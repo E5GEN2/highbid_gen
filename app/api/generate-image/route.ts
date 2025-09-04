@@ -11,25 +11,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Try Gemini 2.0 Flash Experimental with image generation
+    // Use OpenRouter API with image generation models
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      'https://openrouter.ai/api/v1/chat/completions',
       {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://highbidgen.onrender.com',
+          'X-Title': 'AI Image Generator'
         },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `Generate an image of: ${prompt}`
-            }]
+          model: 'google/gemini-2.0-flash-exp:free', // Free tier model
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Generate an image: ${prompt}`
+              }
+            ]
           }],
-          generationConfig: {
-            temperature: 0.4,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 8192,
+          temperature: 0.7,
+          max_tokens: 4096,
+          provider: {
+            allow_fallbacks: true
           }
         })
       }
@@ -37,125 +44,134 @@ export async function POST(request: NextRequest) {
 
     if (!response.ok) {
       const errorData = await response.text();
+      console.error('OpenRouter API Error:', errorData);
       
-      // Try with Imagen 3 through Gemini
-      const imagen3Response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${apiKey}`,
+      // Try with a different model
+      const fallbackResponse = await fetch(
+        'https://openrouter.ai/api/v1/chat/completions',
         {
           method: 'POST',
           headers: {
+            'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://highbidgen.onrender.com',
+            'X-Title': 'AI Image Generator'
           },
           body: JSON.stringify({
-            instances: [{
-              prompt: prompt
+            model: 'google/gemini-flash-1.5-exp', // Alternative model
+            messages: [{
+              role: 'user',
+              content: `Create an image of: ${prompt}`
             }],
-            parameters: {
-              sampleCount: 1,
-              aspectRatio: "1:1",
-              negativePrompt: "blurry, bad quality",
-              personGeneration: "allow_adult",
-              safetyFilterLevel: "block_some",
-              addWatermark: false
-            }
+            temperature: 0.7,
+            max_tokens: 4096
           })
         }
       );
 
-      if (!imagen3Response.ok) {
-        // Try standard Gemini model to generate image description
-        const geminiResponse = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `Create a detailed image generation prompt for: ${prompt}`
-                }]
-              }]
-            })
-          }
+      if (!fallbackResponse.ok) {
+        return NextResponse.json(
+          { error: `OpenRouter API error: ${errorData}` },
+          { status: response.status }
         );
-
-        if (!geminiResponse.ok) {
-          return NextResponse.json(
-            { error: `Unable to generate image. Error: ${errorData}` },
-            { status: response.status }
-          );
-        }
-
-        const geminiData = await geminiResponse.json();
-        return NextResponse.json({
-          error: 'Direct image generation not available. Gemini suggests: ' + geminiData.candidates?.[0]?.content?.parts?.[0]?.text,
-          success: false
-        });
       }
 
-      const imagen3Data = await imagen3Response.json();
+      const fallbackData = await fallbackResponse.json();
+      console.log('Fallback response:', JSON.stringify(fallbackData, null, 2).substring(0, 500));
       
-      if (imagen3Data.predictions?.[0]?.bytesBase64Encoded) {
+      // Check if response contains image
+      if (fallbackData.choices?.[0]?.message?.content) {
+        const content = fallbackData.choices[0].message.content;
+        
+        // Check if content is base64 image
+        if (content.includes('base64,') || content.includes('data:image')) {
+          const base64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+          if (base64Match) {
+            return NextResponse.json({
+              image: base64Match[0],
+              success: true,
+              model: 'gemini-flash-1.5-exp via OpenRouter'
+            });
+          }
+        }
+        
+        // If it's just text, return as error
         return NextResponse.json({
-          image: `data:image/png;base64,${imagen3Data.predictions[0].bytesBase64Encoded}`,
-          success: true,
-          model: 'imagen-3.0'
+          error: 'Model returned text instead of image: ' + content.substring(0, 200),
+          success: false
         });
       }
     }
 
     const data = await response.json();
-    console.log('Gemini response structure:', JSON.stringify(data, null, 2).substring(0, 500));
+    console.log('OpenRouter response:', JSON.stringify(data, null, 2).substring(0, 500));
     
-    // Check if response contains image data
-    if (data.candidates?.[0]?.content?.parts?.[0]?.inlineData) {
-      const imageData = data.candidates[0].content.parts[0].inlineData;
-      return NextResponse.json({
-        image: `data:${imageData.mimeType || 'image/png'};base64,${imageData.data}`,
-        success: true,
-        model: 'gemini-2.0-flash-exp'
-      });
-    }
-
-    // Check for functionCall with image generation
-    if (data.candidates?.[0]?.content?.parts?.[0]?.functionCall) {
-      const functionCall = data.candidates[0].content.parts[0].functionCall;
-      if (functionCall.name === 'generate_image' && functionCall.args?.image_data) {
-        return NextResponse.json({
-          image: `data:image/png;base64,${functionCall.args.image_data}`,
-          success: true,
-          model: 'gemini-2.0-flash-exp'
-        });
-      }
-    }
-
-    // If text response, it might contain base64 or description
-    if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      const textContent = data.candidates[0].content.parts[0].text;
+    // Check OpenRouter response format
+    if (data.choices?.[0]?.message?.content) {
+      const content = data.choices[0].message.content;
       
-      // Check if it's base64 image data
-      if (textContent.length > 1000 && (textContent.includes('iVBOR') || textContent.includes('/9j/'))) {
-        // Extract base64 from text
-        const base64Match = textContent.match(/(?:data:image\/[^;]+;base64,)?([A-Za-z0-9+/=]{100,})/);
-        if (base64Match) {
+      // Check if content contains image data
+      if (typeof content === 'string') {
+        // Check for base64 image in response
+        if (content.includes('base64,') || content.includes('data:image')) {
+          const base64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+          if (base64Match) {
+            return NextResponse.json({
+              image: base64Match[0],
+              success: true,
+              model: 'gemini-2.0-flash via OpenRouter'
+            });
+          }
+        }
+        
+        // Check if raw base64
+        if (content.length > 1000 && /^[A-Za-z0-9+/=]{100,}$/.test(content.trim())) {
           return NextResponse.json({
-            image: `data:image/png;base64,${base64Match[1]}`,
+            image: `data:image/png;base64,${content.trim()}`,
             success: true,
-            model: 'gemini-2.0-flash-exp'
+            model: 'gemini-2.0-flash via OpenRouter'
           });
         }
       }
       
+      // If content is array with image
+      if (Array.isArray(content)) {
+        for (const item of content) {
+          if (item.type === 'image_url' && item.image_url?.url) {
+            return NextResponse.json({
+              image: item.image_url.url,
+              success: true,
+              model: 'gemini-2.0-flash via OpenRouter'
+            });
+          }
+        }
+      }
+      
       return NextResponse.json({
-        error: 'This model cannot generate images directly. Response: ' + textContent.substring(0, 200),
+        error: 'Model did not generate an image. Response: ' + (typeof content === 'string' ? content.substring(0, 200) : JSON.stringify(content).substring(0, 200)),
         success: false
       });
     }
 
+    // Check for other possible image fields
+    if (data.data?.[0]?.url) {
+      return NextResponse.json({
+        image: data.data[0].url,
+        success: true,
+        model: 'via OpenRouter'
+      });
+    }
+
+    if (data.data?.[0]?.b64_json) {
+      return NextResponse.json({
+        image: `data:image/png;base64,${data.data[0].b64_json}`,
+        success: true,
+        model: 'via OpenRouter'
+      });
+    }
+
     return NextResponse.json({
-      error: 'The model did not return an image. Try using a different prompt or API key.',
+      error: 'Unexpected response format from OpenRouter API',
       success: false,
       debug: data
     });

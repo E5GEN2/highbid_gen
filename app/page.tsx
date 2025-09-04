@@ -61,7 +61,7 @@ export default function Home() {
             AI Image Generator
           </h1>
           <p className="text-gray-400 text-lg">
-            Generate stunning images using Google&apos;s AI models
+            Generate stunning images using AI models via OpenRouter
           </p>
         </div>
 
@@ -76,7 +76,7 @@ export default function Home() {
                   type={showApiKey ? 'text' : 'password'}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Enter your Google API key"
+                  placeholder="Enter your OpenRouter API key"
                   className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
                 <button
