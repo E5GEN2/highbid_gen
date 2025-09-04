@@ -34,6 +34,7 @@ export default function Home() {
       gender?: string;
       age?: string;
       style?: string;
+      type?: string;
     };
   }[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState('21m00Tcm4TlvDq8ikWAM');

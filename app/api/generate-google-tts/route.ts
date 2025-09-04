@@ -96,7 +96,6 @@ export async function POST(request: NextRequest) {
 
     // Convert PCM to WAV format
     const base64Audio = audioData.inlineData.data;
-    const audioMimeType = audioData.inlineData.mimeType;
     
     // Create WAV header for the PCM data
     const pcmBuffer = Buffer.from(base64Audio, 'base64');
