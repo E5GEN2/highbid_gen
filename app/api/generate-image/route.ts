@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Use the verified working model from OpenRouter
+    // Use OpenRouter's image generation endpoint with modalities
     const response = await fetch(
       'https://openrouter.ai/api/v1/chat/completions',
       {
@@ -26,11 +26,9 @@ export async function POST(request: NextRequest) {
           model: 'google/gemini-2.5-flash-image-preview:free',
           messages: [{
             role: 'user',
-            content: [{
-              type: 'text',
-              text: prompt
-            }]
+            content: prompt
           }],
+          modalities: ['text', 'image'], // This enables image generation
           temperature: 0.7,
           max_tokens: 4096
         })
@@ -38,25 +36,92 @@ export async function POST(request: NextRequest) {
     );
 
     if (!response.ok) {
-      const errorData = await response.text();
-      console.error('OpenRouter API Error:', errorData);
+      const errorText = await response.text();
+      console.error('OpenRouter error:', errorText);
+      
+      // Try with different free models if the first fails
+      const fallbackModels = [
+        'black-forest-labs/flux-schnell:free',
+        'stabilityai/stable-diffusion-xl-base-1.0:free'
+      ];
+
+      for (const model of fallbackModels) {
+        try {
+          const fallbackResponse = await fetch(
+            'https://openrouter.ai/api/v1/chat/completions',
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://highbidgen.onrender.com',
+                'X-Title': 'AI Image Generator'
+              },
+              body: JSON.stringify({
+                model: model,
+                messages: [{
+                  role: 'user',
+                  content: prompt
+                }],
+                modalities: ['text', 'image'],
+                temperature: 0.7,
+                max_tokens: 4096
+              })
+            }
+          );
+
+          if (fallbackResponse.ok) {
+            const fallbackData = await fallbackResponse.json();
+            console.log(`Success with fallback model ${model}:`, JSON.stringify(fallbackData, null, 2).substring(0, 300));
+            
+            // Process fallback response
+            if (fallbackData.choices?.[0]?.message?.content) {
+              const content = fallbackData.choices[0].message.content;
+              
+              // Check for image data in various formats
+              if (Array.isArray(content)) {
+                for (const part of content) {
+                  if (part.type === 'image_url' && part.image_url?.url) {
+                    return NextResponse.json({
+                      image: part.image_url.url,
+                      success: true,
+                      model: model
+                    });
+                  }
+                  if (part.type === 'image' && part.source?.data) {
+                    return NextResponse.json({
+                      image: `data:${part.source.media_type || 'image/png'};base64,${part.source.data}`,
+                      success: true,
+                      model: model
+                    });
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.log(`Fallback model ${model} failed:`, error);
+          continue;
+        }
+      }
+
       return NextResponse.json(
-        { error: `OpenRouter API error: ${errorData}` },
+        { error: `OpenRouter API error: ${errorText}` },
         { status: response.status }
       );
     }
 
     const data = await response.json();
-    console.log('OpenRouter response:', JSON.stringify(data, null, 2).substring(0, 500));
+    console.log('OpenRouter response structure:', JSON.stringify(data, null, 2).substring(0, 1000));
     
-    // Check if response contains image data
+    // Check for image content in the response
     if (data.choices?.[0]?.message?.content) {
       const content = data.choices[0].message.content;
       
-      // Handle different response formats
+      // Handle array content (multimodal response)
       if (Array.isArray(content)) {
-        // Content is an array of parts
         for (const part of content) {
+          // OpenRouter image format
           if (part.type === 'image_url' && part.image_url?.url) {
             return NextResponse.json({
               image: part.image_url.url,
@@ -65,7 +130,17 @@ export async function POST(request: NextRequest) {
             });
           }
           
-          if (part.type === 'inline_data' && part.inline_data?.data) {
+          // Gemini inline data format
+          if (part.type === 'image' && part.source?.data) {
+            return NextResponse.json({
+              image: `data:${part.source.media_type || 'image/png'};base64,${part.source.data}`,
+              success: true,
+              model: 'gemini-2.5-flash-image-preview'
+            });
+          }
+
+          // Alternative inline data format
+          if (part.inline_data?.data) {
             return NextResponse.json({
               image: `data:${part.inline_data.mime_type || 'image/png'};base64,${part.inline_data.data}`,
               success: true,
@@ -73,10 +148,11 @@ export async function POST(request: NextRequest) {
             });
           }
         }
-      } else if (typeof content === 'string') {
-        // Content is a string - check for base64 or URLs
-        
-        // Check for data URL format
+      }
+      
+      // Handle string content
+      if (typeof content === 'string') {
+        // Check for data URL
         const dataUrlMatch = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
         if (dataUrlMatch) {
           return NextResponse.json({
@@ -86,16 +162,7 @@ export async function POST(request: NextRequest) {
           });
         }
         
-        // Check for raw base64 (if it's a long string of base64 characters)
-        if (content.length > 1000 && /^[A-Za-z0-9+/=]{100,}$/.test(content.trim())) {
-          return NextResponse.json({
-            image: `data:image/png;base64,${content.trim()}`,
-            success: true,
-            model: 'gemini-2.5-flash-image-preview'
-          });
-        }
-        
-        // Check for HTTP URLs
+        // Check for URLs
         const urlMatch = content.match(/https?:\/\/[^\s]+\.(jpg|jpeg|png|gif|webp)/i);
         if (urlMatch) {
           return NextResponse.json({
@@ -105,26 +172,26 @@ export async function POST(request: NextRequest) {
           });
         }
         
-        // If it's just text describing an image or error
+        // If it's text, the model is not generating images
         return NextResponse.json({
-          error: `Model response: ${content.substring(0, 200)}`,
-          success: false
+          error: `The model is responding with text instead of generating an image. Response: "${content.substring(0, 200)}"`,
+          success: false,
+          suggestion: 'Try using a different prompt or the model might not have image generation enabled.'
         });
       }
     }
 
-    // Check for inline_data at message level
-    if (data.choices?.[0]?.message?.inline_data) {
-      const inlineData = data.choices[0].message.inline_data;
+    // Check for image data at the message level
+    if (data.choices?.[0]?.message?.image_url) {
       return NextResponse.json({
-        image: `data:${inlineData.mime_type || 'image/png'};base64,${inlineData.data}`,
+        image: data.choices[0].message.image_url.url,
         success: true,
         model: 'gemini-2.5-flash-image-preview'
       });
     }
 
     return NextResponse.json({
-      error: 'No image data found in response',
+      error: 'No image was generated. The model might not support image generation or returned an unexpected format.',
       success: false,
       debug: data
     });
