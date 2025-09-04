@@ -49,13 +49,23 @@ export async function POST(request: NextRequest) {
     const assistantMessage = data.choices?.[0]?.message;
     
     if (assistantMessage?.images && assistantMessage.images.length > 0) {
-      // Images are stored as base64 data URLs
-      const imageUrl = assistantMessage.images[0];
-      return NextResponse.json({
-        image: imageUrl,
-        success: true,
-        model: 'gemini-2.5-flash-image-preview'
-      });
+      // Images are stored in the images array with image_url structure
+      const imageData = assistantMessage.images[0];
+      if (imageData.type === 'image_url' && imageData.image_url?.url) {
+        return NextResponse.json({
+          image: imageData.image_url.url,
+          success: true,
+          model: 'gemini-2.5-flash-image-preview'
+        });
+      }
+      // Fallback: if it's just a string URL
+      if (typeof imageData === 'string') {
+        return NextResponse.json({
+          image: imageData,
+          success: true,
+          model: 'gemini-2.5-flash-image-preview'
+        });
+      }
     }
 
     // Check content array for image parts
