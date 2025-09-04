@@ -107,6 +107,7 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await response.json();
+    console.log('Gemini response structure:', JSON.stringify(data, null, 2).substring(0, 500));
     
     // Check if response contains image data
     if (data.candidates?.[0]?.content?.parts?.[0]?.inlineData) {

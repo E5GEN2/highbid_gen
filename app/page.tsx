@@ -40,8 +40,11 @@ export default function Home() {
 
       if (data.image) {
         setGeneratedImage(data.image);
+      } else if (data.error) {
+        setError(data.error);
       } else {
         setError('Failed to generate image. Please check your API key and try again.');
+        console.error('Unexpected response:', data);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
