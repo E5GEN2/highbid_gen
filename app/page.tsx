@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 
 export default function Home() {
   const [apiKey, setApiKey] = useState('');
@@ -11,18 +12,27 @@ export default function Home() {
   
   // Script Generation State
   const [scriptPrompts, setScriptPrompts] = useState<string[]>(['']);
-  const [generatedScripts, setGeneratedScripts] = useState<string[]>([]);
+  const [generatedScripts, _setGeneratedScripts] = useState<string[]>([]);
   const [scriptsLoading, setScriptsLoading] = useState(false);
   
   // Storyboard State
-  const [storyboards, setStoryboards] = useState<string[]>([]);
-  const [storyboardsLoading, setStoryboardsLoading] = useState(false);
+  const [_storyboards, _setStoryboards] = useState<string[]>([]);
+  const [_storyboardsLoading, _setStoryboardsLoading] = useState(false);
   
   // Voice-over State
   const [voiceoverTexts, setVoiceoverTexts] = useState<string[]>(['']);
   const [generatedVoiceovers, setGeneratedVoiceovers] = useState<{text: string, audio: string}[]>([]);
   const [voiceoversLoading, setVoiceoversLoading] = useState(false);
-  const [availableVoices, setAvailableVoices] = useState<any[]>([]);
+  const [availableVoices, setAvailableVoices] = useState<{
+    voice_id: string;
+    name: string;
+    description: string;
+    preview_url: string;
+    labels?: {
+      gender?: string;
+      age?: string;
+    };
+  }[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState('21m00Tcm4TlvDq8ikWAM');
   const [voicesLoaded, setVoicesLoaded] = useState(false);
   
@@ -32,8 +42,8 @@ export default function Home() {
   const [imagesLoading, setImagesLoading] = useState(false);
   
   // Effects State
-  const [finalVideos, setFinalVideos] = useState<string[]>([]);
-  const [effectsLoading, setEffectsLoading] = useState(false);
+  const [_finalVideos, _setFinalVideos] = useState<string[]>([]);
+  const [_effectsLoading, _setEffectsLoading] = useState(false);
   
   const [error, setError] = useState<string | null>(null);
 
@@ -400,11 +410,15 @@ export default function Home() {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                       {generatedImages.map((image, index) => (
                         <div key={index} className="bg-gray-900/50 p-4 rounded-xl">
-                          <img
-                            src={image}
-                            alt={`Generated ${index + 1}`}
-                            className="w-full h-48 object-cover rounded-xl mb-3"
-                          />
+                          <div className="relative w-full h-48 mb-3">
+                            <Image
+                              src={image}
+                              alt={`Generated ${index + 1}`}
+                              fill
+                              className="object-cover rounded-xl"
+                              unoptimized
+                            />
+                          </div>
                           <button
                             onClick={() => {
                               const link = document.createElement('a');

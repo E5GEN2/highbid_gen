@@ -97,7 +97,18 @@ export async function GET(request: NextRequest) {
     const data = await response.json();
     
     // Simplify voice data for frontend
-    const voices = data.voices.map((voice: any) => ({
+    const voices = data.voices.map((voice: {
+      voice_id: string;
+      name: string;
+      description: string;
+      preview_url: string;
+      labels: {
+        accent?: string;
+        gender?: string;
+        age?: string;
+        language?: string;
+      };
+    }) => ({
       voice_id: voice.voice_id,
       name: voice.name,
       description: voice.description,
