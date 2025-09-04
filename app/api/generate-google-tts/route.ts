@@ -1,5 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+function createWavHeader(pcmBuffer: Buffer): Buffer {
+  const sampleRate = 24000; // Google TTS returns 24kHz
+  const numChannels = 1; // Mono
+  const bitsPerSample = 16; // 16-bit PCM
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataSize = pcmBuffer.length;
+  const fileSize = 36 + dataSize;
+  
+  const header = Buffer.alloc(44);
+  let offset = 0;
+  
+  // RIFF header
+  header.write('RIFF', offset); offset += 4;
+  header.writeUInt32LE(fileSize, offset); offset += 4;
+  header.write('WAVE', offset); offset += 4;
+  
+  // fmt chunk
+  header.write('fmt ', offset); offset += 4;
+  header.writeUInt32LE(16, offset); offset += 4; // fmt chunk size
+  header.writeUInt16LE(1, offset); offset += 2; // PCM format
+  header.writeUInt16LE(numChannels, offset); offset += 2;
+  header.writeUInt32LE(sampleRate, offset); offset += 4;
+  header.writeUInt32LE(byteRate, offset); offset += 4;
+  header.writeUInt16LE(blockAlign, offset); offset += 2;
+  header.writeUInt16LE(bitsPerSample, offset); offset += 2;
+  
+  // data chunk
+  header.write('data', offset); offset += 4;
+  header.writeUInt32LE(dataSize, offset);
+  
+  return Buffer.concat([header, pcmBuffer]);
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { text, apiKey, voiceName = 'Kore' } = await request.json();
@@ -64,8 +98,13 @@ export async function POST(request: NextRequest) {
     const base64Audio = audioData.inlineData.data;
     const audioMimeType = audioData.inlineData.mimeType;
     
+    // Create WAV header for the PCM data
+    const pcmBuffer = Buffer.from(base64Audio, 'base64');
+    const wavBuffer = createWavHeader(pcmBuffer);
+    const wavBase64 = wavBuffer.toString('base64');
+    
     return NextResponse.json({
-      audio: `data:${audioMimeType};base64,${base64Audio}`,
+      audio: `data:audio/wav;base64,${wavBase64}`,
       success: true,
       voiceName: voiceName,
       text: text,
