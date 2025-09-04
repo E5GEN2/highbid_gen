@@ -574,11 +574,11 @@ export default function Home() {
                         </>
                       ) : (
                         <>
-                          <option value="Kore">Kore - Conversational, clear (Default)</option>
+                          <option value="Kore">Kore - Firm, reliable (Default)</option>
                           {availableVoices.map((voice) => (
                             voice.voice_id !== 'Kore' && (
                               <option key={voice.voice_id} value={voice.voice_id}>
-                                {voice.name} - {voice.labels?.gender || 'Unknown'} ({voice.labels?.style || 'Natural'})
+                                {voice.name} - {voice.labels?.style || 'Natural'} ({voice.labels?.type || 'Standard'})
                               </option>
                             )
                           ))}

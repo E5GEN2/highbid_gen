@@ -122,18 +122,38 @@ export async function POST(request: NextRequest) {
 
 export async function GET(_request: NextRequest) {
   try {
-    // Return available Google Gemini TTS voices
+    // Return all 30 available Google Gemini TTS voices
     const voices = [
-      { voice_id: 'Kore', name: 'Kore', description: 'Conversational, clear', labels: { gender: 'Female', style: 'Natural' } },
-      { voice_id: 'Zephyr', name: 'Zephyr', description: 'Bright, energetic', labels: { gender: 'Male', style: 'Bright' } },
-      { voice_id: 'Puck', name: 'Puck', description: 'Upbeat, cheerful', labels: { gender: 'Male', style: 'Upbeat' } },
-      { voice_id: 'Charon', name: 'Charon', description: 'Informative, authoritative', labels: { gender: 'Male', style: 'Informative' } },
-      { voice_id: 'Cosmic', name: 'Cosmic', description: 'Mysterious, ethereal', labels: { gender: 'Neutral', style: 'Ethereal' } },
-      { voice_id: 'Sage', name: 'Sage', description: 'Wise, calm', labels: { gender: 'Male', style: 'Calm' } },
-      { voice_id: 'Fenix', name: 'Fenix', description: 'Dynamic, powerful', labels: { gender: 'Female', style: 'Dynamic' } },
-      { voice_id: 'Vox', name: 'Vox', description: 'Professional, clear', labels: { gender: 'Male', style: 'Professional' } },
-      { voice_id: 'Nova', name: 'Nova', description: 'Bright, youthful', labels: { gender: 'Female', style: 'Youthful' } },
-      { voice_id: 'Echo', name: 'Echo', description: 'Resonant, deep', labels: { gender: 'Male', style: 'Deep' } }
+      { voice_id: 'Kore', name: 'Kore', description: 'Firm, reliable tone', labels: { style: 'Firm', type: 'Professional' } },
+      { voice_id: 'Zephyr', name: 'Zephyr', description: 'Bright, energetic tone', labels: { style: 'Bright', type: 'Energetic' } },
+      { voice_id: 'Puck', name: 'Puck', description: 'Upbeat, cheerful tone', labels: { style: 'Upbeat', type: 'Cheerful' } },
+      { voice_id: 'Charon', name: 'Charon', description: 'Informative, clear tone', labels: { style: 'Informative', type: 'Professional' } },
+      { voice_id: 'Fenrir', name: 'Fenrir', description: 'Excitable, dynamic tone', labels: { style: 'Excitable', type: 'Dynamic' } },
+      { voice_id: 'Leda', name: 'Leda', description: 'Youthful, vibrant tone', labels: { style: 'Youthful', type: 'Vibrant' } },
+      { voice_id: 'Orus', name: 'Orus', description: 'Firm, decisive tone', labels: { style: 'Firm', type: 'Authoritative' } },
+      { voice_id: 'Aoede', name: 'Aoede', description: 'Breezy, light tone', labels: { style: 'Breezy', type: 'Light' } },
+      { voice_id: 'Callirrhoe', name: 'Callirrhoe', description: 'Easy-going, relaxed tone', labels: { style: 'Easy-going', type: 'Relaxed' } },
+      { voice_id: 'Autonoe', name: 'Autonoe', description: 'Bright, optimistic tone', labels: { style: 'Bright', type: 'Optimistic' } },
+      { voice_id: 'Enceladus', name: 'Enceladus', description: 'Breathy, gentle tone', labels: { style: 'Breathy', type: 'Gentle' } },
+      { voice_id: 'Iapetus', name: 'Iapetus', description: 'Clear, articulate tone', labels: { style: 'Clear', type: 'Articulate' } },
+      { voice_id: 'Umbriel', name: 'Umbriel', description: 'Easy-going, calm tone', labels: { style: 'Easy-going', type: 'Calm' } },
+      { voice_id: 'Algieba', name: 'Algieba', description: 'Smooth, pleasant tone', labels: { style: 'Smooth', type: 'Pleasant' } },
+      { voice_id: 'Despina', name: 'Despina', description: 'Smooth, flowing tone', labels: { style: 'Smooth', type: 'Flowing' } },
+      { voice_id: 'Erinome', name: 'Erinome', description: 'Clear, precise tone', labels: { style: 'Clear', type: 'Precise' } },
+      { voice_id: 'Algenib', name: 'Algenib', description: 'Gravelly, textured tone', labels: { style: 'Gravelly', type: 'Textured' } },
+      { voice_id: 'Rasalgethi', name: 'Rasalgethi', description: 'Informative, professional tone', labels: { style: 'Informative', type: 'Professional' } },
+      { voice_id: 'Laomedeia', name: 'Laomedeia', description: 'Upbeat, lively tone', labels: { style: 'Upbeat', type: 'Lively' } },
+      { voice_id: 'Achernar', name: 'Achernar', description: 'Soft, gentle tone', labels: { style: 'Soft', type: 'Gentle' } },
+      { voice_id: 'Alnilam', name: 'Alnilam', description: 'Firm, strong tone', labels: { style: 'Firm', type: 'Strong' } },
+      { voice_id: 'Schedar', name: 'Schedar', description: 'Even, balanced tone', labels: { style: 'Even', type: 'Balanced' } },
+      { voice_id: 'Gacrux', name: 'Gacrux', description: 'Mature, experienced tone', labels: { style: 'Mature', type: 'Experienced' } },
+      { voice_id: 'Pulcherrima', name: 'Pulcherrima', description: 'Forward, expressive tone', labels: { style: 'Forward', type: 'Expressive' } },
+      { voice_id: 'Achird', name: 'Achird', description: 'Friendly, approachable tone', labels: { style: 'Friendly', type: 'Approachable' } },
+      { voice_id: 'Zubenelgenubi', name: 'Zubenelgenubi', description: 'Casual, relaxed tone', labels: { style: 'Casual', type: 'Relaxed' } },
+      { voice_id: 'Vindemiatrix', name: 'Vindemiatrix', description: 'Gentle, kind tone', labels: { style: 'Gentle', type: 'Kind' } },
+      { voice_id: 'Sadachbia', name: 'Sadachbia', description: 'Lively, animated tone', labels: { style: 'Lively', type: 'Animated' } },
+      { voice_id: 'Sadaltager', name: 'Sadaltager', description: 'Knowledgeable, authoritative tone', labels: { style: 'Knowledgeable', type: 'Authoritative' } },
+      { voice_id: 'Sulafat', name: 'Sulafat', description: 'Warm, welcoming tone', labels: { style: 'Warm', type: 'Welcoming' } }
     ];
 
     return NextResponse.json({
