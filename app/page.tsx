@@ -6,9 +6,11 @@ import Image from 'next/image';
 export default function Home() {
   const [apiKey, setApiKey] = useState('');
   const [elevenLabsKey, setElevenLabsKey] = useState('');
+  const [googleTtsKey, setGoogleTtsKey] = useState('');
   const [activeTab, setActiveTab] = useState('scripts');
   const [showApiKey, setShowApiKey] = useState(false);
   const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
+  const [showGoogleTtsKey, setShowGoogleTtsKey] = useState(false);
   
   // Script Generation State
   const [scriptPrompts, setScriptPrompts] = useState<string[]>(['']);
@@ -21,20 +23,23 @@ export default function Home() {
   
   // Voice-over State
   const [voiceoverTexts, setVoiceoverTexts] = useState<string[]>(['']);
-  const [generatedVoiceovers, setGeneratedVoiceovers] = useState<{text: string, audio: string}[]>([]);
+  const [generatedVoiceovers, setGeneratedVoiceovers] = useState<{text: string, audio: string, provider?: string}[]>([]);
   const [voiceoversLoading, setVoiceoversLoading] = useState(false);
   const [availableVoices, setAvailableVoices] = useState<{
     voice_id: string;
     name: string;
     description: string;
-    preview_url: string;
+    preview_url?: string;
     labels?: {
       gender?: string;
       age?: string;
+      style?: string;
     };
   }[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState('21m00Tcm4TlvDq8ikWAM');
   const [voicesLoaded, setVoicesLoaded] = useState(false);
+  const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'google'>('elevenlabs');
+  const [googleVoicesLoaded, setGoogleVoicesLoaded] = useState(false);
   
   // Image Generation State
   const [imagePrompts, setImagePrompts] = useState<string[]>(['']);
@@ -55,25 +60,46 @@ export default function Home() {
     { id: 'effects', name: '5. Final Video', icon: '🎬' }
   ];
 
-  const loadVoices = async () => {
-    if (!elevenLabsKey || voicesLoaded) return;
-    
-    try {
-      const response = await fetch(`/api/generate-voiceover?apiKey=${elevenLabsKey}`);
-      const data = await response.json();
+  const loadVoices = async (provider: 'elevenlabs' | 'google' = ttsProvider) => {
+    if (provider === 'elevenlabs') {
+      if (!elevenLabsKey || voicesLoaded) return;
       
-      if (data.success && data.voices) {
-        setAvailableVoices(data.voices);
-        setVoicesLoaded(true);
+      try {
+        const response = await fetch(`/api/generate-voiceover?apiKey=${elevenLabsKey}`);
+        const data = await response.json();
+        
+        if (data.success && data.voices) {
+          setAvailableVoices(data.voices);
+          setVoicesLoaded(true);
+          setSelectedVoiceId('21m00Tcm4TlvDq8ikWAM');
+        }
+      } catch (err) {
+        console.error('Failed to load ElevenLabs voices:', err);
       }
-    } catch (err) {
-      console.error('Failed to load voices:', err);
+    } else if (provider === 'google') {
+      if (!googleTtsKey || googleVoicesLoaded) return;
+      
+      try {
+        const response = await fetch(`/api/generate-google-tts`);
+        const data = await response.json();
+        
+        if (data.success && data.voices) {
+          setAvailableVoices(data.voices);
+          setGoogleVoicesLoaded(true);
+          setSelectedVoiceId('Kore');
+        }
+      } catch (err) {
+        console.error('Failed to load Google voices:', err);
+      }
     }
   };
 
   const handleVoiceoverGeneration = async () => {
-    if (!elevenLabsKey || voiceoverTexts.filter(t => t.trim()).length === 0) {
-      setError('Please provide ElevenLabs API key and at least one text');
+    const apiKeyRequired = ttsProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
+    const providerName = ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS';
+    
+    if (!apiKeyRequired || voiceoverTexts.filter(t => t.trim()).length === 0) {
+      setError(`Please provide ${providerName} API key and at least one text`);
       return;
     }
 
@@ -81,31 +107,32 @@ export default function Home() {
     setError(null);
 
     try {
-      const results: {text: string, audio: string}[] = [];
+      const results: {text: string, audio: string, provider?: string}[] = [];
       
       for (const text of voiceoverTexts) {
         if (!text.trim()) continue;
         
-        const response = await fetch('/api/generate-voiceover', {
+        const endpoint = ttsProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
+        const requestBody = ttsProvider === 'elevenlabs' 
+          ? { text, apiKey: elevenLabsKey, voiceId: selectedVoiceId }
+          : { text, apiKey: googleTtsKey, voiceName: selectedVoiceId };
+        
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            text,
-            apiKey: elevenLabsKey,
-            voiceId: selectedVoiceId,
-          }),
+          body: JSON.stringify(requestBody),
         });
 
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || 'Failed to generate voice-over');
+          throw new Error(data.error || `Failed to generate voice-over with ${providerName}`);
         }
 
         if (data.audio) {
-          results.push({ text, audio: data.audio });
+          results.push({ text, audio: data.audio, provider: data.provider || ttsProvider });
         }
       }
       
@@ -231,7 +258,7 @@ export default function Home() {
 
         {/* API Keys Section */}
         <div className="bg-gray-800/50 backdrop-blur-xl rounded-2xl p-6 border border-gray-700 mb-8">
-          <div className="grid md:grid-cols-2 gap-6">
+          <div className="grid md:grid-cols-3 gap-6">
             <div>
               <label className="block text-white text-sm font-semibold mb-3">
                 OpenRouter API Key (for Images & Scripts)
@@ -273,6 +300,30 @@ export default function Home() {
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
                 >
                   {showElevenLabsKey ? '👁️' : '👁️‍🗨️'}
+                </button>
+              </div>
+            </div>
+            
+            <div>
+              <label className="block text-white text-sm font-semibold mb-3">
+                Google Gemini TTS API Key (Alternative Voice)
+              </label>
+              <div className="relative">
+                <input
+                  type={showGoogleTtsKey ? 'text' : 'password'}
+                  value={googleTtsKey}
+                  onChange={(e) => {
+                    setGoogleTtsKey(e.target.value);
+                    setGoogleVoicesLoaded(false);
+                  }}
+                  placeholder="Enter your Google API key"
+                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+                <button
+                  onClick={() => setShowGoogleTtsKey(!showGoogleTtsKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
+                >
+                  {showGoogleTtsKey ? '👁️' : '👁️‍🗨️'}
                 </button>
               </div>
             </div>
@@ -457,26 +508,82 @@ export default function Home() {
                   <p className="text-gray-400 mb-6">Convert your scripts to professional audio narration</p>
                 </div>
 
+                {/* TTS Provider Selection */}
+                <div className="bg-gray-900/50 p-4 rounded-xl">
+                  <label className="block text-white text-sm font-semibold mb-3">
+                    TTS Provider
+                  </label>
+                  <div className="flex gap-4 mb-4">
+                    <button
+                      onClick={() => {
+                        setTtsProvider('elevenlabs');
+                        setVoicesLoaded(false);
+                        setGoogleVoicesLoaded(false);
+                        setAvailableVoices([]);
+                        setSelectedVoiceId('21m00Tcm4TlvDq8ikWAM');
+                      }}
+                      className={`px-4 py-2 rounded-xl transition ${
+                        ttsProvider === 'elevenlabs'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      ElevenLabs
+                    </button>
+                    <button
+                      onClick={() => {
+                        setTtsProvider('google');
+                        setVoicesLoaded(false);
+                        setGoogleVoicesLoaded(false);
+                        setAvailableVoices([]);
+                        setSelectedVoiceId('Kore');
+                      }}
+                      className={`px-4 py-2 rounded-xl transition ${
+                        ttsProvider === 'google'
+                          ? 'bg-green-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      Google Gemini TTS
+                    </button>
+                  </div>
+                </div>
+
                 {/* Voice Selection */}
                 <div className="bg-gray-900/50 p-4 rounded-xl">
                   <label className="block text-white text-sm font-semibold mb-3">
-                    Select Voice
+                    Select Voice {ttsProvider === 'google' && '(Google Gemini)'}
                   </label>
                   <div className="flex gap-4 items-center">
                     <select
                       value={selectedVoiceId}
                       onChange={(e) => setSelectedVoiceId(e.target.value)}
-                      onFocus={() => loadVoices()}
+                      onFocus={() => loadVoices(ttsProvider)}
                       className="flex-1 px-4 py-3 bg-gray-800 border border-gray-600 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                     >
-                      <option value="21m00Tcm4TlvDq8ikWAM">Rachel - Young Female (Default)</option>
-                      {availableVoices.map((voice) => (
-                        voice.voice_id !== '21m00Tcm4TlvDq8ikWAM' && (
-                          <option key={voice.voice_id} value={voice.voice_id}>
-                            {voice.name} - {voice.labels?.gender || 'Unknown'} {voice.labels?.age || ''}
-                          </option>
-                        )
-                      ))}
+                      {ttsProvider === 'elevenlabs' ? (
+                        <>
+                          <option value="21m00Tcm4TlvDq8ikWAM">Rachel - Young Female (Default)</option>
+                          {availableVoices.map((voice) => (
+                            voice.voice_id !== '21m00Tcm4TlvDq8ikWAM' && (
+                              <option key={voice.voice_id} value={voice.voice_id}>
+                                {voice.name} - {voice.labels?.gender || 'Unknown'} {voice.labels?.age || ''}
+                              </option>
+                            )
+                          ))}
+                        </>
+                      ) : (
+                        <>
+                          <option value="Kore">Kore - Conversational, clear (Default)</option>
+                          {availableVoices.map((voice) => (
+                            voice.voice_id !== 'Kore' && (
+                              <option key={voice.voice_id} value={voice.voice_id}>
+                                {voice.name} - {voice.labels?.gender || 'Unknown'} ({voice.labels?.style || 'Natural'})
+                              </option>
+                            )
+                          ))}
+                        </>
+                      )}
                     </select>
                     {selectedVoiceId && availableVoices.length > 0 && (
                       <div className="text-sm text-gray-400">
@@ -484,6 +591,16 @@ export default function Home() {
                       </div>
                     )}
                   </div>
+                  {ttsProvider === 'google' && !googleTtsKey && (
+                    <div className="mt-3 text-yellow-400 text-sm">
+                      Please enter your Google Gemini TTS API key above to load voices
+                    </div>
+                  )}
+                  {ttsProvider === 'elevenlabs' && !elevenLabsKey && (
+                    <div className="mt-3 text-yellow-400 text-sm">
+                      Please enter your ElevenLabs API key above to load voices
+                    </div>
+                  )}
                 </div>
 
                 {/* Text Input */}
@@ -517,10 +634,10 @@ export default function Home() {
                   </button>
                   <button
                     onClick={handleVoiceoverGeneration}
-                    disabled={voiceoversLoading || !elevenLabsKey}
+                    disabled={voiceoversLoading || (ttsProvider === 'elevenlabs' ? !elevenLabsKey : !googleTtsKey)}
                     className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
                   >
-                    {voiceoversLoading ? 'Generating Voice-overs...' : 'Generate Voice-overs'}
+                    {voiceoversLoading ? `Generating with ${ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}...` : `Generate with ${ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}`}
                   </button>
                 </div>
 
@@ -532,7 +649,16 @@ export default function Home() {
                       {generatedVoiceovers.map((voiceover, index) => (
                         <div key={index} className="bg-gray-900/50 p-4 rounded-xl">
                           <div className="mb-3">
-                            <h5 className="text-lg font-semibold text-white mb-2">Voice-over {index + 1}</h5>
+                            <div className="flex justify-between items-start mb-2">
+                              <h5 className="text-lg font-semibold text-white">Voice-over {index + 1}</h5>
+                              {voiceover.provider && (
+                                <span className={`px-2 py-1 text-xs rounded-full ${
+                                  voiceover.provider === 'google-gemini' ? 'bg-green-600/20 text-green-400' : 'bg-blue-600/20 text-blue-400'
+                                }`}>
+                                  {voiceover.provider === 'google-gemini' ? 'Google TTS' : 'ElevenLabs'}
+                                </span>
+                              )}
+                            </div>
                             <p className="text-gray-400 text-sm mb-3">{voiceover.text}</p>
                           </div>
                           <audio 
