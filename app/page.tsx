@@ -4,8 +4,10 @@ import { useState } from 'react';
 
 export default function Home() {
   const [apiKey, setApiKey] = useState('');
+  const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [activeTab, setActiveTab] = useState('scripts');
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
   
   // Script Generation State
   const [scriptPrompts, setScriptPrompts] = useState<string[]>(['']);
@@ -17,8 +19,12 @@ export default function Home() {
   const [storyboardsLoading, setStoryboardsLoading] = useState(false);
   
   // Voice-over State
-  const [voiceovers, setVoiceovers] = useState<string[]>([]);
+  const [voiceoverTexts, setVoiceoverTexts] = useState<string[]>(['']);
+  const [generatedVoiceovers, setGeneratedVoiceovers] = useState<{text: string, audio: string}[]>([]);
   const [voiceoversLoading, setVoiceoversLoading] = useState(false);
+  const [availableVoices, setAvailableVoices] = useState<any[]>([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState('21m00Tcm4TlvDq8ikWAM');
+  const [voicesLoaded, setVoicesLoaded] = useState(false);
   
   // Image Generation State
   const [imagePrompts, setImagePrompts] = useState<string[]>(['']);
@@ -38,6 +44,68 @@ export default function Home() {
     { id: 'images', name: '4. Images', icon: '🖼️' },
     { id: 'effects', name: '5. Final Video', icon: '🎬' }
   ];
+
+  const loadVoices = async () => {
+    if (!elevenLabsKey || voicesLoaded) return;
+    
+    try {
+      const response = await fetch(`/api/generate-voiceover?apiKey=${elevenLabsKey}`);
+      const data = await response.json();
+      
+      if (data.success && data.voices) {
+        setAvailableVoices(data.voices);
+        setVoicesLoaded(true);
+      }
+    } catch (err) {
+      console.error('Failed to load voices:', err);
+    }
+  };
+
+  const handleVoiceoverGeneration = async () => {
+    if (!elevenLabsKey || voiceoverTexts.filter(t => t.trim()).length === 0) {
+      setError('Please provide ElevenLabs API key and at least one text');
+      return;
+    }
+
+    setVoiceoversLoading(true);
+    setError(null);
+
+    try {
+      const results: {text: string, audio: string}[] = [];
+      
+      for (const text of voiceoverTexts) {
+        if (!text.trim()) continue;
+        
+        const response = await fetch('/api/generate-voiceover', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            text,
+            apiKey: elevenLabsKey,
+            voiceId: selectedVoiceId,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to generate voice-over');
+        }
+
+        if (data.audio) {
+          results.push({ text, audio: data.audio });
+        }
+      }
+      
+      setGeneratedVoiceovers(results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setVoiceoversLoading(false);
+    }
+  };
 
   const handleScriptGeneration = async () => {
     if (!apiKey || scriptPrompts.filter(p => p.trim()).length === 0) {
@@ -103,31 +171,39 @@ export default function Home() {
     }
   };
 
-  const addPrompt = (type: 'script' | 'image') => {
+  const addPrompt = (type: 'script' | 'image' | 'voiceover') => {
     if (type === 'script') {
       setScriptPrompts([...scriptPrompts, '']);
-    } else {
+    } else if (type === 'image') {
       setImagePrompts([...imagePrompts, '']);
+    } else {
+      setVoiceoverTexts([...voiceoverTexts, '']);
     }
   };
 
-  const removePrompt = (type: 'script' | 'image', index: number) => {
+  const removePrompt = (type: 'script' | 'image' | 'voiceover', index: number) => {
     if (type === 'script') {
       setScriptPrompts(scriptPrompts.filter((_, i) => i !== index));
-    } else {
+    } else if (type === 'image') {
       setImagePrompts(imagePrompts.filter((_, i) => i !== index));
+    } else {
+      setVoiceoverTexts(voiceoverTexts.filter((_, i) => i !== index));
     }
   };
 
-  const updatePrompt = (type: 'script' | 'image', index: number, value: string) => {
+  const updatePrompt = (type: 'script' | 'image' | 'voiceover', index: number, value: string) => {
     if (type === 'script') {
       const updated = [...scriptPrompts];
       updated[index] = value;
       setScriptPrompts(updated);
-    } else {
+    } else if (type === 'image') {
       const updated = [...imagePrompts];
       updated[index] = value;
       setImagePrompts(updated);
+    } else {
+      const updated = [...voiceoverTexts];
+      updated[index] = value;
+      setVoiceoverTexts(updated);
     }
   };
 
@@ -143,25 +219,53 @@ export default function Home() {
           </p>
         </div>
 
-        {/* API Key Section */}
+        {/* API Keys Section */}
         <div className="bg-gray-800/50 backdrop-blur-xl rounded-2xl p-6 border border-gray-700 mb-8">
-          <label className="block text-white text-sm font-semibold mb-3">
-            OpenRouter API Key
-          </label>
-          <div className="relative max-w-md">
-            <input
-              type={showApiKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Enter your OpenRouter API key"
-              className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-            />
-            <button
-              onClick={() => setShowApiKey(!showApiKey)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
-            >
-              {showApiKey ? '👁️' : '👁️‍🗨️'}
-            </button>
+          <div className="grid md:grid-cols-2 gap-6">
+            <div>
+              <label className="block text-white text-sm font-semibold mb-3">
+                OpenRouter API Key (for Images & Scripts)
+              </label>
+              <div className="relative">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="Enter your OpenRouter API key"
+                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+                <button
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
+                >
+                  {showApiKey ? '👁️' : '👁️‍🗨️'}
+                </button>
+              </div>
+            </div>
+            
+            <div>
+              <label className="block text-white text-sm font-semibold mb-3">
+                ElevenLabs API Key (for Voice-overs)
+              </label>
+              <div className="relative">
+                <input
+                  type={showElevenLabsKey ? 'text' : 'password'}
+                  value={elevenLabsKey}
+                  onChange={(e) => {
+                    setElevenLabsKey(e.target.value);
+                    setVoicesLoaded(false);
+                  }}
+                  placeholder="Enter your ElevenLabs API key"
+                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+                <button
+                  onClick={() => setShowElevenLabsKey(!showElevenLabsKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
+                >
+                  {showElevenLabsKey ? '👁️' : '👁️‍🗨️'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -333,13 +437,113 @@ export default function Home() {
             )}
 
             {activeTab === 'voiceovers' && (
-              <div className="text-center py-12">
-                <div className="text-6xl mb-4">🎤</div>
-                <h3 className="text-2xl font-bold text-white mb-4">Voice-over Generation</h3>
-                <p className="text-gray-400 mb-6">Convert your scripts to audio narration</p>
-                <div className="bg-yellow-900/20 border border-yellow-500 text-yellow-400 px-4 py-3 rounded-xl max-w-md mx-auto">
-                  Coming Soon - Text-to-speech voice generation
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-white mb-4">Batch Voice-over Generation</h3>
+                  <p className="text-gray-400 mb-6">Convert your scripts to professional audio narration</p>
                 </div>
+
+                {/* Voice Selection */}
+                <div className="bg-gray-900/50 p-4 rounded-xl">
+                  <label className="block text-white text-sm font-semibold mb-3">
+                    Select Voice
+                  </label>
+                  <div className="flex gap-4 items-center">
+                    <select
+                      value={selectedVoiceId}
+                      onChange={(e) => setSelectedVoiceId(e.target.value)}
+                      onFocus={() => loadVoices()}
+                      className="flex-1 px-4 py-3 bg-gray-800 border border-gray-600 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                    >
+                      <option value="21m00Tcm4TlvDq8ikWAM">Rachel - Young Female (Default)</option>
+                      {availableVoices.map((voice) => (
+                        voice.voice_id !== '21m00Tcm4TlvDq8ikWAM' && (
+                          <option key={voice.voice_id} value={voice.voice_id}>
+                            {voice.name} - {voice.labels?.gender || 'Unknown'} {voice.labels?.age || ''}
+                          </option>
+                        )
+                      ))}
+                    </select>
+                    {selectedVoiceId && availableVoices.length > 0 && (
+                      <div className="text-sm text-gray-400">
+                        {availableVoices.find(v => v.voice_id === selectedVoiceId)?.description || 'Default voice'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Text Input */}
+                <div className="space-y-4">
+                  {voiceoverTexts.map((text, index) => (
+                    <div key={index} className="flex gap-3">
+                      <textarea
+                        value={text}
+                        onChange={(e) => updatePrompt('voiceover', index, e.target.value)}
+                        placeholder={`Voice-over text ${index + 1}...`}
+                        rows={4}
+                        className="flex-1 px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition resize-none"
+                      />
+                      <button
+                        onClick={() => removePrompt('voiceover', index)}
+                        disabled={voiceoverTexts.length === 1}
+                        className="px-4 py-2 bg-red-600/20 text-red-400 rounded-xl hover:bg-red-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => addPrompt('voiceover')}
+                    className="px-6 py-3 bg-gray-700 text-white rounded-xl hover:bg-gray-600 transition"
+                  >
+                    + Add Voice-over Text
+                  </button>
+                  <button
+                    onClick={handleVoiceoverGeneration}
+                    disabled={voiceoversLoading || !elevenLabsKey}
+                    className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                  >
+                    {voiceoversLoading ? 'Generating Voice-overs...' : 'Generate Voice-overs'}
+                  </button>
+                </div>
+
+                {/* Generated Audio */}
+                {generatedVoiceovers.length > 0 && (
+                  <div className="space-y-4">
+                    <h4 className="text-xl font-bold text-white">Generated Voice-overs</h4>
+                    <div className="grid gap-4">
+                      {generatedVoiceovers.map((voiceover, index) => (
+                        <div key={index} className="bg-gray-900/50 p-4 rounded-xl">
+                          <div className="mb-3">
+                            <h5 className="text-lg font-semibold text-white mb-2">Voice-over {index + 1}</h5>
+                            <p className="text-gray-400 text-sm mb-3">{voiceover.text}</p>
+                          </div>
+                          <audio 
+                            controls 
+                            className="w-full mb-3"
+                            src={voiceover.audio}
+                          >
+                            Your browser does not support the audio element.
+                          </audio>
+                          <button
+                            onClick={() => {
+                              const link = document.createElement('a');
+                              link.href = voiceover.audio;
+                              link.download = `voiceover-${index + 1}.mp3`;
+                              link.click();
+                            }}
+                            className="w-full py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition"
+                          >
+                            Download Audio
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
