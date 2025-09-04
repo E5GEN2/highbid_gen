@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, apiKey, model = 'imagen-3.0-generate-001' } = await request.json();
+    const { prompt, apiKey } = await request.json();
 
     if (!prompt || !apiKey) {
       return NextResponse.json(
@@ -11,58 +11,45 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Use Hugging Face's free inference API instead
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
       {
-        method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
         },
+        method: "POST",
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: prompt
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.4,
-            topK: 32,
-            topP: 1,
-            maxOutputTokens: 4096,
-          },
-          safetySettings: [
-            {
-              category: "HARM_CATEGORY_HARASSMENT",
-              threshold: "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-              category: "HARM_CATEGORY_HATE_SPEECH",
-              threshold: "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-              category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-              threshold: "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-              category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-              threshold: "BLOCK_MEDIUM_AND_ABOVE"
-            }
-          ]
-        })
+          inputs: prompt,
+          parameters: {
+            negative_prompt: "blurry, bad quality, distorted",
+            width: 768,
+            height: 768,
+          }
+        }),
       }
     );
 
     if (!response.ok) {
-      const errorData = await response.text();
-      console.error('Google API Error:', errorData);
+      const errorText = await response.text();
+      console.error('API Error:', errorText);
       return NextResponse.json(
-        { error: `Google API error: ${response.status} - ${errorData}` },
+        { error: `API error: ${response.status} - ${errorText}` },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
-    return NextResponse.json(data);
+    // Get the image as a blob
+    const imageBlob = await response.blob();
+    const arrayBuffer = await imageBlob.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString('base64');
+
+    return NextResponse.json({
+      image: `data:image/png;base64,${base64}`,
+      success: true
+    });
+
   } catch (error) {
     console.error('Server error:', error);
     return NextResponse.json(

@@ -38,14 +38,10 @@ export default function Home() {
         throw new Error(data.error || 'Failed to generate image');
       }
 
-      if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.inlineData?.data) {
-        const imageData = data.candidates[0].content.parts[0].inlineData.data;
-        const mimeType = data.candidates[0].content.parts[0].inlineData.mimeType || 'image/png';
-        setGeneratedImage(`data:${mimeType};base64,${imageData}`);
-      } else if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
-        setError('Text response received instead of image. Please ensure you are using an image generation model.');
+      if (data.image) {
+        setGeneratedImage(data.image);
       } else {
-        setError('Unexpected response format from API');
+        setError('Failed to generate image. Please check your API key and try again.');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -62,7 +58,7 @@ export default function Home() {
             AI Image Generator
           </h1>
           <p className="text-gray-400 text-lg">
-            Generate stunning images using Google&apos;s AI models
+            Generate stunning images using Stable Diffusion AI
           </p>
         </div>
 
@@ -77,7 +73,7 @@ export default function Home() {
                   type={showApiKey ? 'text' : 'password'}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Enter your Google API key"
+                  placeholder="Enter your Hugging Face API token"
                   className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
                 <button
