@@ -7,10 +7,12 @@ export default function Home() {
   const [apiKey, setApiKey] = useState('');
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [googleTtsKey, setGoogleTtsKey] = useState('');
+  const [highbidApiUrl, setHighbidApiUrl] = useState('');
   const [activeTab, setActiveTab] = useState('scripts');
   const [showApiKey, setShowApiKey] = useState(false);
   const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
   const [showGoogleTtsKey, setShowGoogleTtsKey] = useState(false);
+  const [showHighbidUrl, setShowHighbidUrl] = useState(false);
   
   // Script Generation State
   const [scriptPrompts, setScriptPrompts] = useState<string[]>(['']);
@@ -46,6 +48,9 @@ export default function Home() {
   const [imagePrompts, setImagePrompts] = useState<string[]>(['']);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
   const [imagesLoading, setImagesLoading] = useState(false);
+  const [imageProvider, setImageProvider] = useState<'openrouter' | 'highbid'>('openrouter');
+  const [imageWidth, setImageWidth] = useState(1024);
+  const [imageHeight, setImageHeight] = useState(1024);
   
   // Effects State
   const [_finalVideos, _setFinalVideos] = useState<string[]>([]);
@@ -165,8 +170,11 @@ export default function Home() {
   };
 
   const handleImageGeneration = async () => {
-    if (!apiKey || imagePrompts.filter(p => p.trim()).length === 0) {
-      setError('Please provide API key and at least one image prompt');
+    const requiredKey = imageProvider === 'openrouter' ? apiKey : highbidApiUrl;
+    const providerName = imageProvider === 'openrouter' ? 'OpenRouter API key' : 'Highbid API URL';
+    
+    if (!requiredKey || imagePrompts.filter(p => p.trim()).length === 0) {
+      setError(`Please provide ${providerName} and at least one image prompt`);
       return;
     }
 
@@ -179,21 +187,23 @@ export default function Home() {
       for (const prompt of imagePrompts) {
         if (!prompt.trim()) continue;
         
-        const response = await fetch('/api/generate-image', {
+        const endpoint = imageProvider === 'openrouter' ? '/api/generate-image' : '/api/generate-highbid-image';
+        const requestBody = imageProvider === 'openrouter' 
+          ? { prompt, apiKey }
+          : { prompt, apiUrl: highbidApiUrl, width: imageWidth, height: imageHeight };
+        
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            prompt,
-            apiKey,
-          }),
+          body: JSON.stringify(requestBody),
         });
 
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || 'Failed to generate image');
+          throw new Error(data.error || `Failed to generate image with ${imageProvider}`);
         }
 
         if (data.image) {
@@ -329,6 +339,28 @@ export default function Home() {
               </div>
             </div>
           </div>
+          
+          {/* Highbid API URL - Full width row */}
+          <div className="mt-6">
+            <label className="block text-white text-sm font-semibold mb-3">
+              Highbid API URL (for High-Quality Image Generation)
+            </label>
+            <div className="relative">
+              <input
+                type={showHighbidUrl ? 'text' : 'password'}
+                value={highbidApiUrl}
+                onChange={(e) => setHighbidApiUrl(e.target.value)}
+                placeholder="Enter your Highbid/ngrok API URL (e.g., https://xxxx.ngrok-free.app)"
+                className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition"
+              />
+              <button
+                onClick={() => setShowHighbidUrl(!showHighbidUrl)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
+              >
+                {showHighbidUrl ? '👁️' : '👁️‍🗨️'}
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Tab Navigation */}
@@ -419,6 +451,80 @@ export default function Home() {
                   <p className="text-gray-400 mb-6">Generate multiple images for your video scenes</p>
                 </div>
 
+                {/* Image Provider Selection */}
+                <div className="bg-gray-900/50 p-4 rounded-xl">
+                  <label className="block text-white text-sm font-semibold mb-3">
+                    Image Generation Provider
+                  </label>
+                  <div className="flex gap-4 mb-4">
+                    <button
+                      onClick={() => setImageProvider('openrouter')}
+                      className={`px-4 py-2 rounded-xl transition ${
+                        imageProvider === 'openrouter'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      OpenRouter (Gemini)
+                    </button>
+                    <button
+                      onClick={() => setImageProvider('highbid')}
+                      className={`px-4 py-2 rounded-xl transition ${
+                        imageProvider === 'highbid'
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      Highbid (Flux - High Quality)
+                    </button>
+                  </div>
+                  
+                  {/* Dimension controls for Highbid */}
+                  {imageProvider === 'highbid' && (
+                    <div className="grid grid-cols-2 gap-4 mt-4">
+                      <div>
+                        <label className="block text-gray-400 text-xs mb-1">Width</label>
+                        <select
+                          value={imageWidth}
+                          onChange={(e) => setImageWidth(Number(e.target.value))}
+                          className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm"
+                        >
+                          <option value={512}>512px</option>
+                          <option value={768}>768px</option>
+                          <option value={1024}>1024px (Default)</option>
+                          <option value={1536}>1536px</option>
+                          <option value={2048}>2048px</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-gray-400 text-xs mb-1">Height</label>
+                        <select
+                          value={imageHeight}
+                          onChange={(e) => setImageHeight(Number(e.target.value))}
+                          className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm"
+                        >
+                          <option value={512}>512px</option>
+                          <option value={768}>768px</option>
+                          <option value={1024}>1024px (Default)</option>
+                          <option value={1536}>1536px</option>
+                          <option value={2048}>2048px</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {imageProvider === 'highbid' && !highbidApiUrl && (
+                    <div className="mt-3 text-yellow-400 text-sm">
+                      Please enter your Highbid API URL above to generate images
+                    </div>
+                  )}
+                  {imageProvider === 'openrouter' && !apiKey && (
+                    <div className="mt-3 text-yellow-400 text-sm">
+                      Please enter your OpenRouter API key above to generate images
+                    </div>
+                  )}
+                </div>
+
                 <div className="space-y-4">
                   {imagePrompts.map((prompt, index) => (
                     <div key={index} className="flex gap-3">
@@ -449,10 +555,16 @@ export default function Home() {
                   </button>
                   <button
                     onClick={handleImageGeneration}
-                    disabled={imagesLoading || !apiKey}
-                    className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                    disabled={imagesLoading || (imageProvider === 'openrouter' ? !apiKey : !highbidApiUrl)}
+                    className={`px-8 py-3 text-white font-semibold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition ${
+                      imageProvider === 'highbid' 
+                        ? 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700'
+                        : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700'
+                    }`}
                   >
-                    {imagesLoading ? 'Generating Images...' : 'Generate Images'}
+                    {imagesLoading 
+                      ? `Generating with ${imageProvider === 'highbid' ? 'Highbid' : 'OpenRouter'}...` 
+                      : `Generate with ${imageProvider === 'highbid' ? 'Highbid (${imageWidth}x${imageHeight})' : 'OpenRouter'}`}
                   </button>
                 </div>
 
