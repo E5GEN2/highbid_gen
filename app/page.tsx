@@ -481,34 +481,164 @@ export default function Home() {
                   
                   {/* Dimension controls for Highbid */}
                   {imageProvider === 'highbid' && (
-                    <div className="grid grid-cols-2 gap-4 mt-4">
-                      <div>
-                        <label className="block text-gray-400 text-xs mb-1">Width</label>
-                        <select
-                          value={imageWidth}
-                          onChange={(e) => setImageWidth(Number(e.target.value))}
-                          className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm"
-                        >
-                          <option value={512}>512px</option>
-                          <option value={768}>768px</option>
-                          <option value={1024}>1024px (Default)</option>
-                          <option value={1536}>1536px</option>
-                          <option value={2048}>2048px</option>
-                        </select>
+                    <div className="mt-4">
+                      <label className="block text-gray-400 text-xs mb-2">Quick Presets</label>
+                      
+                      {/* 16:9 Landscape Resolutions */}
+                      <div className="mb-2">
+                        <span className="text-xs text-gray-500 block mb-1">16:9 Landscape (Video)</span>
+                        <div className="grid grid-cols-3 gap-2">
+                          <button
+                            onClick={() => { setImageWidth(1920); setImageHeight(1080); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 1920 && imageHeight === 1080
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            1920×1080
+                          </button>
+                          <button
+                            onClick={() => { setImageWidth(1280); setImageHeight(720); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 1280 && imageHeight === 720
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            1280×720
+                          </button>
+                          <button
+                            onClick={() => { setImageWidth(1024); setImageHeight(576); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 1024 && imageHeight === 576
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            1024×576
+                          </button>
+                        </div>
                       </div>
-                      <div>
-                        <label className="block text-gray-400 text-xs mb-1">Height</label>
-                        <select
-                          value={imageHeight}
-                          onChange={(e) => setImageHeight(Number(e.target.value))}
-                          className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm"
-                        >
-                          <option value={512}>512px</option>
-                          <option value={768}>768px</option>
-                          <option value={1024}>1024px (Default)</option>
-                          <option value={1536}>1536px</option>
-                          <option value={2048}>2048px</option>
-                        </select>
+                      
+                      {/* 9:16 Portrait Resolutions */}
+                      <div className="mb-2">
+                        <span className="text-xs text-gray-500 block mb-1">9:16 Portrait (Stories/Reels)</span>
+                        <div className="grid grid-cols-3 gap-2">
+                          <button
+                            onClick={() => { setImageWidth(1080); setImageHeight(1920); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 1080 && imageHeight === 1920
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            1080×1920
+                          </button>
+                          <button
+                            onClick={() => { setImageWidth(720); setImageHeight(1280); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 720 && imageHeight === 1280
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            720×1280
+                          </button>
+                          <button
+                            onClick={() => { setImageWidth(576); setImageHeight(1024); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 576 && imageHeight === 1024
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            576×1024
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Square Resolution */}
+                      <div className="mb-3">
+                        <span className="text-xs text-gray-500 block mb-1">1:1 Square (Instagram)</span>
+                        <div className="grid grid-cols-3 gap-2">
+                          <button
+                            onClick={() => { setImageWidth(1024); setImageHeight(1024); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 1024 && imageHeight === 1024
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            1024×1024
+                          </button>
+                          <button
+                            onClick={() => { setImageWidth(768); setImageHeight(768); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 768 && imageHeight === 768
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            768×768
+                          </button>
+                          <button
+                            onClick={() => { setImageWidth(512); setImageHeight(512); }}
+                            className={`px-3 py-2 text-xs rounded-lg transition ${
+                              imageWidth === 512 && imageHeight === 512
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            512×512
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Custom dimension inputs */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-gray-400 text-xs mb-1">Custom Width</label>
+                          <select
+                            value={imageWidth}
+                            onChange={(e) => setImageWidth(Number(e.target.value))}
+                            className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm"
+                          >
+                            <option value={512}>512px</option>
+                            <option value={576}>576px</option>
+                            <option value={640}>640px</option>
+                            <option value={720}>720px</option>
+                            <option value={768}>768px</option>
+                            <option value={896}>896px</option>
+                            <option value={1024}>1024px</option>
+                            <option value={1280}>1280px</option>
+                            <option value={1536}>1536px</option>
+                            <option value={1920}>1920px</option>
+                            <option value={2048}>2048px</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-gray-400 text-xs mb-1">Custom Height</label>
+                          <select
+                            value={imageHeight}
+                            onChange={(e) => setImageHeight(Number(e.target.value))}
+                            className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm"
+                          >
+                            <option value={360}>360px</option>
+                            <option value={480}>480px</option>
+                            <option value={512}>512px</option>
+                            <option value={576}>576px</option>
+                            <option value={720}>720px</option>
+                            <option value={768}>768px</option>
+                            <option value={1024}>1024px</option>
+                            <option value={1080}>1080px</option>
+                            <option value={1536}>1536px</option>
+                            <option value={2048}>2048px</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="mt-2 text-xs text-gray-500">
+                        Aspect Ratio: {(imageWidth / imageHeight).toFixed(2)}:1 ({imageWidth}×{imageHeight})
                       </div>
                     </div>
                   )}
