@@ -874,6 +874,14 @@ export default function Home() {
                               <span className="text-xs text-gray-500">Setting</span>
                               <p className="text-sm text-gray-300">{story.setting}</p>
                             </div>
+                            <div>
+                              <span className="text-xs text-gray-500">Target Viewer</span>
+                              <p className="text-sm text-gray-300">{story.target_viewer}</p>
+                            </div>
+                            <div>
+                              <span className="text-xs text-gray-500">Visual Style</span>
+                              <p className="text-sm text-purple-400 font-medium">{story.visual_style}</p>
+                            </div>
                           </div>
                           
                           <div className="mb-3">
@@ -881,10 +889,35 @@ export default function Home() {
                             <p className="text-sm text-gray-300">{story.premise}</p>
                           </div>
                           
+                          <div className="grid grid-cols-2 gap-4 mb-3">
+                            <div>
+                              <span className="text-xs text-gray-500">Goal</span>
+                              <p className="text-sm text-gray-300">{story.goal}</p>
+                            </div>
+                            <div>
+                              <span className="text-xs text-gray-500">Stakes</span>
+                              <p className="text-sm text-gray-300">{story.stakes}</p>
+                            </div>
+                          </div>
+                          
                           <div className="mb-3">
                             <span className="text-xs text-gray-500">Twist</span>
                             <p className="text-sm text-yellow-400 italic">{story.twist}</p>
                           </div>
+
+                          {story.call_to_action && (
+                            <div className="mb-3">
+                              <span className="text-xs text-gray-500">Call to Action</span>
+                              <p className="text-sm text-blue-400">{story.call_to_action}</p>
+                            </div>
+                          )}
+
+                          {story.constraint && (
+                            <div className="mb-3">
+                              <span className="text-xs text-gray-500">Constraint</span>
+                              <p className="text-sm text-orange-400">{story.constraint}</p>
+                            </div>
+                          )}
                           
                           <div className="flex justify-between items-center mt-4">
                             <div className="flex gap-2">
