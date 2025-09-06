@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const STORYBOARD_PROMPT = `SYSTEM:
 You are a storyboard generator.
-You must output exactly 30 lines of JSON (JSONL format). 
+You must output exactly 5 lines of JSON (JSONL format) for the requested scene range. 
 Each line must be a valid JSON object conforming to the schema below.
 No prose, no explanations, no comments, no markdown formatting, no code blocks.
 
 REQUIRED FIELDS:
 {
-  "scene_id": int (1..30),
+  "scene_id": int (specific scene number),
   "start_ms": int (2000*(scene_id-1)),
   "end_ms": int (start_ms+2000),
   "beat": one of ["hook","setup","inciting","rise","midpoint","complication","climax","resolution","cta"],
@@ -42,12 +42,12 @@ REQUIRED FIELDS:
 }
 
 RULES:
-- Output 30 lines, one JSON object per line, no extra text, no markdown.
+- Output 5 lines for the requested scene range, one JSON object per line.
 - Each scene covers 2000 ms (2 seconds).
 - Maintain continuity: reuse seeds within the same beat, change on beat transitions.
 - Keep vo_text ≤18 words, natural and concise.
 - Use consistent characters wording to avoid identity drift.
-- Ensure final scene (#30) has beat="cta" if a call_to_action exists.
+- Scene 30 should have beat="cta" if a call_to_action exists.
 - IMPORTANT: Do not wrap output in code blocks or markdown formatting.
 - NOTE: Visual style consistency will be applied at the image generation level using the story's visual_style.`;
 
@@ -62,98 +62,138 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate storyboard using Google Gemini API
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}\n\nExpand this into a 30-scene storyboard in JSONL format.`
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.8,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 16384,
-            responseMimeType: "text/plain"
-          }
-        })
-      }
-    );
+    // Helper function to create compressed context from previous scenes
+    const createCompressedContext = (scenes: any[]) => {
+      if (scenes.length === 0) return '';
+      
+      const context = scenes.map(scene => ({
+        scene_id: scene.scene_id,
+        beat: scene.beat,
+        vo_text: scene.vo_text,
+        setting: scene.visual_prompt?.setting,
+        characters: scene.visual_prompt?.characters,
+        seed: scene.visual_prompt?.seed
+      }));
+      
+      return `\nPrevious scenes context for continuity:\n${JSON.stringify(context, null, 2)}`;
+    };
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Gemini API Error:', errorText);
-      return NextResponse.json(
-        { error: `Gemini API error: ${response.status} - ${errorText}` },
-        { status: response.status }
+    // Generate storyboard in batches of 5 with context
+    const generateBatch = async (startScene: number, endScene: number, previousScenes: any[] = []) => {
+      const contextPrompt = createCompressedContext(previousScenes);
+      const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}\n\nGenerate scenes ${startScene} to ${endScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${startScene}.`;
+      
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text: batchPrompt
+              }]
+            }],
+            generationConfig: {
+              temperature: 0.8,
+              topK: 40,
+              topP: 0.95,
+              maxOutputTokens: 4096,
+              responseMimeType: "text/plain"
+            }
+          })
+        }
       );
+      
+      return response;
+    };
+    
+    // Generate all scenes progressively with context
+    const allScenes: any[] = [];
+    const batchSize = 5;
+    const totalBatches = Math.ceil(30 / batchSize); // 6 batches of 5 scenes each
+    
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const startScene = batchIndex * batchSize + 1;
+      const endScene = Math.min(startScene + batchSize - 1, 30);
+      
+      console.log(`Generating batch ${batchIndex + 1}/${totalBatches}: scenes ${startScene}-${endScene}`);
+      
+      const batchResponse = await generateBatch(startScene, endScene, allScenes);
+      
+      if (!batchResponse.ok) {
+        const errorText = await batchResponse.text();
+        console.error(`Gemini API Error in batch ${batchIndex + 1}:`, errorText);
+        return NextResponse.json(
+          { error: `Gemini API error in batch ${batchIndex + 1}: ${batchResponse.status} - ${errorText}` },
+          { status: batchResponse.status }
+        );
+      }
+      
+      const batchData = await batchResponse.json();
+      const batchText = batchData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      
+      if (!batchText) {
+        console.warn(`No content generated for batch ${batchIndex + 1}`);
+        continue;
+      }
+      
+      // Parse this batch's scenes
+      try {
+        let cleanedText = batchText.trim();
+        if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
+          cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
+        }
+        
+        const lines = cleanedText.trim().split('\n').filter((line: string) => line.trim());
+        
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          
+          try {
+            const scene = JSON.parse(line.trim());
+            allScenes.push(scene);
+          } catch (parseError) {
+            console.error(`Failed to parse scene in batch ${batchIndex + 1}:`, line.trim());
+          }
+        }
+      } catch (parseError) {
+        console.error(`Failed to process batch ${batchIndex + 1}:`, parseError);
+      }
+      
+      console.log(`Batch ${batchIndex + 1} complete. Total scenes so far: ${allScenes.length}`);
     }
-
-    const data = await response.json();
     
-    // Extract the generated JSONL from the response
-    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const generatedText = allScenes.map(scene => JSON.stringify(scene)).join('\n');
     
-    if (!generatedText) {
+    if (allScenes.length === 0) {
       return NextResponse.json(
         { error: 'No storyboard generated' },
         { status: 500 }
       );
     }
 
-    try {
-      // Clean up the response - remove markdown formatting if present
-      let cleanedText = generatedText.trim();
-      if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
-        cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
-      }
-      
-      // Parse JSONL (each line is a separate JSON object)
-      const lines = cleanedText.trim().split('\n').filter((line: string) => line.trim());
-      const scenes = [];
-      
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        
-        try {
-          const scene = JSON.parse(line);
-          scenes.push(scene);
-        } catch (parseError) {
-          console.error(`Failed to parse line ${i + 1}:`, line);
-          // Continue parsing other lines instead of failing completely
-          continue;
-        }
-      }
-
-      if (scenes.length === 0) {
-        throw new Error('No valid scenes parsed from response');
-      }
-      
-      // If we have fewer than 30 scenes, log it but don't fail
-      if (scenes.length < 30) {
-        console.warn(`Generated ${scenes.length} scenes instead of 30 (may be due to token limit)`);
-      }
-      
+    // Log scene generation results
+    console.log(`Storyboard generation complete: ${allScenes.length} scenes generated`);
+    
+    // If we have fewer than 30 scenes, include warning in response
+    if (allScenes.length < 30) {
+      console.warn(`Generated ${allScenes.length} scenes instead of 30`);
       return NextResponse.json({
         success: true,
-        storyboard: scenes,
-        storyBulb: storyBulb
+        storyboard: allScenes,
+        storyBulb: storyBulb,
+        warning: `Only ${allScenes.length} of 30 scenes were generated. This may be due to API limitations.`
       });
-    } catch (parseError) {
-      console.error('Failed to parse storyboard JSONL:', parseError);
-      return NextResponse.json(
-        { error: 'Generated storyboard is not valid JSONL', details: parseError instanceof Error ? parseError.message : 'Parse error' },
-        { status: 500 }
-      );
     }
+    
+    return NextResponse.json({
+      success: true,
+      storyboard: allScenes,
+      storyBulb: storyBulb
+    });
 
   } catch (error) {
     console.error('Server error:', error);
