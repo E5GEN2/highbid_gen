@@ -185,11 +185,27 @@ export default function Home() {
   const [storyboardImages, setStoryboardImages] = useState<{[sceneId: number]: string}>({});
   const [imageGenerationLoading, setImageGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
   const [batchImageLoading, setBatchImageLoading] = useState(false);
+  const [batchImageProgress, setBatchImageProgress] = useState({
+    current: 0,
+    total: 0,
+    currentScene: 0,
+    status: '',
+    failed: 0,
+    retries: 0
+  });
 
   // Storyboard Voiceovers State
   const [storyboardVoiceovers, setStoryboardVoiceovers] = useState<{[sceneId: number]: string}>({});
   const [voiceoverGenerationLoading, setVoiceoverGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
   const [batchVoiceoverLoading, setBatchVoiceoverLoading] = useState(false);
+  const [batchVoiceoverProgress, setBatchVoiceoverProgress] = useState({
+    current: 0,
+    total: 0,
+    currentScene: 0,
+    status: '',
+    failed: 0,
+    retries: 0
+  });
 
   // Create Flux prompt from storyboard scene
   const createFluxPrompt = (scene: StoryboardScene, storyVisualStyle?: string) => {
@@ -544,7 +560,7 @@ export default function Home() {
     }
   };
 
-  // Generate all storyboard images in batch
+  // Generate all storyboard images in batch with retry logic and progress
   const generateAllStoryboardImages = async () => {
     if (!highbidApiUrl) {
       setError('Highbid API URL is required for batch storyboard image generation');
@@ -558,58 +574,129 @@ export default function Home() {
 
     setBatchImageLoading(true);
     setError(null);
+    
+    const totalScenes = generatedStoryboard.length;
+    setBatchImageProgress({
+      current: 0,
+      total: totalScenes,
+      currentScene: 0,
+      status: 'Starting batch image generation...',
+      failed: 0,
+      retries: 0
+    });
 
     try {
-      const results: {[sceneId: number]: string} = {};
+      const maxRetries = 3;
       
-      for (const scene of generatedStoryboard) {
-        const { prompt } = createFluxPrompt(scene, selectedStory?.visual_style);
-        
-        // Get dimensions from aspect ratio
-        let width, height;
-        switch (scene.visual_prompt.aspect_ratio) {
-          case '16:9':
-            width = 1024; height = 576;
-            break;
-          case '9:16':
-            width = 576; height = 1024;
-            break;
-          case '1:1':
-          default:
-            width = 1024; height = 1024;
-            break;
-        }
-        
-        const response = await fetch('/api/generate-highbid-image', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            prompt,
-            apiUrl: highbidApiUrl,
-            width,
-            height
-          }),
-        });
+      for (let i = 0; i < generatedStoryboard.length; i++) {
+        const scene = generatedStoryboard[i];
+        let attempts = 0;
+        let success = false;
 
-        const data = await response.json();
+        setBatchImageProgress(prev => ({
+          ...prev,
+          currentScene: scene.scene_id,
+          status: `Generating image for scene ${scene.scene_id}...`
+        }));
 
-        if (!response.ok) {
-          console.error(`Failed to generate image for scene ${scene.scene_id}:`, data.error);
-          continue;
-        }
+        while (attempts < maxRetries && !success) {
+          try {
+            const { prompt } = createFluxPrompt(scene, selectedStory?.visual_style);
+            
+            // Get dimensions from aspect ratio
+            let width, height;
+            switch (scene.visual_prompt.aspect_ratio) {
+              case '16:9':
+                width = 1024; height = 576;
+                break;
+              case '9:16':
+                width = 576; height = 1024;
+                break;
+              case '1:1':
+              default:
+                width = 1024; height = 1024;
+                break;
+            }
 
-        if (data.image) {
-          results[scene.scene_id] = data.image;
+            if (attempts > 0) {
+              setBatchImageProgress(prev => ({
+                ...prev,
+                status: `Retrying scene ${scene.scene_id} (attempt ${attempts + 1}/${maxRetries})...`,
+                retries: prev.retries + 1
+              }));
+              // Wait a bit before retry
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
+            const response = await fetch('/api/generate-highbid-image', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                prompt,
+                apiUrl: highbidApiUrl,
+                width,
+                height
+              }),
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+              throw new Error(data.error || `Failed to generate image for scene ${scene.scene_id}`);
+            }
+            
+            if (data.image) {
+              // Update the storyboard images immediately to show progress
+              setStoryboardImages(prev => ({
+                ...prev,
+                [scene.scene_id]: data.image
+              }));
+              success = true;
+              
+              setBatchImageProgress(prev => ({
+                ...prev,
+                current: prev.current + 1,
+                status: `Generated image for scene ${scene.scene_id} ✓`
+              }));
+              
+              // Small delay to show the progress update
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } else {
+              throw new Error('No image data received from API');
+            }
+            
+          } catch (err) {
+            attempts++;
+            console.error(`Attempt ${attempts} failed for scene ${scene.scene_id}:`, err);
+            
+            if (attempts >= maxRetries) {
+              setBatchImageProgress(prev => ({
+                ...prev,
+                failed: prev.failed + 1,
+                current: prev.current + 1,
+                status: `Failed to generate image for scene ${scene.scene_id} after ${maxRetries} attempts ✗`
+              }));
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
         }
       }
+
+      setBatchImageProgress(prev => ({
+        ...prev,
+        status: `Batch generation complete! Generated: ${prev.current - prev.failed}, Failed: ${prev.failed}`
+      }));
       
-      setStoryboardImages(prev => ({ ...prev, ...results }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred during batch generation');
     } finally {
       setBatchImageLoading(false);
+      // Clear progress after 5 seconds
+      setTimeout(() => {
+        setBatchImageProgress({ current: 0, total: 0, currentScene: 0, status: '', failed: 0, retries: 0 });
+      }, 5000);
     }
   };
 
@@ -679,7 +766,7 @@ export default function Home() {
     }
   };
 
-  // Generate all storyboard voiceovers in batch
+  // Generate all storyboard voiceovers in batch with retry logic and progress
   const generateAllStoryboardVoiceovers = async () => {
     const currentProvider = ttsProvider;
     const currentApiKey = currentProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
@@ -696,41 +783,112 @@ export default function Home() {
 
     setBatchVoiceoverLoading(true);
     setError(null);
+    
+    const totalScenes = generatedStoryboard.length;
+    setBatchVoiceoverProgress({
+      current: 0,
+      total: totalScenes,
+      currentScene: 0,
+      status: 'Starting batch voiceover generation...',
+      failed: 0,
+      retries: 0
+    });
 
     try {
-      const results: {[sceneId: number]: string} = {};
+      const maxRetries = 3;
       
-      for (const scene of generatedStoryboard) {
-        const endpoint = currentProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
-        const requestBody = currentProvider === 'elevenlabs' 
-          ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
-          : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
+      for (let i = 0; i < generatedStoryboard.length; i++) {
+        const scene = generatedStoryboard[i];
+        let attempts = 0;
+        let success = false;
 
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-        });
+        setBatchVoiceoverProgress(prev => ({
+          ...prev,
+          currentScene: scene.scene_id,
+          status: `Generating voiceover for scene ${scene.scene_id}...`
+        }));
 
-        const data = await response.json();
+        while (attempts < maxRetries && !success) {
+          try {
+            if (attempts > 0) {
+              setBatchVoiceoverProgress(prev => ({
+                ...prev,
+                status: `Retrying scene ${scene.scene_id} (attempt ${attempts + 1}/${maxRetries})...`,
+                retries: prev.retries + 1
+              }));
+              // Wait a bit before retry
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
 
-        if (!response.ok) {
-          console.error(`Failed to generate voiceover for scene ${scene.scene_id}:`, data.error);
-          continue;
-        }
+            const endpoint = currentProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
+            const requestBody = currentProvider === 'elevenlabs' 
+              ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
+              : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
 
-        if (data.audio) {
-          results[scene.scene_id] = data.audio;
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(requestBody),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+              throw new Error(data.error || `Failed to generate voiceover for scene ${scene.scene_id}`);
+            }
+
+            if (data.audio) {
+              // Update the storyboard voiceovers immediately to show progress
+              setStoryboardVoiceovers(prev => ({
+                ...prev,
+                [scene.scene_id]: data.audio
+              }));
+              success = true;
+              
+              setBatchVoiceoverProgress(prev => ({
+                ...prev,
+                current: prev.current + 1,
+                status: `Generated voiceover for scene ${scene.scene_id} ✓`
+              }));
+              
+              // Small delay to show the progress update
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } else {
+              throw new Error('No audio data received from API');
+            }
+            
+          } catch (err) {
+            attempts++;
+            console.error(`Attempt ${attempts} failed for scene ${scene.scene_id}:`, err);
+            
+            if (attempts >= maxRetries) {
+              setBatchVoiceoverProgress(prev => ({
+                ...prev,
+                failed: prev.failed + 1,
+                current: prev.current + 1,
+                status: `Failed to generate voiceover for scene ${scene.scene_id} after ${maxRetries} attempts ✗`
+              }));
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
         }
       }
+
+      setBatchVoiceoverProgress(prev => ({
+        ...prev,
+        status: `Batch generation complete! Generated: ${prev.current - prev.failed}, Failed: ${prev.failed}`
+      }));
       
-      setStoryboardVoiceovers(prev => ({ ...prev, ...results }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred during batch voiceover generation');
     } finally {
       setBatchVoiceoverLoading(false);
+      // Clear progress after 5 seconds
+      setTimeout(() => {
+        setBatchVoiceoverProgress({ current: 0, total: 0, currentScene: 0, status: '', failed: 0, retries: 0 });
+      }, 5000);
     }
   };
 
@@ -1860,6 +2018,33 @@ export default function Home() {
                             {batchImageLoading ? 'Generating...' : 'Generate All'}
                           </button>
                         </div>
+                        
+                        {/* Batch Image Progress */}
+                        {batchImageLoading && batchImageProgress.status && (
+                          <div className="mt-4 p-4 bg-gray-800/50 rounded-lg border border-purple-500/30">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-sm text-white font-medium">Batch Image Generation</span>
+                              <span className="text-xs text-gray-400">
+                                {batchImageProgress.current}/{batchImageProgress.total} • Scene #{batchImageProgress.currentScene}
+                              </span>
+                            </div>
+                            
+                            <div className="w-full bg-gray-700 rounded-full h-2 mb-2">
+                              <div 
+                                className="bg-gradient-to-r from-purple-500 to-pink-500 h-2 rounded-full transition-all duration-500"
+                                style={{ width: `${(batchImageProgress.current / batchImageProgress.total) * 100}%` }}
+                              ></div>
+                            </div>
+                            
+                            <div className="flex justify-between text-xs">
+                              <span className="text-gray-300">{batchImageProgress.status}</span>
+                              <span className="text-gray-400">
+                                {batchImageProgress.failed > 0 && `${batchImageProgress.failed} failed • `}
+                                {batchImageProgress.retries > 0 && `${batchImageProgress.retries} retries`}
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                       
                       {/* Batch Voiceovers */}
@@ -1878,6 +2063,33 @@ export default function Home() {
                             {batchVoiceoverLoading ? 'Generating...' : !selectedVoiceId ? 'Loading Voices...' : 'Generate All'}
                           </button>
                         </div>
+                        
+                        {/* Batch Voiceover Progress */}
+                        {batchVoiceoverLoading && batchVoiceoverProgress.status && (
+                          <div className="mt-4 p-4 bg-gray-800/50 rounded-lg border border-blue-500/30">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-sm text-white font-medium">Batch Voiceover Generation</span>
+                              <span className="text-xs text-gray-400">
+                                {batchVoiceoverProgress.current}/{batchVoiceoverProgress.total} • Scene #{batchVoiceoverProgress.currentScene}
+                              </span>
+                            </div>
+                            
+                            <div className="w-full bg-gray-700 rounded-full h-2 mb-2">
+                              <div 
+                                className="bg-gradient-to-r from-blue-500 to-cyan-500 h-2 rounded-full transition-all duration-500"
+                                style={{ width: `${(batchVoiceoverProgress.current / batchVoiceoverProgress.total) * 100}%` }}
+                              ></div>
+                            </div>
+                            
+                            <div className="flex justify-between text-xs">
+                              <span className="text-gray-300">{batchVoiceoverProgress.status}</span>
+                              <span className="text-gray-400">
+                                {batchVoiceoverProgress.failed > 0 && `${batchVoiceoverProgress.failed} failed • `}
+                                {batchVoiceoverProgress.retries > 0 && `${batchVoiceoverProgress.retries} retries`}
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
 
