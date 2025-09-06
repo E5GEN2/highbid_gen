@@ -837,15 +837,19 @@ export default function Home() {
 
                 {generatedStories.length > 0 && (
                   <div className="space-y-4">
-                    <h4 className="text-xl font-bold text-white mb-2">Generated Story Bulbs</h4>
+                    <div className="flex justify-between items-center mb-2">
+                      <h4 className="text-xl font-bold text-white">Generated Story Bulbs</h4>
+                      <div className="text-sm text-gray-400 bg-blue-600/20 px-3 py-1 rounded-lg">
+                        ✏️ Stories are editable in the Storyboard tab
+                      </div>
+                    </div>
                     <div className="grid gap-4">
                       {generatedStories.map((story, index) => (
                         <div 
                           key={index} 
-                          className={`bg-gray-900/50 p-6 rounded-xl border-2 transition cursor-pointer ${
-                            selectedStory === story ? 'border-green-500 bg-gray-900/70' : 'border-gray-700 hover:border-gray-600'
+                          className={`bg-gray-900/50 p-6 rounded-xl border-2 transition ${
+                            selectedStory === story ? 'border-green-500 bg-gray-900/70' : 'border-gray-700'
                           }`}
-                          onClick={() => setSelectedStory(story)}
                         >
                           <div className="flex justify-between items-start mb-3">
                             <h5 className="text-xl font-bold text-white">{story.title}</h5>
@@ -1235,6 +1239,11 @@ export default function Home() {
                     {/* Story Summary - Editable */}
                     {selectedStory && (
                       <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 p-6 rounded-xl border border-gray-700">
+                        <div className="text-center mb-4">
+                          <div className="inline-block bg-blue-600/20 text-blue-300 px-4 py-2 rounded-lg text-sm">
+                            ✏️ <strong>Story Editing Mode</strong> - All fields below are editable. Changes apply immediately.
+                          </div>
+                        </div>
                         <div className="grid md:grid-cols-2 gap-4 mb-4">
                           {/* Title */}
                           <div>
