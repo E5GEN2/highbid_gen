@@ -1246,22 +1246,13 @@ export default function Home() {
                             </div>
                             <div>
                               <label className="block text-xs text-gray-400 mb-1">Visual Style</label>
-                              <select
+                              <input
+                                type="text"
                                 value={story.visual_style}
                                 onChange={(e) => updateStoryBulb(index, 'visual_style', e.target.value)}
-                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
-                              >
-                                <option value="cinematic photoreal">Cinematic Photoreal</option>
-                                <option value="animated cartoon">Animated Cartoon</option>
-                                <option value="comic book">Comic Book</option>
-                                <option value="sketch art">Sketch Art</option>
-                                <option value="oil painting">Oil Painting</option>
-                                <option value="watercolor">Watercolor</option>
-                                <option value="cyberpunk neon">Cyberpunk Neon</option>
-                                <option value="retro vintage">Retro Vintage</option>
-                                <option value="minimalist clean">Minimalist Clean</option>
-                                <option value="dark gothic">Dark Gothic</option>
-                              </select>
+                                placeholder="e.g., cinematic photoreal, anime style, oil painting, cyberpunk neon..."
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500"
+                              />
                             </div>
                           </div>
                           
@@ -1762,7 +1753,8 @@ export default function Home() {
                           {/* Visual Style */}
                           <div>
                             <label className="block text-xs text-gray-400 mb-1">Visual Style</label>
-                            <select
+                            <input
+                              type="text"
                               value={selectedStory.visual_style}
                               onChange={(e) => {
                                 const updated = { ...selectedStory, visual_style: e.target.value };
@@ -1771,19 +1763,9 @@ export default function Home() {
                                   story === selectedStory ? updated : story
                                 ));
                               }}
-                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
-                            >
-                              <option value="cinematic photoreal">Cinematic Photoreal</option>
-                              <option value="animated cartoon">Animated Cartoon</option>
-                              <option value="comic book">Comic Book</option>
-                              <option value="sketch art">Sketch Art</option>
-                              <option value="oil painting">Oil Painting</option>
-                              <option value="watercolor">Watercolor</option>
-                              <option value="cyberpunk neon">Cyberpunk Neon</option>
-                              <option value="retro vintage">Retro Vintage</option>
-                              <option value="minimalist clean">Minimalist Clean</option>
-                              <option value="dark gothic">Dark Gothic</option>
-                            </select>
+                              placeholder="e.g., cinematic photoreal, anime style, oil painting, cyberpunk neon..."
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500"
+                            />
                           </div>
                         </div>
                         
