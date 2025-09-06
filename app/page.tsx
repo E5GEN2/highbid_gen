@@ -131,6 +131,21 @@ export default function Home() {
     }
   }, [ttsProvider, elevenLabsKey, googleTtsKey, voicesLoaded, googleVoicesLoaded]);
 
+  // Helper function to update story bulb
+  const updateStoryBulb = (storyIndex: number, field: keyof StoryBulb, value: string | number) => {
+    setGeneratedStories(prev => prev.map((story, index) => {
+      if (index === storyIndex) {
+        const updated = { ...story, [field]: value };
+        // Update selectedStory if it matches
+        if (selectedStory === story) {
+          setSelectedStory(updated);
+        }
+        return updated;
+      }
+      return story;
+    }));
+  };
+
   // Auto-load voices when API keys are available
   React.useEffect(() => {
     if (ttsProvider === 'elevenlabs' && elevenLabsKey && !voicesLoaded) {
@@ -869,8 +884,8 @@ export default function Home() {
                   <div className="space-y-4">
                     <div className="flex justify-between items-center mb-2">
                       <h4 className="text-xl font-bold text-white">Generated Story Bulbs</h4>
-                      <div className="text-sm text-gray-400 bg-blue-600/20 px-3 py-1 rounded-lg">
-                        ✏️ Stories are editable in the Storyboard tab
+                      <div className="text-sm text-gray-400 bg-green-600/20 px-3 py-1 rounded-lg">
+                        ✏️ All story parameters are editable below
                       </div>
                     </div>
                     <div className="grid gap-4">
@@ -881,81 +896,172 @@ export default function Home() {
                             selectedStory === story ? 'border-green-500 bg-gray-900/70' : 'border-gray-700'
                           }`}
                         >
-                          <div className="flex justify-between items-start mb-3">
-                            <h5 className="text-xl font-bold text-white">{story.title}</h5>
-                            <span className={`px-3 py-1 text-xs rounded-full ${
-                              story.tone === 'inspiring' ? 'bg-yellow-600/20 text-yellow-400' :
-                              story.tone === 'dramatic' ? 'bg-red-600/20 text-red-400' :
-                              story.tone === 'cozy' ? 'bg-green-600/20 text-green-400' :
-                              story.tone === 'creepy' ? 'bg-purple-600/20 text-purple-400' :
-                              story.tone === 'comedic' ? 'bg-pink-600/20 text-pink-400' :
-                              'bg-blue-600/20 text-blue-400'
-                            }`}>
-                              {story.tone}
-                            </span>
-                          </div>
-                          
-                          <div className="grid grid-cols-2 gap-4 mb-3">
-                            <div>
-                              <span className="text-xs text-gray-500">Protagonist</span>
-                              <p className="text-sm text-gray-300">{story.protagonist}</p>
+                          <div className="flex justify-between items-start mb-4">
+                            <div className="flex-1 mr-4">
+                              <label className="block text-xs text-gray-400 mb-1">Title</label>
+                              <input
+                                type="text"
+                                value={story.title}
+                                onChange={(e) => updateStoryBulb(index, 'title', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-lg font-bold"
+                              />
                             </div>
                             <div>
-                              <span className="text-xs text-gray-500">Setting</span>
-                              <p className="text-sm text-gray-300">{story.setting}</p>
-                            </div>
-                            <div>
-                              <span className="text-xs text-gray-500">Target Viewer</span>
-                              <p className="text-sm text-gray-300">{story.target_viewer}</p>
-                            </div>
-                            <div>
-                              <span className="text-xs text-gray-500">Visual Style</span>
-                              <p className="text-sm text-purple-400 font-medium">{story.visual_style}</p>
+                              <label className="block text-xs text-gray-400 mb-1">Tone</label>
+                              <select
+                                value={story.tone}
+                                onChange={(e) => updateStoryBulb(index, 'tone', e.target.value)}
+                                className="bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              >
+                                <option value="inspiring">Inspiring</option>
+                                <option value="dramatic">Dramatic</option>
+                                <option value="cozy">Cozy</option>
+                                <option value="creepy">Creepy</option>
+                                <option value="comedic">Comedic</option>
+                                <option value="educational">Educational</option>
+                              </select>
                             </div>
                           </div>
                           
-                          <div className="mb-3">
-                            <span className="text-xs text-gray-500">Premise</span>
-                            <p className="text-sm text-gray-300">{story.premise}</p>
-                          </div>
-                          
-                          <div className="grid grid-cols-2 gap-4 mb-3">
+                          <div className="grid grid-cols-2 gap-4 mb-4">
                             <div>
-                              <span className="text-xs text-gray-500">Goal</span>
-                              <p className="text-sm text-gray-300">{story.goal}</p>
+                              <label className="block text-xs text-gray-400 mb-1">Protagonist</label>
+                              <input
+                                type="text"
+                                value={story.protagonist}
+                                onChange={(e) => updateStoryBulb(index, 'protagonist', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
                             </div>
                             <div>
-                              <span className="text-xs text-gray-500">Stakes</span>
-                              <p className="text-sm text-gray-300">{story.stakes}</p>
+                              <label className="block text-xs text-gray-400 mb-1">Setting</label>
+                              <input
+                                type="text"
+                                value={story.setting}
+                                onChange={(e) => updateStoryBulb(index, 'setting', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Target Viewer</label>
+                              <input
+                                type="text"
+                                value={story.target_viewer}
+                                onChange={(e) => updateStoryBulb(index, 'target_viewer', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Visual Style</label>
+                              <select
+                                value={story.visual_style}
+                                onChange={(e) => updateStoryBulb(index, 'visual_style', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              >
+                                <option value="cinematic photoreal">Cinematic Photoreal</option>
+                                <option value="animated cartoon">Animated Cartoon</option>
+                                <option value="comic book">Comic Book</option>
+                                <option value="sketch art">Sketch Art</option>
+                                <option value="oil painting">Oil Painting</option>
+                                <option value="watercolor">Watercolor</option>
+                                <option value="cyberpunk neon">Cyberpunk Neon</option>
+                                <option value="retro vintage">Retro Vintage</option>
+                                <option value="minimalist clean">Minimalist Clean</option>
+                                <option value="dark gothic">Dark Gothic</option>
+                              </select>
                             </div>
                           </div>
                           
-                          <div className="mb-3">
-                            <span className="text-xs text-gray-500">Twist</span>
-                            <p className="text-sm text-yellow-400 italic">{story.twist}</p>
+                          <div className="mb-4">
+                            <label className="block text-xs text-gray-400 mb-1">Premise</label>
+                            <textarea
+                              value={story.premise}
+                              onChange={(e) => updateStoryBulb(index, 'premise', e.target.value)}
+                              rows={2}
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm resize-none"
+                            />
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Goal</label>
+                              <textarea
+                                value={story.goal}
+                                onChange={(e) => updateStoryBulb(index, 'goal', e.target.value)}
+                                rows={2}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm resize-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Stakes</label>
+                              <textarea
+                                value={story.stakes}
+                                onChange={(e) => updateStoryBulb(index, 'stakes', e.target.value)}
+                                rows={2}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm resize-none"
+                              />
+                            </div>
+                          </div>
+                          
+                          <div className="mb-4">
+                            <label className="block text-xs text-gray-400 mb-1">Twist</label>
+                            <textarea
+                              value={story.twist}
+                              onChange={(e) => updateStoryBulb(index, 'twist', e.target.value)}
+                              rows={2}
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-yellow-400 text-sm resize-none italic"
+                            />
                           </div>
 
-                          {story.call_to_action && (
-                            <div className="mb-3">
-                              <span className="text-xs text-gray-500">Call to Action</span>
-                              <p className="text-sm text-blue-400">{story.call_to_action}</p>
+                          <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Call to Action</label>
+                              <input
+                                type="text"
+                                value={story.call_to_action}
+                                onChange={(e) => updateStoryBulb(index, 'call_to_action', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-blue-400 text-sm"
+                                placeholder="Optional call to action"
+                              />
                             </div>
-                          )}
-
-                          {story.constraint && (
-                            <div className="mb-3">
-                              <span className="text-xs text-gray-500">Constraint</span>
-                              <p className="text-sm text-orange-400">{story.constraint}</p>
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Constraint</label>
+                              <input
+                                type="text"
+                                value={story.constraint}
+                                onChange={(e) => updateStoryBulb(index, 'constraint', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-orange-400 text-sm"
+                                placeholder="Story constraint"
+                              />
                             </div>
-                          )}
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Runtime (seconds)</label>
+                              <input
+                                type="number"
+                                value={story.runtime_sec}
+                                onChange={(e) => updateStoryBulb(index, 'runtime_sec', parseInt(e.target.value) || 60)}
+                                min="30"
+                                max="180"
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Narration POV</label>
+                              <select
+                                value={story.narration_pov}
+                                onChange={(e) => updateStoryBulb(index, 'narration_pov', e.target.value)}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              >
+                                <option value="first_person">First Person</option>
+                                <option value="third_person">Third Person</option>
+                              </select>
+                            </div>
+                          </div>
                           
                           <div className="flex justify-between items-center mt-4">
-                            <div className="flex gap-2">
-                              <span className="text-xs text-gray-500">Runtime:</span>
-                              <span className="text-xs text-gray-400">{story.runtime_sec}s</span>
-                              <span className="text-xs text-gray-500 ml-2">POV:</span>
-                              <span className="text-xs text-gray-400">{story.narration_pov}</span>
-                            </div>
                             {selectedStory === story && (
                               <button
                                 onClick={handleStoryboardGeneration}
