@@ -2418,7 +2418,7 @@ export default function Home() {
                   <div className="text-center py-16">
                     <div className="text-6xl mb-4">🎬</div>
                     <h3 className="text-2xl font-bold text-white mb-4">No Video Rendered Yet</h3>
-                    <p className="text-gray-400 mb-6">Go to the Storyboard tab and click "RENDER FINAL VIDEO" to create your video</p>
+                    <p className="text-gray-400 mb-6">Go to the Storyboard tab and click &quot;RENDER FINAL VIDEO&quot; to create your video</p>
                     <button
                       onClick={() => setActiveTab('storyboard')}
                       className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition"
