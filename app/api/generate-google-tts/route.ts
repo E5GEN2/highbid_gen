@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET(_request: NextRequest) {
+export async function GET() {
   try {
     // Return all 30 available Google Gemini TTS voices
     const voices = [

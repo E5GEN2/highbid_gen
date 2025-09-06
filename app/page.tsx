@@ -16,12 +16,62 @@ export default function Home() {
   
   // Script Generation State
   const [scriptTitles, setScriptTitles] = useState<string[]>(['']);
-  const [generatedStories, setGeneratedStories] = useState<any[]>([]);
+  interface StoryBulb {
+    title: string;
+    runtime_sec: number;
+    tone: string;
+    narration_pov: string;
+    target_viewer: string;
+    premise: string;
+    protagonist: string;
+    goal: string;
+    stakes: string;
+    setting: string;
+    constraint: string;
+    twist: string;
+    call_to_action: string;
+  }
+  
+  interface StoryboardScene {
+    scene_id: number;
+    start_ms: number;
+    end_ms: number;
+    beat: string;
+    vo_text: string;
+    vo_emphasis: string;
+    read_speed_wps: number;
+    visual_prompt: {
+      setting: string;
+      characters: string;
+      action: string;
+      props: string;
+      mood: string;
+      lighting: string;
+      color_palette: string;
+      camera: string;
+      composition: string;
+      aspect_ratio: string;
+      style_tags: string;
+      negative_tags: string;
+      model_hint: string;
+      seed: number;
+    };
+    text_overlay: {
+      content: string;
+      position: string;
+      weight: string;
+    };
+    transition_in: string;
+    transition_out: string;
+    music_cue: string;
+  }
+  
+  const [generatedStories, setGeneratedStories] = useState<StoryBulb[]>([]);
   const [scriptsLoading, setScriptsLoading] = useState(false);
   
   // Storyboard State
-  const [selectedStory, setSelectedStory] = useState<any>(null);
-  const [generatedStoryboard, setGeneratedStoryboard] = useState<any[]>([]);
+  const [selectedStory, setSelectedStory] = useState<StoryBulb | null>(null);
+  const [generatedStoryboard, setGeneratedStoryboard] = useState<StoryboardScene[]>([]);
   const [storyboardsLoading, setStoryboardsLoading] = useState(false);
   
   // Voice-over State
@@ -939,7 +989,7 @@ export default function Home() {
                                   scene.vo_emphasis === 'strong' ? 'font-bold' :
                                   scene.vo_emphasis === 'slight' ? 'font-medium' : ''
                                 }`}>
-                                  "{scene.vo_text}"
+                                  &ldquo;{scene.vo_text}&rdquo;
                                 </p>
                                 <span className="text-xs text-gray-500">Speed: {scene.read_speed_wps} wps</span>
                               </div>
