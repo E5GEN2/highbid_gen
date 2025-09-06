@@ -1,5 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+interface StoryboardScene {
+  scene_id: number;
+  start_ms: number;
+  end_ms: number;
+  beat: string;
+  vo_text: string;
+  vo_emphasis: string;
+  read_speed_wps: number;
+  visual_prompt: {
+    setting: string;
+    characters: string;
+    action: string;
+    props: string;
+    mood: string;
+    lighting: string;
+    color_palette: string;
+    camera: string;
+    composition: string;
+    aspect_ratio: string;
+    style_tags: string;
+    negative_tags: string;
+    model_hint: string;
+    seed: number;
+  };
+  text_overlay: {
+    content: string;
+    position: string;
+    weight: string;
+  };
+  transition_in: string;
+  transition_out: string;
+  music_cue: string;
+}
+
 const STORYBOARD_PROMPT = `SYSTEM:
 You are a storyboard generator.
 You must output exactly 5 lines of JSON (JSONL format) for the requested scene range. 
@@ -63,7 +97,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Helper function to create compressed context from previous scenes
-    const createCompressedContext = (scenes: any[]) => {
+    const createCompressedContext = (scenes: StoryboardScene[]) => {
       if (scenes.length === 0) return '';
       
       const context = scenes.map(scene => ({
@@ -79,7 +113,7 @@ export async function POST(request: NextRequest) {
     };
 
     // Generate storyboard in batches of 5 with context
-    const generateBatch = async (startScene: number, endScene: number, previousScenes: any[] = []) => {
+    const generateBatch = async (startScene: number, endScene: number, previousScenes: StoryboardScene[] = []) => {
       const contextPrompt = createCompressedContext(previousScenes);
       const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}\n\nGenerate scenes ${startScene} to ${endScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${startScene}.`;
       
@@ -111,7 +145,7 @@ export async function POST(request: NextRequest) {
     };
     
     // Generate all scenes progressively with context
-    const allScenes: any[] = [];
+    const allScenes: StoryboardScene[] = [];
     const batchSize = 5;
     const totalBatches = Math.ceil(30 / batchSize); // 6 batches of 5 scenes each
     
@@ -155,7 +189,7 @@ export async function POST(request: NextRequest) {
           try {
             const scene = JSON.parse(line.trim());
             allScenes.push(scene);
-          } catch (parseError) {
+          } catch {
             console.error(`Failed to parse scene in batch ${batchIndex + 1}:`, line.trim());
           }
         }
@@ -166,7 +200,6 @@ export async function POST(request: NextRequest) {
       console.log(`Batch ${batchIndex + 1} complete. Total scenes so far: ${allScenes.length}`);
     }
     
-    const generatedText = allScenes.map(scene => JSON.stringify(scene)).join('\n');
     
     if (allScenes.length === 0) {
       return NextResponse.json(
