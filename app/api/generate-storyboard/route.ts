@@ -87,7 +87,7 @@ RULES:
 
 export async function POST(request: NextRequest) {
   try {
-    const { storyBulb, apiKey } = await request.json();
+    const { storyBulb, apiKey, startScene, endScene, previousScenes } = await request.json();
 
     if (!storyBulb || !apiKey) {
       return NextResponse.json(
@@ -96,9 +96,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Handle single batch generation
+    const actualStartScene = startScene || 1;
+    const actualEndScene = endScene || 30;
+    
     // Helper function to create compressed context from previous scenes
     const createCompressedContext = (scenes: StoryboardScene[]) => {
-      if (scenes.length === 0) return '';
+      if (!scenes || scenes.length === 0) return '';
       
       const context = scenes.map(scene => ({
         scene_id: scene.scene_id,
@@ -112,114 +116,84 @@ export async function POST(request: NextRequest) {
       return `\nPrevious scenes context for continuity:\n${JSON.stringify(context, null, 2)}`;
     };
 
-    // Generate storyboard in batches of 5 with context
-    const generateBatch = async (startScene: number, endScene: number, previousScenes: StoryboardScene[] = []) => {
-      const contextPrompt = createCompressedContext(previousScenes);
-      const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}\n\nGenerate scenes ${startScene} to ${endScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${startScene}.`;
-      
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            contents: [{
-              parts: [{
-                text: batchPrompt
-              }]
-            }],
-            generationConfig: {
-              temperature: 0.8,
-              topK: 40,
-              topP: 0.95,
-              maxOutputTokens: 4096,
-              responseMimeType: "text/plain"
-            }
-          })
-        }
-      );
-      
-      return response;
-    };
+    const contextPrompt = createCompressedContext(previousScenes || []);
+    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}.`;
     
-    // Generate all scenes progressively with context
-    const allScenes: StoryboardScene[] = [];
-    const batchSize = 5;
-    const totalBatches = Math.ceil(30 / batchSize); // 6 batches of 5 scenes each
-    
-    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-      const startScene = batchIndex * batchSize + 1;
-      const endScene = Math.min(startScene + batchSize - 1, 30);
-      
-      console.log(`Generating batch ${batchIndex + 1}/${totalBatches}: scenes ${startScene}-${endScene}`);
-      
-      const batchResponse = await generateBatch(startScene, endScene, allScenes);
-      
-      if (!batchResponse.ok) {
-        const errorText = await batchResponse.text();
-        console.error(`Gemini API Error in batch ${batchIndex + 1}:`, errorText);
-        return NextResponse.json(
-          { error: `Gemini API error in batch ${batchIndex + 1}: ${batchResponse.status} - ${errorText}` },
-          { status: batchResponse.status }
-        );
-      }
-      
-      const batchData = await batchResponse.json();
-      const batchText = batchData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      
-      if (!batchText) {
-        console.warn(`No content generated for batch ${batchIndex + 1}`);
-        continue;
-      }
-      
-      // Parse this batch's scenes
-      try {
-        let cleanedText = batchText.trim();
-        if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
-          cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
-        }
-        
-        const lines = cleanedText.trim().split('\n').filter((line: string) => line.trim());
-        
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          
-          try {
-            const scene = JSON.parse(line.trim());
-            allScenes.push(scene);
-          } catch {
-            console.error(`Failed to parse scene in batch ${batchIndex + 1}:`, line.trim());
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: batchPrompt
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.8,
+            topK: 40,
+            topP: 0.95,
+            maxOutputTokens: 4096,
+            responseMimeType: "text/plain"
           }
-        }
-      } catch (parseError) {
-        console.error(`Failed to process batch ${batchIndex + 1}:`, parseError);
+        })
       }
-      
-      console.log(`Batch ${batchIndex + 1} complete. Total scenes so far: ${allScenes.length}`);
+    );
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Gemini API Error:`, errorText);
+      return NextResponse.json(
+        { error: `Gemini API error: ${response.status} - ${errorText}` },
+        { status: response.status }
+      );
     }
     
+    const data = await response.json();
+    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     
-    if (allScenes.length === 0) {
+    if (!generatedText) {
       return NextResponse.json(
         { error: 'No storyboard generated' },
         { status: 500 }
       );
     }
 
-    // Log scene generation results
-    console.log(`Storyboard generation complete: ${allScenes.length} scenes generated`);
+    // Parse the generated scenes
+    const allScenes: StoryboardScene[] = [];
     
-    // If we have fewer than 30 scenes, include warning in response
-    if (allScenes.length < 30) {
-      console.warn(`Generated ${allScenes.length} scenes instead of 30`);
-      return NextResponse.json({
-        success: true,
-        storyboard: allScenes,
-        storyBulb: storyBulb,
-        warning: `Only ${allScenes.length} of 30 scenes were generated. This may be due to API limitations.`
-      });
+    try {
+      let cleanedText = generatedText.trim();
+      if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
+        cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      
+      const lines = cleanedText.trim().split('\n').filter((line: string) => line.trim());
+      
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        
+        try {
+          const scene = JSON.parse(line.trim());
+          allScenes.push(scene);
+        } catch {
+          console.error(`Failed to parse scene:`, line.trim());
+        }
+      }
+    } catch (parseError) {
+      console.error(`Failed to process batch:`, parseError);
+    }
+    
+    console.log(`Generated ${allScenes.length} scenes for range ${actualStartScene}-${actualEndScene}`);
+
+    if (allScenes.length === 0) {
+      return NextResponse.json(
+        { error: 'No valid scenes were generated' },
+        { status: 500 }
+      );
     }
     
     return NextResponse.json({

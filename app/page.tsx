@@ -74,6 +74,13 @@ export default function Home() {
   const [selectedStory, setSelectedStory] = useState<StoryBulb | null>(null);
   const [generatedStoryboard, setGeneratedStoryboard] = useState<StoryboardScene[]>([]);
   const [storyboardsLoading, setStoryboardsLoading] = useState(false);
+  const [storyboardProgress, setStoryboardProgress] = useState({
+    currentBatch: 0,
+    totalBatches: 6,
+    currentScene: 0,
+    totalScenes: 30,
+    status: ''
+  });
   
   // Voice-over State
   const [voiceoverTexts, setVoiceoverTexts] = useState<string[]>(['']);
@@ -340,33 +347,85 @@ export default function Home() {
     
     setStoryboardsLoading(true);
     setError(null);
+    setStoryboardProgress({ currentBatch: 0, totalBatches: 6, currentScene: 0, totalScenes: 30, status: 'Starting storyboard generation...' });
     
     try {
-      const response = await fetch('/api/generate-storyboard', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          storyBulb: selectedStory,
-          apiKey: googleTtsKey,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to generate storyboard');
+      const allScenes: StoryboardScene[] = [];
+      const batchSize = 5;
+      const totalBatches = Math.ceil(30 / batchSize);
+      
+      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+        const startScene = batchIndex * batchSize + 1;
+        const endScene = Math.min(startScene + batchSize - 1, 30);
+        
+        setStoryboardProgress({
+          currentBatch: batchIndex + 1,
+          totalBatches,
+          currentScene: startScene - 1,
+          totalScenes: 30,
+          status: `Generating scenes ${startScene}-${endScene}...`
+        });
+        
+        const response = await fetch('/api/generate-storyboard', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            storyBulb: selectedStory,
+            apiKey: googleTtsKey,
+            startScene,
+            endScene,
+            previousScenes: allScenes.slice(-10) // Send last 10 scenes for context
+          }),
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `Failed to generate batch ${batchIndex + 1}`);
+        }
+        
+        const data = await response.json();
+        if (data.storyboard && Array.isArray(data.storyboard)) {
+          allScenes.push(...data.storyboard);
+          setStoryboardProgress({
+            currentBatch: batchIndex + 1,
+            totalBatches,
+            currentScene: allScenes.length,
+            totalScenes: 30,
+            status: `Generated ${allScenes.length}/30 scenes`
+          });
+        }
+        
+        // Small delay between batches to show progress
+        if (batchIndex < totalBatches - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
       }
-
-      if (data.storyboard) {
-        setGeneratedStoryboard(data.storyboard);
+      
+      if (allScenes.length > 0) {
+        setGeneratedStoryboard(allScenes);
+        setStoryboardProgress({
+          currentBatch: totalBatches,
+          totalBatches,
+          currentScene: allScenes.length,
+          totalScenes: 30,
+          status: 'Storyboard generation complete!'
+        });
         setActiveTab('storyboard');
+      } else {
+        throw new Error('No scenes were generated');
       }
+      
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate storyboard');
+      setStoryboardProgress({ currentBatch: 0, totalBatches: 6, currentScene: 0, totalScenes: 30, status: '' });
     } finally {
       setStoryboardsLoading(false);
+      // Clear progress after a delay
+      setTimeout(() => {
+        setStoryboardProgress({ currentBatch: 0, totalBatches: 6, currentScene: 0, totalScenes: 30, status: '' });
+      }, 3000);
     }
   };
 
@@ -1068,7 +1127,9 @@ export default function Home() {
                                 disabled={storyboardsLoading}
                                 className="px-4 py-2 bg-gradient-to-r from-green-500 to-blue-600 text-white text-sm font-semibold rounded-lg hover:from-green-600 hover:to-blue-700 disabled:opacity-50 transition"
                               >
-                                {storyboardsLoading ? 'Generating...' : 'Generate Storyboard →'}
+                                {storyboardsLoading ? (
+                                  storyboardProgress.status ? `${storyboardProgress.currentScene}/30...` : 'Generating...'
+                                ) : 'Generate Storyboard →'}
                               </button>
                             )}
                           </div>
@@ -1400,6 +1461,38 @@ export default function Home() {
                     >
                       {storyboardsLoading ? 'Generating Storyboard...' : 'Generate 30-Scene Storyboard'}
                     </button>
+                    
+                    {/* Progress Display */}
+                    {storyboardsLoading && storyboardProgress.status && (
+                      <div className="mt-6 bg-gray-900/50 p-4 rounded-xl border border-gray-700">
+                        <div className="flex justify-between items-center mb-3">
+                          <div className="text-white font-medium">Storyboard Generation Progress</div>
+                          <div className="text-sm text-gray-400">
+                            {storyboardProgress.currentScene}/{storyboardProgress.totalScenes} scenes
+                          </div>
+                        </div>
+                        
+                        {/* Progress Bar */}
+                        <div className="mb-3">
+                          <div className="flex justify-between text-xs text-gray-500 mb-1">
+                            <span>Batch {storyboardProgress.currentBatch}/{storyboardProgress.totalBatches}</span>
+                            <span>{Math.round((storyboardProgress.currentScene / storyboardProgress.totalScenes) * 100)}%</span>
+                          </div>
+                          <div className="w-full bg-gray-800 rounded-full h-2">
+                            <div 
+                              className="bg-gradient-to-r from-green-500 to-blue-600 h-2 rounded-full transition-all duration-500"
+                              style={{ width: `${(storyboardProgress.currentScene / storyboardProgress.totalScenes) * 100}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                        
+                        {/* Status Text */}
+                        <div className="text-sm text-gray-300 flex items-center">
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-500 mr-2"></div>
+                          {storyboardProgress.status}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
