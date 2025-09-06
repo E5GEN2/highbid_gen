@@ -103,9 +103,9 @@ export default function Home() {
   const [imageWidth, setImageWidth] = useState(1024);
   const [imageHeight, setImageHeight] = useState(1024);
   
-  // Effects State
-  const [_finalVideos, _setFinalVideos] = useState<string[]>([]);
-  const [_effectsLoading, _setEffectsLoading] = useState(false);
+  // Effects State (placeholder for future implementation)
+  // const [finalVideos, setFinalVideos] = useState<string[]>([]);
+  // const [effectsLoading, setEffectsLoading] = useState(false);
   
   const [error, setError] = useState<string | null>(null);
 

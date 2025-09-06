@@ -115,7 +115,7 @@ export async function POST(request: NextRequest) {
       }
       
       // Parse JSONL (each line is a separate JSON object)
-      const lines = cleanedText.trim().split('\n').filter(line => line.trim());
+      const lines = cleanedText.trim().split('\n').filter((line: string) => line.trim());
       const scenes = [];
       
       for (let i = 0; i < lines.length; i++) {
@@ -125,7 +125,7 @@ export async function POST(request: NextRequest) {
         try {
           const scene = JSON.parse(line);
           scenes.push(scene);
-        } catch (e) {
+        } catch (parseError) {
           console.error(`Failed to parse line ${i + 1}:`, line);
           // Continue parsing other lines instead of failing completely
           continue;

@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
         storyBulb: storyBulb
       });
     } catch (parseError) {
-      console.error('Failed to parse story JSON:', generatedText);
+      console.error('Failed to parse story JSON:', generatedText, parseError);
       return NextResponse.json(
         { error: 'Generated story is not valid JSON', raw: generatedText },
         { status: 500 }
