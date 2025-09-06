@@ -96,8 +96,8 @@ export default function Home() {
   const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'google'>('elevenlabs');
   const [googleVoicesLoaded, setGoogleVoicesLoaded] = useState(false);
   
-  // Load voices function (moved up for useEffect)
-  const loadVoices = async (provider: 'elevenlabs' | 'google' = ttsProvider) => {
+  // Load voices function (memoized with useCallback)
+  const loadVoices = React.useCallback(async (provider: 'elevenlabs' | 'google' = ttsProvider) => {
     if (provider === 'elevenlabs') {
       if (!elevenLabsKey || voicesLoaded) return;
       
@@ -117,7 +117,7 @@ export default function Home() {
       if (!googleTtsKey || googleVoicesLoaded) return;
       
       try {
-        const response = await fetch(`/api/generate-google-tts`);
+        const response = await fetch(`/api/generate-google-tts?apiKey=${googleTtsKey}`);
         const data = await response.json();
         
         if (data.success && data.voices) {
@@ -129,7 +129,7 @@ export default function Home() {
         console.error('Failed to load Google voices:', err);
       }
     }
-  };
+  }, [ttsProvider, elevenLabsKey, googleTtsKey, voicesLoaded, googleVoicesLoaded]);
 
   // Auto-load voices when API keys are available
   React.useEffect(() => {
