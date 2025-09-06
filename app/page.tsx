@@ -69,6 +69,8 @@ export default function Home() {
   
   const [generatedStories, setGeneratedStories] = useState<StoryBulb[]>([]);
   const [scriptsLoading, setScriptsLoading] = useState(false);
+  const [showStoryBulbPrompt, setShowStoryBulbPrompt] = useState(false);
+  const [showStoryboardPrompt, setShowStoryboardPrompt] = useState(false);
   
   // Storyboard State
   const [selectedStory, setSelectedStory] = useState<StoryBulb | null>(null);
@@ -1171,6 +1173,26 @@ export default function Home() {
                   >
                     {scriptsLoading ? 'Generating Stories...' : 'Generate Stories with Gemini'}
                   </button>
+                </div>
+
+                {/* Prompt Inspection Section */}
+                <div className="bg-gray-900/30 p-6 rounded-xl border border-gray-700">
+                  <h4 className="text-lg font-bold text-white mb-4">🔍 Inspect AI Prompts</h4>
+                  <p className="text-gray-400 mb-4">View the exact prompts sent to AI models for story generation</p>
+                  <div className="flex gap-4">
+                    <button
+                      onClick={() => setShowStoryBulbPrompt(true)}
+                      className="px-6 py-3 bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl hover:bg-blue-600/30 transition"
+                    >
+                      📄 View Story Bulb Prompt
+                    </button>
+                    <button
+                      onClick={() => setShowStoryboardPrompt(true)}
+                      className="px-6 py-3 bg-purple-600/20 border border-purple-500/30 text-purple-300 rounded-xl hover:bg-purple-600/30 transition"
+                    >
+                      🎬 View Storyboard Prompt
+                    </button>
+                  </div>
                 </div>
 
                 {generatedStories.length > 0 && (
@@ -2711,13 +2733,79 @@ export default function Home() {
                     <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
                       <h4 className="text-lg font-bold text-white mb-4">Export & Share</h4>
                       <div className="flex gap-4">
-                        <button className="px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition">
+                        <button 
+                          onClick={() => {
+                            if (finalVideos.length > 0) {
+                              const videoData = JSON.parse(atob(finalVideos[0].split(',')[1]));
+                              const exportData = {
+                                ...videoData,
+                                exportFormat: 'mobile',
+                                aspectRatio: '9:16',
+                                resolution: '1080x1920'
+                              };
+                              const dataStr = JSON.stringify(exportData, null, 2);
+                              const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+                              const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-mobile.json`;
+                              const linkElement = document.createElement('a');
+                              linkElement.setAttribute('href', dataUri);
+                              linkElement.setAttribute('download', exportFileDefaultName);
+                              linkElement.click();
+                            }
+                          }}
+                          className="px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition"
+                        >
                           📱 Download for Mobile
                         </button>
-                        <button className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition">
+                        <button 
+                          onClick={() => {
+                            if (finalVideos.length > 0) {
+                              const videoData = JSON.parse(atob(finalVideos[0].split(',')[1]));
+                              const exportData = {
+                                ...videoData,
+                                exportFormat: 'desktop',
+                                aspectRatio: '16:9',
+                                resolution: '1920x1080'
+                              };
+                              const dataStr = JSON.stringify(exportData, null, 2);
+                              const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+                              const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-desktop.json`;
+                              const linkElement = document.createElement('a');
+                              linkElement.setAttribute('href', dataUri);
+                              linkElement.setAttribute('download', exportFileDefaultName);
+                              linkElement.click();
+                            }
+                          }}
+                          className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition"
+                        >
                           💻 Download for Desktop
                         </button>
-                        <button className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition">
+                        <button 
+                          onClick={() => {
+                            if (finalVideos.length > 0) {
+                              const videoData = JSON.parse(atob(finalVideos[0].split(',')[1]));
+                              const shareData = {
+                                title: selectedStory?.title,
+                                premise: selectedStory?.premise,
+                                duration: `${generatedStoryboard.length * 2}s`,
+                                scenes: generatedStoryboard.length,
+                                style: selectedStory?.visual_style,
+                                timestamp: new Date().toISOString()
+                              };
+                              navigator.clipboard.writeText(JSON.stringify(shareData, null, 2)).then(() => {
+                                alert('Share data copied to clipboard!');
+                              }).catch(() => {
+                                const dataStr = JSON.stringify(shareData, null, 2);
+                                const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+                                const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-share.json`;
+                                const linkElement = document.createElement('a');
+                                linkElement.setAttribute('href', dataUri);
+                                linkElement.setAttribute('download', exportFileDefaultName);
+                                linkElement.click();
+                              });
+                            }
+                          }}
+                          className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition"
+                        >
                           🔗 Generate Share Link
                         </button>
                       </div>
@@ -2734,6 +2822,138 @@ export default function Home() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Prompt Inspection Modals */}
+            {showStoryBulbPrompt && (
+              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-gray-900 rounded-xl border border-gray-700 max-w-4xl w-full max-h-[80vh] overflow-hidden">
+                  <div className="p-6 border-b border-gray-700 flex justify-between items-center">
+                    <h3 className="text-xl font-bold text-white">📄 Story Bulb Generation Prompt</h3>
+                    <button
+                      onClick={() => setShowStoryBulbPrompt(false)}
+                      className="text-gray-400 hover:text-white transition"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="p-6 overflow-y-auto max-h-[60vh]">
+                    <div className="bg-gray-800/50 rounded-lg p-4 font-mono text-sm">
+                      <pre className="text-gray-300 whitespace-pre-wrap">SYSTEM:
+You are a story generator. 
+You must output valid JSON only, with no explanations, no prose, no comments.
+
+The JSON object must have the following keys:
+{'{'}
+  "title": string,
+  "runtime_sec": 60,
+  "tone": one of ["inspiring","dramatic","cozy","creepy","comedic","educational"],
+  "narration_pov": one of ["first_person","third_person"],
+  "target_viewer": string,
+  "premise": string (≤22 words),
+  "protagonist": string,
+  "goal": string,
+  "stakes": string,
+  "setting": string,
+  "constraint": string,
+  "twist": string (≤22 words),
+  "call_to_action": string or "",
+  "visual_style": string (free-form description)
+{'}'}
+
+RULES:
+- All values must be single-line strings (no line breaks).
+- runtime_sec is always 60 unless explicitly told otherwise.
+- Keep premise and twist short, max 22 words.
+- visual_style can be any creative description (e.g., "cinematic photoreal", "anime style", "oil painting")
+- Do not output anything except the JSON object.
+
+USER:
+Generate a Story Bulb JSON for this viral title: "&lt;TITLE&gt;"</pre>
+                    </div>
+                    <div className="mt-4 text-sm text-gray-400">
+                      <p><strong>Note:</strong> The &lt;TITLE&gt; placeholder gets replaced with your actual title when sent to the AI model.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {showStoryboardPrompt && (
+              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-gray-900 rounded-xl border border-gray-700 max-w-4xl w-full max-h-[80vh] overflow-hidden">
+                  <div className="p-6 border-b border-gray-700 flex justify-between items-center">
+                    <h3 className="text-xl font-bold text-white">🎬 Storyboard Generation Prompt</h3>
+                    <button
+                      onClick={() => setShowStoryboardPrompt(false)}
+                      className="text-gray-400 hover:text-white transition"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="p-6 overflow-y-auto max-h-[60vh]">
+                    <div className="bg-gray-800/50 rounded-lg p-4 font-mono text-sm">
+                      <pre className="text-gray-300 whitespace-pre-wrap">SYSTEM:
+You are a storyboard generator.
+You must output exactly 30 lines of JSON (JSONL format). 
+Each line must be a valid JSON object conforming to the schema below.
+No prose, no explanations, no comments.
+
+REQUIRED FIELDS:
+{'{'}
+  "scene_id": int (1..30),
+  "start_ms": int (2000*(scene_id-1)),
+  "end_ms": int (start_ms+2000),
+  "beat": one of ["hook","setup","inciting","rise","midpoint","complication","climax","resolution","cta"],
+  "vo_text": string (≤18 words, no line breaks),
+  "vo_emphasis": one of ["none","slight","strong"],
+  "read_speed_wps": float between 1.8 and 3.2,
+  "visual_prompt": {'{'}
+    "setting": string,
+    "characters": string,
+    "action": string,
+    "props": string,
+    "mood": string,
+    "lighting": one of ["soft","hard","noir","neon","golden_hour","overcast","practical"],
+    "color_palette": one of ["warm","cool","monochrome","teal_orange","pastel"],
+    "camera": string,
+    "composition": one of ["rule_of_thirds","center","symmetry","leading_lines"],
+    "aspect_ratio": "9:16",
+    "style_tags": string,
+    "negative_tags": "blurry, extra fingers, watermark",
+    "model_hint": one of ["sdxl","flux","juggernaut","midjourney","dalle","kling"],
+    "seed": int
+  {'}'},
+  "text_overlay": {'{'}
+    "content": string,
+    "position": one of ["top","center","bottom","caption"],
+    "weight": one of ["none","subtle","bold"]
+  {'}'},
+  "transition_in": one of ["cut","fade","dolly_in","whip"],
+  "transition_out": one of ["cut","fade","dolly_out","whip"],
+  "music_cue": one of ["low","medium","high","drop","silence"]
+{'}'}
+
+RULES:
+- Output 30 lines, one JSON object per line, no extra text.
+- Each scene covers 2000 ms (2 seconds).
+- Maintain continuity: reuse seeds within the same beat, change on beat transitions.
+- Keep `vo_text` ≤18 words, natural and concise.
+- Use consistent characters wording to avoid identity drift.
+- Ensure final scene (#30) has beat="cta" if a call_to_action exists.
+
+USER:
+Here is the Story Bulb JSON:
+&lt;PASTE STORY BULB JSON HERE&gt;
+
+Expand this into a 30-scene storyboard in JSONL format.</pre>
+                    </div>
+                    <div className="mt-4 text-sm text-gray-400">
+                      <p><strong>Note:</strong> The &lt;PASTE STORY BULB JSON HERE&gt; placeholder gets replaced with the actual story bulb JSON when sent to the AI model.</p>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
