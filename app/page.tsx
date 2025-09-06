@@ -15,13 +15,14 @@ export default function Home() {
   const [showHighbidUrl, setShowHighbidUrl] = useState(false);
   
   // Script Generation State
-  const [scriptPrompts, setScriptPrompts] = useState<string[]>(['']);
-  const [generatedScripts, _setGeneratedScripts] = useState<string[]>([]);
+  const [scriptTitles, setScriptTitles] = useState<string[]>(['']);
+  const [generatedStories, setGeneratedStories] = useState<any[]>([]);
   const [scriptsLoading, setScriptsLoading] = useState(false);
   
   // Storyboard State
-  const [_storyboards, _setStoryboards] = useState<string[]>([]);
-  const [_storyboardsLoading, _setStoryboardsLoading] = useState(false);
+  const [selectedStory, setSelectedStory] = useState<any>(null);
+  const [generatedStoryboard, setGeneratedStoryboard] = useState<any[]>([]);
+  const [storyboardsLoading, setStoryboardsLoading] = useState(false);
   
   // Voice-over State
   const [voiceoverTexts, setVoiceoverTexts] = useState<string[]>(['']);
@@ -151,8 +152,8 @@ export default function Home() {
   };
 
   const handleScriptGeneration = async () => {
-    if (!apiKey || scriptPrompts.filter(p => p.trim()).length === 0) {
-      setError('Please provide API key and at least one script prompt');
+    if (!googleTtsKey || scriptTitles.filter(t => t.trim()).length === 0) {
+      setError('Please provide Google API key and at least one title');
       return;
     }
     
@@ -160,12 +161,79 @@ export default function Home() {
     setError(null);
     
     try {
-      // This will be implemented with script generation API
-      setError('Script generation not yet implemented');
+      const results = [];
+      
+      for (const title of scriptTitles) {
+        if (!title.trim()) continue;
+        
+        const response = await fetch('/api/generate-story', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            title,
+            apiKey: googleTtsKey,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to generate story');
+        }
+
+        if (data.storyBulb) {
+          results.push(data.storyBulb);
+        }
+      }
+      
+      setGeneratedStories(results);
+      if (results.length > 0) {
+        setSelectedStory(results[0]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate scripts');
     } finally {
       setScriptsLoading(false);
+    }
+  };
+  
+  const handleStoryboardGeneration = async () => {
+    if (!googleTtsKey || !selectedStory) {
+      setError('Please provide Google API key and select a story');
+      return;
+    }
+    
+    setStoryboardsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/generate-storyboard', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          storyBulb: selectedStory,
+          apiKey: googleTtsKey,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate storyboard');
+      }
+
+      if (data.storyboard) {
+        setGeneratedStoryboard(data.storyboard);
+        setActiveTab('storyboard');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate storyboard');
+    } finally {
+      setStoryboardsLoading(false);
     }
   };
 
@@ -221,7 +289,7 @@ export default function Home() {
 
   const addPrompt = (type: 'script' | 'image' | 'voiceover') => {
     if (type === 'script') {
-      setScriptPrompts([...scriptPrompts, '']);
+      setScriptTitles([...scriptTitles, '']);
     } else if (type === 'image') {
       setImagePrompts([...imagePrompts, '']);
     } else {
@@ -231,7 +299,7 @@ export default function Home() {
 
   const removePrompt = (type: 'script' | 'image' | 'voiceover', index: number) => {
     if (type === 'script') {
-      setScriptPrompts(scriptPrompts.filter((_, i) => i !== index));
+      setScriptTitles(scriptTitles.filter((_, i) => i !== index));
     } else if (type === 'image') {
       setImagePrompts(imagePrompts.filter((_, i) => i !== index));
     } else {
@@ -241,9 +309,9 @@ export default function Home() {
 
   const updatePrompt = (type: 'script' | 'image' | 'voiceover', index: number, value: string) => {
     if (type === 'script') {
-      const updated = [...scriptPrompts];
+      const updated = [...scriptTitles];
       updated[index] = value;
-      setScriptPrompts(updated);
+      setScriptTitles(updated);
     } else if (type === 'image') {
       const updated = [...imagePrompts];
       updated[index] = value;
@@ -388,23 +456,23 @@ export default function Home() {
             {activeTab === 'scripts' && (
               <div className="space-y-6">
                 <div>
-                  <h3 className="text-2xl font-bold text-white mb-4">Batch Script Generation</h3>
-                  <p className="text-gray-400 mb-6">Generate multiple short story scripts for your videos</p>
+                  <h3 className="text-2xl font-bold text-white mb-4">Story Generation</h3>
+                  <p className="text-gray-400 mb-6">Enter viral titles to generate complete story structures</p>
                 </div>
 
                 <div className="space-y-4">
-                  {scriptPrompts.map((prompt, index) => (
+                  {scriptTitles.map((title, index) => (
                     <div key={index} className="flex gap-3">
-                      <textarea
-                        value={prompt}
+                      <input
+                        type="text"
+                        value={title}
                         onChange={(e) => updatePrompt('script', index, e.target.value)}
-                        placeholder={`Script prompt ${index + 1}...`}
-                        rows={3}
-                        className="flex-1 px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition resize-none"
+                        placeholder={`Enter viral title ${index + 1} (e.g., "The Secret That Changed Everything")`}
+                        className="flex-1 px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                       />
                       <button
                         onClick={() => removePrompt('script', index)}
-                        disabled={scriptPrompts.length === 1}
+                        disabled={scriptTitles.length === 1}
                         className="px-4 py-2 bg-red-600/20 text-red-400 rounded-xl hover:bg-red-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition"
                       >
                         ✕
@@ -418,26 +486,84 @@ export default function Home() {
                     onClick={() => addPrompt('script')}
                     className="px-6 py-3 bg-gray-700 text-white rounded-xl hover:bg-gray-600 transition"
                   >
-                    + Add Script Prompt
+                    + Add Title
                   </button>
                   <button
                     onClick={handleScriptGeneration}
-                    disabled={scriptsLoading || !apiKey}
-                    className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                    disabled={scriptsLoading || !googleTtsKey}
+                    className="px-8 py-3 bg-gradient-to-r from-green-500 to-blue-600 text-white font-semibold rounded-xl hover:from-green-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
                   >
-                    {scriptsLoading ? 'Generating Scripts...' : 'Generate Scripts'}
+                    {scriptsLoading ? 'Generating Stories...' : 'Generate Stories with Gemini'}
                   </button>
                 </div>
 
-                {generatedScripts.length > 0 && (
+                {generatedStories.length > 0 && (
                   <div className="space-y-4">
-                    <h4 className="text-xl font-bold text-white">Generated Scripts</h4>
-                    {generatedScripts.map((script, index) => (
-                      <div key={index} className="bg-gray-900/50 p-4 rounded-xl">
-                        <h5 className="text-lg font-semibold text-white mb-2">Script {index + 1}</h5>
-                        <p className="text-gray-300 whitespace-pre-wrap">{script}</p>
-                      </div>
-                    ))}
+                    <h4 className="text-xl font-bold text-white mb-2">Generated Story Bulbs</h4>
+                    <div className="grid gap-4">
+                      {generatedStories.map((story, index) => (
+                        <div 
+                          key={index} 
+                          className={`bg-gray-900/50 p-6 rounded-xl border-2 transition cursor-pointer ${
+                            selectedStory === story ? 'border-green-500 bg-gray-900/70' : 'border-gray-700 hover:border-gray-600'
+                          }`}
+                          onClick={() => setSelectedStory(story)}
+                        >
+                          <div className="flex justify-between items-start mb-3">
+                            <h5 className="text-xl font-bold text-white">{story.title}</h5>
+                            <span className={`px-3 py-1 text-xs rounded-full ${
+                              story.tone === 'inspiring' ? 'bg-yellow-600/20 text-yellow-400' :
+                              story.tone === 'dramatic' ? 'bg-red-600/20 text-red-400' :
+                              story.tone === 'cozy' ? 'bg-green-600/20 text-green-400' :
+                              story.tone === 'creepy' ? 'bg-purple-600/20 text-purple-400' :
+                              story.tone === 'comedic' ? 'bg-pink-600/20 text-pink-400' :
+                              'bg-blue-600/20 text-blue-400'
+                            }`}>
+                              {story.tone}
+                            </span>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4 mb-3">
+                            <div>
+                              <span className="text-xs text-gray-500">Protagonist</span>
+                              <p className="text-sm text-gray-300">{story.protagonist}</p>
+                            </div>
+                            <div>
+                              <span className="text-xs text-gray-500">Setting</span>
+                              <p className="text-sm text-gray-300">{story.setting}</p>
+                            </div>
+                          </div>
+                          
+                          <div className="mb-3">
+                            <span className="text-xs text-gray-500">Premise</span>
+                            <p className="text-sm text-gray-300">{story.premise}</p>
+                          </div>
+                          
+                          <div className="mb-3">
+                            <span className="text-xs text-gray-500">Twist</span>
+                            <p className="text-sm text-yellow-400 italic">{story.twist}</p>
+                          </div>
+                          
+                          <div className="flex justify-between items-center mt-4">
+                            <div className="flex gap-2">
+                              <span className="text-xs text-gray-500">Runtime:</span>
+                              <span className="text-xs text-gray-400">{story.runtime_sec}s</span>
+                              <span className="text-xs text-gray-500 ml-2">POV:</span>
+                              <span className="text-xs text-gray-400">{story.narration_pov}</span>
+                            </div>
+                            {selectedStory === story && (
+                              <button
+                                onClick={handleStoryboardGeneration}
+                                disabled={storyboardsLoading}
+                                className="px-4 py-2 bg-gradient-to-r from-green-500 to-blue-600 text-white text-sm font-semibold rounded-lg hover:from-green-600 hover:to-blue-700 disabled:opacity-50 transition"
+                              >
+                                {storyboardsLoading ? 'Generating...' : 'Generate Storyboard →'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -732,15 +858,195 @@ export default function Home() {
               </div>
             )}
 
-            {/* Placeholder tabs */}
+            {/* Storyboard Tab */}
             {activeTab === 'storyboard' && (
-              <div className="text-center py-12">
-                <div className="text-6xl mb-4">🎨</div>
-                <h3 className="text-2xl font-bold text-white mb-4">Storyboard Generation</h3>
-                <p className="text-gray-400 mb-6">Turn your scripts into visual storyboards</p>
-                <div className="bg-yellow-900/20 border border-yellow-500 text-yellow-400 px-4 py-3 rounded-xl max-w-md mx-auto">
-                  Coming Soon - Storyboard generation from scripts
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-white mb-4">Visual Storyboard</h3>
+                  <p className="text-gray-400 mb-6">30-scene storyboard with complete visual and audio direction</p>
                 </div>
+
+                {!selectedStory && !generatedStoryboard.length && (
+                  <div className="text-center py-12 bg-gray-900/30 rounded-xl">
+                    <div className="text-6xl mb-4">🎬</div>
+                    <p className="text-gray-400 mb-4">No story selected</p>
+                    <button
+                      onClick={() => setActiveTab('scripts')}
+                      className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                    >
+                      Go to Scripts Tab
+                    </button>
+                  </div>
+                )}
+
+                {selectedStory && !generatedStoryboard.length && (
+                  <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
+                    <h4 className="text-lg font-bold text-white mb-3">Selected Story: {selectedStory.title}</h4>
+                    <button
+                      onClick={handleStoryboardGeneration}
+                      disabled={storyboardsLoading}
+                      className="px-8 py-3 bg-gradient-to-r from-green-500 to-blue-600 text-white font-semibold rounded-xl hover:from-green-600 hover:to-blue-700 disabled:opacity-50 transition"
+                    >
+                      {storyboardsLoading ? 'Generating Storyboard...' : 'Generate 30-Scene Storyboard'}
+                    </button>
+                  </div>
+                )}
+
+                {generatedStoryboard.length > 0 && (
+                  <div className="space-y-6">
+                    {/* Story Summary */}
+                    {selectedStory && (
+                      <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 p-6 rounded-xl border border-gray-700">
+                        <h4 className="text-xl font-bold text-white mb-2">{selectedStory.title}</h4>
+                        <p className="text-gray-300 mb-2">{selectedStory.premise}</p>
+                        <div className="flex gap-4 text-sm">
+                          <span className="text-gray-400">Runtime: {selectedStory.runtime_sec}s</span>
+                          <span className="text-gray-400">Tone: {selectedStory.tone}</span>
+                          <span className="text-gray-400">POV: {selectedStory.narration_pov}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Storyboard Grid */}
+                    <div className="grid gap-4">
+                      {generatedStoryboard.map((scene, index) => (
+                        <div key={index} className="bg-gray-900/50 rounded-xl border border-gray-700 overflow-hidden">
+                          <div className="flex">
+                            {/* Scene Info Panel */}
+                            <div className="w-1/3 p-4 border-r border-gray-700">
+                              <div className="flex justify-between items-start mb-3">
+                                <div>
+                                  <span className="text-2xl font-bold text-white">#{scene.scene_id}</span>
+                                  <span className={`ml-3 px-2 py-1 text-xs rounded-full ${
+                                    scene.beat === 'hook' ? 'bg-red-600/20 text-red-400' :
+                                    scene.beat === 'climax' ? 'bg-yellow-600/20 text-yellow-400' :
+                                    scene.beat === 'resolution' ? 'bg-green-600/20 text-green-400' :
+                                    scene.beat === 'cta' ? 'bg-blue-600/20 text-blue-400' :
+                                    'bg-gray-600/20 text-gray-400'
+                                  }`}>
+                                    {scene.beat}
+                                  </span>
+                                </div>
+                                <span className="text-xs text-gray-500">
+                                  {(scene.start_ms / 1000).toFixed(1)}s - {(scene.end_ms / 1000).toFixed(1)}s
+                                </span>
+                              </div>
+                              
+                              {/* Voice Over */}
+                              <div className="mb-4">
+                                <label className="text-xs text-gray-500 block mb-1">Voice Over</label>
+                                <p className={`text-sm text-white ${
+                                  scene.vo_emphasis === 'strong' ? 'font-bold' :
+                                  scene.vo_emphasis === 'slight' ? 'font-medium' : ''
+                                }`}>
+                                  "{scene.vo_text}"
+                                </p>
+                                <span className="text-xs text-gray-500">Speed: {scene.read_speed_wps} wps</span>
+                              </div>
+
+                              {/* Text Overlay */}
+                              {scene.text_overlay?.content && (
+                                <div className="mb-4">
+                                  <label className="text-xs text-gray-500 block mb-1">Text Overlay</label>
+                                  <p className={`text-sm ${
+                                    scene.text_overlay.weight === 'bold' ? 'text-yellow-400 font-bold' :
+                                    scene.text_overlay.weight === 'subtle' ? 'text-gray-400' :
+                                    'text-gray-500'
+                                  }`}>
+                                    {scene.text_overlay.content}
+                                  </p>
+                                  <span className="text-xs text-gray-500">Position: {scene.text_overlay.position}</span>
+                                </div>
+                              )}
+
+                              {/* Transitions & Music */}
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-gray-500">In:</span>
+                                  <span className="text-gray-400 ml-1">{scene.transition_in}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Out:</span>
+                                  <span className="text-gray-400 ml-1">{scene.transition_out}</span>
+                                </div>
+                                <div>
+                                  <span className="text-gray-500">Music:</span>
+                                  <span className="text-gray-400 ml-1">{scene.music_cue}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Visual Prompt Panel */}
+                            <div className="flex-1 p-4">
+                              <label className="text-xs text-gray-500 block mb-2">Visual Direction</label>
+                              
+                              <div className="grid grid-cols-2 gap-3 mb-3">
+                                <div>
+                                  <span className="text-xs text-gray-500">Setting</span>
+                                  <p className="text-sm text-gray-300">{scene.visual_prompt.setting}</p>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500">Characters</span>
+                                  <p className="text-sm text-gray-300">{scene.visual_prompt.characters}</p>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500">Action</span>
+                                  <p className="text-sm text-gray-300">{scene.visual_prompt.action}</p>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500">Props</span>
+                                  <p className="text-sm text-gray-300">{scene.visual_prompt.props}</p>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap gap-2 mb-3">
+                                <span className="px-2 py-1 text-xs bg-purple-600/20 text-purple-400 rounded">
+                                  {scene.visual_prompt.mood}
+                                </span>
+                                <span className="px-2 py-1 text-xs bg-orange-600/20 text-orange-400 rounded">
+                                  {scene.visual_prompt.lighting}
+                                </span>
+                                <span className="px-2 py-1 text-xs bg-blue-600/20 text-blue-400 rounded">
+                                  {scene.visual_prompt.color_palette}
+                                </span>
+                                <span className="px-2 py-1 text-xs bg-green-600/20 text-green-400 rounded">
+                                  {scene.visual_prompt.composition}
+                                </span>
+                              </div>
+
+                              <div className="text-xs">
+                                <p className="text-gray-500 mb-1">Camera: <span className="text-gray-400">{scene.visual_prompt.camera}</span></p>
+                                <p className="text-gray-500 mb-1">Style: <span className="text-gray-400">{scene.visual_prompt.style_tags}</span></p>
+                                <p className="text-gray-500">Model: <span className="text-gray-400">{scene.visual_prompt.model_hint}</span> | Seed: <span className="text-gray-400">{scene.visual_prompt.seed}</span></p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Export Options */}
+                    <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
+                      <h4 className="text-lg font-bold text-white mb-4">Export Storyboard</h4>
+                      <div className="flex gap-4">
+                        <button
+                          onClick={() => {
+                            const dataStr = JSON.stringify({ story: selectedStory, storyboard: generatedStoryboard }, null, 2);
+                            const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+                            const exportFileDefaultName = `storyboard-${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase()}.json`;
+                            const linkElement = document.createElement('a');
+                            linkElement.setAttribute('href', dataUri);
+                            linkElement.setAttribute('download', exportFileDefaultName);
+                            linkElement.click();
+                          }}
+                          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+                        >
+                          Export as JSON
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
