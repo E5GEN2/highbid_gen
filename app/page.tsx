@@ -115,6 +115,11 @@ export default function Home() {
   const [imageGenerationLoading, setImageGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
   const [batchImageLoading, setBatchImageLoading] = useState(false);
 
+  // Storyboard Voiceovers State
+  const [storyboardVoiceovers, setStoryboardVoiceovers] = useState<{[sceneId: number]: string}>({});
+  const [voiceoverGenerationLoading, setVoiceoverGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
+  const [batchVoiceoverLoading, setBatchVoiceoverLoading] = useState(false);
+
   // Create Flux prompt from storyboard scene
   const createFluxPrompt = (scene: StoryboardScene, storyVisualStyle?: string) => {
     const vp = scene.visual_prompt;
@@ -516,6 +521,107 @@ export default function Home() {
       setError(err instanceof Error ? err.message : 'An error occurred during batch generation');
     } finally {
       setBatchImageLoading(false);
+    }
+  };
+
+  // Generate voiceover for a specific storyboard scene
+  const generateStoryboardVoiceover = async (scene: StoryboardScene) => {
+    const currentProvider = ttsProvider;
+    const currentApiKey = currentProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
+    
+    if (!currentApiKey) {
+      setError(`${currentProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'} API key is required for voiceover generation`);
+      return;
+    }
+
+    setVoiceoverGenerationLoading(prev => ({ ...prev, [scene.scene_id]: true }));
+    setError(null);
+
+    try {
+      const endpoint = currentProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
+      const requestBody = currentProvider === 'elevenlabs' 
+        ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
+        : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate storyboard voiceover');
+      }
+
+      if (data.audio) {
+        setStoryboardVoiceovers(prev => ({
+          ...prev,
+          [scene.scene_id]: data.audio
+        }));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred generating storyboard voiceover');
+    } finally {
+      setVoiceoverGenerationLoading(prev => ({ ...prev, [scene.scene_id]: false }));
+    }
+  };
+
+  // Generate all storyboard voiceovers in batch
+  const generateAllStoryboardVoiceovers = async () => {
+    const currentProvider = ttsProvider;
+    const currentApiKey = currentProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
+    
+    if (!currentApiKey) {
+      setError(`${currentProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'} API key is required for batch voiceover generation`);
+      return;
+    }
+
+    if (generatedStoryboard.length === 0) {
+      setError('No storyboard generated yet');
+      return;
+    }
+
+    setBatchVoiceoverLoading(true);
+    setError(null);
+
+    try {
+      const results: {[sceneId: number]: string} = {};
+      
+      for (const scene of generatedStoryboard) {
+        const endpoint = currentProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
+        const requestBody = currentProvider === 'elevenlabs' 
+          ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
+          : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          console.error(`Failed to generate voiceover for scene ${scene.scene_id}:`, data.error);
+          continue;
+        }
+
+        if (data.audio) {
+          results[scene.scene_id] = data.audio;
+        }
+      }
+      
+      setStoryboardVoiceovers(prev => ({ ...prev, ...results }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred during batch voiceover generation');
+    } finally {
+      setBatchVoiceoverLoading(false);
     }
   };
 
@@ -1126,34 +1232,304 @@ export default function Home() {
 
                 {generatedStoryboard.length > 0 && (
                   <div className="space-y-6">
-                    {/* Story Summary */}
+                    {/* Story Summary - Editable */}
                     {selectedStory && (
                       <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 p-6 rounded-xl border border-gray-700">
-                        <h4 className="text-xl font-bold text-white mb-2">{selectedStory.title}</h4>
-                        <p className="text-gray-300 mb-2">{selectedStory.premise}</p>
-                        <div className="flex flex-wrap gap-4 text-sm">
-                          <span className="text-gray-400">Runtime: {selectedStory.runtime_sec}s</span>
-                          <span className="text-gray-400">Tone: {selectedStory.tone}</span>
-                          <span className="text-gray-400">POV: {selectedStory.narration_pov}</span>
-                          <span className="text-purple-400 font-medium">Style: {selectedStory.visual_style}</span>
+                        <div className="grid md:grid-cols-2 gap-4 mb-4">
+                          {/* Title */}
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">Title</label>
+                            <input
+                              type="text"
+                              value={selectedStory.title}
+                              onChange={(e) => {
+                                const updated = { ...selectedStory, title: e.target.value };
+                                setSelectedStory(updated);
+                                // Update in generatedStories array
+                                setGeneratedStories(prev => prev.map(story => 
+                                  story === selectedStory ? updated : story
+                                ));
+                              }}
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                            />
+                          </div>
+                          
+                          {/* Visual Style */}
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">Visual Style</label>
+                            <select
+                              value={selectedStory.visual_style}
+                              onChange={(e) => {
+                                const updated = { ...selectedStory, visual_style: e.target.value };
+                                setSelectedStory(updated);
+                                setGeneratedStories(prev => prev.map(story => 
+                                  story === selectedStory ? updated : story
+                                ));
+                              }}
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                            >
+                              <option value="cinematic photoreal">Cinematic Photoreal</option>
+                              <option value="animated cartoon">Animated Cartoon</option>
+                              <option value="comic book">Comic Book</option>
+                              <option value="sketch art">Sketch Art</option>
+                              <option value="oil painting">Oil Painting</option>
+                              <option value="watercolor">Watercolor</option>
+                              <option value="cyberpunk neon">Cyberpunk Neon</option>
+                              <option value="retro vintage">Retro Vintage</option>
+                              <option value="minimalist clean">Minimalist Clean</option>
+                              <option value="dark gothic">Dark Gothic</option>
+                            </select>
+                          </div>
                         </div>
+                        
+                        {/* Premise */}
+                        <div className="mb-4">
+                          <label className="block text-xs text-gray-400 mb-1">Premise</label>
+                          <textarea
+                            value={selectedStory.premise}
+                            onChange={(e) => {
+                              const updated = { ...selectedStory, premise: e.target.value };
+                              setSelectedStory(updated);
+                              setGeneratedStories(prev => prev.map(story => 
+                                story === selectedStory ? updated : story
+                              ));
+                            }}
+                            rows={2}
+                            className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                          />
+                        </div>
+                        
+                        {/* Quick Settings Row */}
+                        <div className="grid grid-cols-3 gap-4 mb-4">
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">Tone</label>
+                            <select
+                              value={selectedStory.tone}
+                              onChange={(e) => {
+                                const updated = { ...selectedStory, tone: e.target.value };
+                                setSelectedStory(updated);
+                                setGeneratedStories(prev => prev.map(story => 
+                                  story === selectedStory ? updated : story
+                                ));
+                              }}
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                            >
+                              <option value="inspiring">Inspiring</option>
+                              <option value="dramatic">Dramatic</option>
+                              <option value="cozy">Cozy</option>
+                              <option value="creepy">Creepy</option>
+                              <option value="comedic">Comedic</option>
+                              <option value="educational">Educational</option>
+                            </select>
+                          </div>
+                          
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">POV</label>
+                            <select
+                              value={selectedStory.narration_pov}
+                              onChange={(e) => {
+                                const updated = { ...selectedStory, narration_pov: e.target.value };
+                                setSelectedStory(updated);
+                                setGeneratedStories(prev => prev.map(story => 
+                                  story === selectedStory ? updated : story
+                                ));
+                              }}
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                            >
+                              <option value="first_person">First Person</option>
+                              <option value="third_person">Third Person</option>
+                            </select>
+                          </div>
+                          
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">Runtime (seconds)</label>
+                            <input
+                              type="number"
+                              value={selectedStory.runtime_sec}
+                              onChange={(e) => {
+                                const updated = { ...selectedStory, runtime_sec: parseInt(e.target.value) || 60 };
+                                setSelectedStory(updated);
+                                setGeneratedStories(prev => prev.map(story => 
+                                  story === selectedStory ? updated : story
+                                ));
+                              }}
+                              min="30"
+                              max="180"
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                            />
+                          </div>
+                        </div>
+                        
+                        {/* Expandable Advanced Settings */}
+                        <details className="cursor-pointer">
+                          <summary className="text-sm text-gray-400 hover:text-gray-300 mb-3">Advanced Story Parameters</summary>
+                          <div className="grid md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Target Viewer</label>
+                              <input
+                                type="text"
+                                value={selectedStory.target_viewer}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, target_viewer: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Protagonist</label>
+                              <input
+                                type="text"
+                                value={selectedStory.protagonist}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, protagonist: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Goal</label>
+                              <textarea
+                                value={selectedStory.goal}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, goal: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                rows={2}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Stakes</label>
+                              <textarea
+                                value={selectedStory.stakes}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, stakes: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                rows={2}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Setting</label>
+                              <input
+                                type="text"
+                                value={selectedStory.setting}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, setting: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            
+                            <div>
+                              <label className="block text-xs text-gray-400 mb-1">Constraint</label>
+                              <input
+                                type="text"
+                                value={selectedStory.constraint}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, constraint: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            
+                            <div className="md:col-span-2">
+                              <label className="block text-xs text-gray-400 mb-1">Twist</label>
+                              <textarea
+                                value={selectedStory.twist}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, twist: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                rows={2}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                            
+                            <div className="md:col-span-2">
+                              <label className="block text-xs text-gray-400 mb-1">Call to Action</label>
+                              <input
+                                type="text"
+                                value={selectedStory.call_to_action}
+                                onChange={(e) => {
+                                  const updated = { ...selectedStory, call_to_action: e.target.value };
+                                  setSelectedStory(updated);
+                                  setGeneratedStories(prev => prev.map(story => 
+                                    story === selectedStory ? updated : story
+                                  ));
+                                }}
+                                className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                              />
+                            </div>
+                          </div>
+                        </details>
                       </div>
                     )}
 
-                    {/* Batch Generate Button */}
-                    <div className="bg-gray-900/50 p-4 rounded-xl border border-gray-700 mb-4">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <h4 className="text-lg font-bold text-white mb-2">Generate Storyboard Images</h4>
-                          <p className="text-gray-400 text-sm">Generate images for all scenes using Highbid Flux API</p>
+                    {/* Batch Generation Buttons */}
+                    <div className="grid md:grid-cols-2 gap-4 mb-4">
+                      {/* Batch Images */}
+                      <div className="bg-gray-900/50 p-4 rounded-xl border border-gray-700">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <h4 className="text-lg font-bold text-white mb-2">Generate Images</h4>
+                            <p className="text-gray-400 text-sm">Generate images for all scenes</p>
+                          </div>
+                          <button
+                            onClick={generateAllStoryboardImages}
+                            disabled={batchImageLoading || !highbidApiUrl}
+                            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                          >
+                            {batchImageLoading ? 'Generating...' : 'Generate All'}
+                          </button>
                         </div>
-                        <button
-                          onClick={generateAllStoryboardImages}
-                          disabled={batchImageLoading || !highbidApiUrl}
-                          className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {batchImageLoading ? 'Generating All Images...' : 'Generate All Images'}
-                        </button>
+                      </div>
+                      
+                      {/* Batch Voiceovers */}
+                      <div className="bg-gray-900/50 p-4 rounded-xl border border-gray-700">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <h4 className="text-lg font-bold text-white mb-2">Generate Voiceovers</h4>
+                            <p className="text-gray-400 text-sm">Generate voiceovers for all scenes</p>
+                          </div>
+                          <button
+                            onClick={generateAllStoryboardVoiceovers}
+                            disabled={batchVoiceoverLoading || (!elevenLabsKey && !googleTtsKey)}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                          >
+                            {batchVoiceoverLoading ? 'Generating...' : 'Generate All'}
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -1163,7 +1539,7 @@ export default function Home() {
                         <div key={index} className="bg-gray-900/50 rounded-xl border border-gray-700 overflow-hidden">
                           <div className="flex">
                             {/* Scene Info Panel */}
-                            <div className="w-1/4 p-4 border-r border-gray-700">
+                            <div className="w-1/5 p-4 border-r border-gray-700">
                               <div className="flex justify-between items-start mb-3">
                                 <div>
                                   <span className="text-2xl font-bold text-white">#{scene.scene_id}</span>
@@ -1227,7 +1603,7 @@ export default function Home() {
                             </div>
 
                             {/* Visual Prompt Panel */}
-                            <div className="w-1/3 p-4 border-r border-gray-700">
+                            <div className="w-1/4 p-4 border-r border-gray-700">
                               <label className="text-xs text-gray-500 block mb-2">Visual Direction</label>
                               
                               <div className="grid grid-cols-2 gap-3 mb-3">
@@ -1271,8 +1647,64 @@ export default function Home() {
                               </div>
                             </div>
 
+                            {/* Voiceover Generation Panel */}
+                            <div className="w-1/4 p-4 border-r border-gray-700">
+                              <div className="flex justify-between items-center mb-2">
+                                <label className="text-xs text-gray-500">Generated Audio</label>
+                                <button
+                                  onClick={() => generateStoryboardVoiceover(scene)}
+                                  disabled={voiceoverGenerationLoading[scene.scene_id] || (!elevenLabsKey && !googleTtsKey)}
+                                  className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {voiceoverGenerationLoading[scene.scene_id] ? 'Gen...' : 'Generate'}
+                                </button>
+                              </div>
+                              
+                              {/* Audio Display */}
+                              <div className="bg-gray-800/50 rounded-lg p-4 mb-3">
+                                {storyboardVoiceovers[scene.scene_id] ? (
+                                  <div>
+                                    <audio 
+                                      controls 
+                                      src={storyboardVoiceovers[scene.scene_id]}
+                                      className="w-full mb-2"
+                                      style={{ height: '32px' }}
+                                    />
+                                    <p className="text-xs text-gray-400">
+                                      Voice: {ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}
+                                    </p>
+                                  </div>
+                                ) : voiceoverGenerationLoading[scene.scene_id] ? (
+                                  <div className="text-gray-400 text-center">
+                                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                                    <p className="text-xs">Generating...</p>
+                                  </div>
+                                ) : (
+                                  <div className="text-gray-500 text-center">
+                                    <div className="text-xl mb-2">🎤</div>
+                                    <p className="text-xs">Click Generate for voiceover</p>
+                                    <p className="text-xs mt-1 text-gray-600">
+                                      {ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                              
+                              {/* Voice Text Preview */}
+                              <div className="text-xs">
+                                <label className="text-gray-500 block mb-1">Voice Text:</label>
+                                <p className="text-gray-300 bg-gray-800/50 p-2 rounded text-xs leading-relaxed">
+                                  &ldquo;{scene.vo_text}&rdquo;
+                                </p>
+                                <div className="flex justify-between mt-1 text-gray-500">
+                                  <span>Emphasis: {scene.vo_emphasis}</span>
+                                  <span>Speed: {scene.read_speed_wps} wps</span>
+                                </div>
+                              </div>
+                            </div>
+
                             {/* Image Generation Panel */}
-                            <div className="w-1/3 p-4">
+                            <div className="w-1/4 p-4">
                               <div className="flex justify-between items-center mb-2">
                                 <label className="text-xs text-gray-500">Generated Image</label>
                                 <button
