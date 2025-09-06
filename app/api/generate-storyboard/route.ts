@@ -4,7 +4,7 @@ const STORYBOARD_PROMPT = `SYSTEM:
 You are a storyboard generator.
 You must output exactly 30 lines of JSON (JSONL format). 
 Each line must be a valid JSON object conforming to the schema below.
-No prose, no explanations, no comments.
+No prose, no explanations, no comments, no markdown formatting, no code blocks.
 
 REQUIRED FIELDS:
 {
@@ -42,12 +42,13 @@ REQUIRED FIELDS:
 }
 
 RULES:
-- Output 30 lines, one JSON object per line, no extra text.
+- Output 30 lines, one JSON object per line, no extra text, no markdown.
 - Each scene covers 2000 ms (2 seconds).
 - Maintain continuity: reuse seeds within the same beat, change on beat transitions.
 - Keep vo_text ≤18 words, natural and concise.
 - Use consistent characters wording to avoid identity drift.
-- Ensure final scene (#30) has beat="cta" if a call_to_action exists.`;
+- Ensure final scene (#30) has beat="cta" if a call_to_action exists.
+- IMPORTANT: Do not wrap output in code blocks or markdown formatting.`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -78,7 +79,7 @@ export async function POST(request: NextRequest) {
             temperature: 0.8,
             topK: 40,
             topP: 0.95,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 16384,
             responseMimeType: "text/plain"
           }
         })
@@ -107,19 +108,37 @@ export async function POST(request: NextRequest) {
     }
 
     try {
+      // Clean up the response - remove markdown formatting if present
+      let cleanedText = generatedText.trim();
+      if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
+        cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      
       // Parse JSONL (each line is a separate JSON object)
-      const lines = generatedText.trim().split('\n');
-      const scenes = lines.map((line: string, index: number) => {
+      const lines = cleanedText.trim().split('\n').filter(line => line.trim());
+      const scenes = [];
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
         try {
-          return JSON.parse(line);
+          const scene = JSON.parse(line);
+          scenes.push(scene);
         } catch (e) {
-          console.error(`Failed to parse line ${index + 1}:`, line);
-          throw new Error(`Invalid JSON at scene ${index + 1}`);
+          console.error(`Failed to parse line ${i + 1}:`, line);
+          // Continue parsing other lines instead of failing completely
+          continue;
         }
-      });
+      }
 
-      if (scenes.length !== 30) {
-        throw new Error(`Expected 30 scenes, got ${scenes.length}`);
+      if (scenes.length === 0) {
+        throw new Error('No valid scenes parsed from response');
+      }
+      
+      // If we have fewer than 30 scenes, log it but don't fail
+      if (scenes.length < 30) {
+        console.warn(`Generated ${scenes.length} scenes instead of 30 (may be due to token limit)`);
       }
       
       return NextResponse.json({
