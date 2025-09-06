@@ -109,6 +109,58 @@ export default function Home() {
   
   const [error, setError] = useState<string | null>(null);
 
+  // Storyboard Images State
+  const [storyboardImages, setStoryboardImages] = useState<{[sceneId: number]: string}>({});
+  const [imageGenerationLoading, setImageGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
+  const [batchImageLoading, setBatchImageLoading] = useState(false);
+
+  // Create Flux prompt from storyboard scene
+  const createFluxPrompt = (scene: StoryboardScene) => {
+    const vp = scene.visual_prompt;
+    
+    // Convert lighting enum to descriptive text
+    const lightingMap: {[key: string]: string} = {
+      'soft': 'soft lighting',
+      'hard': 'hard lighting', 
+      'noir': 'noir dramatic lighting',
+      'neon': 'neon lighting',
+      'golden_hour': 'golden hour lighting',
+      'overcast': 'overcast lighting',
+      'practical': 'practical lighting'
+    };
+    
+    // Convert color palette enum to descriptive text
+    const colorMap: {[key: string]: string} = {
+      'warm': 'warm tones',
+      'cool': 'cool tones',
+      'monochrome': 'monochrome tones',
+      'teal_orange': 'teal orange tones',
+      'pastel': 'pastel tones'
+    };
+    
+    // Build prompt components
+    const components = [
+      vp.style_tags,
+      `${vp.mood} mood`,
+      vp.setting,
+      vp.characters,
+      vp.action,
+      vp.props,
+      lightingMap[vp.lighting] || vp.lighting,
+      colorMap[vp.color_palette] || vp.color_palette,
+      `${vp.camera} camera`,
+      `${vp.composition} composition`,
+      'cinematic shot',
+      `aspect ratio ${vp.aspect_ratio}`,
+      `seed ${vp.seed}`
+    ].filter(Boolean);
+    
+    return {
+      prompt: components.join(', '),
+      negative: vp.negative_tags
+    };
+  };
+
   const tabs = [
     { id: 'scripts', name: '1. Scripts', icon: '📝' },
     { id: 'storyboard', name: '2. Storyboard', icon: '🎨' },
@@ -334,6 +386,135 @@ export default function Home() {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setImagesLoading(false);
+    }
+  };
+
+  // Generate image for a specific storyboard scene
+  const generateStoryboardImage = async (scene: StoryboardScene) => {
+    if (!highbidApiUrl) {
+      setError('Highbid API URL is required for storyboard image generation');
+      return;
+    }
+
+    setImageGenerationLoading(prev => ({ ...prev, [scene.scene_id]: true }));
+    setError(null);
+
+    try {
+      const { prompt } = createFluxPrompt(scene);
+      
+      // Get dimensions from aspect ratio
+      let width, height;
+      switch (scene.visual_prompt.aspect_ratio) {
+        case '16:9':
+          width = 1024; height = 576;
+          break;
+        case '9:16':
+          width = 576; height = 1024;
+          break;
+        case '1:1':
+        default:
+          width = 1024; height = 1024;
+          break;
+      }
+      
+      const response = await fetch('/api/generate-highbid-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt,
+          apiUrl: highbidApiUrl,
+          width,
+          height
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate storyboard image');
+      }
+
+      if (data.image) {
+        setStoryboardImages(prev => ({
+          ...prev,
+          [scene.scene_id]: data.image
+        }));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred generating storyboard image');
+    } finally {
+      setImageGenerationLoading(prev => ({ ...prev, [scene.scene_id]: false }));
+    }
+  };
+
+  // Generate all storyboard images in batch
+  const generateAllStoryboardImages = async () => {
+    if (!highbidApiUrl) {
+      setError('Highbid API URL is required for batch storyboard image generation');
+      return;
+    }
+
+    if (generatedStoryboard.length === 0) {
+      setError('No storyboard generated yet');
+      return;
+    }
+
+    setBatchImageLoading(true);
+    setError(null);
+
+    try {
+      const results: {[sceneId: number]: string} = {};
+      
+      for (const scene of generatedStoryboard) {
+        const { prompt } = createFluxPrompt(scene);
+        
+        // Get dimensions from aspect ratio
+        let width, height;
+        switch (scene.visual_prompt.aspect_ratio) {
+          case '16:9':
+            width = 1024; height = 576;
+            break;
+          case '9:16':
+            width = 576; height = 1024;
+            break;
+          case '1:1':
+          default:
+            width = 1024; height = 1024;
+            break;
+        }
+        
+        const response = await fetch('/api/generate-highbid-image', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prompt,
+            apiUrl: highbidApiUrl,
+            width,
+            height
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          console.error(`Failed to generate image for scene ${scene.scene_id}:`, data.error);
+          continue;
+        }
+
+        if (data.image) {
+          results[scene.scene_id] = data.image;
+        }
+      }
+      
+      setStoryboardImages(prev => ({ ...prev, ...results }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred during batch generation');
+    } finally {
+      setBatchImageLoading(false);
     }
   };
 
@@ -957,13 +1138,30 @@ export default function Home() {
                       </div>
                     )}
 
+                    {/* Batch Generate Button */}
+                    <div className="bg-gray-900/50 p-4 rounded-xl border border-gray-700 mb-4">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <h4 className="text-lg font-bold text-white mb-2">Generate Storyboard Images</h4>
+                          <p className="text-gray-400 text-sm">Generate images for all scenes using Highbid Flux API</p>
+                        </div>
+                        <button
+                          onClick={generateAllStoryboardImages}
+                          disabled={batchImageLoading || !highbidApiUrl}
+                          className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {batchImageLoading ? 'Generating All Images...' : 'Generate All Images'}
+                        </button>
+                      </div>
+                    </div>
+
                     {/* Storyboard Grid */}
                     <div className="grid gap-4">
                       {generatedStoryboard.map((scene, index) => (
                         <div key={index} className="bg-gray-900/50 rounded-xl border border-gray-700 overflow-hidden">
                           <div className="flex">
                             {/* Scene Info Panel */}
-                            <div className="w-1/3 p-4 border-r border-gray-700">
+                            <div className="w-1/4 p-4 border-r border-gray-700">
                               <div className="flex justify-between items-start mb-3">
                                 <div>
                                   <span className="text-2xl font-bold text-white">#{scene.scene_id}</span>
@@ -1027,7 +1225,7 @@ export default function Home() {
                             </div>
 
                             {/* Visual Prompt Panel */}
-                            <div className="flex-1 p-4">
+                            <div className="w-1/3 p-4 border-r border-gray-700">
                               <label className="text-xs text-gray-500 block mb-2">Visual Direction</label>
                               
                               <div className="grid grid-cols-2 gap-3 mb-3">
@@ -1068,6 +1266,63 @@ export default function Home() {
                                 <p className="text-gray-500 mb-1">Camera: <span className="text-gray-400">{scene.visual_prompt.camera}</span></p>
                                 <p className="text-gray-500 mb-1">Style: <span className="text-gray-400">{scene.visual_prompt.style_tags}</span></p>
                                 <p className="text-gray-500">Model: <span className="text-gray-400">{scene.visual_prompt.model_hint}</span> | Seed: <span className="text-gray-400">{scene.visual_prompt.seed}</span></p>
+                              </div>
+                            </div>
+
+                            {/* Image Generation Panel */}
+                            <div className="w-1/3 p-4">
+                              <div className="flex justify-between items-center mb-2">
+                                <label className="text-xs text-gray-500">Generated Image</label>
+                                <button
+                                  onClick={() => generateStoryboardImage(scene)}
+                                  disabled={imageGenerationLoading[scene.scene_id] || !highbidApiUrl}
+                                  className="px-3 py-1 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {imageGenerationLoading[scene.scene_id] ? 'Gen...' : 'Generate'}
+                                </button>
+                              </div>
+                              
+                              {/* Image Display */}
+                              <div className={`bg-gray-800/50 rounded-lg flex items-center justify-center overflow-hidden ${
+                                scene.visual_prompt.aspect_ratio === '9:16' ? 'aspect-[9/16]' :
+                                scene.visual_prompt.aspect_ratio === '16:9' ? 'aspect-[16/9]' :
+                                'aspect-square'
+                              }`}>
+                                {storyboardImages[scene.scene_id] ? (
+                                  <img 
+                                    src={storyboardImages[scene.scene_id]} 
+                                    alt={`Scene ${scene.scene_id}`}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : imageGenerationLoading[scene.scene_id] ? (
+                                  <div className="text-gray-400 text-center">
+                                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-2"></div>
+                                    <p className="text-xs">Generating...</p>
+                                  </div>
+                                ) : (
+                                  <div className="text-gray-500 text-center p-4">
+                                    <div className="text-2xl mb-2">🖼️</div>
+                                    <p className="text-xs">Click Generate to create image</p>
+                                    <p className="text-xs mt-1 text-gray-600">
+                                      {scene.visual_prompt.aspect_ratio} ratio
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                              
+                              {/* Flux Prompt Preview */}
+                              <div className="mt-3">
+                                <details className="cursor-pointer">
+                                  <summary className="text-xs text-gray-500 hover:text-gray-400">View Flux Prompt</summary>
+                                  <div className="mt-2 p-2 bg-gray-800/50 rounded text-xs">
+                                    <p className="text-gray-300 mb-2">
+                                      <strong>Prompt:</strong> {createFluxPrompt(scene).prompt}
+                                    </p>
+                                    <p className="text-gray-400">
+                                      <strong>Negative:</strong> {createFluxPrompt(scene).negative}
+                                    </p>
+                                  </div>
+                                </details>
                               </div>
                             </div>
                           </div>
