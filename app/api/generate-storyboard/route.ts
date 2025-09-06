@@ -48,7 +48,8 @@ RULES:
 - Keep vo_text ≤18 words, natural and concise.
 - Use consistent characters wording to avoid identity drift.
 - Ensure final scene (#30) has beat="cta" if a call_to_action exists.
-- IMPORTANT: Do not wrap output in code blocks or markdown formatting.`;
+- IMPORTANT: Do not wrap output in code blocks or markdown formatting.
+- NOTE: Visual style consistency will be applied at the image generation level using the story's visual_style.`;
 
 export async function POST(request: NextRequest) {
   try {

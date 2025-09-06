@@ -18,7 +18,8 @@ The JSON object must have the following keys:
   "setting": string,
   "constraint": string,
   "twist": string (≤22 words),
-  "call_to_action": string or ""
+  "call_to_action": string or "",
+  "visual_style": one of ["cinematic photoreal","animated cartoon","comic book","sketch art","oil painting","watercolor","cyberpunk neon","retro vintage","minimalist clean","dark gothic"]
 }
 
 RULES:

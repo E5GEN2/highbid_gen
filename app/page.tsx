@@ -30,6 +30,7 @@ export default function Home() {
     constraint: string;
     twist: string;
     call_to_action: string;
+    visual_style: string;
   }
   
   interface StoryboardScene {
@@ -115,7 +116,7 @@ export default function Home() {
   const [batchImageLoading, setBatchImageLoading] = useState(false);
 
   // Create Flux prompt from storyboard scene
-  const createFluxPrompt = (scene: StoryboardScene) => {
+  const createFluxPrompt = (scene: StoryboardScene, storyVisualStyle?: string) => {
     const vp = scene.visual_prompt;
     
     // Convert lighting enum to descriptive text
@@ -138,9 +139,9 @@ export default function Home() {
       'pastel': 'pastel tones'
     };
     
-    // Build prompt components
+    // Build prompt components - use story-level visual style for consistency
     const components = [
-      vp.style_tags,
+      storyVisualStyle || vp.style_tags, // Use story-level visual style if available
       `${vp.mood} mood`,
       vp.setting,
       vp.characters,
@@ -400,7 +401,7 @@ export default function Home() {
     setError(null);
 
     try {
-      const { prompt } = createFluxPrompt(scene);
+      const { prompt } = createFluxPrompt(scene, selectedStory?.visual_style);
       
       // Get dimensions from aspect ratio
       let width, height;
@@ -468,7 +469,7 @@ export default function Home() {
       const results: {[sceneId: number]: string} = {};
       
       for (const scene of generatedStoryboard) {
-        const { prompt } = createFluxPrompt(scene);
+        const { prompt } = createFluxPrompt(scene, selectedStory?.visual_style);
         
         // Get dimensions from aspect ratio
         let width, height;
@@ -1130,10 +1131,11 @@ export default function Home() {
                       <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 p-6 rounded-xl border border-gray-700">
                         <h4 className="text-xl font-bold text-white mb-2">{selectedStory.title}</h4>
                         <p className="text-gray-300 mb-2">{selectedStory.premise}</p>
-                        <div className="flex gap-4 text-sm">
+                        <div className="flex flex-wrap gap-4 text-sm">
                           <span className="text-gray-400">Runtime: {selectedStory.runtime_sec}s</span>
                           <span className="text-gray-400">Tone: {selectedStory.tone}</span>
                           <span className="text-gray-400">POV: {selectedStory.narration_pov}</span>
+                          <span className="text-purple-400 font-medium">Style: {selectedStory.visual_style}</span>
                         </div>
                       </div>
                     )}
@@ -1316,10 +1318,10 @@ export default function Home() {
                                   <summary className="text-xs text-gray-500 hover:text-gray-400">View Flux Prompt</summary>
                                   <div className="mt-2 p-2 bg-gray-800/50 rounded text-xs">
                                     <p className="text-gray-300 mb-2">
-                                      <strong>Prompt:</strong> {createFluxPrompt(scene).prompt}
+                                      <strong>Prompt:</strong> {createFluxPrompt(scene, selectedStory?.visual_style).prompt}
                                     </p>
                                     <p className="text-gray-400">
-                                      <strong>Negative:</strong> {createFluxPrompt(scene).negative}
+                                      <strong>Negative:</strong> {createFluxPrompt(scene, selectedStory?.visual_style).negative}
                                     </p>
                                   </div>
                                 </details>
