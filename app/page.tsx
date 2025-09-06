@@ -98,9 +98,9 @@ export default function Home() {
       type?: string;
     };
   }[]>([]);
-  const [selectedVoiceId, setSelectedVoiceId] = useState('21m00Tcm4TlvDq8ikWAM');
+  const [selectedVoiceId, setSelectedVoiceId] = useState('Kore');
   const [voicesLoaded, setVoicesLoaded] = useState(false);
-  const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'google'>('elevenlabs');
+  const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'google'>('google');
   const [googleVoicesLoaded, setGoogleVoicesLoaded] = useState(false);
   
   // Load voices function (memoized with useCallback)
@@ -1795,7 +1795,7 @@ export default function Home() {
                           </div>
                           <button
                             onClick={generateAllStoryboardVoiceovers}
-                            disabled={batchVoiceoverLoading || (!elevenLabsKey && !googleTtsKey) || !selectedVoiceId}
+                            disabled={batchVoiceoverLoading || (ttsProvider === 'elevenlabs' ? !elevenLabsKey : !googleTtsKey) || !selectedVoiceId}
                             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                             title={!selectedVoiceId ? 'Loading voices...' : ''}
                           >
@@ -1925,7 +1925,7 @@ export default function Home() {
                                 <label className="text-xs text-gray-500">Generated Audio</label>
                                 <button
                                   onClick={() => generateStoryboardVoiceover(scene)}
-                                  disabled={voiceoverGenerationLoading[scene.scene_id] || (!elevenLabsKey && !googleTtsKey) || !selectedVoiceId}
+                                  disabled={voiceoverGenerationLoading[scene.scene_id] || (ttsProvider === 'elevenlabs' ? !elevenLabsKey : !googleTtsKey) || !selectedVoiceId}
                                   className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                   title={!selectedVoiceId ? 'Loading voices...' : ''}
                                 >
