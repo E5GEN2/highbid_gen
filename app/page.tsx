@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import Image from 'next/image';
 
 export default function Home() {
@@ -96,6 +96,50 @@ export default function Home() {
   const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'google'>('elevenlabs');
   const [googleVoicesLoaded, setGoogleVoicesLoaded] = useState(false);
   
+  // Load voices function (moved up for useEffect)
+  const loadVoices = async (provider: 'elevenlabs' | 'google' = ttsProvider) => {
+    if (provider === 'elevenlabs') {
+      if (!elevenLabsKey || voicesLoaded) return;
+      
+      try {
+        const response = await fetch(`/api/generate-voiceover?apiKey=${elevenLabsKey}`);
+        const data = await response.json();
+        
+        if (data.success && data.voices) {
+          setAvailableVoices(data.voices);
+          setVoicesLoaded(true);
+          setSelectedVoiceId('21m00Tcm4TlvDq8ikWAM');
+        }
+      } catch (err) {
+        console.error('Failed to load ElevenLabs voices:', err);
+      }
+    } else if (provider === 'google') {
+      if (!googleTtsKey || googleVoicesLoaded) return;
+      
+      try {
+        const response = await fetch(`/api/generate-google-tts`);
+        const data = await response.json();
+        
+        if (data.success && data.voices) {
+          setAvailableVoices(data.voices);
+          setGoogleVoicesLoaded(true);
+          setSelectedVoiceId('Kore');
+        }
+      } catch (err) {
+        console.error('Failed to load Google voices:', err);
+      }
+    }
+  };
+
+  // Auto-load voices when API keys are available
+  React.useEffect(() => {
+    if (ttsProvider === 'elevenlabs' && elevenLabsKey && !voicesLoaded) {
+      loadVoices('elevenlabs');
+    } else if (ttsProvider === 'google' && googleTtsKey && !googleVoicesLoaded) {
+      loadVoices('google');
+    }
+  }, [ttsProvider, elevenLabsKey, googleTtsKey, voicesLoaded, googleVoicesLoaded, loadVoices]);
+
   // Image Generation State
   const [imagePrompts, setImagePrompts] = useState<string[]>(['']);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
@@ -174,40 +218,6 @@ export default function Home() {
     { id: 'images', name: '4. Images', icon: '🖼️' },
     { id: 'effects', name: '5. Final Video', icon: '🎬' }
   ];
-
-  const loadVoices = async (provider: 'elevenlabs' | 'google' = ttsProvider) => {
-    if (provider === 'elevenlabs') {
-      if (!elevenLabsKey || voicesLoaded) return;
-      
-      try {
-        const response = await fetch(`/api/generate-voiceover?apiKey=${elevenLabsKey}`);
-        const data = await response.json();
-        
-        if (data.success && data.voices) {
-          setAvailableVoices(data.voices);
-          setVoicesLoaded(true);
-          setSelectedVoiceId('21m00Tcm4TlvDq8ikWAM');
-        }
-      } catch (err) {
-        console.error('Failed to load ElevenLabs voices:', err);
-      }
-    } else if (provider === 'google') {
-      if (!googleTtsKey || googleVoicesLoaded) return;
-      
-      try {
-        const response = await fetch(`/api/generate-google-tts`);
-        const data = await response.json();
-        
-        if (data.success && data.voices) {
-          setAvailableVoices(data.voices);
-          setGoogleVoicesLoaded(true);
-          setSelectedVoiceId('Kore');
-        }
-      } catch (err) {
-        console.error('Failed to load Google voices:', err);
-      }
-    }
-  };
 
   const handleVoiceoverGeneration = async () => {
     const apiKeyRequired = ttsProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
@@ -529,8 +539,21 @@ export default function Home() {
     const currentProvider = ttsProvider;
     const currentApiKey = currentProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
     
+    console.log('🎤 Voiceover Debug:', {
+      provider: currentProvider,
+      hasApiKey: !!currentApiKey,
+      selectedVoiceId,
+      sceneText: scene.vo_text,
+      availableVoicesCount: availableVoices.length
+    });
+    
     if (!currentApiKey) {
       setError(`${currentProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'} API key is required for voiceover generation`);
+      return;
+    }
+
+    if (!selectedVoiceId) {
+      setError(`Please select a voice first. Go to Voice-overs tab to load and select voices.`);
       return;
     }
 
@@ -543,6 +566,8 @@ export default function Home() {
         ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
         : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
 
+      console.log('🎤 Making request:', { endpoint, requestBody: { ...requestBody, apiKey: '***' } });
+
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -552,6 +577,7 @@ export default function Home() {
       });
 
       const data = await response.json();
+      console.log('🎤 Response:', { ok: response.ok, status: response.status, hasAudio: !!data.audio });
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to generate storyboard voiceover');
@@ -562,8 +588,12 @@ export default function Home() {
           ...prev,
           [scene.scene_id]: data.audio
         }));
+        console.log('🎤 Voiceover saved for scene:', scene.scene_id);
+      } else {
+        throw new Error('No audio data received from API');
       }
     } catch (err) {
+      console.error('🎤 Voiceover error:', err);
       setError(err instanceof Error ? err.message : 'An error occurred generating storyboard voiceover');
     } finally {
       setVoiceoverGenerationLoading(prev => ({ ...prev, [scene.scene_id]: false }));
@@ -1566,10 +1596,11 @@ export default function Home() {
                           </div>
                           <button
                             onClick={generateAllStoryboardVoiceovers}
-                            disabled={batchVoiceoverLoading || (!elevenLabsKey && !googleTtsKey)}
+                            disabled={batchVoiceoverLoading || (!elevenLabsKey && !googleTtsKey) || !selectedVoiceId}
                             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                            title={!selectedVoiceId ? 'Loading voices...' : ''}
                           >
-                            {batchVoiceoverLoading ? 'Generating...' : 'Generate All'}
+                            {batchVoiceoverLoading ? 'Generating...' : !selectedVoiceId ? 'Loading Voices...' : 'Generate All'}
                           </button>
                         </div>
                       </div>
@@ -1695,10 +1726,11 @@ export default function Home() {
                                 <label className="text-xs text-gray-500">Generated Audio</label>
                                 <button
                                   onClick={() => generateStoryboardVoiceover(scene)}
-                                  disabled={voiceoverGenerationLoading[scene.scene_id] || (!elevenLabsKey && !googleTtsKey)}
+                                  disabled={voiceoverGenerationLoading[scene.scene_id] || (!elevenLabsKey && !googleTtsKey) || !selectedVoiceId}
                                   className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                  title={!selectedVoiceId ? 'Loading voices...' : ''}
                                 >
-                                  {voiceoverGenerationLoading[scene.scene_id] ? 'Gen...' : 'Generate'}
+                                  {voiceoverGenerationLoading[scene.scene_id] ? 'Gen...' : !selectedVoiceId ? '⏳' : 'Generate'}
                                 </button>
                               </div>
                               
