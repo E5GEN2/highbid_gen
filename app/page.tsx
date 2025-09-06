@@ -170,9 +170,14 @@ export default function Home() {
   const [imageWidth, setImageWidth] = useState(1024);
   const [imageHeight, setImageHeight] = useState(1024);
   
-  // Effects State (placeholder for future implementation)
-  // const [finalVideos, setFinalVideos] = useState<string[]>([]);
-  // const [effectsLoading, setEffectsLoading] = useState(false);
+  // Effects State and Video Rendering
+  const [finalVideos, setFinalVideos] = useState<string[]>([]);
+  const [renderingVideo, setRenderingVideo] = useState(false);
+  const [renderProgress, setRenderProgress] = useState({
+    step: '',
+    progress: 0,
+    total: 100
+  });
   
   const [error, setError] = useState<string | null>(null);
 
@@ -726,6 +731,77 @@ export default function Home() {
       setError(err instanceof Error ? err.message : 'An error occurred during batch voiceover generation');
     } finally {
       setBatchVoiceoverLoading(false);
+    }
+  };
+
+  // Handle video rendering
+  const handleVideoRender = async () => {
+    if (!selectedStory || generatedStoryboard.length === 0) {
+      setError('Please generate a storyboard first');
+      return;
+    }
+
+    setRenderingVideo(true);
+    setError(null);
+    setRenderProgress({ step: 'Preparing video data...', progress: 0, total: 100 });
+
+    try {
+      // Collect all the generated content
+      const videoData = {
+        story: selectedStory,
+        storyboard: generatedStoryboard,
+        images: storyboardImages,
+        voiceovers: storyboardVoiceovers,
+        metadata: {
+          totalScenes: generatedStoryboard.length,
+          imagesGenerated: Object.keys(storyboardImages).length,
+          voiceoversGenerated: Object.keys(storyboardVoiceovers).length,
+          aspectRatio: '9:16', // Vertical format for social media
+          duration: generatedStoryboard.length * 2 // 2 seconds per scene
+        }
+      };
+
+      setRenderProgress({ step: 'Collecting content...', progress: 20, total: 100 });
+
+      // Simulate video rendering process (replace with actual video generation API later)
+      const steps = [
+        'Processing storyboard...',
+        'Combining images...',
+        'Syncing voiceovers...',
+        'Adding transitions...',
+        'Finalizing video...'
+      ];
+
+      for (let i = 0; i < steps.length; i++) {
+        setRenderProgress({ 
+          step: steps[i], 
+          progress: 20 + (i + 1) * 15, 
+          total: 100 
+        });
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate processing time
+      }
+
+      setRenderProgress({ step: 'Rendering complete!', progress: 100, total: 100 });
+
+      // For now, we'll just navigate to the Final Video tab
+      // Later this will include the actual rendered video
+      setActiveTab('effects');
+
+      // Store the video data for the Final Video tab
+      console.log('Video render data:', videoData);
+
+      // Add a placeholder final video (replace with actual video URL later)
+      const placeholderVideo = `data:application/json;base64,${btoa(JSON.stringify(videoData))}`;
+      setFinalVideos([placeholderVideo]);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to render video');
+    } finally {
+      setRenderingVideo(false);
+      // Clear progress after a delay
+      setTimeout(() => {
+        setRenderProgress({ step: '', progress: 0, total: 100 });
+      }, 3000);
     }
   };
 
@@ -2057,6 +2133,89 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
+
+                    {/* Video Render Section */}
+                    <div className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 p-8 rounded-xl border-2 border-purple-500/50">
+                      <div className="text-center">
+                        <div className="text-6xl mb-4">🎬</div>
+                        <h3 className="text-3xl font-bold text-white mb-4">Ready to Render Your Video?</h3>
+                        <p className="text-gray-300 mb-6 max-w-2xl mx-auto">
+                          Combine all your generated content - storyboard, images, and voiceovers - into a professional video ready for social media.
+                        </p>
+                        
+                        {/* Content Status */}
+                        <div className="grid grid-cols-3 gap-4 mb-8">
+                          <div className="bg-gray-800/50 p-4 rounded-xl">
+                            <div className="text-2xl mb-2">📝</div>
+                            <div className="text-white font-semibold">Storyboard</div>
+                            <div className="text-sm text-gray-400">{generatedStoryboard.length}/30 scenes</div>
+                            <div className={`text-xs mt-1 ${generatedStoryboard.length === 30 ? 'text-green-400' : 'text-yellow-400'}`}>
+                              {generatedStoryboard.length === 30 ? '✓ Complete' : '⚠ Incomplete'}
+                            </div>
+                          </div>
+                          
+                          <div className="bg-gray-800/50 p-4 rounded-xl">
+                            <div className="text-2xl mb-2">🖼️</div>
+                            <div className="text-white font-semibold">Images</div>
+                            <div className="text-sm text-gray-400">{Object.keys(storyboardImages).length}/30 images</div>
+                            <div className={`text-xs mt-1 ${Object.keys(storyboardImages).length === 30 ? 'text-green-400' : Object.keys(storyboardImages).length > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              {Object.keys(storyboardImages).length === 30 ? '✓ Complete' : Object.keys(storyboardImages).length > 0 ? '⚠ Partial' : '✗ Missing'}
+                            </div>
+                          </div>
+                          
+                          <div className="bg-gray-800/50 p-4 rounded-xl">
+                            <div className="text-2xl mb-2">🎤</div>
+                            <div className="text-white font-semibold">Voiceovers</div>
+                            <div className="text-sm text-gray-400">{Object.keys(storyboardVoiceovers).length}/30 audio</div>
+                            <div className={`text-xs mt-1 ${Object.keys(storyboardVoiceovers).length === 30 ? 'text-green-400' : Object.keys(storyboardVoiceovers).length > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              {Object.keys(storyboardVoiceovers).length === 30 ? '✓ Complete' : Object.keys(storyboardVoiceovers).length > 0 ? '⚠ Partial' : '✗ Missing'}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <button
+                          onClick={handleVideoRender}
+                          disabled={renderingVideo || generatedStoryboard.length === 0}
+                          className="px-12 py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white text-xl font-bold rounded-xl hover:from-purple-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:scale-105"
+                        >
+                          {renderingVideo ? (
+                            <div className="flex items-center">
+                              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white mr-3"></div>
+                              Rendering Video...
+                            </div>
+                          ) : (
+                            '🎬 RENDER FINAL VIDEO'
+                          )}
+                        </button>
+                        
+                        {/* Rendering Progress */}
+                        {renderingVideo && renderProgress.step && (
+                          <div className="mt-6 bg-gray-900/50 p-6 rounded-xl border border-gray-700">
+                            <div className="text-center mb-4">
+                              <div className="text-white font-semibold mb-2">Video Rendering Progress</div>
+                              <div className="text-sm text-gray-300 mb-4">{renderProgress.step}</div>
+                            </div>
+                            
+                            {/* Progress Bar */}
+                            <div className="w-full bg-gray-800 rounded-full h-3 mb-2">
+                              <div 
+                                className="bg-gradient-to-r from-purple-500 to-pink-500 h-3 rounded-full transition-all duration-1000"
+                                style={{ width: `${renderProgress.progress}%` }}
+                              ></div>
+                            </div>
+                            <div className="text-center text-sm text-gray-400">
+                              {renderProgress.progress}% Complete
+                            </div>
+                          </div>
+                        )}
+                        
+                        {generatedStoryboard.length === 0 && (
+                          <p className="text-yellow-400 text-sm mt-4">
+                            ⚠️ Generate a storyboard first to enable video rendering
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2249,13 +2408,138 @@ export default function Home() {
             )}
 
             {activeTab === 'effects' && (
-              <div className="text-center py-12">
-                <div className="text-6xl mb-4">🎬</div>
-                <h3 className="text-2xl font-bold text-white mb-4">Video Assembly & Effects</h3>
-                <p className="text-gray-400 mb-6">Combine images, voice-overs, and effects into final videos</p>
-                <div className="bg-yellow-900/20 border border-yellow-500 text-yellow-400 px-4 py-3 rounded-xl max-w-md mx-auto">
-                  Coming Soon - Video editing and final assembly
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-white mb-4">Final Video</h3>
+                  <p className="text-gray-400 mb-6">Your rendered video combining all generated content</p>
                 </div>
+
+                {finalVideos.length === 0 ? (
+                  <div className="text-center py-16">
+                    <div className="text-6xl mb-4">🎬</div>
+                    <h3 className="text-2xl font-bold text-white mb-4">No Video Rendered Yet</h3>
+                    <p className="text-gray-400 mb-6">Go to the Storyboard tab and click "RENDER FINAL VIDEO" to create your video</p>
+                    <button
+                      onClick={() => setActiveTab('storyboard')}
+                      className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition"
+                    >
+                      Go to Storyboard Tab
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {/* Video Preview Section */}
+                    <div className="bg-gray-900/50 p-8 rounded-xl border border-gray-700">
+                      <div className="text-center mb-6">
+                        <h4 className="text-xl font-bold text-white mb-2">Rendered Video Preview</h4>
+                        <p className="text-gray-400">60-second vertical video optimized for social media</p>
+                      </div>
+                      
+                      {/* Video Player Placeholder */}
+                      <div className="max-w-sm mx-auto">
+                        <div className="bg-gray-800 rounded-xl p-8 aspect-[9/16] flex items-center justify-center">
+                          <div className="text-center">
+                            <div className="text-4xl mb-4">🎥</div>
+                            <div className="text-white font-semibold mb-2">Video Preview</div>
+                            <div className="text-sm text-gray-400">
+                              {selectedStory?.title || 'Untitled Story'}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-2">
+                              {generatedStoryboard.length} scenes • 9:16 aspect ratio
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Video Stats */}
+                    <div className="grid grid-cols-4 gap-4">
+                      <div className="bg-gray-900/50 p-4 rounded-xl text-center">
+                        <div className="text-2xl mb-2">⏱️</div>
+                        <div className="text-white font-semibold">{generatedStoryboard.length * 2}s</div>
+                        <div className="text-xs text-gray-400">Duration</div>
+                      </div>
+                      <div className="bg-gray-900/50 p-4 rounded-xl text-center">
+                        <div className="text-2xl mb-2">📐</div>
+                        <div className="text-white font-semibold">9:16</div>
+                        <div className="text-xs text-gray-400">Aspect Ratio</div>
+                      </div>
+                      <div className="bg-gray-900/50 p-4 rounded-xl text-center">
+                        <div className="text-2xl mb-2">🎞️</div>
+                        <div className="text-white font-semibold">{generatedStoryboard.length}</div>
+                        <div className="text-xs text-gray-400">Scenes</div>
+                      </div>
+                      <div className="bg-gray-900/50 p-4 rounded-xl text-center">
+                        <div className="text-2xl mb-2">🎨</div>
+                        <div className="text-white font-semibold">{selectedStory?.visual_style}</div>
+                        <div className="text-xs text-gray-400">Style</div>
+                      </div>
+                    </div>
+
+                    {/* Content Summary */}
+                    <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
+                      <h4 className="text-lg font-bold text-white mb-4">Video Content Summary</h4>
+                      <div className="grid grid-cols-3 gap-6">
+                        <div>
+                          <div className="text-sm text-gray-400 mb-2">Images Generated</div>
+                          <div className="text-white font-semibold">{Object.keys(storyboardImages).length}/30</div>
+                          <div className="w-full bg-gray-800 rounded-full h-2 mt-2">
+                            <div 
+                              className="bg-green-500 h-2 rounded-full transition-all"
+                              style={{ width: `${(Object.keys(storyboardImages).length / 30) * 100}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-sm text-gray-400 mb-2">Voiceovers Generated</div>
+                          <div className="text-white font-semibold">{Object.keys(storyboardVoiceovers).length}/30</div>
+                          <div className="w-full bg-gray-800 rounded-full h-2 mt-2">
+                            <div 
+                              className="bg-blue-500 h-2 rounded-full transition-all"
+                              style={{ width: `${(Object.keys(storyboardVoiceovers).length / 30) * 100}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-sm text-gray-400 mb-2">Story Completion</div>
+                          <div className="text-white font-semibold">{Math.round(((Object.keys(storyboardImages).length + Object.keys(storyboardVoiceovers).length) / 60) * 100)}%</div>
+                          <div className="w-full bg-gray-800 rounded-full h-2 mt-2">
+                            <div 
+                              className="bg-purple-500 h-2 rounded-full transition-all"
+                              style={{ width: `${((Object.keys(storyboardImages).length + Object.keys(storyboardVoiceovers).length) / 60) * 100}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Export Options */}
+                    <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
+                      <h4 className="text-lg font-bold text-white mb-4">Export & Share</h4>
+                      <div className="flex gap-4">
+                        <button className="px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition">
+                          📱 Download for Mobile
+                        </button>
+                        <button className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition">
+                          💻 Download for Desktop
+                        </button>
+                        <button className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition">
+                          🔗 Generate Share Link
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Re-render Button */}
+                    <div className="text-center pt-6 border-t border-gray-700">
+                      <button
+                        onClick={() => setActiveTab('storyboard')}
+                        className="px-8 py-3 bg-gray-700 text-white rounded-xl hover:bg-gray-600 transition"
+                      >
+                        ← Back to Storyboard to Re-render
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
