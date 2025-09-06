@@ -2846,31 +2846,31 @@ You must output valid JSON only, with no explanations, no prose, no comments.
 
 The JSON object must have the following keys:
 {'{'}
-  "title": string,
-  "runtime_sec": 60,
-  "tone": one of ["inspiring","dramatic","cozy","creepy","comedic","educational"],
-  "narration_pov": one of ["first_person","third_person"],
-  "target_viewer": string,
-  "premise": string (≤22 words),
-  "protagonist": string,
-  "goal": string,
-  "stakes": string,
-  "setting": string,
-  "constraint": string,
-  "twist": string (≤22 words),
-  "call_to_action": string or "",
-  "visual_style": string (free-form description)
+  &quot;title&quot;: string,
+  &quot;runtime_sec&quot;: 60,
+  &quot;tone&quot;: one of [&quot;inspiring&quot;,&quot;dramatic&quot;,&quot;cozy&quot;,&quot;creepy&quot;,&quot;comedic&quot;,&quot;educational&quot;],
+  &quot;narration_pov&quot;: one of [&quot;first_person&quot;,&quot;third_person&quot;],
+  &quot;target_viewer&quot;: string,
+  &quot;premise&quot;: string (≤22 words),
+  &quot;protagonist&quot;: string,
+  &quot;goal&quot;: string,
+  &quot;stakes&quot;: string,
+  &quot;setting&quot;: string,
+  &quot;constraint&quot;: string,
+  &quot;twist&quot;: string (≤22 words),
+  &quot;call_to_action&quot;: string or &quot;&quot;,
+  &quot;visual_style&quot;: string (free-form description)
 {'}'}
 
 RULES:
 - All values must be single-line strings (no line breaks).
 - runtime_sec is always 60 unless explicitly told otherwise.
 - Keep premise and twist short, max 22 words.
-- visual_style can be any creative description (e.g., "cinematic photoreal", "anime style", "oil painting")
+- visual_style can be any creative description (e.g., &quot;cinematic photoreal&quot;, &quot;anime style&quot;, &quot;oil painting&quot;)
 - Do not output anything except the JSON object.
 
 USER:
-Generate a Story Bulb JSON for this viral title: "&lt;TITLE&gt;"</pre>
+Generate a Story Bulb JSON for this viral title: &quot;&lt;TITLE&gt;&quot;</pre>
                     </div>
                     <div className="mt-4 text-sm text-gray-400">
                       <p><strong>Note:</strong> The &lt;TITLE&gt; placeholder gets replaced with your actual title when sent to the AI model.</p>
@@ -2902,46 +2902,46 @@ No prose, no explanations, no comments.
 
 REQUIRED FIELDS:
 {'{'}
-  "scene_id": int (1..30),
-  "start_ms": int (2000*(scene_id-1)),
-  "end_ms": int (start_ms+2000),
-  "beat": one of ["hook","setup","inciting","rise","midpoint","complication","climax","resolution","cta"],
-  "vo_text": string (≤18 words, no line breaks),
-  "vo_emphasis": one of ["none","slight","strong"],
-  "read_speed_wps": float between 1.8 and 3.2,
-  "visual_prompt": {'{'}
-    "setting": string,
-    "characters": string,
-    "action": string,
-    "props": string,
-    "mood": string,
-    "lighting": one of ["soft","hard","noir","neon","golden_hour","overcast","practical"],
-    "color_palette": one of ["warm","cool","monochrome","teal_orange","pastel"],
-    "camera": string,
-    "composition": one of ["rule_of_thirds","center","symmetry","leading_lines"],
-    "aspect_ratio": "9:16",
-    "style_tags": string,
-    "negative_tags": "blurry, extra fingers, watermark",
-    "model_hint": one of ["sdxl","flux","juggernaut","midjourney","dalle","kling"],
-    "seed": int
+  &quot;scene_id&quot;: int (1..30),
+  &quot;start_ms&quot;: int (2000*(scene_id-1)),
+  &quot;end_ms&quot;: int (start_ms+2000),
+  &quot;beat&quot;: one of [&quot;hook&quot;,&quot;setup&quot;,&quot;inciting&quot;,&quot;rise&quot;,&quot;midpoint&quot;,&quot;complication&quot;,&quot;climax&quot;,&quot;resolution&quot;,&quot;cta&quot;],
+  &quot;vo_text&quot;: string (≤18 words, no line breaks),
+  &quot;vo_emphasis&quot;: one of [&quot;none&quot;,&quot;slight&quot;,&quot;strong&quot;],
+  &quot;read_speed_wps&quot;: float between 1.8 and 3.2,
+  &quot;visual_prompt&quot;: {'{'}
+    &quot;setting&quot;: string,
+    &quot;characters&quot;: string,
+    &quot;action&quot;: string,
+    &quot;props&quot;: string,
+    &quot;mood&quot;: string,
+    &quot;lighting&quot;: one of [&quot;soft&quot;,&quot;hard&quot;,&quot;noir&quot;,&quot;neon&quot;,&quot;golden_hour&quot;,&quot;overcast&quot;,&quot;practical&quot;],
+    &quot;color_palette&quot;: one of [&quot;warm&quot;,&quot;cool&quot;,&quot;monochrome&quot;,&quot;teal_orange&quot;,&quot;pastel&quot;],
+    &quot;camera&quot;: string,
+    &quot;composition&quot;: one of [&quot;rule_of_thirds&quot;,&quot;center&quot;,&quot;symmetry&quot;,&quot;leading_lines&quot;],
+    &quot;aspect_ratio&quot;: &quot;9:16&quot;,
+    &quot;style_tags&quot;: string,
+    &quot;negative_tags&quot;: &quot;blurry, extra fingers, watermark&quot;,
+    &quot;model_hint&quot;: one of [&quot;sdxl&quot;,&quot;flux&quot;,&quot;juggernaut&quot;,&quot;midjourney&quot;,&quot;dalle&quot;,&quot;kling&quot;],
+    &quot;seed&quot;: int
   {'}'},
-  "text_overlay": {'{'}
-    "content": string,
-    "position": one of ["top","center","bottom","caption"],
-    "weight": one of ["none","subtle","bold"]
+  &quot;text_overlay&quot;: {'{'}
+    &quot;content&quot;: string,
+    &quot;position&quot;: one of [&quot;top&quot;,&quot;center&quot;,&quot;bottom&quot;,&quot;caption&quot;],
+    &quot;weight&quot;: one of [&quot;none&quot;,&quot;subtle&quot;,&quot;bold&quot;]
   {'}'},
-  "transition_in": one of ["cut","fade","dolly_in","whip"],
-  "transition_out": one of ["cut","fade","dolly_out","whip"],
-  "music_cue": one of ["low","medium","high","drop","silence"]
+  &quot;transition_in&quot;: one of [&quot;cut&quot;,&quot;fade&quot;,&quot;dolly_in&quot;,&quot;whip&quot;],
+  &quot;transition_out&quot;: one of [&quot;cut&quot;,&quot;fade&quot;,&quot;dolly_out&quot;,&quot;whip&quot;],
+  &quot;music_cue&quot;: one of [&quot;low&quot;,&quot;medium&quot;,&quot;high&quot;,&quot;drop&quot;,&quot;silence&quot;]
 {'}'}
 
 RULES:
 - Output 30 lines, one JSON object per line, no extra text.
 - Each scene covers 2000 ms (2 seconds).
 - Maintain continuity: reuse seeds within the same beat, change on beat transitions.
-- Keep `vo_text` ≤18 words, natural and concise.
+- Keep vo_text ≤18 words, natural and concise.
 - Use consistent characters wording to avoid identity drift.
-- Ensure final scene (#30) has beat="cta" if a call_to_action exists.
+- Ensure final scene (#30) has beat=&quot;cta&quot; if a call_to_action exists.
 
 USER:
 Here is the Story Bulb JSON:
