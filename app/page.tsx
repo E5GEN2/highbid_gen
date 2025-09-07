@@ -967,7 +967,10 @@ export default function Home() {
       console.log('Video render data:', videoData);
 
       // Add a placeholder final video (replace with actual video URL later)
-      const placeholderVideo = `data:application/json;base64,${btoa(JSON.stringify(videoData))}`;
+      // Properly encode Unicode characters for base64
+      const jsonString = JSON.stringify(videoData);
+      const encodedString = encodeURIComponent(jsonString);
+      const placeholderVideo = `data:application/json;charset=utf-8,${encodedString}`;
       setFinalVideos([placeholderVideo]);
 
     } catch (err) {
