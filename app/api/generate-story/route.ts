@@ -74,8 +74,8 @@ export async function POST(request: NextRequest) {
             temperature: 0.9,
             topK: 40,
             topP: 0.95,
-            maxOutputTokens: 1024,
-            responseMimeType: "application/json"
+            maxOutputTokens: 2048,
+            responseMimeType: "text/plain"
           }
         })
       }
@@ -103,12 +103,44 @@ export async function POST(request: NextRequest) {
     }
 
     try {
+      // Clean the response - remove markdown code blocks if present
+      let cleanedText = generatedText.trim();
+      
+      // Remove markdown code block wrapper if present
+      if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
+        cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      
       // Parse the JSON to validate it
-      const storyBulb = JSON.parse(generatedText);
+      const storyBulb = JSON.parse(cleanedText);
+      
+      // Ensure all required fields have default values if missing
+      // Handle plot_threads which might be missing consequence fields
+      const plot_threads = storyBulb.plot_threads || {};
+      const completeStoryBulb = {
+        ...storyBulb,
+        domino_sequences: storyBulb.domino_sequences || [],
+        setups_payoffs: storyBulb.setups_payoffs || [],
+        escalation_points: storyBulb.escalation_points || [],
+        plot_threads: {
+          act1: { 
+            turning_point: plot_threads.act1?.turning_point || plot_threads.act_1?.turning_point || "", 
+            consequence: plot_threads.act1?.consequence || plot_threads.act_1?.consequence || ""
+          },
+          act2: { 
+            turning_point: plot_threads.act2?.turning_point || plot_threads.act_2?.turning_point || "", 
+            consequence: plot_threads.act2?.consequence || plot_threads.act_2?.consequence || ""
+          },
+          act3: { 
+            turning_point: plot_threads.act3?.turning_point || plot_threads.act_3?.turning_point || "", 
+            consequence: plot_threads.act3?.consequence || plot_threads.act_3?.consequence || ""
+          }
+        }
+      };
       
       return NextResponse.json({
         success: true,
-        storyBulb: storyBulb
+        storyBulb: completeStoryBulb
       });
     } catch (parseError) {
       console.error('Failed to parse story JSON:', generatedText, parseError);
