@@ -1356,6 +1356,152 @@ export default function Home() {
                             />
                           </div>
 
+                          <div className="mb-4">
+                            <label className="block text-xs text-gray-400 mb-1">Action Emphasis</label>
+                            <textarea
+                              value={story.action_emphasis}
+                              onChange={(e) => updateStoryBulb(index, 'action_emphasis', e.target.value)}
+                              rows={2}
+                              placeholder="How actions cause reactions and consequences..."
+                              className="w-full bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm resize-none"
+                            />
+                          </div>
+
+                          {/* Causality Fields */}
+                          <div className="mb-4 border-t border-gray-700 pt-4">
+                            <h5 className="text-sm font-semibold text-blue-300 mb-3">🔗 Causality Structure</h5>
+                            
+                            <div className="mb-4">
+                              <label className="block text-xs text-gray-400 mb-1">Domino Sequences</label>
+                              <div className="space-y-2">
+                                {(story.domino_sequences || []).map((sequence, seqIndex) => (
+                                  <div key={seqIndex} className="flex gap-2">
+                                    <textarea
+                                      value={sequence}
+                                      onChange={(e) => {
+                                        const newSequences = [...(story.domino_sequences || [])];
+                                        newSequences[seqIndex] = e.target.value;
+                                        updateStoryBulb(index, 'domino_sequences', newSequences);
+                                      }}
+                                      rows={1}
+                                      placeholder="Cause → Effect → Consequence chain..."
+                                      className="flex-1 bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-xs resize-none"
+                                    />
+                                    <button
+                                      onClick={() => {
+                                        const newSequences = (story.domino_sequences || []).filter((_, i) => i !== seqIndex);
+                                        updateStoryBulb(index, 'domino_sequences', newSequences);
+                                      }}
+                                      className="px-2 py-2 bg-red-600/20 text-red-400 rounded-lg hover:bg-red-600/30 text-xs"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                ))}
+                                <button
+                                  onClick={() => {
+                                    const newSequences = [...(story.domino_sequences || []), ''];
+                                    updateStoryBulb(index, 'domino_sequences', newSequences);
+                                  }}
+                                  className="text-xs text-blue-400 hover:text-blue-300"
+                                >
+                                  + Add Domino Sequence
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="mb-4">
+                              <label className="block text-xs text-gray-400 mb-1">Setup/Payoff Pairs</label>
+                              <div className="space-y-2">
+                                {(story.setups_payoffs || []).map((pair, pairIndex) => (
+                                  <div key={pairIndex} className="grid grid-cols-2 gap-2">
+                                    <input
+                                      type="text"
+                                      value={pair.setup || ''}
+                                      onChange={(e) => {
+                                        const newPairs = [...(story.setups_payoffs || [])];
+                                        newPairs[pairIndex] = { ...newPairs[pairIndex], setup: e.target.value };
+                                        updateStoryBulb(index, 'setups_payoffs', newPairs);
+                                      }}
+                                      placeholder="Setup (early element)..."
+                                      className="bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-xs"
+                                    />
+                                    <div className="flex gap-2">
+                                      <input
+                                        type="text"
+                                        value={pair.payoff || ''}
+                                        onChange={(e) => {
+                                          const newPairs = [...(story.setups_payoffs || [])];
+                                          newPairs[pairIndex] = { ...newPairs[pairIndex], payoff: e.target.value };
+                                          updateStoryBulb(index, 'setups_payoffs', newPairs);
+                                        }}
+                                        placeholder="Payoff (later consequence)..."
+                                        className="flex-1 bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-xs"
+                                      />
+                                      <button
+                                        onClick={() => {
+                                          const newPairs = (story.setups_payoffs || []).filter((_, i) => i !== pairIndex);
+                                          updateStoryBulb(index, 'setups_payoffs', newPairs);
+                                        }}
+                                        className="px-2 py-2 bg-red-600/20 text-red-400 rounded-lg hover:bg-red-600/30 text-xs"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                                <button
+                                  onClick={() => {
+                                    const newPairs = [...(story.setups_payoffs || []), { setup: '', payoff: '' }];
+                                    updateStoryBulb(index, 'setups_payoffs', newPairs);
+                                  }}
+                                  className="text-xs text-blue-400 hover:text-blue-300"
+                                >
+                                  + Add Setup/Payoff Pair
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="mb-4">
+                              <label className="block text-xs text-gray-400 mb-1">Escalation Points</label>
+                              <div className="space-y-2">
+                                {(story.escalation_points || []).map((point, pointIndex) => (
+                                  <div key={pointIndex} className="flex gap-2">
+                                    <textarea
+                                      value={point}
+                                      onChange={(e) => {
+                                        const newPoints = [...(story.escalation_points || [])];
+                                        newPoints[pointIndex] = e.target.value;
+                                        updateStoryBulb(index, 'escalation_points', newPoints);
+                                      }}
+                                      rows={1}
+                                      placeholder="Stakes increase BECAUSE of protagonist action..."
+                                      className="flex-1 bg-gray-800/50 border border-gray-600 rounded-lg px-3 py-2 text-white text-xs resize-none"
+                                    />
+                                    <button
+                                      onClick={() => {
+                                        const newPoints = (story.escalation_points || []).filter((_, i) => i !== pointIndex);
+                                        updateStoryBulb(index, 'escalation_points', newPoints);
+                                      }}
+                                      className="px-2 py-2 bg-red-600/20 text-red-400 rounded-lg hover:bg-red-600/30 text-xs"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                ))}
+                                <button
+                                  onClick={() => {
+                                    const newPoints = [...(story.escalation_points || []), ''];
+                                    updateStoryBulb(index, 'escalation_points', newPoints);
+                                  }}
+                                  className="text-xs text-blue-400 hover:text-blue-300"
+                                >
+                                  + Add Escalation Point
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
                           <div className="grid grid-cols-2 gap-4 mb-4">
                             <div>
                               <label className="block text-xs text-gray-400 mb-1">Call to Action</label>
@@ -2170,6 +2316,50 @@ export default function Home() {
                                 </p>
                                 <span className="text-xs text-gray-500">Speed: {scene.read_speed_wps} wps</span>
                               </div>
+
+                              {/* Scene Twist */}
+                              {scene.scene_twist && (
+                                <div className="mb-4">
+                                  <label className="text-xs text-gray-500 block mb-1">Scene Twist</label>
+                                  <p className="text-sm text-orange-400 bg-orange-600/10 p-2 rounded italic">
+                                    {scene.scene_twist}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Causality Chain */}
+                              {(scene.caused_by || scene.leads_to || scene.callback_to !== 'none') && (
+                                <div className="mb-4 border-l-2 border-blue-500/30 pl-3">
+                                  <label className="text-xs text-blue-400 block mb-2">🔗 Causality Chain</label>
+                                  
+                                  {scene.caused_by && (
+                                    <div className="mb-2">
+                                      <span className="text-xs text-gray-500">Caused by:</span>
+                                      <p className="text-xs text-gray-300 bg-gray-800/50 p-1 rounded">
+                                        {scene.caused_by}
+                                      </p>
+                                    </div>
+                                  )}
+                                  
+                                  {scene.leads_to && (
+                                    <div className="mb-2">
+                                      <span className="text-xs text-gray-500">Leads to:</span>
+                                      <p className="text-xs text-gray-300 bg-gray-800/50 p-1 rounded">
+                                        {scene.leads_to}
+                                      </p>
+                                    </div>
+                                  )}
+                                  
+                                  {scene.callback_to && scene.callback_to !== 'none' && (
+                                    <div className="mb-2">
+                                      <span className="text-xs text-gray-500">Callback to:</span>
+                                      <p className="text-xs text-yellow-300 bg-yellow-800/20 p-1 rounded">
+                                        {scene.callback_to}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
 
                               {/* Text Overlay */}
                               {scene.text_overlay?.content && (
