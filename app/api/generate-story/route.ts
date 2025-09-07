@@ -47,7 +47,7 @@ RULES:
 
 export async function POST(request: NextRequest) {
   try {
-    const { title, apiKey } = await request.json();
+    const { title, apiKey, model = 'gemini-2.0-flash-exp' } = await request.json();
 
     if (!title || !apiKey) {
       return NextResponse.json(
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
 
     // Generate story using Google Gemini API
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {

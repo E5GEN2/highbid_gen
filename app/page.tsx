@@ -84,6 +84,7 @@ export default function Home() {
   const [scriptsLoading, setScriptsLoading] = useState(false);
   const [showStoryBulbPrompt, setShowStoryBulbPrompt] = useState(false);
   const [showStoryboardPrompt, setShowStoryboardPrompt] = useState(false);
+  const [geminiModel, setGeminiModel] = useState('gemini-2.0-flash-exp');
   
   // Storyboard State
   const [selectedStory, setSelectedStory] = useState<StoryBulb | null>(null);
@@ -350,6 +351,7 @@ export default function Home() {
           body: JSON.stringify({
             title,
             apiKey: googleTtsKey,
+            model: geminiModel,
           }),
         });
 
@@ -412,7 +414,8 @@ export default function Home() {
             apiKey: googleTtsKey,
             startScene,
             endScene,
-            previousScenes: allScenes.slice(-10) // Send last 10 scenes for context
+            previousScenes: allScenes.slice(-10), // Send last 10 scenes for context
+            model: geminiModel
           }),
         });
         
@@ -1096,6 +1099,27 @@ export default function Home() {
                   {showGoogleTtsKey ? '👁️' : '👁️‍🗨️'}
                 </button>
               </div>
+            </div>
+            
+            <div>
+              <label className="block text-white text-sm font-semibold mb-3">
+                🤖 Gemini Model Selection
+              </label>
+              <select
+                value={geminiModel}
+                onChange={(e) => setGeminiModel(e.target.value)}
+                className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+              >
+                <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Experimental (Recommended)</option>
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                <option value="gemini-1.5-flash-8b">Gemini 1.5 Flash 8B</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                <option value="gemini-exp-1206">Gemini Experimental 1206</option>
+              </select>
+              <p className="text-xs text-gray-400 mt-2">
+                Different models have varying capabilities. Experimental models may provide better causality but could be less stable.
+              </p>
             </div>
           </div>
           

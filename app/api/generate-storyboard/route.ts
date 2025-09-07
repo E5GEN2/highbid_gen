@@ -101,7 +101,7 @@ RULES:
 
 export async function POST(request: NextRequest) {
   try {
-    const { storyBulb, apiKey, startScene, endScene, previousScenes } = await request.json();
+    const { storyBulb, apiKey, startScene, endScene, previousScenes, model = 'gemini-2.0-flash-exp' } = await request.json();
 
     if (!storyBulb || !apiKey) {
       return NextResponse.json(
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
     const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
     
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
