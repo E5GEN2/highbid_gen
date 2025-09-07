@@ -6,6 +6,7 @@ interface StoryboardScene {
   end_ms: number;
   beat: string;
   vo_text: string;
+  scene_twist: string;
   vo_emphasis: string;
   read_speed_wps: number;
   visual_prompt: {
@@ -46,7 +47,8 @@ REQUIRED FIELDS:
   "start_ms": int (2000*(scene_id-1)),
   "end_ms": int (start_ms+2000),
   "beat": one of ["hook","setup","inciting","rise","midpoint","complication","climax","resolution","cta"],
-  "vo_text": string (≤18 words, no line breaks),
+  "vo_text": string (≤7 words, no line breaks, action-focused),
+  "scene_twist": string (the specific action/conflict/revelation in this scene),
   "vo_emphasis": one of ["none","slight","strong"],
   "read_speed_wps": float between 1.8 and 3.2,
   "visual_prompt": {
@@ -78,9 +80,13 @@ REQUIRED FIELDS:
 RULES:
 - Output 5 lines for the requested scene range, one JSON object per line.
 - Each scene covers 2000 ms (2 seconds).
+- CRITICAL: vo_text must be ≤7 words maximum to fit 2-second timing.
+- CRITICAL: Every scene must show ACTION, not passive observation. 
+- CRITICAL: Each scene_twist must describe a specific conflict/revelation/action happening.
+- Avoid passive scenes like "observes", "looks at", "thinks about".
+- Use action verbs: "attacks", "discovers", "escapes", "confronts", "reveals".
 - Maintain continuity: reuse seeds within the same beat, change on beat transitions.
-- Keep vo_text ≤18 words, natural and concise.
-- Use consistent characters wording to avoid identity drift.
+- Use consistent character descriptions to avoid identity drift.
 - Scene 30 should have beat="cta" if a call_to_action exists.
 - IMPORTANT: Do not wrap output in code blocks or markdown formatting.
 - NOTE: Visual style consistency will be applied at the image generation level using the story's visual_style.`;

@@ -19,13 +19,18 @@ The JSON object must have the following keys:
   "constraint": string,
   "twist": string (≤22 words),
   "call_to_action": string or "",
-  "visual_style": one of ["cinematic photoreal","animated cartoon","comic book","sketch art","oil painting","watercolor","cyberpunk neon","retro vintage","minimalist clean","dark gothic"]
+  "visual_style": string (free-form description),
+  "action_emphasis": string (guidance for creating action-packed scenes)
 }
 
 RULES:
 - All values must be single-line strings (no line breaks).
 - runtime_sec is always 60 unless explicitly told otherwise.
 - Keep premise and twist short, max 22 words.
+- CRITICAL: Focus on ACTION-DRIVEN narratives. Avoid passive observation.
+- Every story element should lead to dynamic, visual scenes with conflict/movement.
+- action_emphasis should guide how each scene will show action, not passive states.
+- Examples of good action_emphasis: "constant movement and revelations", "each scene shows character making discoveries", "fast-paced confrontations and escapes".
 - Do not output anything except the JSON object.`;
 
 export async function POST(request: NextRequest) {

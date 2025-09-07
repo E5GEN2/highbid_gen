@@ -31,6 +31,7 @@ export default function Home() {
     twist: string;
     call_to_action: string;
     visual_style: string;
+    action_emphasis: string;
   }
   
   interface StoryboardScene {
@@ -39,6 +40,7 @@ export default function Home() {
     end_ms: number;
     beat: string;
     vo_text: string;
+    scene_twist: string;
     vo_emphasis: string;
     read_speed_wps: number;
     visual_prompt: {
@@ -2859,7 +2861,8 @@ The JSON object must have the following keys:
   &quot;constraint&quot;: string,
   &quot;twist&quot;: string (≤22 words),
   &quot;call_to_action&quot;: string or &quot;&quot;,
-  &quot;visual_style&quot;: string (free-form description)
+  &quot;visual_style&quot;: string (free-form description),
+  &quot;action_emphasis&quot;: string (guidance for creating action-packed scenes)
 {'}'}
 
 RULES:
@@ -2867,6 +2870,10 @@ RULES:
 - runtime_sec is always 60 unless explicitly told otherwise.
 - Keep premise and twist short, max 22 words.
 - visual_style can be any creative description (e.g., &quot;cinematic photoreal&quot;, &quot;anime style&quot;, &quot;oil painting&quot;)
+- CRITICAL: Focus on ACTION-DRIVEN narratives. Avoid passive observation.
+- Every story element should lead to dynamic, visual scenes with conflict/movement.
+- action_emphasis should guide how each scene will show action, not passive states.
+- Examples of good action_emphasis: &quot;constant movement and revelations&quot;, &quot;each scene shows character making discoveries&quot;, &quot;fast-paced confrontations and escapes&quot;.
 - Do not output anything except the JSON object.
 
 USER:
@@ -2906,7 +2913,8 @@ REQUIRED FIELDS:
   &quot;start_ms&quot;: int (2000*(scene_id-1)),
   &quot;end_ms&quot;: int (start_ms+2000),
   &quot;beat&quot;: one of [&quot;hook&quot;,&quot;setup&quot;,&quot;inciting&quot;,&quot;rise&quot;,&quot;midpoint&quot;,&quot;complication&quot;,&quot;climax&quot;,&quot;resolution&quot;,&quot;cta&quot;],
-  &quot;vo_text&quot;: string (≤18 words, no line breaks),
+  &quot;vo_text&quot;: string (≤7 words, no line breaks, action-focused),
+  &quot;scene_twist&quot;: string (the specific action/conflict/revelation in this scene),
   &quot;vo_emphasis&quot;: one of [&quot;none&quot;,&quot;slight&quot;,&quot;strong&quot;],
   &quot;read_speed_wps&quot;: float between 1.8 and 3.2,
   &quot;visual_prompt&quot;: {'{'}
@@ -2938,9 +2946,13 @@ REQUIRED FIELDS:
 RULES:
 - Output 30 lines, one JSON object per line, no extra text.
 - Each scene covers 2000 ms (2 seconds).
+- CRITICAL: vo_text must be ≤7 words maximum to fit 2-second timing.
+- CRITICAL: Every scene must show ACTION, not passive observation. 
+- CRITICAL: Each scene_twist must describe a specific conflict/revelation/action happening.
+- Avoid passive scenes like &quot;observes&quot;, &quot;looks at&quot;, &quot;thinks about&quot;.
+- Use action verbs: &quot;attacks&quot;, &quot;discovers&quot;, &quot;escapes&quot;, &quot;confronts&quot;, &quot;reveals&quot;.
 - Maintain continuity: reuse seeds within the same beat, change on beat transitions.
-- Keep vo_text ≤18 words, natural and concise.
-- Use consistent characters wording to avoid identity drift.
+- Use consistent character descriptions to avoid identity drift.
 - Ensure final scene (#30) has beat=&quot;cta&quot; if a call_to_action exists.
 
 USER:
