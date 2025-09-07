@@ -20,17 +20,29 @@ The JSON object must have the following keys:
   "twist": string (≤22 words),
   "call_to_action": string or "",
   "visual_style": string (free-form description),
-  "action_emphasis": string (guidance for creating action-packed scenes)
+  "action_emphasis": string (guidance for creating action-packed scenes),
+  "domino_sequences": array of 3-5 cause-effect chains (e.g., ["hero's attack → enemy escalates → ally betrays", "discovery → pursuit → trap"]),
+  "setups_payoffs": array of setup/payoff pairs (e.g., [{"setup": "hidden weapon", "payoff": "saves hero in climax"}]),
+  "escalation_points": array of 3 moments where stakes increase BECAUSE of protagonist actions,
+  "plot_threads": object with three acts and their key turning points {
+    "act1": {"turning_point": string, "consequence": string},
+    "act2": {"turning_point": string, "consequence": string},
+    "act3": {"turning_point": string, "consequence": string}
+  }
 }
 
 RULES:
 - All values must be single-line strings (no line breaks).
 - runtime_sec is always 60 unless explicitly told otherwise.
 - Keep premise and twist short, max 22 words.
-- CRITICAL: Focus on ACTION-DRIVEN narratives. Avoid passive observation.
-- Every story element should lead to dynamic, visual scenes with conflict/movement.
-- action_emphasis should guide how each scene will show action, not passive states.
-- Examples of good action_emphasis: "constant movement and revelations", "each scene shows character making discoveries", "fast-paced confrontations and escapes".
+- CRITICAL: Create CAUSALLY-LINKED narratives where each action triggers consequences.
+- Every story beat must connect: "because X happened, Y must occur, but then Z interrupts"
+- domino_sequences must show clear cause-effect chains, not random events
+- setups_payoffs must plant elements early that become crucial later
+- escalation_points must be CAUSED BY the protagonist's choices, not random events
+- plot_threads must show how each act's climax directly causes the next act's conflict
+- Use "therefore/but/however" logic, never "and then/also/next"
+- action_emphasis should specify HOW actions cause reactions and consequences
 - Do not output anything except the JSON object.`;
 
 export async function POST(request: NextRequest) {

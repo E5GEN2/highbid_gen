@@ -32,6 +32,14 @@ export default function Home() {
     call_to_action: string;
     visual_style: string;
     action_emphasis: string;
+    domino_sequences: string[];
+    setups_payoffs: { setup: string; payoff: string }[];
+    escalation_points: string[];
+    plot_threads: {
+      act1: { turning_point: string; consequence: string };
+      act2: { turning_point: string; consequence: string };
+      act3: { turning_point: string; consequence: string };
+    };
   }
   
   interface StoryboardScene {
@@ -41,6 +49,9 @@ export default function Home() {
     beat: string;
     vo_text: string;
     scene_twist: string;
+    caused_by: string;
+    leads_to: string;
+    callback_to: string;
     vo_emphasis: string;
     read_speed_wps: number;
     visual_prompt: {
@@ -2862,7 +2873,11 @@ The JSON object must have the following keys:
   &quot;twist&quot;: string (≤22 words),
   &quot;call_to_action&quot;: string or &quot;&quot;,
   &quot;visual_style&quot;: string (free-form description),
-  &quot;action_emphasis&quot;: string (guidance for creating action-packed scenes)
+  &quot;action_emphasis&quot;: string (guidance for creating action-packed scenes),
+  &quot;domino_sequences&quot;: array of 3-5 cause-effect chains,
+  &quot;setups_payoffs&quot;: array of setup/payoff pairs,
+  &quot;escalation_points&quot;: array of 3 moments where stakes increase,
+  &quot;plot_threads&quot;: object with three acts and their turning points
 {'}'}
 
 RULES:
@@ -2915,6 +2930,9 @@ REQUIRED FIELDS:
   &quot;beat&quot;: one of [&quot;hook&quot;,&quot;setup&quot;,&quot;inciting&quot;,&quot;rise&quot;,&quot;midpoint&quot;,&quot;complication&quot;,&quot;climax&quot;,&quot;resolution&quot;,&quot;cta&quot;],
   &quot;vo_text&quot;: string (≤7 words, no line breaks, action-focused),
   &quot;scene_twist&quot;: string (the specific action/conflict/revelation in this scene),
+  &quot;caused_by&quot;: string (what previous event directly triggers THIS scene),
+  &quot;leads_to&quot;: string (what immediate consequence this scene creates),
+  &quot;callback_to&quot;: string (reference to earlier setup if payoff, or &quot;none&quot;),
   &quot;vo_emphasis&quot;: one of [&quot;none&quot;,&quot;slight&quot;,&quot;strong&quot;],
   &quot;read_speed_wps&quot;: float between 1.8 and 3.2,
   &quot;visual_prompt&quot;: {'{'}
@@ -2947,12 +2965,14 @@ RULES:
 - Output 30 lines, one JSON object per line, no extra text.
 - Each scene covers 2000 ms (2 seconds).
 - CRITICAL: vo_text must be ≤7 words maximum to fit 2-second timing.
-- CRITICAL: Every scene must show ACTION, not passive observation. 
-- CRITICAL: Each scene_twist must describe a specific conflict/revelation/action happening.
-- Avoid passive scenes like &quot;observes&quot;, &quot;looks at&quot;, &quot;thinks about&quot;.
-- Use action verbs: &quot;attacks&quot;, &quot;discovers&quot;, &quot;escapes&quot;, &quot;confronts&quot;, &quot;reveals&quot;.
-- Maintain continuity: reuse seeds within the same beat, change on beat transitions.
-- Use consistent character descriptions to avoid identity drift.
+- CRITICAL: Every scene must be a DIRECT CONSEQUENCE of previous events.
+- CRITICAL: Use &quot;therefore/but/however&quot; logic between ALL scenes.
+- caused_by must reference SPECIFIC actions from previous scenes
+- leads_to must create concrete problems that next scene MUST address
+- callback_to should reference earlier setups when paying them off
+- Each scene_twist must be CAUSED BY previous actions, not random
+- Example: Scene 3 hero action → Scene 4 enemy reaction → Scene 5 consequence
+- Avoid generic actions: specify WHO does WHAT causing WHAT
 - Ensure final scene (#30) has beat=&quot;cta&quot; if a call_to_action exists.
 
 USER:

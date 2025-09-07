@@ -7,6 +7,9 @@ interface StoryboardScene {
   beat: string;
   vo_text: string;
   scene_twist: string;
+  caused_by: string;
+  leads_to: string;
+  callback_to: string;
   vo_emphasis: string;
   read_speed_wps: number;
   visual_prompt: {
@@ -49,6 +52,9 @@ REQUIRED FIELDS:
   "beat": one of ["hook","setup","inciting","rise","midpoint","complication","climax","resolution","cta"],
   "vo_text": string (≤7 words, no line breaks, action-focused),
   "scene_twist": string (the specific action/conflict/revelation in this scene),
+  "caused_by": string (what previous event directly triggers THIS scene - use "scene X: [specific event]" format),
+  "leads_to": string (what immediate consequence this scene creates for the next),
+  "callback_to": string (reference to earlier setup if this is a payoff, or "none"),
   "vo_emphasis": one of ["none","slight","strong"],
   "read_speed_wps": float between 1.8 and 3.2,
   "visual_prompt": {
@@ -81,15 +87,17 @@ RULES:
 - Output 5 lines for the requested scene range, one JSON object per line.
 - Each scene covers 2000 ms (2 seconds).
 - CRITICAL: vo_text must be ≤7 words maximum to fit 2-second timing.
-- CRITICAL: Every scene must show ACTION, not passive observation. 
-- CRITICAL: Each scene_twist must describe a specific conflict/revelation/action happening.
-- Avoid passive scenes like "observes", "looks at", "thinks about".
-- Use action verbs: "attacks", "discovers", "escapes", "confronts", "reveals".
-- Maintain continuity: reuse seeds within the same beat, change on beat transitions.
-- Use consistent character descriptions to avoid identity drift.
+- CRITICAL: Every scene must be a DIRECT CONSEQUENCE of previous events.
+- CRITICAL: Use "therefore/but/however" logic between ALL scenes, never "and then".
+- caused_by must reference a SPECIFIC action from a previous scene that triggers this one
+- leads_to must create a concrete problem/opportunity that the next scene MUST address
+- callback_to should reference earlier setups when paying them off (weapons, allies, information)
+- Each scene_twist must be CAUSED BY previous actions, not random events
+- Example causality: "Scene 3: Hero destroys bridge" → "Scene 4: Enemy forced to airborne assault" → "Scene 5: Hero hijacks enemy aircraft"
+- Avoid generic actions: specify WHO does WHAT causing WHAT CONSEQUENCE
+- Use the story's domino_sequences and plot_threads to maintain causality
 - Scene 30 should have beat="cta" if a call_to_action exists.
-- IMPORTANT: Do not wrap output in code blocks or markdown formatting.
-- NOTE: Visual style consistency will be applied at the image generation level using the story's visual_style.`;
+- IMPORTANT: Do not wrap output in code blocks or markdown formatting.`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -106,7 +114,7 @@ export async function POST(request: NextRequest) {
     const actualStartScene = startScene || 1;
     const actualEndScene = endScene || 30;
     
-    // Helper function to create compressed context from previous scenes
+    // Helper function to create compressed context from previous scenes with causality
     const createCompressedContext = (scenes: StoryboardScene[]) => {
       if (!scenes || scenes.length === 0) return '';
       
@@ -114,16 +122,30 @@ export async function POST(request: NextRequest) {
         scene_id: scene.scene_id,
         beat: scene.beat,
         vo_text: scene.vo_text,
+        scene_twist: scene.scene_twist,
+        leads_to: scene.leads_to,
+        caused_by: scene.caused_by,
+        callback_to: scene.callback_to,
         setting: scene.visual_prompt?.setting,
         characters: scene.visual_prompt?.characters,
         seed: scene.visual_prompt?.seed
       }));
       
-      return `\nPrevious scenes context for continuity:\n${JSON.stringify(context, null, 2)}`;
+      // Get the last 3 scenes' consequences for immediate context
+      const recentConsequences = scenes.slice(-3).map(s => 
+        `Scene ${s.scene_id}: ${s.scene_twist} → LEADS TO: ${s.leads_to}`
+      ).join('\n');
+      
+      return `\nPrevious scenes with CAUSALITY CHAIN:\n${JSON.stringify(context, null, 2)}\n\nIMPORTANT - Recent consequences that MUST influence next scenes:\n${recentConsequences}`;
     };
 
     const contextPrompt = createCompressedContext(previousScenes || []);
-    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}.`;
+    
+    // Add story's causality guidance
+    const causalityGuidance = storyBulb.domino_sequences ? 
+      `\n\nCRITICAL CAUSALITY CHAINS TO FOLLOW:\n${storyBulb.domino_sequences.join('\n')}\n\nSETUPS TO PAY OFF:\n${JSON.stringify(storyBulb.setups_payoffs || [])}` : '';
+    
+    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
     
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
