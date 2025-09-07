@@ -155,7 +155,7 @@ export default function Home() {
   }, [ttsProvider, elevenLabsKey, googleTtsKey, voicesLoaded, googleVoicesLoaded]);
 
   // Helper function to update story bulb
-  const updateStoryBulb = (storyIndex: number, field: keyof StoryBulb, value: string | number) => {
+  const updateStoryBulb = (storyIndex: number, field: keyof StoryBulb, value: string | number | string[] | any[]) => {
     setGeneratedStories(prev => prev.map((story, index) => {
       if (index === storyIndex) {
         const updated = { ...story, [field]: value };
