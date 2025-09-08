@@ -7,7 +7,7 @@ import Image from 'next/image';
 const isVideoFile = (url: string): boolean => {
   const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
   const lowerUrl = url.toLowerCase();
-  return lowerUrl.includes('blob:') || videoExtensions.some(ext => lowerUrl.includes(ext));
+  return videoExtensions.some(ext => lowerUrl.includes(ext));
 };
 
 export default function Home() {
@@ -206,6 +206,7 @@ export default function Home() {
 
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[sceneId: number]: string}>({});
+  const [uploadedFileTypes, setUploadedFileTypes] = useState<{[sceneId: number]: 'video' | 'image'}>({});
   const [imageGenerationLoading, setImageGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
   const [batchImageLoading, setBatchImageLoading] = useState(false);
   const [batchImageProgress, setBatchImageProgress] = useState({
@@ -2542,7 +2543,7 @@ export default function Home() {
                                 'aspect-square'
                               }`}>
                                 {storyboardImages[scene.scene_id] ? (
-                                  isVideoFile(storyboardImages[scene.scene_id]) ? (
+                                  (isVideoFile(storyboardImages[scene.scene_id]) || uploadedFileTypes[scene.scene_id] === 'video') ? (
                                     <video
                                       src={storyboardImages[scene.scene_id]}
                                       className="w-full h-full object-cover"
@@ -2582,6 +2583,9 @@ export default function Home() {
                                           if (file) {
                                             const url = URL.createObjectURL(file);
                                             setStoryboardImages(prev => ({ ...prev, [scene.scene_id]: url }));
+                                            // Track file type
+                                            const isVideo = file.type.startsWith('video/');
+                                            setUploadedFileTypes(prev => ({ ...prev, [scene.scene_id]: isVideo ? 'video' : 'image' }));
                                           }
                                         }}
                                       />
