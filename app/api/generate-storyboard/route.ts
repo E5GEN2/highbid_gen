@@ -181,9 +181,14 @@ export async function POST(request: NextRequest) {
     }
     
     const data = await response.json();
+    console.log('Gemini response structure:', JSON.stringify(data, null, 2));
+    
     const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.log('Generated text length:', generatedText.length);
+    console.log('Generated text preview:', generatedText.substring(0, 200));
     
     if (!generatedText) {
+      console.error('Empty generated text from Gemini');
       return NextResponse.json(
         { error: 'No storyboard generated' },
         { status: 500 }
@@ -209,18 +214,23 @@ export async function POST(request: NextRequest) {
         return trimmed && trimmed.startsWith('{') && trimmed.endsWith('}');
       });
       
+      console.log(`Found ${lines.length} potential JSON lines`);
+      
       for (const line of lines) {
         if (!line.trim()) continue;
         
         try {
           const scene = JSON.parse(line.trim());
           allScenes.push(scene);
-        } catch {
-          console.error(`Failed to parse scene:`, line.trim());
+          console.log(`Successfully parsed scene ${scene.scene_id}`);
+        } catch (err) {
+          console.error(`Failed to parse scene:`, line.substring(0, 100), 'Error:', err);
         }
       }
     } catch (parseError) {
       console.error(`Failed to process batch:`, parseError);
+      console.error(`Cleaned text length:`, cleanedText?.length);
+      console.error(`Cleaned text preview:`, cleanedText?.substring(0, 300));
     }
     
     console.log(`Generated ${allScenes.length} scenes for range ${actualStartScene}-${actualEndScene}`);
