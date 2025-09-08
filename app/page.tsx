@@ -3,6 +3,13 @@
 import React, { useState } from 'react';
 import Image from 'next/image';
 
+// Helper function to check if URL is a video
+const isVideoFile = (url: string): boolean => {
+  const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
+  const lowerUrl = url.toLowerCase();
+  return lowerUrl.includes('blob:') || videoExtensions.some(ext => lowerUrl.includes(ext));
+};
+
 export default function Home() {
   const [apiKey, setApiKey] = useState('');
   const [elevenLabsKey, setElevenLabsKey] = useState('');
@@ -2466,7 +2473,7 @@ export default function Home() {
                                       style={{ height: '32px' }}
                                     />
                                     <p className="text-xs text-gray-400">
-                                      Voice: {ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}
+                                      Voice: {storyboardVoiceovers[scene.scene_id].startsWith('blob:') ? 'Uploaded' : (ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS')}
                                     </p>
                                   </div>
                                 ) : voiceoverGenerationLoading[scene.scene_id] ? (
@@ -2481,6 +2488,23 @@ export default function Home() {
                                     <p className="text-xs mt-1 text-gray-600">
                                       {ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}
                                     </p>
+                                    <label className="block mt-2">
+                                      <span className="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded cursor-pointer hover:bg-gray-600">
+                                        Or Upload Audio
+                                      </span>
+                                      <input
+                                        type="file"
+                                        accept="audio/*"
+                                        className="hidden"
+                                        onChange={(e) => {
+                                          const file = e.target.files?.[0];
+                                          if (file) {
+                                            const url = URL.createObjectURL(file);
+                                            setStoryboardVoiceovers(prev => ({ ...prev, [scene.scene_id]: url }));
+                                          }
+                                        }}
+                                      />
+                                    </label>
                                   </div>
                                 )}
                               </div>
@@ -2518,11 +2542,21 @@ export default function Home() {
                                 'aspect-square'
                               }`}>
                                 {storyboardImages[scene.scene_id] ? (
-                                  <img 
-                                    src={storyboardImages[scene.scene_id]} 
-                                    alt={`Scene ${scene.scene_id}`}
-                                    className="w-full h-full object-cover"
-                                  />
+                                  isVideoFile(storyboardImages[scene.scene_id]) ? (
+                                    <video
+                                      src={storyboardImages[scene.scene_id]}
+                                      className="w-full h-full object-cover"
+                                      controls
+                                      loop
+                                      muted
+                                    />
+                                  ) : (
+                                    <img 
+                                      src={storyboardImages[scene.scene_id]} 
+                                      alt={`Scene ${scene.scene_id}`}
+                                      className="w-full h-full object-cover"
+                                    />
+                                  )
                                 ) : imageGenerationLoading[scene.scene_id] ? (
                                   <div className="text-gray-400 text-center">
                                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-2"></div>
@@ -2535,6 +2569,23 @@ export default function Home() {
                                     <p className="text-xs mt-1 text-gray-600">
                                       {scene.visual_prompt.aspect_ratio} ratio
                                     </p>
+                                    <label className="block mt-2">
+                                      <span className="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded cursor-pointer hover:bg-gray-600">
+                                        Or Upload Video/Image
+                                      </span>
+                                      <input
+                                        type="file"
+                                        accept="image/*,video/*"
+                                        className="hidden"
+                                        onChange={(e) => {
+                                          const file = e.target.files?.[0];
+                                          if (file) {
+                                            const url = URL.createObjectURL(file);
+                                            setStoryboardImages(prev => ({ ...prev, [scene.scene_id]: url }));
+                                          }
+                                        }}
+                                      />
+                                    </label>
                                   </div>
                                 )}
                               </div>
