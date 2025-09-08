@@ -15,11 +15,13 @@ export default function Home() {
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [googleTtsKey, setGoogleTtsKey] = useState('');
   const [highbidApiUrl, setHighbidApiUrl] = useState('');
+  const [kokoroUrl, setKokoroUrl] = useState('');
   const [activeTab, setActiveTab] = useState('scripts');
   const [showApiKey, setShowApiKey] = useState(false);
   const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
   const [showGoogleTtsKey, setShowGoogleTtsKey] = useState(false);
   const [showHighbidUrl, setShowHighbidUrl] = useState(false);
+  const [showKokoroUrl, setShowKokoroUrl] = useState(false);
   
   // Script Generation State
   const [scriptTitles, setScriptTitles] = useState<string[]>(['']);
@@ -123,11 +125,11 @@ export default function Home() {
   }[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState('Kore');
   const [voicesLoaded, setVoicesLoaded] = useState(false);
-  const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'google'>('google');
+  const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'google' | 'kokoro'>('google');
   const [googleVoicesLoaded, setGoogleVoicesLoaded] = useState(false);
   
   // Load voices function (memoized with useCallback)
-  const loadVoices = React.useCallback(async (provider: 'elevenlabs' | 'google' = ttsProvider) => {
+  const loadVoices = React.useCallback(async (provider: 'elevenlabs' | 'google' | 'kokoro' = ttsProvider) => {
     if (provider === 'elevenlabs') {
       if (!elevenLabsKey || voicesLoaded) return;
       
@@ -304,10 +306,17 @@ export default function Home() {
       for (const text of voiceoverTexts) {
         if (!text.trim()) continue;
         
-        const endpoint = ttsProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
+        const endpoint = ttsProvider === 'elevenlabs' 
+          ? '/api/generate-voiceover' 
+          : ttsProvider === 'kokoro' 
+            ? '/api/generate-voiceover-kokoro'
+            : '/api/generate-google-tts';
+        
         const requestBody = ttsProvider === 'elevenlabs' 
           ? { text, apiKey: elevenLabsKey, voiceId: selectedVoiceId }
-          : { text, apiKey: googleTtsKey, voiceName: selectedVoiceId };
+          : ttsProvider === 'kokoro'
+            ? { text, voice: selectedVoiceId, speed: 1.0, kokoroUrl }
+            : { text, apiKey: googleTtsKey, voiceName: selectedVoiceId };
         
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -729,7 +738,11 @@ export default function Home() {
   // Generate voiceover for a specific storyboard scene
   const generateStoryboardVoiceover = async (scene: StoryboardScene) => {
     const currentProvider = ttsProvider;
-    const currentApiKey = currentProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
+    const currentApiKey = currentProvider === 'elevenlabs' 
+      ? elevenLabsKey 
+      : currentProvider === 'kokoro' 
+        ? kokoroUrl 
+        : googleTtsKey;
     
     console.log('🎤 Voiceover Debug:', {
       provider: currentProvider,
@@ -753,10 +766,17 @@ export default function Home() {
     setError(null);
 
     try {
-      const endpoint = currentProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
+      const endpoint = currentProvider === 'elevenlabs' 
+        ? '/api/generate-voiceover' 
+        : currentProvider === 'kokoro'
+          ? '/api/generate-voiceover-kokoro'
+          : '/api/generate-google-tts';
+      
       const requestBody = currentProvider === 'elevenlabs' 
         ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
-        : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
+        : currentProvider === 'kokoro'
+          ? { text: scene.vo_text, voice: selectedVoiceId, speed: scene.read_speed_wps ? scene.read_speed_wps / 2.5 : 1.0, kokoroUrl }
+          : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
 
       console.log('🎤 Making request:', { endpoint, requestBody: { ...requestBody, apiKey: '***' } });
 
@@ -795,7 +815,11 @@ export default function Home() {
   // Generate all storyboard voiceovers in batch with retry logic and progress
   const generateAllStoryboardVoiceovers = async () => {
     const currentProvider = ttsProvider;
-    const currentApiKey = currentProvider === 'elevenlabs' ? elevenLabsKey : googleTtsKey;
+    const currentApiKey = currentProvider === 'elevenlabs' 
+      ? elevenLabsKey 
+      : currentProvider === 'kokoro' 
+        ? kokoroUrl 
+        : googleTtsKey;
     
     if (!currentApiKey) {
       setError(`${currentProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'} API key is required for batch voiceover generation`);
@@ -846,10 +870,17 @@ export default function Home() {
               await new Promise(resolve => setTimeout(resolve, 2000));
             }
 
-            const endpoint = currentProvider === 'elevenlabs' ? '/api/generate-voiceover' : '/api/generate-google-tts';
+            const endpoint = currentProvider === 'elevenlabs' 
+              ? '/api/generate-voiceover' 
+              : currentProvider === 'kokoro'
+                ? '/api/generate-voiceover-kokoro'
+                : '/api/generate-google-tts';
+            
             const requestBody = currentProvider === 'elevenlabs' 
               ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
-              : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
+              : currentProvider === 'kokoro'
+                ? { text: scene.vo_text, voice: selectedVoiceId, speed: scene.read_speed_wps ? scene.read_speed_wps / 2.5 : 1.0, kokoroUrl }
+                : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
 
             const response = await fetch(endpoint, {
               method: 'POST',
@@ -1152,6 +1183,28 @@ export default function Home() {
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
               >
                 {showHighbidUrl ? '👁️' : '👁️‍🗨️'}
+              </button>
+            </div>
+          </div>
+
+          {/* Kokoro TTS URL */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Kokoro TTS URL (optional)
+            </label>
+            <div className="relative">
+              <input
+                type={showKokoroUrl ? 'text' : 'password'}
+                value={kokoroUrl}
+                onChange={(e) => setKokoroUrl(e.target.value)}
+                placeholder="Enter your Kokoro/ngrok URL (e.g., https://xxxx.ngrok-free.app)"
+                className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition"
+              />
+              <button
+                onClick={() => setShowKokoroUrl(!showKokoroUrl)}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition"
+              >
+                {showKokoroUrl ? '👁️' : '👁️‍🗨️'}
               </button>
             </div>
           </div>
@@ -2767,13 +2820,29 @@ export default function Home() {
                     >
                       Google Gemini TTS
                     </button>
+                    <button
+                      onClick={() => {
+                        setTtsProvider('kokoro');
+                        setVoicesLoaded(false);
+                        setGoogleVoicesLoaded(false);
+                        setAvailableVoices([]);
+                        setSelectedVoiceId('af_heart');
+                      }}
+                      className={`px-4 py-2 rounded-xl transition ${
+                        ttsProvider === 'kokoro'
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      Kokoro TTS
+                    </button>
                   </div>
                 </div>
 
                 {/* Voice Selection */}
                 <div className="bg-gray-900/50 p-4 rounded-xl">
                   <label className="block text-white text-sm font-semibold mb-3">
-                    Select Voice {ttsProvider === 'google' && '(Google Gemini)'}
+                    Select Voice {ttsProvider === 'google' && '(Google Gemini)'} {ttsProvider === 'kokoro' && '(Kokoro TTS)'}
                   </label>
                   <div className="flex gap-4 items-center">
                     <select
@@ -2792,6 +2861,16 @@ export default function Home() {
                               </option>
                             )
                           ))}
+                        </>
+                      ) : ttsProvider === 'kokoro' ? (
+                        <>
+                          <option value="af_heart">Heart - Young Female (Default)</option>
+                          <option value="af_alloy">Alloy - Female</option>
+                          <option value="af_ember">Ember - Female</option>
+                          <option value="am_adam">Adam - Male</option>
+                          <option value="bf_emma">Emma - British Female</option>
+                          <option value="bf_sarah">Sarah - British Female</option>
+                          <option value="bm_george">George - British Male</option>
                         </>
                       ) : (
                         <>
