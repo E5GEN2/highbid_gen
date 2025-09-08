@@ -197,9 +197,9 @@ export async function POST(request: NextRequest) {
 
     // Parse the generated scenes
     const allScenes: StoryboardScene[] = [];
+    let cleanedText = generatedText.trim();
     
     try {
-      let cleanedText = generatedText.trim();
       
       // More aggressive markdown cleaning
       if (cleanedText.includes('```')) {
