@@ -106,9 +106,18 @@ export async function POST(request: NextRequest) {
       // Clean the response - remove markdown code blocks if present
       let cleanedText = generatedText.trim();
       
-      // Remove markdown code block wrapper if present
-      if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
-        cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
+      // More aggressive markdown cleaning
+      if (cleanedText.includes('```')) {
+        // Remove all markdown code blocks
+        cleanedText = cleanedText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+        cleanedText = cleanedText.trim();
+      }
+      
+      // Ensure it starts with { and ends with }
+      const firstBrace = cleanedText.indexOf('{');
+      const lastBrace = cleanedText.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        cleanedText = cleanedText.substring(firstBrace, lastBrace + 1);
       }
       
       // Parse the JSON to validate it

@@ -195,11 +195,19 @@ export async function POST(request: NextRequest) {
     
     try {
       let cleanedText = generatedText.trim();
-      if (cleanedText.startsWith('```json') || cleanedText.startsWith('```')) {
-        cleanedText = cleanedText.replace(/^```(json)?\n?/, '').replace(/\n?```$/, '');
+      
+      // More aggressive markdown cleaning
+      if (cleanedText.includes('```')) {
+        // Remove all markdown code blocks
+        cleanedText = cleanedText.replace(/```jsonl?\s*/gi, '').replace(/```\s*/g, '');
+        cleanedText = cleanedText.trim();
       }
       
-      const lines = cleanedText.trim().split('\n').filter((line: string) => line.trim());
+      // Split into lines and filter out empty ones
+      const lines = cleanedText.split('\n').filter((line: string) => {
+        const trimmed = line.trim();
+        return trimmed && trimmed.startsWith('{') && trimmed.endsWith('}');
+      });
       
       for (const line of lines) {
         if (!line.trim()) continue;
