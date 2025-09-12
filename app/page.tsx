@@ -735,8 +735,10 @@ export default function Home() {
             break;
         }
 
-        // Generate multiple images in parallel for this scene
-        const imagePromises = Array.from({ length: numColumns }, async (_, colIndex) => {
+        // Generate multiple images sequentially for this scene
+        const sceneImages: { [key: string]: string } = {};
+        
+        for (let colIndex = 0; colIndex < numColumns; colIndex++) {
           const timeStart = colIndex * 2;
           const timeEnd = (colIndex + 1) * 2;
           const timeRange = numColumns > 1 ? ` (${timeStart}-${timeEnd}s)` : '';
@@ -790,6 +792,10 @@ export default function Home() {
                   current: totalGenerated,
                   status: `Generated image ${colIndex + 1}/${numColumns} for scene ${scene.scene_id} ✓`
                 }));
+                
+                // Store the image immediately
+                const imageKey = numColumns === 1 ? scene.scene_id.toString() : `${scene.scene_id}_${colIndex + 1}`;
+                sceneImages[imageKey] = data.image;
               } else {
                 throw new Error('No image data received from API');
               }
@@ -805,24 +811,11 @@ export default function Home() {
                   current: totalGenerated,
                   status: `Failed to generate image ${colIndex + 1} for scene ${scene.scene_id} after ${maxRetries} attempts ✗`
                 }));
+                break; // Stop trying this image and move to next
               }
             }
           }
-
-          return { colIndex, imageData, success };
-        });
-
-        // Wait for all images of this scene to complete
-        const results = await Promise.all(imagePromises);
-        
-        // Update storyboard images with all generated images for this scene
-        const sceneImages: { [key: string]: string } = {};
-        results.forEach(result => {
-          if (result.success && result.imageData) {
-            const imageKey = numColumns === 1 ? scene.scene_id.toString() : `${scene.scene_id}_${result.colIndex + 1}`;
-            sceneImages[imageKey] = result.imageData;
-          }
-        });
+        }
         
         setStoryboardImages(prev => ({
           ...prev,
@@ -3390,7 +3383,7 @@ You are a story generator.
 You must output valid JSON only, with no explanations, no prose, no comments.
 
 The JSON object must have the following keys:
-{'{'}
+{`{`}
   &quot;title&quot;: string,
   &quot;runtime_sec&quot;: 60,
   &quot;tone&quot;: one of [&quot;inspiring&quot;,&quot;dramatic&quot;,&quot;cozy&quot;,&quot;creepy&quot;,&quot;comedic&quot;,&quot;educational&quot;],
@@ -3410,7 +3403,7 @@ The JSON object must have the following keys:
   &quot;setups_payoffs&quot;: array of setup/payoff pairs,
   &quot;escalation_points&quot;: array of 3 moments where stakes increase,
   &quot;plot_threads&quot;: object with three acts and their turning points
-{'}'}
+{`}`}
 
 RULES:
 - All values must be single-line strings (no line breaks).
@@ -3455,7 +3448,7 @@ Each line must be a valid JSON object conforming to the schema below.
 No prose, no explanations, no comments.
 
 REQUIRED FIELDS:
-{'{'}
+{`{`}
   &quot;scene_id&quot;: int (1..30),
   &quot;start_ms&quot;: int (2000*(scene_id-1)),
   &quot;end_ms&quot;: int (start_ms+2000),
@@ -3467,7 +3460,7 @@ REQUIRED FIELDS:
   &quot;callback_to&quot;: string (reference to earlier setup if payoff, or &quot;none&quot;),
   &quot;vo_emphasis&quot;: one of [&quot;none&quot;,&quot;slight&quot;,&quot;strong&quot;],
   &quot;read_speed_wps&quot;: float between 1.8 and 3.2,
-  &quot;visual_prompt&quot;: {'{'}
+  &quot;visual_prompt&quot;: {`{`}
     &quot;setting&quot;: string,
     &quot;characters&quot;: string,
     &quot;action&quot;: string,
@@ -3482,16 +3475,16 @@ REQUIRED FIELDS:
     &quot;negative_tags&quot;: &quot;blurry, extra fingers, watermark&quot;,
     &quot;model_hint&quot;: one of [&quot;sdxl&quot;,&quot;flux&quot;,&quot;juggernaut&quot;,&quot;midjourney&quot;,&quot;dalle&quot;,&quot;kling&quot;],
     &quot;seed&quot;: int
-  {'}'},
-  &quot;text_overlay&quot;: {'{'}
+  {`}`},
+  &quot;text_overlay&quot;: {`{`}
     &quot;content&quot;: string,
     &quot;position&quot;: one of [&quot;top&quot;,&quot;center&quot;,&quot;bottom&quot;,&quot;caption&quot;],
     &quot;weight&quot;: one of [&quot;none&quot;,&quot;subtle&quot;,&quot;bold&quot;]
-  {'}'},
+  {`}`},
   &quot;transition_in&quot;: one of [&quot;cut&quot;,&quot;fade&quot;,&quot;dolly_in&quot;,&quot;whip&quot;],
   &quot;transition_out&quot;: one of [&quot;cut&quot;,&quot;fade&quot;,&quot;dolly_out&quot;,&quot;whip&quot;],
   &quot;music_cue&quot;: one of [&quot;low&quot;,&quot;medium&quot;,&quot;high&quot;,&quot;drop&quot;,&quot;silence&quot;]
-{'}'}
+{`}`}
 
 RULES:
 - Output 30 lines, one JSON object per line, no extra text.
