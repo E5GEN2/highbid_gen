@@ -215,7 +215,7 @@ export default function Home() {
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});
   const [uploadedFileTypes, setUploadedFileTypes] = useState<{[sceneId: number]: 'video' | 'image'}>({});
-  const [imageGenerationLoading, setImageGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
+  const [imageGenerationLoading, setImageGenerationLoading] = useState<{[key: string]: boolean}>({});
   const [batchImageLoading, setBatchImageLoading] = useState(false);
   const [batchImageProgress, setBatchImageProgress] = useState({
     current: 0,
