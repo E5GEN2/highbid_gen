@@ -213,7 +213,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   // Storyboard Images State
-  const [storyboardImages, setStoryboardImages] = useState<{[sceneId: number]: string}>({});
+  const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});
   const [uploadedFileTypes, setUploadedFileTypes] = useState<{[sceneId: number]: 'video' | 'image'}>({});
   const [imageGenerationLoading, setImageGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
   const [batchImageLoading, setBatchImageLoading] = useState(false);
