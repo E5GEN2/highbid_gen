@@ -10,6 +10,12 @@ const isVideoFile = (url: string): boolean => {
   return videoExtensions.some(ext => lowerUrl.includes(ext));
 };
 
+// Helper function to calculate number of image columns needed based on audio duration
+const calculateImageColumns = (durationSeconds: number): number => {
+  if (!durationSeconds) return 1; // Default to 1 column if no duration
+  return Math.max(1, Math.ceil(durationSeconds / 2)); // One column per 2 seconds, minimum 1
+};
+
 export default function Home() {
   const [apiKey, setApiKey] = useState('');
   const [elevenLabsKey, setElevenLabsKey] = useState('');
@@ -222,6 +228,7 @@ export default function Home() {
 
   // Storyboard Voiceovers State
   const [storyboardVoiceovers, setStoryboardVoiceovers] = useState<{[sceneId: number]: string}>({});
+  const [voiceoverDurations, setVoiceoverDurations] = useState<{[sceneId: number]: number}>({});
   const [voiceoverGenerationLoading, setVoiceoverGenerationLoading] = useState<{[sceneId: number]: boolean}>({});
   const [batchVoiceoverLoading, setBatchVoiceoverLoading] = useState(false);
   const [batchVoiceoverProgress, setBatchVoiceoverProgress] = useState({
@@ -748,7 +755,7 @@ export default function Home() {
       provider: currentProvider,
       hasApiKey: !!currentApiKey,
       selectedVoiceId,
-      sceneText: scene.vo_text,
+      sceneText: scene.scene_twist || scene.vo_text,
       availableVoicesCount: availableVoices.length
     });
     
@@ -772,11 +779,14 @@ export default function Home() {
           ? '/api/generate-voiceover-kokoro'
           : '/api/generate-google-tts';
       
+      // Use scene_twist for more engaging voiceover text
+      const voiceoverText = scene.scene_twist || scene.vo_text;
+      
       const requestBody = currentProvider === 'elevenlabs' 
-        ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
+        ? { text: voiceoverText, apiKey: currentApiKey, voiceId: selectedVoiceId }
         : currentProvider === 'kokoro'
-          ? { text: scene.vo_text, voice: selectedVoiceId, speed: scene.read_speed_wps ? scene.read_speed_wps / 2.5 : 1.0, kokoroUrl }
-          : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
+          ? { text: voiceoverText, voice: selectedVoiceId, speed: scene.read_speed_wps ? scene.read_speed_wps / 2.5 : 1.0, kokoroUrl }
+          : { text: voiceoverText, apiKey: currentApiKey, voiceName: selectedVoiceId };
 
       console.log('🎤 Making request:', { endpoint, requestBody: { ...requestBody, apiKey: '***' } });
 
@@ -876,11 +886,14 @@ export default function Home() {
                 ? '/api/generate-voiceover-kokoro'
                 : '/api/generate-google-tts';
             
+            // Use scene_twist for more engaging voiceover text
+            const voiceoverText = scene.scene_twist || scene.vo_text;
+            
             const requestBody = currentProvider === 'elevenlabs' 
-              ? { text: scene.vo_text, apiKey: currentApiKey, voiceId: selectedVoiceId }
+              ? { text: voiceoverText, apiKey: currentApiKey, voiceId: selectedVoiceId }
               : currentProvider === 'kokoro'
-                ? { text: scene.vo_text, voice: selectedVoiceId, speed: scene.read_speed_wps ? scene.read_speed_wps / 2.5 : 1.0, kokoroUrl }
-                : { text: scene.vo_text, apiKey: currentApiKey, voiceName: selectedVoiceId };
+                ? { text: voiceoverText, voice: selectedVoiceId, speed: scene.read_speed_wps ? scene.read_speed_wps / 2.5 : 1.0, kokoroUrl }
+                : { text: voiceoverText, apiKey: currentApiKey, voiceName: selectedVoiceId };
 
             const response = await fetch(endpoint, {
               method: 'POST',
@@ -2525,10 +2538,21 @@ export default function Home() {
                                       src={storyboardVoiceovers[scene.scene_id]}
                                       className="w-full mb-2"
                                       style={{ height: '32px' }}
+                                      onLoadedMetadata={(e) => {
+                                        const duration = (e.target as HTMLAudioElement).duration;
+                                        setVoiceoverDurations(prev => ({ ...prev, [scene.scene_id]: duration }));
+                                      }}
                                     />
-                                    <p className="text-xs text-gray-400">
-                                      Voice: {storyboardVoiceovers[scene.scene_id].startsWith('blob:') ? 'Uploaded' : (ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS')}
-                                    </p>
+                                    <div className="flex justify-between">
+                                      <p className="text-xs text-gray-400">
+                                        Voice: {storyboardVoiceovers[scene.scene_id].startsWith('blob:') ? 'Uploaded' : (ttsProvider === 'elevenlabs' ? 'ElevenLabs' : ttsProvider === 'kokoro' ? 'Kokoro TTS' : 'Google TTS')}
+                                      </p>
+                                      {voiceoverDurations[scene.scene_id] && (
+                                        <p className="text-xs text-gray-400">
+                                          {voiceoverDurations[scene.scene_id].toFixed(1)}s
+                                        </p>
+                                      )}
+                                    </div>
                                   </div>
                                 ) : voiceoverGenerationLoading[scene.scene_id] ? (
                                   <div className="text-gray-400 text-center">
@@ -2576,92 +2600,112 @@ export default function Home() {
                               </div>
                             </div>
 
-                            {/* Image Generation Panel */}
-                            <div className="w-1/4 p-4">
-                              <div className="flex justify-between items-center mb-2">
-                                <label className="text-xs text-gray-500">Generated Image</label>
-                                <button
-                                  onClick={() => generateStoryboardImage(scene)}
-                                  disabled={imageGenerationLoading[scene.scene_id] || !highbidApiUrl}
-                                  className="px-3 py-1 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  {imageGenerationLoading[scene.scene_id] ? 'Gen...' : 'Generate'}
-                                </button>
-                              </div>
+                            {/* Image Generation Panels - Multiple based on audio duration */}
+                            {(() => {
+                              const numColumns = calculateImageColumns(voiceoverDurations[scene.scene_id]);
+                              const columnWidth = numColumns === 1 ? 'w-1/4' : numColumns === 2 ? 'w-1/2' : 'w-3/4';
                               
-                              {/* Image Display */}
-                              <div className={`bg-gray-800/50 rounded-lg flex items-center justify-center overflow-hidden ${
-                                scene.visual_prompt.aspect_ratio === '9:16' ? 'aspect-[9/16]' :
-                                scene.visual_prompt.aspect_ratio === '16:9' ? 'aspect-[16/9]' :
-                                'aspect-square'
-                              }`}>
-                                {storyboardImages[scene.scene_id] ? (
-                                  (isVideoFile(storyboardImages[scene.scene_id]) || uploadedFileTypes[scene.scene_id] === 'video') ? (
-                                    <video
-                                      src={storyboardImages[scene.scene_id]}
-                                      className="w-full h-full object-cover"
-                                      controls
-                                      loop
-                                      muted
-                                    />
-                                  ) : (
-                                    <img 
-                                      src={storyboardImages[scene.scene_id]} 
-                                      alt={`Scene ${scene.scene_id}`}
-                                      className="w-full h-full object-cover"
-                                    />
-                                  )
-                                ) : imageGenerationLoading[scene.scene_id] ? (
-                                  <div className="text-gray-400 text-center">
-                                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-2"></div>
-                                    <p className="text-xs">Generating...</p>
-                                  </div>
-                                ) : (
-                                  <div className="text-gray-500 text-center p-4">
-                                    <div className="text-2xl mb-2">🖼️</div>
-                                    <p className="text-xs">Click Generate to create image</p>
-                                    <p className="text-xs mt-1 text-gray-600">
-                                      {scene.visual_prompt.aspect_ratio} ratio
-                                    </p>
-                                    <label className="block mt-2">
-                                      <span className="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded cursor-pointer hover:bg-gray-600">
-                                        Or Upload Video/Image
-                                      </span>
-                                      <input
-                                        type="file"
-                                        accept="image/*,video/*"
-                                        className="hidden"
-                                        onChange={(e) => {
-                                          const file = e.target.files?.[0];
-                                          if (file) {
-                                            const url = URL.createObjectURL(file);
-                                            setStoryboardImages(prev => ({ ...prev, [scene.scene_id]: url }));
-                                            // Track file type
-                                            const isVideo = file.type.startsWith('video/');
-                                            setUploadedFileTypes(prev => ({ ...prev, [scene.scene_id]: isVideo ? 'video' : 'image' }));
-                                          }
-                                        }}
-                                      />
+                              return (
+                                <div className={`${columnWidth} p-4`}>
+                                  <div className="flex justify-between items-center mb-2">
+                                    <label className="text-xs text-gray-500">
+                                      Generated Images ({numColumns} {numColumns === 1 ? 'image' : 'images'})
+                                      {voiceoverDurations[scene.scene_id] && (
+                                        <span className="text-gray-600"> • {voiceoverDurations[scene.scene_id].toFixed(1)}s audio</span>
+                                      )}
                                     </label>
+                                    <button
+                                      onClick={() => generateStoryboardImage(scene)}
+                                      disabled={imageGenerationLoading[scene.scene_id] || !highbidApiUrl}
+                                      className="px-3 py-1 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      {imageGenerationLoading[scene.scene_id] ? 'Gen...' : `Generate ${numColumns}`}
+                                    </button>
                                   </div>
-                                )}
-                              </div>
-                              
-                              {/* Flux Prompt Preview */}
-                              <div className="mt-3">
-                                <details className="cursor-pointer">
-                                  <summary className="text-xs text-gray-500 hover:text-gray-400">View Flux Prompt</summary>
-                                  <div className="mt-2 p-2 bg-gray-800/50 rounded text-xs">
-                                    <p className="text-gray-300 mb-2">
-                                      <strong>Prompt:</strong> {createFluxPrompt(scene, selectedStory?.visual_style).prompt}
-                                    </p>
-                                    <p className="text-gray-400">
-                                      <strong>Negative:</strong> {createFluxPrompt(scene, selectedStory?.visual_style).negative}
-                                    </p>
+                                  
+                                  {/* Multiple Image Columns */}
+                                  <div className={`grid gap-2 ${numColumns === 1 ? 'grid-cols-1' : numColumns === 2 ? 'grid-cols-2' : numColumns === 3 ? 'grid-cols-3' : 'grid-cols-4'}`}>
+                                    {Array.from({ length: numColumns }, (_, colIndex) => (
+                                      <div key={colIndex} className={`bg-gray-800/50 rounded-lg flex items-center justify-center overflow-hidden ${
+                                        scene.visual_prompt.aspect_ratio === '9:16' ? 'aspect-[9/16]' :
+                                        scene.visual_prompt.aspect_ratio === '16:9' ? 'aspect-[16/9]' :
+                                        'aspect-square'
+                                      }`}>
+                                        {/* Individual image content for each column */}
+                                        {storyboardImages[`${scene.scene_id}_${colIndex}`] || (colIndex === 0 && storyboardImages[scene.scene_id]) ? (
+                                          (() => {
+                                            const imageUrl = storyboardImages[`${scene.scene_id}_${colIndex}`] || storyboardImages[scene.scene_id];
+                                            return (isVideoFile(imageUrl) || uploadedFileTypes[scene.scene_id] === 'video') ? (
+                                              <video
+                                                src={imageUrl}
+                                                className="w-full h-full object-cover"
+                                                controls
+                                                loop
+                                                muted
+                                              />
+                                            ) : (
+                                              <img 
+                                                src={imageUrl} 
+                                                alt={`Scene ${scene.scene_id} - ${colIndex + 1}`}
+                                                className="w-full h-full object-cover"
+                                              />
+                                            );
+                                          })()
+                                        ) : imageGenerationLoading[scene.scene_id] ? (
+                                          <div className="text-gray-400 text-center p-2">
+                                            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600 mx-auto mb-1"></div>
+                                            <p className="text-xs">Gen...</p>
+                                          </div>
+                                        ) : (
+                                          <div className="text-gray-500 text-center p-2">
+                                            <div className="text-lg mb-1">🖼️</div>
+                                            <p className="text-xs">Image {colIndex + 1}</p>
+                                            <p className="text-xs text-gray-600 mt-1">
+                                              {Math.round(colIndex * 2)}-{Math.round((colIndex + 1) * 2)}s
+                                            </p>
+                                            <label className="block mt-2">
+                                              <span className="px-1 py-1 text-xs bg-gray-700 text-gray-300 rounded cursor-pointer hover:bg-gray-600">
+                                                Upload
+                                              </span>
+                                              <input
+                                                type="file"
+                                                accept="image/*,video/*"
+                                                className="hidden"
+                                                onChange={(e) => {
+                                                  const file = e.target.files?.[0];
+                                                  if (file) {
+                                                    const url = URL.createObjectURL(file);
+                                                    const key = colIndex === 0 ? scene.scene_id : `${scene.scene_id}_${colIndex}`;
+                                                    setStoryboardImages(prev => ({ ...prev, [key]: url }));
+                                                    const isVideo = file.type.startsWith('video/');
+                                                    setUploadedFileTypes(prev => ({ ...prev, [scene.scene_id]: isVideo ? 'video' : 'image' }));
+                                                  }
+                                                }}
+                                              />
+                                            </label>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
                                   </div>
-                                </details>
-                              </div>
-                            </div>
+                                  
+                                  {/* Flux Prompt Preview */}
+                                  <div className="mt-3">
+                                    <details className="cursor-pointer">
+                                      <summary className="text-xs text-gray-500 hover:text-gray-400">View Flux Prompt</summary>
+                                      <div className="mt-2 p-2 bg-gray-800/50 rounded text-xs">
+                                        <p className="text-gray-300 mb-2">
+                                          <strong>Prompt:</strong> {createFluxPrompt(scene, selectedStory?.visual_style).prompt}
+                                        </p>
+                                        <p className="text-gray-400">
+                                          <strong>Negative:</strong> {createFluxPrompt(scene, selectedStory?.visual_style).negative}
+                                        </p>
+                                      </div>
+                                    </details>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
                       ))}
