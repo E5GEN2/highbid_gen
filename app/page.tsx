@@ -2861,8 +2861,20 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
+                  </div>
+                )}
+              </div>
+            )}
 
-                    {/* Video Render Section */}
+            {/* Final Video Tab */}
+            {activeTab === 'final-video' && (
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-white mb-4">Final Video Rendering</h3>
+                  <p className="text-gray-400 mb-6">Combine your storyboard, images, and voiceovers into a final video</p>
+                </div>
+
+                {/* Video Render Section */}
                     <div className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 p-8 rounded-xl border-2 border-purple-500/50">
                       <div className="text-center">
                         <div className="text-6xl mb-4">🎬</div>
