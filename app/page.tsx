@@ -549,11 +549,15 @@ export default function Home() {
       return;
     }
 
+    // Calculate how many images we need based on audio duration
+    const numColumns = calculateImageColumns(voiceoverDurations[scene.scene_id]);
+    console.log(`Generating ${numColumns} images for scene ${scene.scene_id} (${voiceoverDurations[scene.scene_id]}s audio)`);
+
     setImageGenerationLoading(prev => ({ ...prev, [scene.scene_id]: true }));
     setError(null);
 
     try {
-      const { prompt } = createFluxPrompt(scene, selectedStory?.visual_style);
+      const basePrompt = createFluxPrompt(scene, selectedStory?.visual_style).prompt;
       
       // Get dimensions from aspect ratio
       let width, height;
@@ -570,33 +574,60 @@ export default function Home() {
           break;
       }
       
-      const response = await fetch('/api/generate-highbid-image', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          apiUrl: highbidApiUrl,
-          width,
-          height
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to generate storyboard image');
+      // Generate images for each column (time segment)
+      const imagePromises = [];
+      for (let colIndex = 0; colIndex < numColumns; colIndex++) {
+        const startTime = colIndex * 2;
+        const endTime = (colIndex + 1) * 2;
+        
+        // Enhance prompt with temporal context
+        const timePrompt = `${basePrompt}, at ${startTime}-${endTime} seconds into the scene, progressive sequence ${colIndex + 1} of ${numColumns}`;
+        
+        const promise = fetch('/api/generate-highbid-image', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prompt: timePrompt,
+            apiUrl: highbidApiUrl,
+            width,
+            height
+          }),
+        }).then(async response => {
+          const data = await response.json();
+          return { colIndex, data, ok: response.ok };
+        });
+        
+        imagePromises.push(promise);
       }
 
-      if (data.image) {
-        setStoryboardImages(prev => ({
-          ...prev,
-          [scene.scene_id]: data.image
-        }));
+      // Wait for all images to generate
+      const results = await Promise.all(imagePromises);
+      
+      // Process results and update state
+      const newImages: { [key: string]: string } = {};
+      let successCount = 0;
+      
+      for (const result of results) {
+        if (result.ok && result.data.image) {
+          const key = result.colIndex === 0 ? scene.scene_id.toString() : `${scene.scene_id}_${result.colIndex}`;
+          newImages[key] = result.data.image;
+          successCount++;
+        }
       }
+      
+      if (successCount > 0) {
+        setStoryboardImages(prev => ({ ...prev, ...newImages }));
+        console.log(`Successfully generated ${successCount}/${numColumns} images for scene ${scene.scene_id}`);
+      }
+      
+      if (successCount < numColumns) {
+        setError(`Generated ${successCount}/${numColumns} images. Some failed to generate.`);
+      }
+      
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred generating storyboard image');
+      setError(err instanceof Error ? err.message : 'An error occurred generating storyboard images');
     } finally {
       setImageGenerationLoading(prev => ({ ...prev, [scene.scene_id]: false }));
     }
