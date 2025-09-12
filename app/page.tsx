@@ -2864,7 +2864,6 @@ export default function Home() {
                   </div>
                 )}
               </div>
-            )}
 
             {/* Final Video Tab */}
             {activeTab === 'final-video' && (
@@ -2959,7 +2958,6 @@ export default function Home() {
                   </div>
                 )}
               </div>
-            )}
 
             {activeTab === 'voiceovers' && (
               <div className="space-y-6">
