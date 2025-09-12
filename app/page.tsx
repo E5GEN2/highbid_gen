@@ -2135,6 +2135,70 @@ export default function Home() {
 
                 {generatedStoryboard.length > 0 && (
                   <div className="space-y-6">
+                    {/* TTS Provider Selection */}
+                    <div className="bg-gray-900/50 p-4 rounded-xl border border-gray-700">
+                      <label className="block text-white text-sm font-semibold mb-3">
+                        🎤 TTS Provider for Voice Generation
+                      </label>
+                      <div className="flex flex-wrap gap-3 mb-4">
+                        <button
+                          onClick={() => {
+                            setTtsProvider('elevenlabs');
+                            setVoicesLoaded(false);
+                            setGoogleVoicesLoaded(false);
+                            setAvailableVoices([]);
+                            setSelectedVoiceId('21m00Tcm4TlvDq8ikWAM');
+                          }}
+                          className={`px-4 py-2 rounded-xl transition text-sm font-medium ${
+                            ttsProvider === 'elevenlabs'
+                              ? 'bg-blue-600 text-white shadow-lg'
+                              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          }`}
+                        >
+                          ElevenLabs
+                        </button>
+                        <button
+                          onClick={() => {
+                            setTtsProvider('google');
+                            setVoicesLoaded(false);
+                            setGoogleVoicesLoaded(false);
+                            setAvailableVoices([]);
+                            setSelectedVoiceId('Kore');
+                          }}
+                          className={`px-4 py-2 rounded-xl transition text-sm font-medium ${
+                            ttsProvider === 'google'
+                              ? 'bg-green-600 text-white shadow-lg'
+                              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          }`}
+                        >
+                          Google Gemini TTS
+                        </button>
+                        <button
+                          onClick={() => {
+                            setTtsProvider('kokoro');
+                            setVoicesLoaded(false);
+                            setGoogleVoicesLoaded(false);
+                            setAvailableVoices([]);
+                            setSelectedVoiceId('af_heart');
+                          }}
+                          className={`px-4 py-2 rounded-xl transition text-sm font-medium ${
+                            ttsProvider === 'kokoro'
+                              ? 'bg-purple-600 text-white shadow-lg'
+                              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          }`}
+                        >
+                          Kokoro TTS
+                        </button>
+                      </div>
+                      <div className="text-xs text-gray-400">
+                        Selected: <span className="text-white font-medium">{
+                          ttsProvider === 'elevenlabs' ? 'ElevenLabs' :
+                          ttsProvider === 'google' ? 'Google Gemini TTS' :
+                          'Kokoro TTS'
+                        }</span>
+                      </div>
+                    </div>
+
                     {/* Story Summary - Editable */}
                     {selectedStory && (
                       <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 p-6 rounded-xl border border-gray-700">
@@ -2450,7 +2514,11 @@ export default function Home() {
                           </div>
                           <button
                             onClick={generateAllStoryboardVoiceovers}
-                            disabled={batchVoiceoverLoading || (ttsProvider === 'elevenlabs' ? !elevenLabsKey : !googleTtsKey) || !selectedVoiceId}
+                            disabled={batchVoiceoverLoading || (
+                              ttsProvider === 'elevenlabs' ? !elevenLabsKey :
+                              ttsProvider === 'kokoro' ? !kokoroUrl :
+                              !googleTtsKey
+                            ) || !selectedVoiceId}
                             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                             title={!selectedVoiceId ? 'Loading voices...' : ''}
                           >
@@ -2651,7 +2719,11 @@ export default function Home() {
                                 <label className="text-xs text-gray-500">Generated Audio</label>
                                 <button
                                   onClick={() => generateStoryboardVoiceover(scene)}
-                                  disabled={voiceoverGenerationLoading[scene.scene_id] || (ttsProvider === 'elevenlabs' ? !elevenLabsKey : !googleTtsKey) || !selectedVoiceId}
+                                  disabled={voiceoverGenerationLoading[scene.scene_id] || (
+                                    ttsProvider === 'elevenlabs' ? !elevenLabsKey :
+                                    ttsProvider === 'kokoro' ? !kokoroUrl :
+                                    !googleTtsKey
+                                  ) || !selectedVoiceId}
                                   className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                   title={!selectedVoiceId ? 'Loading voices...' : ''}
                                 >
@@ -3131,10 +3203,22 @@ export default function Home() {
                   </button>
                   <button
                     onClick={handleVoiceoverGeneration}
-                    disabled={voiceoversLoading || (ttsProvider === 'elevenlabs' ? !elevenLabsKey : !googleTtsKey)}
+                    disabled={voiceoversLoading || (
+                      ttsProvider === 'elevenlabs' ? !elevenLabsKey :
+                      ttsProvider === 'kokoro' ? !kokoroUrl :
+                      !googleTtsKey
+                    )}
                     className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
                   >
-                    {voiceoversLoading ? `Generating with ${ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}...` : `Generate with ${ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Google TTS'}`}
+                    {voiceoversLoading ? `Generating with ${
+                      ttsProvider === 'elevenlabs' ? 'ElevenLabs' :
+                      ttsProvider === 'kokoro' ? 'Kokoro TTS' :
+                      'Google TTS'
+                    }...` : `Generate with ${
+                      ttsProvider === 'elevenlabs' ? 'ElevenLabs' :
+                      ttsProvider === 'kokoro' ? 'Kokoro TTS' :
+                      'Google TTS'
+                    }`}
                   </button>
                 </div>
 
