@@ -3388,46 +3388,46 @@ export default function Home() {
                   </div>
                   <div className="p-6 overflow-y-auto max-h-[60vh]">
                     <div className="bg-gray-800/50 rounded-lg p-4 font-mono text-sm">
-                      <pre className="text-gray-300 whitespace-pre-wrap">SYSTEM:
+                      <pre className="text-gray-300 whitespace-pre-wrap">{`SYSTEM:
 You are a story generator. 
 You must output valid JSON only, with no explanations, no prose, no comments.
 
 The JSON object must have the following keys:
-{`{`}
-  &quot;title&quot;: string,
-  &quot;runtime_sec&quot;: 60,
-  &quot;tone&quot;: one of [&quot;inspiring&quot;,&quot;dramatic&quot;,&quot;cozy&quot;,&quot;creepy&quot;,&quot;comedic&quot;,&quot;educational&quot;],
-  &quot;narration_pov&quot;: one of [&quot;first_person&quot;,&quot;third_person&quot;],
-  &quot;target_viewer&quot;: string,
-  &quot;premise&quot;: string (≤22 words),
-  &quot;protagonist&quot;: string,
-  &quot;goal&quot;: string,
-  &quot;stakes&quot;: string,
-  &quot;setting&quot;: string,
-  &quot;constraint&quot;: string,
-  &quot;twist&quot;: string (≤22 words),
-  &quot;call_to_action&quot;: string or &quot;&quot;,
-  &quot;visual_style&quot;: string (free-form description),
-  &quot;action_emphasis&quot;: string (guidance for creating action-packed scenes),
-  &quot;domino_sequences&quot;: array of 3-5 cause-effect chains,
-  &quot;setups_payoffs&quot;: array of setup/payoff pairs,
-  &quot;escalation_points&quot;: array of 3 moments where stakes increase,
-  &quot;plot_threads&quot;: object with three acts and their turning points
-{`}`}
+{
+  "title": string,
+  "runtime_sec": 60,
+  "tone": one of ["inspiring","dramatic","cozy","creepy","comedic","educational"],
+  "narration_pov": one of ["first_person","third_person"],
+  "target_viewer": string,
+  "premise": string (≤22 words),
+  "protagonist": string,
+  "goal": string,
+  "stakes": string,
+  "setting": string,
+  "constraint": string,
+  "twist": string (≤22 words),
+  "call_to_action": string or "",
+  "visual_style": string (free-form description),
+  "action_emphasis": string (guidance for creating action-packed scenes),
+  "domino_sequences": array of 3-5 cause-effect chains,
+  "setups_payoffs": array of setup/payoff pairs,
+  "escalation_points": array of 3 moments where stakes increase,
+  "plot_threads": object with three acts and their turning points
+}
 
 RULES:
 - All values must be single-line strings (no line breaks).
 - runtime_sec is always 60 unless explicitly told otherwise.
 - Keep premise and twist short, max 22 words.
-- visual_style can be any creative description (e.g., &quot;cinematic photoreal&quot;, &quot;anime style&quot;, &quot;oil painting&quot;)
+- visual_style can be any creative description (e.g., "cinematic photoreal", "anime style", "oil painting")
 - CRITICAL: Focus on ACTION-DRIVEN narratives. Avoid passive observation.
 - Every story element should lead to dynamic, visual scenes with conflict/movement.
 - action_emphasis should guide how each scene will show action, not passive states.
-- Examples of good action_emphasis: &quot;constant movement and revelations&quot;, &quot;each scene shows character making discoveries&quot;, &quot;fast-paced confrontations and escapes&quot;.
+- Examples of good action_emphasis: "constant movement and revelations", "each scene shows character making discoveries", "fast-paced confrontations and escapes".
 - Do not output anything except the JSON object.
 
 USER:
-Generate a Story Bulb JSON for this viral title: &quot;&lt;TITLE&gt;&quot;</pre>
+Generate a Story Bulb JSON for this viral title: "<TITLE>"`}</pre>
                     </div>
                     <div className="mt-4 text-sm text-gray-400">
                       <p><strong>Note:</strong> The &lt;TITLE&gt; placeholder gets replaced with your actual title when sent to the AI model.</p>
@@ -3451,70 +3451,70 @@ Generate a Story Bulb JSON for this viral title: &quot;&lt;TITLE&gt;&quot;</pre>
                   </div>
                   <div className="p-6 overflow-y-auto max-h-[60vh]">
                     <div className="bg-gray-800/50 rounded-lg p-4 font-mono text-sm">
-                      <pre className="text-gray-300 whitespace-pre-wrap">SYSTEM:
+                      <pre className="text-gray-300 whitespace-pre-wrap">{`SYSTEM:
 You are a storyboard generator.
 You must output exactly 30 lines of JSON (JSONL format). 
 Each line must be a valid JSON object conforming to the schema below.
 No prose, no explanations, no comments.
 
 REQUIRED FIELDS:
-{`{`}
-  &quot;scene_id&quot;: int (1..30),
-  &quot;start_ms&quot;: int (2000*(scene_id-1)),
-  &quot;end_ms&quot;: int (start_ms+2000),
-  &quot;beat&quot;: one of [&quot;hook&quot;,&quot;setup&quot;,&quot;inciting&quot;,&quot;rise&quot;,&quot;midpoint&quot;,&quot;complication&quot;,&quot;climax&quot;,&quot;resolution&quot;,&quot;cta&quot;],
-  &quot;vo_text&quot;: string (≤7 words, no line breaks, action-focused),
-  &quot;scene_twist&quot;: string (the specific action/conflict/revelation in this scene),
-  &quot;caused_by&quot;: string (what previous event directly triggers THIS scene),
-  &quot;leads_to&quot;: string (what immediate consequence this scene creates),
-  &quot;callback_to&quot;: string (reference to earlier setup if payoff, or &quot;none&quot;),
-  &quot;vo_emphasis&quot;: one of [&quot;none&quot;,&quot;slight&quot;,&quot;strong&quot;],
-  &quot;read_speed_wps&quot;: float between 1.8 and 3.2,
-  &quot;visual_prompt&quot;: {`{`}
-    &quot;setting&quot;: string,
-    &quot;characters&quot;: string,
-    &quot;action&quot;: string,
-    &quot;props&quot;: string,
-    &quot;mood&quot;: string,
-    &quot;lighting&quot;: one of [&quot;soft&quot;,&quot;hard&quot;,&quot;noir&quot;,&quot;neon&quot;,&quot;golden_hour&quot;,&quot;overcast&quot;,&quot;practical&quot;],
-    &quot;color_palette&quot;: one of [&quot;warm&quot;,&quot;cool&quot;,&quot;monochrome&quot;,&quot;teal_orange&quot;,&quot;pastel&quot;],
-    &quot;camera&quot;: string,
-    &quot;composition&quot;: one of [&quot;rule_of_thirds&quot;,&quot;center&quot;,&quot;symmetry&quot;,&quot;leading_lines&quot;],
-    &quot;aspect_ratio&quot;: &quot;9:16&quot;,
-    &quot;style_tags&quot;: string,
-    &quot;negative_tags&quot;: &quot;blurry, extra fingers, watermark&quot;,
-    &quot;model_hint&quot;: one of [&quot;sdxl&quot;,&quot;flux&quot;,&quot;juggernaut&quot;,&quot;midjourney&quot;,&quot;dalle&quot;,&quot;kling&quot;],
-    &quot;seed&quot;: int
-  {`}`},
-  &quot;text_overlay&quot;: {`{`}
-    &quot;content&quot;: string,
-    &quot;position&quot;: one of [&quot;top&quot;,&quot;center&quot;,&quot;bottom&quot;,&quot;caption&quot;],
-    &quot;weight&quot;: one of [&quot;none&quot;,&quot;subtle&quot;,&quot;bold&quot;]
-  {`}`},
-  &quot;transition_in&quot;: one of [&quot;cut&quot;,&quot;fade&quot;,&quot;dolly_in&quot;,&quot;whip&quot;],
-  &quot;transition_out&quot;: one of [&quot;cut&quot;,&quot;fade&quot;,&quot;dolly_out&quot;,&quot;whip&quot;],
-  &quot;music_cue&quot;: one of [&quot;low&quot;,&quot;medium&quot;,&quot;high&quot;,&quot;drop&quot;,&quot;silence&quot;]
-{`}`}
+{
+  "scene_id": int (1..30),
+  "start_ms": int (2000*(scene_id-1)),
+  "end_ms": int (start_ms+2000),
+  "beat": one of ["hook","setup","inciting","rise","midpoint","complication","climax","resolution","cta"],
+  "vo_text": string (≤7 words, no line breaks, action-focused),
+  "scene_twist": string (the specific action/conflict/revelation in this scene),
+  "caused_by": string (what previous event directly triggers THIS scene),
+  "leads_to": string (what immediate consequence this scene creates),
+  "callback_to": string (reference to earlier setup if payoff, or "none"),
+  "vo_emphasis": one of ["none","slight","strong"],
+  "read_speed_wps": float between 1.8 and 3.2,
+  "visual_prompt": {
+    "setting": string,
+    "characters": string,
+    "action": string,
+    "props": string,
+    "mood": string,
+    "lighting": one of ["soft","hard","noir","neon","golden_hour","overcast","practical"],
+    "color_palette": one of ["warm","cool","monochrome","teal_orange","pastel"],
+    "camera": string,
+    "composition": one of ["rule_of_thirds","center","symmetry","leading_lines"],
+    "aspect_ratio": "9:16",
+    "style_tags": string,
+    "negative_tags": "blurry, extra fingers, watermark",
+    "model_hint": one of ["sdxl","flux","juggernaut","midjourney","dalle","kling"],
+    "seed": int
+  },
+  "text_overlay": {
+    "content": string,
+    "position": one of ["top","center","bottom","caption"],
+    "weight": one of ["none","subtle","bold"]
+  },
+  "transition_in": one of ["cut","fade","dolly_in","whip"],
+  "transition_out": one of ["cut","fade","dolly_out","whip"],
+  "music_cue": one of ["low","medium","high","drop","silence"]
+}
 
 RULES:
 - Output 30 lines, one JSON object per line, no extra text.
 - Each scene covers 2000 ms (2 seconds).
 - CRITICAL: vo_text must be ≤7 words maximum to fit 2-second timing.
 - CRITICAL: Every scene must be a DIRECT CONSEQUENCE of previous events.
-- CRITICAL: Use &quot;therefore/but/however&quot; logic between ALL scenes.
+- CRITICAL: Use "therefore/but/however" logic between ALL scenes.
 - caused_by must reference SPECIFIC actions from previous scenes
 - leads_to must create concrete problems that next scene MUST address
 - callback_to should reference earlier setups when paying them off
 - Each scene_twist must be CAUSED BY previous actions, not random
 - Example: Scene 3 hero action → Scene 4 enemy reaction → Scene 5 consequence
 - Avoid generic actions: specify WHO does WHAT causing WHAT
-- Ensure final scene (#30) has beat=&quot;cta&quot; if a call_to_action exists.
+- Ensure final scene (#30) has beat="cta" if a call_to_action exists.
 
 USER:
 Here is the Story Bulb JSON:
-&lt;PASTE STORY BULB JSON HERE&gt;
+<PASTE STORY BULB JSON HERE>
 
-Expand this into a 30-scene storyboard in JSONL format.</pre>
+Expand this into a 30-scene storyboard in JSONL format.`}</pre>
                     </div>
                     <div className="mt-4 text-sm text-gray-400">
                       <p><strong>Note:</strong> The &lt;PASTE STORY BULB JSON HERE&gt; placeholder gets replaced with the actual story bulb JSON when sent to the AI model.</p>
