@@ -1999,7 +1999,7 @@ export default function Home() {
                   >
                     {imagesLoading 
                       ? `Generating with ${imageProvider === 'highbid' ? 'Highbid' : 'OpenRouter'}...` 
-                      : `Generate with ${imageProvider === 'highbid' ? 'Highbid (${imageWidth}x${imageHeight})' : 'OpenRouter'}`}
+                      : `Generate with ${imageProvider === 'highbid' ? `Highbid (${imageWidth}x${imageHeight})` : 'OpenRouter'}`}
                   </button>
                 </div>
 
@@ -2874,6 +2874,7 @@ export default function Home() {
                 </div>
 
                 {/* Video Render Section */}
+                {finalVideos.length === 0 ? (
                     <div className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 p-8 rounded-xl border-2 border-purple-500/50">
                       <div className="text-center">
                         <div className="text-6xl mb-4">🎬</div>
@@ -2955,9 +2956,21 @@ export default function Home() {
                         )}
                       </div>
                     </div>
+                ) : (
+                  <div className="text-center py-16">
+                    <div className="text-6xl mb-4">✅</div>
+                    <h3 className="text-2xl font-bold text-white mb-4">Video Rendered Successfully!</h3>
+                    <p className="text-gray-400 mb-6">Your video has been created. Go to the Final Video tab to view and export it.</p>
+                    <button
+                      onClick={() => setActiveTab('effects')}
+                      className="px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition"
+                    >
+                      View Final Video
+                    </button>
                   </div>
                 )}
               </div>
+            )}
 
             {activeTab === 'voiceovers' && (
               <div className="space-y-6">
