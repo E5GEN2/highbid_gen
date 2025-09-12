@@ -1730,7 +1730,7 @@ export default function Home() {
                           <div className="flex justify-between items-center mt-4">
                             {selectedStory === story && (
                               <button
-                                onClick={handleStoryboardGeneration}
+                                onClick={() => handleStoryboardGeneration()}
                                 disabled={storyboardsLoading}
                                 className="px-4 py-2 bg-gradient-to-r from-green-500 to-blue-600 text-white text-sm font-semibold rounded-lg hover:from-green-600 hover:to-blue-700 disabled:opacity-50 transition"
                               >
@@ -3543,7 +3543,6 @@ Expand this into a 30-scene storyboard in JSONL format.`}</pre>
                 <p className="text-sm">{error}</p>
               </div>
             )}
-          </div>
         </div>
       </div>
     </div>
