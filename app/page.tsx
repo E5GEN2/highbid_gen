@@ -979,10 +979,11 @@ export default function Home() {
         throw new Error(data.error || 'Failed to generate storyboard voiceover');
       }
 
-      if (data.audio) {
+      const audioUrl = data.audioUrl || data.audio;
+      if (audioUrl) {
         setStoryboardVoiceovers(prev => ({
           ...prev,
-          [scene.scene_id]: data.audio
+          [scene.scene_id]: audioUrl
         }));
         console.log('🎤 Voiceover saved for scene:', scene.scene_id);
       } else {
@@ -1083,11 +1084,12 @@ export default function Home() {
               throw new Error(data.error || `Failed to generate voiceover for scene ${scene.scene_id}`);
             }
 
-            if (data.audio) {
+            const audioUrl = data.audioUrl || data.audio;
+            if (audioUrl) {
               // Update the storyboard voiceovers immediately to show progress
               setStoryboardVoiceovers(prev => ({
                 ...prev,
-                [scene.scene_id]: data.audio
+                [scene.scene_id]: audioUrl
               }));
               success = true;
               
