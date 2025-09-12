@@ -401,7 +401,7 @@ export default function Home() {
     }
   };
   
-  const handleStoryboardGeneration = async () => {
+  const handleStoryboardGeneration = async (resumeFromScene = 1) => {
     if (!googleTtsKey || !selectedStory) {
       setError('Please provide Google API key and select a story');
       return;
@@ -409,14 +409,30 @@ export default function Home() {
     
     setStoryboardsLoading(true);
     setError(null);
-    setStoryboardProgress({ currentBatch: 0, totalBatches: 6, currentScene: 0, totalScenes: 30, status: 'Starting storyboard generation...' });
+    
+    // Calculate starting point for resume functionality
+    const batchSize = 5;
+    const totalBatches = Math.ceil(30 / batchSize);
+    const startingBatch = Math.floor((resumeFromScene - 1) / batchSize);
+    const existingScenes = resumeFromScene === 1 ? [] : generatedStoryboard.slice(0, resumeFromScene - 1);
+    
+    // Reset storyboard if starting fresh, otherwise keep existing scenes
+    if (resumeFromScene === 1) {
+      setGeneratedStoryboard([]);
+    }
+    
+    setStoryboardProgress({ 
+      currentBatch: startingBatch, 
+      totalBatches, 
+      currentScene: existingScenes.length, 
+      totalScenes: 30, 
+      status: resumeFromScene === 1 ? 'Starting storyboard generation...' : `Resuming from scene ${resumeFromScene}...` 
+    });
     
     try {
-      const allScenes: StoryboardScene[] = [];
-      const batchSize = 5;
-      const totalBatches = Math.ceil(30 / batchSize);
+      const allScenes: StoryboardScene[] = [...existingScenes];
       
-      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      for (let batchIndex = startingBatch; batchIndex < totalBatches; batchIndex++) {
         const startScene = batchIndex * batchSize + 1;
         const endScene = Math.min(startScene + batchSize - 1, 30);
         
@@ -451,13 +467,22 @@ export default function Home() {
         const data = await response.json();
         if (data.storyboard && Array.isArray(data.storyboard)) {
           allScenes.push(...data.storyboard);
+          
+          // Update storyboard in real-time as scenes are generated
+          setGeneratedStoryboard(prev => [...prev, ...data.storyboard]);
+          
           setStoryboardProgress({
             currentBatch: batchIndex + 1,
             totalBatches,
             currentScene: allScenes.length,
             totalScenes: 30,
-            status: `Generated ${allScenes.length}/30 scenes`
+            status: `Generated ${allScenes.length}/30 scenes - Populating UI...`
           });
+          
+          // Auto-switch to storyboard tab after first batch for immediate feedback
+          if (batchIndex === 0) {
+            setActiveTab('storyboard');
+          }
         }
         
         // Small delay between batches to show progress
@@ -467,7 +492,6 @@ export default function Home() {
       }
       
       if (allScenes.length > 0) {
-        setGeneratedStoryboard(allScenes);
         setStoryboardProgress({
           currentBatch: totalBatches,
           totalBatches,
@@ -481,8 +505,23 @@ export default function Home() {
       }
       
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate storyboard');
-      setStoryboardProgress({ currentBatch: 0, totalBatches: 6, currentScene: 0, totalScenes: 30, status: '' });
+      const currentScenes = generatedStoryboard.length;
+      const failedAtScene = currentScenes + 1;
+      const errorMsg = err instanceof Error ? err.message : 'Failed to generate storyboard';
+      
+      if (currentScenes > 0) {
+        setError(`${errorMsg}. Generated ${currentScenes} scenes successfully. You can resume from scene ${failedAtScene}.`);
+        setStoryboardProgress({ 
+          currentBatch: Math.ceil(currentScenes / batchSize), 
+          totalBatches, 
+          currentScene: currentScenes, 
+          totalScenes: 30, 
+          status: `Stopped at scene ${currentScenes}. Click Resume to continue.` 
+        });
+      } else {
+        setError(errorMsg);
+        setStoryboardProgress({ currentBatch: 0, totalBatches, currentScene: 0, totalScenes: 30, status: '' });
+      }
     } finally {
       setStoryboardsLoading(false);
       // Clear progress after a delay
@@ -648,10 +687,15 @@ export default function Home() {
     setBatchImageLoading(true);
     setError(null);
     
-    const totalScenes = generatedStoryboard.length;
+    // Calculate total images needed across all scenes
+    const totalImages = generatedStoryboard.reduce((sum, scene) => {
+      const numColumns = calculateImageColumns(voiceoverDurations[scene.scene_id]);
+      return sum + numColumns;
+    }, 0);
+    
     setBatchImageProgress({
       current: 0,
-      total: totalScenes,
+      total: totalImages,
       currentScene: 0,
       status: 'Starting batch image generation...',
       failed: 0,
@@ -660,106 +704,138 @@ export default function Home() {
 
     try {
       const maxRetries = 3;
+      let totalGenerated = 0;
       
       for (let i = 0; i < generatedStoryboard.length; i++) {
         const scene = generatedStoryboard[i];
-        let attempts = 0;
-        let success = false;
-
+        const numColumns = calculateImageColumns(voiceoverDurations[scene.scene_id]);
+        
+        console.log(`Generating ${numColumns} images for scene ${scene.scene_id} (${voiceoverDurations[scene.scene_id]}s audio)`);
+        
         setBatchImageProgress(prev => ({
           ...prev,
           currentScene: scene.scene_id,
-          status: `Generating image for scene ${scene.scene_id}...`
+          status: `Generating ${numColumns} ${numColumns === 1 ? 'image' : 'images'} for scene ${scene.scene_id}...`
         }));
 
-        while (attempts < maxRetries && !success) {
-          try {
-            const { prompt } = createFluxPrompt(scene, selectedStory?.visual_style);
-            
-            // Get dimensions from aspect ratio
-            let width, height;
-            switch (scene.visual_prompt.aspect_ratio) {
-              case '16:9':
-                width = 1024; height = 576;
-                break;
-              case '9:16':
-                width = 576; height = 1024;
-                break;
-              case '1:1':
-              default:
-                width = 1024; height = 1024;
-                break;
-            }
+        const basePrompt = createFluxPrompt(scene, selectedStory?.visual_style).prompt;
+        
+        // Get dimensions from aspect ratio
+        let width, height;
+        switch (scene.visual_prompt.aspect_ratio) {
+          case '16:9':
+            width = 1024; height = 576;
+            break;
+          case '9:16':
+            width = 576; height = 1024;
+            break;
+          case '1:1':
+          default:
+            width = 1024; height = 1024;
+            break;
+        }
 
-            if (attempts > 0) {
-              setBatchImageProgress(prev => ({
-                ...prev,
-                status: `Retrying scene ${scene.scene_id} (attempt ${attempts + 1}/${maxRetries})...`,
-                retries: prev.retries + 1
-              }));
-              // Wait a bit before retry
-              await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-            
-            const response = await fetch('/api/generate-highbid-image', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                prompt,
-                apiUrl: highbidApiUrl,
-                width,
-                height
-              }),
-            });
-            
-            const data = await response.json();
-            
-            if (!response.ok) {
-              throw new Error(data.error || `Failed to generate image for scene ${scene.scene_id}`);
-            }
-            
-            if (data.image) {
-              // Update the storyboard images immediately to show progress
-              setStoryboardImages(prev => ({
-                ...prev,
-                [scene.scene_id]: data.image
-              }));
-              success = true;
+        // Generate multiple images in parallel for this scene
+        const imagePromises = Array.from({ length: numColumns }, async (_, colIndex) => {
+          const timeStart = colIndex * 2;
+          const timeEnd = (colIndex + 1) * 2;
+          const timeRange = numColumns > 1 ? ` (${timeStart}-${timeEnd}s)` : '';
+          
+          const enhancedPrompt = numColumns > 1 
+            ? `${basePrompt}, temporal context: action moment at ${timeStart}-${timeEnd} seconds${timeRange}`
+            : basePrompt;
+
+          let attempts = 0;
+          let success = false;
+          let imageData = null;
+
+          while (attempts < maxRetries && !success) {
+            try {
+              if (attempts > 0) {
+                setBatchImageProgress(prev => ({
+                  ...prev,
+                  status: `Retrying scene ${scene.scene_id} image ${colIndex + 1}/${numColumns} (attempt ${attempts + 1}/${maxRetries})...`,
+                  retries: prev.retries + 1
+                }));
+                // Wait a bit before retry
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
               
-              setBatchImageProgress(prev => ({
-                ...prev,
-                current: prev.current + 1,
-                status: `Generated image for scene ${scene.scene_id} ✓`
-              }));
+              const response = await fetch('/api/generate-highbid-image', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  prompt: enhancedPrompt,
+                  apiUrl: highbidApiUrl,
+                  width,
+                  height
+                }),
+              });
               
-              // Small delay to show the progress update
-              await new Promise(resolve => setTimeout(resolve, 500));
-            } else {
-              throw new Error('No image data received from API');
-            }
-            
-          } catch (err) {
-            attempts++;
-            console.error(`Attempt ${attempts} failed for scene ${scene.scene_id}:`, err);
-            
-            if (attempts >= maxRetries) {
-              setBatchImageProgress(prev => ({
-                ...prev,
-                failed: prev.failed + 1,
-                current: prev.current + 1,
-                status: `Failed to generate image for scene ${scene.scene_id} after ${maxRetries} attempts ✗`
-              }));
-              await new Promise(resolve => setTimeout(resolve, 1000));
+              const data = await response.json();
+              
+              if (!response.ok) {
+                throw new Error(data.error || `Failed to generate image ${colIndex + 1} for scene ${scene.scene_id}`);
+              }
+              
+              if (data.image) {
+                imageData = data.image;
+                success = true;
+                totalGenerated++;
+                
+                setBatchImageProgress(prev => ({
+                  ...prev,
+                  current: totalGenerated,
+                  status: `Generated image ${colIndex + 1}/${numColumns} for scene ${scene.scene_id} ✓`
+                }));
+              } else {
+                throw new Error('No image data received from API');
+              }
+              
+            } catch (err) {
+              attempts++;
+              console.error(`Attempt ${attempts} failed for scene ${scene.scene_id} image ${colIndex + 1}:`, err);
+              
+              if (attempts >= maxRetries) {
+                setBatchImageProgress(prev => ({
+                  ...prev,
+                  failed: prev.failed + 1,
+                  current: totalGenerated,
+                  status: `Failed to generate image ${colIndex + 1} for scene ${scene.scene_id} after ${maxRetries} attempts ✗`
+                }));
+              }
             }
           }
-        }
+
+          return { colIndex, imageData, success };
+        });
+
+        // Wait for all images of this scene to complete
+        const results = await Promise.all(imagePromises);
+        
+        // Update storyboard images with all generated images for this scene
+        const sceneImages: { [key: string]: string } = {};
+        results.forEach(result => {
+          if (result.success && result.imageData) {
+            const imageKey = numColumns === 1 ? scene.scene_id.toString() : `${scene.scene_id}_${result.colIndex + 1}`;
+            sceneImages[imageKey] = result.imageData;
+          }
+        });
+        
+        setStoryboardImages(prev => ({
+          ...prev,
+          ...sceneImages
+        }));
+        
+        // Small delay to show the progress update
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       setBatchImageProgress(prev => ({
         ...prev,
-        status: `Batch generation complete! Generated: ${prev.current - prev.failed}, Failed: ${prev.failed}`
+        status: `Batch generation complete! Generated: ${totalGenerated}, Failed: ${prev.failed}`
       }));
       
     } catch (err) {
@@ -1993,12 +2069,42 @@ export default function Home() {
                   <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
                     <h4 className="text-lg font-bold text-white mb-3">Selected Story: {selectedStory.title}</h4>
                     <button
-                      onClick={handleStoryboardGeneration}
+                      onClick={() => handleStoryboardGeneration(1)}
                       disabled={storyboardsLoading}
                       className="px-8 py-3 bg-gradient-to-r from-green-500 to-blue-600 text-white font-semibold rounded-xl hover:from-green-600 hover:to-blue-700 disabled:opacity-50 transition"
                     >
                       {storyboardsLoading ? 'Generating Storyboard...' : 'Generate 30-Scene Storyboard'}
                     </button>
+                  </div>
+                )}
+
+                {/* Resume Generation Section - Show when there are partial scenes */}
+                {selectedStory && generatedStoryboard.length > 0 && generatedStoryboard.length < 30 && (
+                  <div className="bg-yellow-900/20 p-6 rounded-xl border border-yellow-700">
+                    <h4 className="text-lg font-bold text-yellow-200 mb-3">
+                      Partial Storyboard ({generatedStoryboard.length}/30 scenes)
+                    </h4>
+                    <p className="text-yellow-300 mb-4">
+                      Generation stopped at scene {generatedStoryboard.length}. You can resume or start over.
+                    </p>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => handleStoryboardGeneration(generatedStoryboard.length + 1)}
+                        disabled={storyboardsLoading}
+                        className="px-6 py-2 bg-gradient-to-r from-yellow-500 to-orange-600 text-white font-semibold rounded-xl hover:from-yellow-600 hover:to-orange-700 disabled:opacity-50 transition"
+                      >
+                        {storyboardsLoading ? 'Resuming...' : `Resume from Scene ${generatedStoryboard.length + 1}`}
+                      </button>
+                      <button
+                        onClick={() => handleStoryboardGeneration(1)}
+                        disabled={storyboardsLoading}
+                        className="px-6 py-2 bg-gradient-to-r from-green-500 to-blue-600 text-white font-semibold rounded-xl hover:from-green-600 hover:to-blue-700 disabled:opacity-50 transition"
+                      >
+                        {storyboardsLoading ? 'Restarting...' : 'Start Over'}
+                      </button>
+                    </div>
+                  </div>
+                )}
                     
                     {/* Progress Display */}
                     {storyboardsLoading && storyboardProgress.status && (
