@@ -11,8 +11,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Call Kokoro TTS API
-    const response = await fetch(`${kokoroUrl}/speak`, {
+    // Call Kokoro TTS API using the new /api/generate-voiceover-kokoro endpoint
+    const response = await fetch(`${kokoroUrl}/api/generate-voiceover-kokoro`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -35,12 +35,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the audio data as ArrayBuffer
-    const audioData = await response.arrayBuffer();
+    // The new endpoint returns JSON with base64 audio
+    const data = await response.json();
     
-    // Convert to base64 for frontend consumption
-    const base64Audio = Buffer.from(audioData).toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Audio}`;
+    if (!data.audio_base64) {
+      return NextResponse.json(
+        { error: 'No audio data returned from Kokoro API' },
+        { status: 500 }
+      );
+    }
+    
+    // Create data URL from the base64 audio
+    const audioUrl = `data:audio/wav;base64,${data.audio_base64}`;
 
     return NextResponse.json({
       success: true,
@@ -68,7 +74,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const response = await fetch(`${kokoroUrl}/voices`);
+    const response = await fetch(`${kokoroUrl}/api/voices-kokoro`);
     
     if (!response.ok) {
       const errorText = await response.text();
