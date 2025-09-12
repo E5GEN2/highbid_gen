@@ -581,7 +581,81 @@ export default function Home() {
     }
   };
 
-  // Generate image for a specific storyboard scene
+  // Generate image for a specific column of a storyboard scene
+  const generateStoryboardImageColumn = async (scene: StoryboardScene, colIndex: number) => {
+    if (!highbidApiUrl) {
+      setError('Highbid API URL is required for storyboard image generation');
+      return;
+    }
+
+    const numColumns = calculateImageColumns(voiceoverDurations[scene.scene_id]);
+    const imageKey = `${scene.scene_id}_${colIndex}`;
+    
+    console.log(`Generating image for scene ${scene.scene_id}, column ${colIndex + 1}/${numColumns}`);
+
+    setImageGenerationLoading(prev => ({ ...prev, [imageKey]: true }));
+    setError(null);
+
+    try {
+      const basePrompt = createFluxPrompt(scene, selectedStory?.visual_style).prompt;
+      
+      // Add temporal context for multi-column images
+      const timeStart = colIndex * 2;
+      const timeEnd = (colIndex + 1) * 2;
+      const enhancedPrompt = numColumns > 1 
+        ? `${basePrompt}, temporal context: action moment at ${timeStart}-${timeEnd} seconds`
+        : basePrompt;
+      
+      // Get dimensions from aspect ratio
+      let width, height;
+      switch (scene.visual_prompt.aspect_ratio) {
+        case '16:9':
+          width = 1024; height = 576;
+          break;
+        case '9:16':
+          width = 576; height = 1024;
+          break;
+        case '1:1':
+        default:
+          width = 1024; height = 1024;
+          break;
+      }
+
+      const response = await fetch('/api/generate-highbid-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: enhancedPrompt,
+          apiUrl: highbidApiUrl,
+          width,
+          height
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || `Failed to generate image for scene ${scene.scene_id}, column ${colIndex + 1}`);
+      }
+      
+      if (data.image) {
+        // Store the image with the appropriate key
+        const finalImageKey = numColumns === 1 ? scene.scene_id.toString() : imageKey;
+        setStoryboardImages(prev => ({ ...prev, [finalImageKey]: data.image }));
+      } else {
+        throw new Error('No image data received from API');
+      }
+      
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred generating storyboard image');
+    } finally {
+      setImageGenerationLoading(prev => ({ ...prev, [imageKey]: false }));
+    }
+  };
+
+  // Generate image for a specific storyboard scene (legacy function - now generates all columns)
   const generateStoryboardImage = async (scene: StoryboardScene) => {
     if (!highbidApiUrl) {
       setError('Highbid API URL is required for storyboard image generation');
@@ -2809,20 +2883,13 @@ export default function Home() {
                               
                               return (
                                 <div className={`${columnWidth} p-4`}>
-                                  <div className="flex justify-between items-center mb-2">
-                                    <label className="text-xs text-gray-500">
+                                  <div className="mb-2">
+                                    <label className="text-xs text-gray-500 block mb-2">
                                       Generated Images ({numColumns} {numColumns === 1 ? 'image' : 'images'})
                                       {voiceoverDurations[scene.scene_id] && (
                                         <span className="text-gray-600"> • {voiceoverDurations[scene.scene_id].toFixed(1)}s audio</span>
                                       )}
                                     </label>
-                                    <button
-                                      onClick={() => generateStoryboardImage(scene)}
-                                      disabled={imageGenerationLoading[scene.scene_id] || !highbidApiUrl}
-                                      className="px-3 py-1 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                      {imageGenerationLoading[scene.scene_id] ? 'Gen...' : `Generate ${numColumns}`}
-                                    </button>
                                   </div>
                                   
                                   {/* Multiple Image Columns */}
@@ -2853,7 +2920,7 @@ export default function Home() {
                                               />
                                             );
                                           })()
-                                        ) : imageGenerationLoading[scene.scene_id] ? (
+                                        ) : imageGenerationLoading[`${scene.scene_id}_${colIndex}`] ? (
                                           <div className="text-gray-400 text-center p-2">
                                             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600 mx-auto mb-1"></div>
                                             <p className="text-xs">Gen...</p>
@@ -2865,7 +2932,14 @@ export default function Home() {
                                             <p className="text-xs text-gray-600 mt-1">
                                               {Math.round(colIndex * 2)}-{Math.round((colIndex + 1) * 2)}s
                                             </p>
-                                            <label className="block mt-2">
+                                            <button
+                                              onClick={() => generateStoryboardImageColumn(scene, colIndex)}
+                                              disabled={imageGenerationLoading[`${scene.scene_id}_${colIndex}`] || !highbidApiUrl}
+                                              className="px-2 py-1 mt-2 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                              Generate
+                                            </button>
+                                            <label className="block mt-1">
                                               <span className="px-1 py-1 text-xs bg-gray-700 text-gray-300 rounded cursor-pointer hover:bg-gray-600">
                                                 Upload
                                               </span>
