@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+interface GeminiContentPart {
+  text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { prompt, apiKey } = await request.json();
@@ -124,7 +132,7 @@ export async function POST(request: NextRequest) {
     
     // Check if response contains inline image data (this is the correct format for gemini-2.5-flash-image-preview)
     if (data.candidates?.[0]?.content?.parts) {
-      const parts = data.candidates[0].content.parts;
+      const parts: GeminiContentPart[] = data.candidates[0].content.parts;
       
       // Find the part with inlineData (image)
       for (const part of parts) {
@@ -137,7 +145,7 @@ export async function POST(request: NextRequest) {
       
       // If no inline data found, check for text responses
       if (!imageData) {
-        const textPart = parts.find(part => part.text);
+        const textPart = parts.find((part: GeminiContentPart) => part.text);
         if (textPart) {
           console.log('Gemini returned text instead of image:', textPart.text.substring(0, 200));
         }
