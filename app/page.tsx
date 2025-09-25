@@ -1861,7 +1861,7 @@ export default function Home() {
                           : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                       }`}
                     >
-                      Gemini 2.0 Flash (Free)
+                      Gemini 2.5 (Requires Billing)
                     </button>
                     <button
                       onClick={() => setImageProvider('highbid')}
@@ -2051,7 +2051,7 @@ export default function Home() {
                   )}
                   {imageProvider === 'gemini' && !geminiApiKey && (
                     <div className="mt-3 text-yellow-400 text-sm">
-                      Please enter your Gemini API key above to generate images (Free tier supported!)
+                      Please enter your Gemini API key above (Requires billing enabled for image generation)
                     </div>
                   )}
                 </div>
@@ -2097,7 +2097,7 @@ export default function Home() {
                   >
                     {imagesLoading 
                       ? `Generating with ${imageProvider === 'highbid' ? 'Highbid' : imageProvider === 'gemini' ? 'Gemini' : 'OpenRouter'}...` 
-                      : `Generate with ${imageProvider === 'highbid' ? `Highbid (${imageWidth}x${imageHeight})` : imageProvider === 'gemini' ? 'Gemini (Free)' : 'OpenRouter'}`}
+                      : `Generate with ${imageProvider === 'highbid' ? `Highbid (${imageWidth}x${imageHeight})` : imageProvider === 'gemini' ? 'Gemini' : 'OpenRouter'}`}
                   </button>
                 </div>
 

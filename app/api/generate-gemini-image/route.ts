@@ -11,8 +11,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Use Gemini 2.0 Flash experimental model with image generation capabilities
-    const model = 'gemini-2.0-flash-exp';
+    // Note: Gemini image generation requires billing enabled
+    // Using gemini-2.5-flash-image-preview (aka "nano banana") - the latest model
+    // Free tier will get quota exceeded error
+    const model = 'gemini-2.5-flash-image-preview';
     
     // Create the request to generate an image using Gemini's native image generation
     const response = await fetch(
@@ -51,6 +53,18 @@ export async function POST(request: NextRequest) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('Gemini API Error:', errorText);
+      
+      // Check for quota/billing issues
+      if (errorText.includes('quota') || errorText.includes('billing') || response.status === 429) {
+        return NextResponse.json(
+          { 
+            error: 'Gemini image generation requires a paid API plan with billing enabled.',
+            details: 'The gemini-2.5-flash-image-preview model is not available in the free tier. Please enable billing in your Google AI Studio account or use OpenRouter/Highbid for image generation.',
+            requiresBilling: true
+          },
+          { status: 402 } // Payment Required
+        );
+      }
       
       // Check if this is because the model doesn't support image generation
       if (errorText.includes('does not support') || errorText.includes('image generation')) {
