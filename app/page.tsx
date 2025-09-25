@@ -588,15 +588,20 @@ export default function Home() {
 
   // Generate image for a specific column of a storyboard scene
   const generateStoryboardImageColumn = async (scene: StoryboardScene, colIndex: number) => {
-    if (!highbidApiUrl) {
-      setError('Highbid API URL is required for storyboard image generation');
+    const requiredKey = imageProvider === 'openrouter' ? apiKey : 
+                        imageProvider === 'gemini' ? googleTtsKey : highbidApiUrl;
+    const providerName = imageProvider === 'openrouter' ? 'OpenRouter API key' : 
+                         imageProvider === 'gemini' ? 'Gemini API key' : 'Highbid API URL';
+
+    if (!requiredKey) {
+      setError(`${providerName} is required for storyboard image generation`);
       return;
     }
 
     const numColumns = calculateImageColumns(voiceoverDurations[scene.scene_id]);
     const imageKey = `${scene.scene_id}_${colIndex}`;
     
-    console.log(`Generating image for scene ${scene.scene_id}, column ${colIndex + 1}/${numColumns}`);
+    console.log(`Generating image for scene ${scene.scene_id}, column ${colIndex + 1}/${numColumns} using ${imageProvider}`);
 
     setImageGenerationLoading(prev => ({ ...prev, [imageKey]: true }));
     setError(null);
@@ -611,7 +616,7 @@ export default function Home() {
         ? `${basePrompt}, temporal context: action moment at ${timeStart}-${timeEnd} seconds`
         : basePrompt;
       
-      // Get dimensions from aspect ratio
+      // Get dimensions from aspect ratio (only needed for Highbid)
       let width, height;
       switch (scene.visual_prompt.aspect_ratio) {
         case '16:9':
@@ -626,17 +631,20 @@ export default function Home() {
           break;
       }
 
-      const response = await fetch('/api/generate-highbid-image', {
+      const endpoint = imageProvider === 'openrouter' ? '/api/generate-image' : 
+                      imageProvider === 'gemini' ? '/api/generate-gemini-image' : '/api/generate-highbid-image';
+      const requestBody = imageProvider === 'openrouter' 
+        ? { prompt: enhancedPrompt, apiKey }
+        : imageProvider === 'gemini'
+          ? { prompt: enhancedPrompt, apiKey: googleTtsKey }
+          : { prompt: enhancedPrompt, apiUrl: highbidApiUrl, width, height };
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          prompt: enhancedPrompt,
-          apiUrl: highbidApiUrl,
-          width,
-          height
-        }),
+        body: JSON.stringify(requestBody),
       });
       
       const data = await response.json();
@@ -645,10 +653,12 @@ export default function Home() {
         throw new Error(data.error || `Failed to generate image for scene ${scene.scene_id}, column ${colIndex + 1}`);
       }
       
-      if (data.image) {
+      // Handle different response formats
+      const imageUrl = data.image || data.imageUrl || data.audioUrl;
+      if (imageUrl) {
         // Store the image with the appropriate key
         const finalImageKey = numColumns === 1 ? scene.scene_id.toString() : imageKey;
-        setStoryboardImages(prev => ({ ...prev, [finalImageKey]: data.image }));
+        setStoryboardImages(prev => ({ ...prev, [finalImageKey]: imageUrl }));
       } else {
         throw new Error('No image data received from API');
       }
@@ -753,8 +763,13 @@ export default function Home() {
 
   // Generate all storyboard images in batch with retry logic and progress
   const generateAllStoryboardImages = async () => {
-    if (!highbidApiUrl) {
-      setError('Highbid API URL is required for batch storyboard image generation');
+    const requiredKey = imageProvider === 'openrouter' ? apiKey : 
+                        imageProvider === 'gemini' ? googleTtsKey : highbidApiUrl;
+    const providerName = imageProvider === 'openrouter' ? 'OpenRouter API key' : 
+                         imageProvider === 'gemini' ? 'Gemini API key' : 'Highbid API URL';
+
+    if (!requiredKey) {
+      setError(`${providerName} is required for batch storyboard image generation`);
       return;
     }
 
@@ -842,17 +857,20 @@ export default function Home() {
                 await new Promise(resolve => setTimeout(resolve, 2000));
               }
               
-              const response = await fetch('/api/generate-highbid-image', {
+              const endpoint = imageProvider === 'openrouter' ? '/api/generate-image' : 
+                              imageProvider === 'gemini' ? '/api/generate-gemini-image' : '/api/generate-highbid-image';
+              const requestBody = imageProvider === 'openrouter' 
+                ? { prompt: enhancedPrompt, apiKey }
+                : imageProvider === 'gemini'
+                  ? { prompt: enhancedPrompt, apiKey: googleTtsKey }
+                  : { prompt: enhancedPrompt, apiUrl: highbidApiUrl, width, height };
+
+              const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                  prompt: enhancedPrompt,
-                  apiUrl: highbidApiUrl,
-                  width,
-                  height
-                }),
+                body: JSON.stringify(requestBody),
               });
               
               const data = await response.json();
@@ -861,8 +879,9 @@ export default function Home() {
                 throw new Error(data.error || `Failed to generate image ${colIndex + 1} for scene ${scene.scene_id}`);
               }
               
-              if (data.image) {
-                imageData = data.image;
+              const imageUrl = data.image || data.imageUrl || data.audioUrl;
+              if (imageUrl) {
+                imageData = imageUrl;
                 success = true;
                 totalGenerated++;
                 
@@ -2568,7 +2587,7 @@ export default function Home() {
                           </div>
                           <button
                             onClick={generateAllStoryboardImages}
-                            disabled={batchImageLoading || !highbidApiUrl}
+                            disabled={batchImageLoading || (imageProvider === 'openrouter' ? !apiKey : imageProvider === 'gemini' ? !googleTtsKey : !highbidApiUrl)}
                             className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                           >
                             {batchImageLoading ? 'Generating...' : 'Generate All'}
@@ -2958,7 +2977,7 @@ export default function Home() {
                                             </p>
                                             <button
                                               onClick={() => generateStoryboardImageColumn(scene, colIndex)}
-                                              disabled={imageGenerationLoading[`${scene.scene_id}_${colIndex}`] || !highbidApiUrl}
+                                              disabled={imageGenerationLoading[`${scene.scene_id}_${colIndex}`] || (imageProvider === 'openrouter' ? !apiKey : imageProvider === 'gemini' ? !googleTtsKey : !highbidApiUrl)}
                                               className="px-2 py-1 mt-2 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
                                               Generate
