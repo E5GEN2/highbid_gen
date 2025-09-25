@@ -146,7 +146,7 @@ export async function POST(request: NextRequest) {
       // If no inline data found, check for text responses
       if (!imageData) {
         const textPart = parts.find((part: GeminiContentPart) => part.text);
-        if (textPart) {
+        if (textPart && textPart.text) {
           console.log('Gemini returned text instead of image:', textPart.text.substring(0, 200));
         }
       }
