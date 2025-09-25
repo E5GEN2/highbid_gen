@@ -119,36 +119,29 @@ export async function POST(request: NextRequest) {
     const data = await response.json();
     console.log('Gemini response structure:', JSON.stringify(data, null, 2).substring(0, 500));
     
-    // Check different possible response formats
+    // Parse the response to extract image data
     let imageData = null;
     
-    // Check if response contains base64 image directly
-    if (data.candidates?.[0]?.content?.parts?.[0]?.inlineData) {
-      const inlineData = data.candidates[0].content.parts[0].inlineData;
-      imageData = `data:${inlineData.mimeType || 'image/png'};base64,${inlineData.data}`;
-    } 
-    // Check if response contains image in text format
-    else if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      const text = data.candidates[0].content.parts[0].text;
-      // Check if the text contains base64 image data
-      if (text.includes('data:image')) {
-        imageData = text;
-      } else {
-        try {
-          // Try parsing as JSON in case it returns structured data
-          const parsed = JSON.parse(text);
-          if (parsed.image) {
-            imageData = parsed.image.startsWith('data:') ? parsed.image : `data:image/png;base64,${parsed.image}`;
-          }
-        } catch {
-          // Not JSON, might be a description or error
-          console.log('Gemini returned text instead of image:', text.substring(0, 200));
+    // Check if response contains inline image data (this is the correct format for gemini-2.5-flash-image-preview)
+    if (data.candidates?.[0]?.content?.parts) {
+      const parts = data.candidates[0].content.parts;
+      
+      // Find the part with inlineData (image)
+      for (const part of parts) {
+        if (part.inlineData) {
+          const inlineData = part.inlineData;
+          imageData = `data:${inlineData.mimeType || 'image/png'};base64,${inlineData.data}`;
+          break;
         }
       }
-    }
-    // Check if the response has the image in the expected schema format
-    else if (data.image) {
-      imageData = data.image.startsWith('data:') ? data.image : `data:image/png;base64,${data.image}`;
+      
+      // If no inline data found, check for text responses
+      if (!imageData) {
+        const textPart = parts.find(part => part.text);
+        if (textPart) {
+          console.log('Gemini returned text instead of image:', textPart.text.substring(0, 200));
+        }
+      }
     }
 
     if (!imageData) {
