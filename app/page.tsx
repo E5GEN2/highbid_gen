@@ -197,7 +197,7 @@ export default function Home() {
   const [imagePrompts, setImagePrompts] = useState<string[]>(['']);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
   const [imagesLoading, setImagesLoading] = useState(false);
-  const [imageProvider, setImageProvider] = useState<'openrouter' | 'highbid'>('openrouter');
+  const [imageProvider, setImageProvider] = useState<'openrouter' | 'highbid' | 'gemini'>('openrouter');
   const [imageWidth, setImageWidth] = useState(1024);
   const [imageHeight, setImageHeight] = useState(1024);
   
@@ -532,8 +532,10 @@ export default function Home() {
   };
 
   const handleImageGeneration = async () => {
-    const requiredKey = imageProvider === 'openrouter' ? apiKey : highbidApiUrl;
-    const providerName = imageProvider === 'openrouter' ? 'OpenRouter API key' : 'Highbid API URL';
+    const requiredKey = imageProvider === 'openrouter' ? apiKey : 
+                        imageProvider === 'gemini' ? geminiApiKey : highbidApiUrl;
+    const providerName = imageProvider === 'openrouter' ? 'OpenRouter API key' : 
+                         imageProvider === 'gemini' ? 'Gemini API key' : 'Highbid API URL';
     
     if (!requiredKey || imagePrompts.filter(p => p.trim()).length === 0) {
       setError(`Please provide ${providerName} and at least one image prompt`);
@@ -549,10 +551,13 @@ export default function Home() {
       for (const prompt of imagePrompts) {
         if (!prompt.trim()) continue;
         
-        const endpoint = imageProvider === 'openrouter' ? '/api/generate-image' : '/api/generate-highbid-image';
+        const endpoint = imageProvider === 'openrouter' ? '/api/generate-image' : 
+                        imageProvider === 'gemini' ? '/api/generate-gemini-image' : '/api/generate-highbid-image';
         const requestBody = imageProvider === 'openrouter' 
           ? { prompt, apiKey }
-          : { prompt, apiUrl: highbidApiUrl, width: imageWidth, height: imageHeight };
+          : imageProvider === 'gemini'
+            ? { prompt, apiKey: geminiApiKey }
+            : { prompt, apiUrl: highbidApiUrl, width: imageWidth, height: imageHeight };
         
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -1837,7 +1842,7 @@ export default function Home() {
                   <label className="block text-white text-sm font-semibold mb-3">
                     Image Generation Provider
                   </label>
-                  <div className="flex gap-4 mb-4">
+                  <div className="flex gap-4 mb-4 flex-wrap">
                     <button
                       onClick={() => setImageProvider('openrouter')}
                       className={`px-4 py-2 rounded-xl transition ${
@@ -1846,7 +1851,17 @@ export default function Home() {
                           : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                       }`}
                     >
-                      OpenRouter (Gemini)
+                      OpenRouter
+                    </button>
+                    <button
+                      onClick={() => setImageProvider('gemini')}
+                      className={`px-4 py-2 rounded-xl transition ${
+                        imageProvider === 'gemini'
+                          ? 'bg-green-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      Gemini 2.0 Flash (Free)
                     </button>
                     <button
                       onClick={() => setImageProvider('highbid')}
@@ -1856,7 +1871,7 @@ export default function Home() {
                           : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                       }`}
                     >
-                      Highbid (Flux - High Quality)
+                      Highbid (Flux)
                     </button>
                   </div>
                   
@@ -2034,6 +2049,11 @@ export default function Home() {
                       Please enter your OpenRouter API key above to generate images
                     </div>
                   )}
+                  {imageProvider === 'gemini' && !geminiApiKey && (
+                    <div className="mt-3 text-yellow-400 text-sm">
+                      Please enter your Gemini API key above to generate images (Free tier supported!)
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-4">
@@ -2066,16 +2086,18 @@ export default function Home() {
                   </button>
                   <button
                     onClick={handleImageGeneration}
-                    disabled={imagesLoading || (imageProvider === 'openrouter' ? !apiKey : !highbidApiUrl)}
+                    disabled={imagesLoading || (imageProvider === 'openrouter' ? !apiKey : imageProvider === 'gemini' ? !geminiApiKey : !highbidApiUrl)}
                     className={`px-8 py-3 text-white font-semibold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition ${
                       imageProvider === 'highbid' 
                         ? 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700'
-                        : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700'
+                        : imageProvider === 'gemini'
+                          ? 'bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-600 hover:to-teal-700'
+                          : 'bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700'
                     }`}
                   >
                     {imagesLoading 
-                      ? `Generating with ${imageProvider === 'highbid' ? 'Highbid' : 'OpenRouter'}...` 
-                      : `Generate with ${imageProvider === 'highbid' ? `Highbid (${imageWidth}x${imageHeight})` : 'OpenRouter'}`}
+                      ? `Generating with ${imageProvider === 'highbid' ? 'Highbid' : imageProvider === 'gemini' ? 'Gemini' : 'OpenRouter'}...` 
+                      : `Generate with ${imageProvider === 'highbid' ? `Highbid (${imageWidth}x${imageHeight})` : imageProvider === 'gemini' ? 'Gemini (Free)' : 'OpenRouter'}`}
                   </button>
                 </div>
 

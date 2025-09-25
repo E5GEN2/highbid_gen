@@ -9,7 +9,13 @@
       "Bash(git commit:*)",
       "Bash(git reset:*)",
       "WebFetch(domain:openrouter.ai)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(node:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run build:*)",
+      "Bash(awk:*)",
+      "WebFetch(domain:highbid-gen.onrender.com)",
+      "Bash(npm run lint)"
     ],
     "deny": [],
     "ask": []
