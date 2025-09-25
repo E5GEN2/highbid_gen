@@ -35,24 +35,14 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: `Generate an image of: ${prompt}\n\nIMPORTANT: Generate a high-quality, detailed image based on this description.`
+              text: `Generate an image: ${prompt}`
             }]
           }],
           generationConfig: {
-            temperature: 0.4,
-            topK: 32,
-            topP: 1,
-            maxOutputTokens: 8192,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "object",
-              properties: {
-                image: {
-                  type: "string",
-                  description: "Base64 encoded image data"
-                }
-              }
-            }
+            temperature: 0.8,
+            topK: 40,
+            topP: 0.95,
+            maxOutputTokens: 8192
           }
         })
       }
