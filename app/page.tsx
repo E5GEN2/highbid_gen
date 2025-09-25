@@ -533,7 +533,7 @@ export default function Home() {
 
   const handleImageGeneration = async () => {
     const requiredKey = imageProvider === 'openrouter' ? apiKey : 
-                        imageProvider === 'gemini' ? geminiApiKey : highbidApiUrl;
+                        imageProvider === 'gemini' ? googleTtsKey : highbidApiUrl;
     const providerName = imageProvider === 'openrouter' ? 'OpenRouter API key' : 
                          imageProvider === 'gemini' ? 'Gemini API key' : 'Highbid API URL';
     
@@ -556,7 +556,7 @@ export default function Home() {
         const requestBody = imageProvider === 'openrouter' 
           ? { prompt, apiKey }
           : imageProvider === 'gemini'
-            ? { prompt, apiKey: geminiApiKey }
+            ? { prompt, apiKey: googleTtsKey }
             : { prompt, apiUrl: highbidApiUrl, width: imageWidth, height: imageHeight };
         
         const response = await fetch(endpoint, {
@@ -2049,7 +2049,7 @@ export default function Home() {
                       Please enter your OpenRouter API key above to generate images
                     </div>
                   )}
-                  {imageProvider === 'gemini' && !geminiApiKey && (
+                  {imageProvider === 'gemini' && !googleTtsKey && (
                     <div className="mt-3 text-yellow-400 text-sm">
                       Please enter your Gemini API key above (Requires billing enabled for image generation)
                     </div>
@@ -2086,7 +2086,7 @@ export default function Home() {
                   </button>
                   <button
                     onClick={handleImageGeneration}
-                    disabled={imagesLoading || (imageProvider === 'openrouter' ? !apiKey : imageProvider === 'gemini' ? !geminiApiKey : !highbidApiUrl)}
+                    disabled={imagesLoading || (imageProvider === 'openrouter' ? !apiKey : imageProvider === 'gemini' ? !googleTtsKey : !highbidApiUrl)}
                     className={`px-8 py-3 text-white font-semibold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition ${
                       imageProvider === 'highbid' 
                         ? 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700'
