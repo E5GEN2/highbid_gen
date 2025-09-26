@@ -1443,7 +1443,7 @@ export default function Home() {
         console.log('📁 Images folder files:', Object.keys(imagesFolder.files));
         for (const [filename, file] of Object.entries(imagesFolder.files)) {
           console.log('🔍 Checking file:', filename, 'isDir:', file.dir);
-          if (!file.dir && filename.includes('scene-')) {
+          if (!file.dir && filename.includes('scene-') && filename.match(/\.(png|jpg|jpeg)$/i)) {
             // Extract the full key (e.g., "scene-1_0" from "images/scene-1_0.png")
             const baseName = filename.split('/').pop() || filename; // Remove folder path
             const imageKey = baseName.replace(/\.(png|jpg|jpeg)$/, '');
@@ -1467,9 +1467,13 @@ export default function Home() {
       // Restore voiceovers
       const voiceovers: { [key: string]: string } = {};
       const voicesFolder = zip.folder('voiceovers');
+      console.log('🎤 Processing voiceovers folder...', voicesFolder ? 'found' : 'not found');
+      
       if (voicesFolder) {
+        console.log('📁 Voiceovers folder files:', Object.keys(voicesFolder.files));
         for (const [filename, file] of Object.entries(voicesFolder.files)) {
-          if (!file.dir && filename.startsWith('scene-')) {
+          console.log('🔍 Checking voiceover file:', filename, 'isDir:', file.dir);
+          if (!file.dir && filename.includes('scene-') && filename.match(/\.(wav|mp3|mpeg)$/i)) {
             const sceneId = filename.match(/scene-(\d+)/)?.[1];
             console.log('Processing voiceover:', filename, 'Scene ID:', sceneId);
             if (sceneId) {
@@ -1477,7 +1481,7 @@ export default function Home() {
                 // Get base64 directly from JSZip to avoid type issues
                 const base64 = await file.async('base64');
                 const extension = filename.endsWith('.wav') ? 'wav' : 'mpeg';
-                voiceovers[sceneId] = `data:audio/${extension};base64,${base64}`;
+                voiceovers[parseInt(sceneId)] = `data:audio/${extension};base64,${base64}`;
                 console.log('✅ Successfully processed voiceover:', sceneId);
               } catch (err) {
                 console.error('❌ Failed to process voiceover:', filename, err);
