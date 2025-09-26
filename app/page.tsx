@@ -1434,58 +1434,46 @@ export default function Home() {
       setGeneratedStoryboard(storyboardData);
       setTargetSceneCount(metadata.targetSceneCount || 30);
       
-      // Restore images
+      // Restore images - iterate through all ZIP files and filter for images folder
       const images: { [key: string]: string } = {};
-      const imagesFolder = zip.folder('images');
-      console.log('🖼️ Processing images folder...', imagesFolder ? 'found' : 'not found');
+      console.log('🖼️ Processing images...');
       
-      if (imagesFolder) {
-        console.log('📁 Images folder files:', Object.keys(imagesFolder.files));
-        for (const [filename, file] of Object.entries(imagesFolder.files)) {
-          console.log('🔍 Checking file:', filename, 'isDir:', file.dir);
-          if (!file.dir && filename.includes('scene-') && filename.match(/\.(png|jpg|jpeg)$/i)) {
-            // Extract the full key (e.g., "scene-1_0" from "images/scene-1_0.png")
-            const baseName = filename.split('/').pop() || filename; // Remove folder path
-            const imageKey = baseName.replace(/\.(png|jpg|jpeg)$/, '');
-            console.log('Processing image:', filename, 'Key:', imageKey);
-            
-            try {
-              // Get base64 directly from JSZip to avoid type issues
-              const base64 = await file.async('base64');
-              const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
-              images[imageKey] = `data:image/${extension};base64,${base64}`;
-              console.log('✅ Successfully processed image:', imageKey);
-            } catch (err) {
-              console.error('❌ Failed to process image:', filename, err);
-            }
+      for (const [filename, file] of Object.entries(zip.files)) {
+        if (!file.dir && filename.startsWith('images/') && filename.match(/\.(png|jpg|jpeg)$/i)) {
+          // Extract the key (e.g., "scene-1_0" from "images/scene-1_0.png")
+          const baseName = filename.split('/').pop() || filename;
+          const imageKey = baseName.replace(/\.(png|jpg|jpeg)$/i, '');
+          console.log('🔍 Processing image:', filename, 'Key:', imageKey);
+          
+          try {
+            const base64 = await file.async('base64');
+            const extension = filename.toLowerCase().endsWith('.png') ? 'png' : 'jpeg';
+            images[imageKey] = `data:image/${extension};base64,${base64}`;
+            console.log('✅ Successfully processed image:', imageKey);
+          } catch (err) {
+            console.error('❌ Failed to process image:', filename, err);
           }
         }
       }
       console.log('Restored images:', Object.keys(images));
       setStoryboardImages(images);
       
-      // Restore voiceovers
+      // Restore voiceovers - iterate through all ZIP files and filter for voiceovers folder  
       const voiceovers: { [key: string]: string } = {};
-      const voicesFolder = zip.folder('voiceovers');
-      console.log('🎤 Processing voiceovers folder...', voicesFolder ? 'found' : 'not found');
+      console.log('🎤 Processing voiceovers...');
       
-      if (voicesFolder) {
-        console.log('📁 Voiceovers folder files:', Object.keys(voicesFolder.files));
-        for (const [filename, file] of Object.entries(voicesFolder.files)) {
-          console.log('🔍 Checking voiceover file:', filename, 'isDir:', file.dir);
-          if (!file.dir && filename.includes('scene-') && filename.match(/\.(wav|mp3|mpeg)$/i)) {
-            const sceneId = filename.match(/scene-(\d+)/)?.[1];
-            console.log('Processing voiceover:', filename, 'Scene ID:', sceneId);
-            if (sceneId) {
-              try {
-                // Get base64 directly from JSZip to avoid type issues
-                const base64 = await file.async('base64');
-                const extension = filename.endsWith('.wav') ? 'wav' : 'mpeg';
-                voiceovers[parseInt(sceneId)] = `data:audio/${extension};base64,${base64}`;
-                console.log('✅ Successfully processed voiceover:', sceneId);
-              } catch (err) {
-                console.error('❌ Failed to process voiceover:', filename, err);
-              }
+      for (const [filename, file] of Object.entries(zip.files)) {
+        if (!file.dir && filename.startsWith('voiceovers/') && filename.match(/\.(wav|mp3|mpeg)$/i)) {
+          const sceneId = filename.match(/scene-(\d+)/)?.[1];
+          console.log('🔍 Processing voiceover:', filename, 'Scene ID:', sceneId);
+          if (sceneId) {
+            try {
+              const base64 = await file.async('base64');
+              const extension = filename.toLowerCase().endsWith('.wav') ? 'wav' : 'mpeg';
+              voiceovers[parseInt(sceneId)] = `data:audio/${extension};base64,${base64}`;
+              console.log('✅ Successfully processed voiceover:', sceneId);
+            } catch (err) {
+              console.error('❌ Failed to process voiceover:', filename, err);
             }
           }
         }
