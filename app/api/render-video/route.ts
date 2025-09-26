@@ -23,8 +23,9 @@ export async function POST(request: NextRequest) {
     const zipBuffer = Buffer.from(await zipFile.arrayBuffer());
 
     // Create job in queue
+    let job;
     try {
-      const job = await createJob(jobId);
+      job = await createJob(jobId);
       console.log('✅ Created render job:', jobId);
     } catch (redisError) {
       console.error('❌ Redis job creation failed:', redisError);
