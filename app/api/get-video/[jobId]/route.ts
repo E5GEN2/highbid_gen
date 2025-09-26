@@ -5,10 +5,10 @@ import { tmpdir } from 'os';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { jobId: string } }
+  { params }: { params: Promise<{ jobId: string }> }
 ) {
   try {
-    const jobId = params.jobId;
+    const { jobId } = await params;
     console.log(`📹 Looking for video file for job: ${jobId}`);
 
     // Try to find the video file in temp directory
