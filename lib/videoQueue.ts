@@ -13,7 +13,7 @@ interface RenderJob {
 
 // Create Redis client
 const redis = createClient({
-  url: process.env.REDIS_URL || 'redis://default:ATFEAAIncDIwZDViMWI5NzllYmI0NGY0YTk3NTdmNWM0NzlmZGE2ZnAyMTI2MTI@learning-ostrich-12612.upstash.io:6379'
+  url: process.env.REDIS_URL || 'rediss://default:ATFEAAIncDIwZDViMWI5NzllYmI0NGY0YTk3NTdmNWM0NzlmZGE2ZnAyMTI2MTI@learning-ostrich-12612.upstash.io:6380'
 });
 
 redis.on('error', (err) => console.error('Redis Client Error', err));
