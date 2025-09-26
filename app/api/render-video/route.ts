@@ -9,7 +9,7 @@ export async function POST(request: NextRequest) {
     const formData = await Promise.race([
       request.formData(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('FormData parsing timeout')), 10000))
-    ]);
+    ]) as FormData;
     console.log('✅ Form data parsed successfully');
     const zipFile = formData.get('projectZip') as File;
 
