@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: `Generate an image: ${prompt}`
+              text: prompt
             }]
           }],
           generationConfig: {

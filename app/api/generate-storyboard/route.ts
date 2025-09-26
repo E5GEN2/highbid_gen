@@ -112,7 +112,7 @@ interface StoryboardScene {
 
 const STORYBOARD_PROMPT = `SYSTEM:
 You are a storyboard generator.
-You must output exactly 5 lines of JSON (JSONL format) for the requested scene range. 
+You must output JSON lines (JSONL format) for the requested scene range. 
 Each line must be a valid JSON object conforming to the schema below.
 No prose, no explanations, no comments, no markdown formatting, no code blocks.
 
@@ -156,11 +156,12 @@ REQUIRED FIELDS:
 }
 
 RULES:
-- Output 5 lines for the requested scene range, one JSON object per line.
+- Output one JSON object per line for the requested scene range.
 - Each scene covers 2000 ms (2 seconds).
 - CRITICAL: vo_text must be ≤7 words maximum to fit 2-second timing.
 - CRITICAL: Every scene must be a DIRECT CONSEQUENCE of previous events.
 - CRITICAL: Use "therefore/but/however" logic between ALL scenes, never "and then".
+- CRITICAL: For shorter storyboards, compress the ENTIRE story arc into the available scenes.
 - caused_by must reference a SPECIFIC action from a previous scene that triggers this one
 - leads_to must create a concrete problem/opportunity that the next scene MUST address
 - callback_to should reference earlier setups when paying them off (weapons, allies, information)
@@ -168,7 +169,7 @@ RULES:
 - Example causality: "Scene 3: Hero destroys bridge" → "Scene 4: Enemy forced to airborne assault" → "Scene 5: Hero hijacks enemy aircraft"
 - Avoid generic actions: specify WHO does WHAT causing WHAT CONSEQUENCE
 - Use the story's domino_sequences and plot_threads to maintain causality
-- Scene 30 should have beat="cta" if a call_to_action exists.
+- CRITICAL: Fit ALL story elements (goal, stakes, twist, resolution) into the target scene count.
 - IMPORTANT: Do not wrap output in code blocks or markdown formatting.`;
 
 export async function POST(request: NextRequest) {
@@ -233,7 +234,11 @@ export async function POST(request: NextRequest) {
       .filter(g => g !== '')
       .join('\n');
     
-    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}\n\nBEAT DISTRIBUTION FOR THIS BATCH:\n${beatGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a ${totalScenes}-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
+    // Add story compression guidance for shorter videos
+    const compressionGuidance = totalScenes < 20 ? 
+      `\n\nCRITICAL STORY COMPRESSION FOR ${totalScenes} SCENES:\n- You MUST fit the protagonist's entire journey (goal + stakes + twist + resolution) into ${totalScenes} scenes\n- Every story element from the Story Bulb MUST appear: premise, goal, stakes, constraint, twist, call_to_action\n- Compress multiple story beats into single scenes if necessary\n- Scene 1 should establish the premise and protagonist goal\n- Final scene should deliver the twist and resolution\n- NO story elements can be omitted - compress, don't cut` : '';
+    
+    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}${compressionGuidance}\n\nBEAT DISTRIBUTION FOR THIS BATCH:\n${beatGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a ${totalScenes}-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
     
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
