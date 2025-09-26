@@ -23,7 +23,7 @@ async function updateProgress(jobId: string, progress: number, status: string, t
 
   // Also try Redis (may fail silently)
   try {
-    await updateJob(jobId, { status: status as any, progress });
+    await updateJob(jobId, { status: status as 'pending' | 'processing' | 'completed' | 'failed', progress });
   } catch (error) {
     console.log(`⚠️ Redis update failed (using file fallback):`, error);
   }
@@ -175,13 +175,12 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
     console.log(`🎬 [${jobId}] Concatenating segments into final video...`);
     await execAsync(concatCmd);
 
-    // Read and encode video
+    // Read video file size for logging
     await updateProgress(jobId, 95, 'processing', tempDir);
-    const { readFileSync } = await import('fs');
-    const videoBuffer = readFileSync(finalVideoPath);
-    const videoBase64 = `data:video/mp4;base64,${videoBuffer.toString('base64')}`;
+    const { statSync } = await import('fs');
+    const videoStats = statSync(finalVideoPath);
 
-    console.log(`📹 [${jobId}] Final video size:`, videoBuffer.length, 'bytes');
+    console.log(`📹 [${jobId}] Final video size:`, videoStats.size, 'bytes');
 
     // Don't clean up immediately - leave video file for retrieval
     console.log(`📁 [${jobId}] Video file available at: ${finalVideoPath}`);
