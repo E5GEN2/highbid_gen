@@ -19,6 +19,9 @@ export async function POST(request: NextRequest) {
     // Create a job ID
     const jobId = randomBytes(16).toString('hex');
 
+    // Convert ZIP to buffer immediately (this is fast)
+    const zipBuffer = Buffer.from(await zipFile.arrayBuffer());
+
     // Create job in queue
     const job = await createJob(jobId);
     console.log('✅ Created render job:', jobId);
@@ -26,8 +29,7 @@ export async function POST(request: NextRequest) {
     // Return job ID immediately - process ZIP in background
     setImmediate(async () => {
       try {
-        console.log('🔄 Starting background ZIP processing...');
-        const zipBuffer = Buffer.from(await zipFile.arrayBuffer());
+        console.log('🔄 Starting background video processing...');
         await processVideoInBackground(jobId, zipBuffer);
       } catch (err) {
         console.error('❌ Background processing error:', err);
