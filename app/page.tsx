@@ -1874,7 +1874,7 @@ export default function Home() {
                                 className="px-4 py-2 bg-gradient-to-r from-green-500 to-blue-600 text-white text-sm font-semibold rounded-lg hover:from-green-600 hover:to-blue-700 disabled:opacity-50 transition"
                               >
                                 {storyboardsLoading ? (
-                                  storyboardProgress.status ? `${storyboardProgress.currentScene}/30...` : 'Generating...'
+                                  storyboardProgress.status ? `${storyboardProgress.currentScene}/${storyboardProgress.totalScenes}...` : 'Generating...'
                                 ) : 'Generate Storyboard →'}
                               </button>
                             )}
@@ -2228,10 +2228,10 @@ export default function Home() {
                 )}
 
                 {/* Resume Generation Section - Show when there are partial scenes */}
-                {selectedStory && generatedStoryboard.length > 0 && generatedStoryboard.length < 30 && (
+                {selectedStory && generatedStoryboard.length > 0 && generatedStoryboard.length < (selectedStory.target_scene_count || 30) && (
                   <div className="bg-yellow-900/20 p-6 rounded-xl border border-yellow-700">
                     <h4 className="text-lg font-bold text-yellow-200 mb-3">
-                      Partial Storyboard ({generatedStoryboard.length}/30 scenes)
+                      Partial Storyboard ({generatedStoryboard.length}/{selectedStory.target_scene_count || 30} scenes)
                     </h4>
                     <p className="text-yellow-300 mb-4">
                       Generation stopped at scene {generatedStoryboard.length}. You can resume or start over.
@@ -3116,27 +3116,27 @@ export default function Home() {
                           <div className="bg-gray-800/50 p-4 rounded-xl">
                             <div className="text-2xl mb-2">📝</div>
                             <div className="text-white font-semibold">Storyboard</div>
-                            <div className="text-sm text-gray-400">{generatedStoryboard.length}/30 scenes</div>
-                            <div className={`text-xs mt-1 ${generatedStoryboard.length === 30 ? 'text-green-400' : 'text-yellow-400'}`}>
-                              {generatedStoryboard.length === 30 ? '✓ Complete' : '⚠ Incomplete'}
+                            <div className="text-sm text-gray-400">{generatedStoryboard.length}/{selectedStory?.target_scene_count || 30} scenes</div>
+                            <div className={`text-xs mt-1 ${generatedStoryboard.length === (selectedStory?.target_scene_count || 30) ? 'text-green-400' : 'text-yellow-400'}`}>
+                              {generatedStoryboard.length === (selectedStory?.target_scene_count || 30) ? '✓ Complete' : '⚠ Incomplete'}
                             </div>
                           </div>
                           
                           <div className="bg-gray-800/50 p-4 rounded-xl">
                             <div className="text-2xl mb-2">🖼️</div>
                             <div className="text-white font-semibold">Images</div>
-                            <div className="text-sm text-gray-400">{Object.keys(storyboardImages).length}/30 images</div>
-                            <div className={`text-xs mt-1 ${Object.keys(storyboardImages).length === 30 ? 'text-green-400' : Object.keys(storyboardImages).length > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
-                              {Object.keys(storyboardImages).length === 30 ? '✓ Complete' : Object.keys(storyboardImages).length > 0 ? '⚠ Partial' : '✗ Missing'}
+                            <div className="text-sm text-gray-400">{Object.keys(storyboardImages).length}/{selectedStory?.target_scene_count || 30} images</div>
+                            <div className={`text-xs mt-1 ${Object.keys(storyboardImages).length === (selectedStory?.target_scene_count || 30) ? 'text-green-400' : Object.keys(storyboardImages).length > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              {Object.keys(storyboardImages).length === (selectedStory?.target_scene_count || 30) ? '✓ Complete' : Object.keys(storyboardImages).length > 0 ? '⚠ Partial' : '✗ Missing'}
                             </div>
                           </div>
                           
                           <div className="bg-gray-800/50 p-4 rounded-xl">
                             <div className="text-2xl mb-2">🎤</div>
                             <div className="text-white font-semibold">Voiceovers</div>
-                            <div className="text-sm text-gray-400">{Object.keys(storyboardVoiceovers).length}/30 audio</div>
-                            <div className={`text-xs mt-1 ${Object.keys(storyboardVoiceovers).length === 30 ? 'text-green-400' : Object.keys(storyboardVoiceovers).length > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
-                              {Object.keys(storyboardVoiceovers).length === 30 ? '✓ Complete' : Object.keys(storyboardVoiceovers).length > 0 ? '⚠ Partial' : '✗ Missing'}
+                            <div className="text-sm text-gray-400">{Object.keys(storyboardVoiceovers).length}/{selectedStory?.target_scene_count || 30} audio</div>
+                            <div className={`text-xs mt-1 ${Object.keys(storyboardVoiceovers).length === (selectedStory?.target_scene_count || 30) ? 'text-green-400' : Object.keys(storyboardVoiceovers).length > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              {Object.keys(storyboardVoiceovers).length === (selectedStory?.target_scene_count || 30) ? '✓ Complete' : Object.keys(storyboardVoiceovers).length > 0 ? '⚠ Partial' : '✗ Missing'}
                             </div>
                           </div>
                         </div>
@@ -3499,21 +3499,21 @@ export default function Home() {
                       <div className="grid grid-cols-3 gap-6">
                         <div>
                           <div className="text-sm text-gray-400 mb-2">Images Generated</div>
-                          <div className="text-white font-semibold">{Object.keys(storyboardImages).length}/30</div>
+                          <div className="text-white font-semibold">{Object.keys(storyboardImages).length}/{selectedStory?.target_scene_count || 30}</div>
                           <div className="w-full bg-gray-800 rounded-full h-2 mt-2">
                             <div 
                               className="bg-green-500 h-2 rounded-full transition-all"
-                              style={{ width: `${(Object.keys(storyboardImages).length / 30) * 100}%` }}
+                              style={{ width: `${(Object.keys(storyboardImages).length / (selectedStory?.target_scene_count || 30)) * 100}%` }}
                             ></div>
                           </div>
                         </div>
                         <div>
                           <div className="text-sm text-gray-400 mb-2">Voiceovers Generated</div>
-                          <div className="text-white font-semibold">{Object.keys(storyboardVoiceovers).length}/30</div>
+                          <div className="text-white font-semibold">{Object.keys(storyboardVoiceovers).length}/{selectedStory?.target_scene_count || 30}</div>
                           <div className="w-full bg-gray-800 rounded-full h-2 mt-2">
                             <div 
                               className="bg-blue-500 h-2 rounded-full transition-all"
-                              style={{ width: `${(Object.keys(storyboardVoiceovers).length / 30) * 100}%` }}
+                              style={{ width: `${(Object.keys(storyboardVoiceovers).length / (selectedStory?.target_scene_count || 30)) * 100}%` }}
                             ></div>
                           </div>
                         </div>
