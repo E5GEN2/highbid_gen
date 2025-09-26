@@ -3943,56 +3943,44 @@ export default function Home() {
                     <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
                       <h4 className="text-lg font-bold text-white mb-4">Export & Share</h4>
                       <div className="flex gap-4">
-                        <button 
+                        <button
                           onClick={() => {
                             if (finalVideos.length > 0) {
-                              const videoData = JSON.parse(atob(finalVideos[0].split(',')[1]));
-                              const exportData = {
-                                ...videoData,
-                                exportFormat: 'mobile',
-                                aspectRatio: '9:16',
-                                resolution: '1080x1920'
-                              };
-                              const dataStr = JSON.stringify(exportData, null, 2);
-                              const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-                              const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-mobile.json`;
+                              console.log('📥 Downloading video for mobile...');
+                              const videoUrl = finalVideos[0];
+                              const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-mobile.mp4`;
                               const linkElement = document.createElement('a');
-                              linkElement.setAttribute('href', dataUri);
+                              linkElement.setAttribute('href', videoUrl);
                               linkElement.setAttribute('download', exportFileDefaultName);
                               linkElement.click();
+                              console.log('✅ Download initiated:', exportFileDefaultName);
                             }
                           }}
                           className="px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition"
                         >
-                          📱 Download for Mobile
+                          📱 Download Video
                         </button>
-                        <button 
+                        <button
                           onClick={() => {
                             if (finalVideos.length > 0) {
-                              const videoData = JSON.parse(atob(finalVideos[0].split(',')[1]));
-                              const exportData = {
-                                ...videoData,
-                                exportFormat: 'desktop',
-                                aspectRatio: '16:9',
-                                resolution: '1920x1080'
-                              };
-                              const dataStr = JSON.stringify(exportData, null, 2);
-                              const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-                              const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-desktop.json`;
-                              const linkElement = document.createElement('a');
-                              linkElement.setAttribute('href', dataUri);
-                              linkElement.setAttribute('download', exportFileDefaultName);
-                              linkElement.click();
+                              console.log('📋 Copying video URL to clipboard...');
+                              navigator.clipboard.writeText(finalVideos[0]).then(() => {
+                                alert('Video URL copied to clipboard!');
+                                console.log('✅ Video URL copied to clipboard');
+                              }).catch((err) => {
+                                console.error('❌ Failed to copy to clipboard:', err);
+                                alert('Failed to copy to clipboard');
+                              });
                             }
                           }}
                           className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition"
                         >
-                          💻 Download for Desktop
+                          📋 Copy Video URL
                         </button>
-                        <button 
+                        <button
                           onClick={() => {
                             if (finalVideos.length > 0) {
-                              const videoData = JSON.parse(atob(finalVideos[0].split(',')[1]));
+                              console.log('📤 Sharing project metadata...');
                               const shareData = {
                                 title: selectedStory?.title,
                                 premise: selectedStory?.premise,
@@ -4002,11 +3990,13 @@ export default function Home() {
                                 timestamp: new Date().toISOString()
                               };
                               navigator.clipboard.writeText(JSON.stringify(shareData, null, 2)).then(() => {
-                                alert('Share data copied to clipboard!');
-                              }).catch(() => {
+                                alert('Project metadata copied to clipboard!');
+                                console.log('✅ Project metadata copied');
+                              }).catch((err) => {
+                                console.error('❌ Failed to copy metadata:', err);
                                 const dataStr = JSON.stringify(shareData, null, 2);
                                 const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-                                const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-share.json`;
+                                const exportFileDefaultName = `${selectedStory?.title?.replace(/\s+/g, '-').toLowerCase() || 'video'}-metadata.json`;
                                 const linkElement = document.createElement('a');
                                 linkElement.setAttribute('href', dataUri);
                                 linkElement.setAttribute('download', exportFileDefaultName);
