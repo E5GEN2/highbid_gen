@@ -1450,23 +1450,8 @@ export default function Home() {
             console.log('Processing image:', filename, 'Key:', imageKey);
             
             try {
-              const bytes = await file.async('uint8array');
-              // Use more efficient base64 conversion for large files
-              const base64 = await new Promise<string>((resolve, reject) => {
-                try {
-                  const blob = new Blob([bytes]);
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    const result = reader.result as string;
-                    resolve(result.split(',')[1]); // Remove data:type;base64, prefix
-                  };
-                  reader.onerror = reject;
-                  reader.readAsDataURL(blob);
-                } catch (error) {
-                  reject(error);
-                }
-              });
-              
+              // Get base64 directly from JSZip to avoid type issues
+              const base64 = await file.async('base64');
               const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
               images[imageKey] = `data:image/${extension};base64,${base64}`;
               console.log('✅ Successfully processed image:', imageKey);
@@ -1489,23 +1474,8 @@ export default function Home() {
             console.log('Processing voiceover:', filename, 'Scene ID:', sceneId);
             if (sceneId) {
               try {
-                const bytes = await file.async('uint8array');
-                // Use more efficient base64 conversion for large files
-                const base64 = await new Promise<string>((resolve, reject) => {
-                  try {
-                    const blob = new Blob([bytes]);
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      const result = reader.result as string;
-                      resolve(result.split(',')[1]); // Remove data:type;base64, prefix
-                    };
-                    reader.onerror = reject;
-                    reader.readAsDataURL(blob);
-                  } catch (error) {
-                    reject(error);
-                  }
-                });
-                
+                // Get base64 directly from JSZip to avoid type issues
+                const base64 = await file.async('base64');
                 const extension = filename.endsWith('.wav') ? 'wav' : 'mpeg';
                 voiceovers[sceneId] = `data:audio/${extension};base64,${base64}`;
                 console.log('✅ Successfully processed voiceover:', sceneId);
