@@ -1438,16 +1438,18 @@ export default function Home() {
       if (imagesFolder) {
         for (const [filename, file] of Object.entries(imagesFolder.files)) {
           if (!file.dir && filename.startsWith('scene-')) {
-            const sceneId = filename.match(/scene-(\d+)/)?.[1];
-            if (sceneId) {
-              const bytes = await file.async('uint8array');
-              const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
-              const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
-              images[sceneId] = `data:image/${extension};base64,${base64}`;
-            }
+            // Extract the full key (e.g., "scene-1_0" from "scene-1_0.png")
+            const imageKey = filename.replace(/\.(png|jpg|jpeg)$/, '');
+            console.log('Processing image:', filename, 'Key:', imageKey);
+            
+            const bytes = await file.async('uint8array');
+            const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
+            const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
+            images[imageKey] = `data:image/${extension};base64,${base64}`;
           }
         }
       }
+      console.log('Restored images:', Object.keys(images));
       setStoryboardImages(images);
       
       // Restore voiceovers
@@ -1457,6 +1459,7 @@ export default function Home() {
         for (const [filename, file] of Object.entries(voicesFolder.files)) {
           if (!file.dir && filename.startsWith('scene-')) {
             const sceneId = filename.match(/scene-(\d+)/)?.[1];
+            console.log('Processing voiceover:', filename, 'Scene ID:', sceneId);
             if (sceneId) {
               const bytes = await file.async('uint8array');
               const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
@@ -1466,15 +1469,19 @@ export default function Home() {
           }
         }
       }
+      console.log('Restored voiceovers:', Object.keys(voiceovers));
       setStoryboardVoiceovers(voiceovers);
       
       // Switch to storyboard tab to show loaded content
       setActiveTab('storyboard');
       
       console.log('Project loaded successfully from ZIP');
+      console.log('Final state - Storyboard scenes:', storyboardData.length);
+      console.log('Final state - Images count:', Object.keys(images).length);  
+      console.log('Final state - Voiceovers count:', Object.keys(voiceovers).length);
     } catch (error) {
       console.error('Failed to load ZIP:', error);
-      setError('Failed to load project file. Please check the file format.');
+      setError(`Failed to load project file: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
