@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
-import { createJob } from '@/lib/videoQueue';
+import { createJob, updateJob } from '@/lib/videoQueue';
 
 export async function POST(request: NextRequest) {
   try {
@@ -23,15 +23,18 @@ export async function POST(request: NextRequest) {
     const job = await createJob(jobId);
     console.log('✅ Created render job:', jobId);
 
-    // Store the ZIP file data for background processing
-    const zipBuffer = Buffer.from(await zipFile.arrayBuffer());
-
-    // Start background processing (don't await)
-    processVideoInBackground(jobId, zipBuffer).catch(err => {
-      console.error('❌ Background processing error:', err);
+    // Return job ID immediately - process ZIP in background
+    setImmediate(async () => {
+      try {
+        console.log('🔄 Starting background ZIP processing...');
+        const zipBuffer = Buffer.from(await zipFile.arrayBuffer());
+        await processVideoInBackground(jobId, zipBuffer);
+      } catch (err) {
+        console.error('❌ Background processing error:', err);
+        await updateJob(jobId, { status: 'failed', error: err instanceof Error ? err.message : 'Unknown error' });
+      }
     });
 
-    // Return job ID immediately
     return NextResponse.json({
       success: true,
       jobId,
