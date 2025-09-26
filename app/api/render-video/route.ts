@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
     const jobId = randomBytes(16).toString('hex');
 
     // Create job in queue
-    const job = createJob(jobId);
+    const job = await createJob(jobId);
     console.log('✅ Created render job:', jobId);
 
     // Store the ZIP file data for background processing
