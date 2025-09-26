@@ -12,7 +12,8 @@
     "jszip": "^3.10.1",
     "next": "15.5.2",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "redis": "^5.8.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
