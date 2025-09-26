@@ -10,9 +10,10 @@ interface RenderJob {
   updatedAt: Date;
 }
 
+// Redis configuration for Upstash
 const redis = new Redis({
   url: process.env.REDIS_URL!,
-  token: process.env.REDIS_TOKEN!,
+  token: process.env.REDIS_TOKEN!
 });
 
 export async function createJob(id: string): Promise<RenderJob> {
@@ -24,9 +25,14 @@ export async function createJob(id: string): Promise<RenderJob> {
     updatedAt: new Date()
   };
 
-  await redis.set(`job:${id}`, JSON.stringify(job), { ex: 3600 }); // 1 hour expiry
-  console.log(`📝 Created job ${id} in Redis`);
-  return job;
+  try {
+    await redis.set(`job:${id}`, JSON.stringify(job), { ex: 3600 }); // 1 hour expiry
+    console.log(`📝 Created job ${id} in Redis`);
+    return job;
+  } catch (error) {
+    console.error(`❌ Redis error creating job ${id}:`, error);
+    throw error;
+  }
 }
 
 export async function getJob(id: string): Promise<RenderJob | undefined> {
@@ -54,7 +60,17 @@ export async function updateJob(id: string, updates: Partial<RenderJob>): Promis
       await redis.set(`job:${id}`, JSON.stringify(updated), { ex: 3600 });
       console.log(`📝 Updated job ${id} in Redis: ${updated.status} (${updated.progress}%)`);
     } else {
-      console.error(`❌ Cannot update job ${id}: not found in Redis`);
+      // Create new job if not found (for edge cases)
+      const newJob: RenderJob = {
+        id,
+        status: 'pending',
+        progress: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...updates
+      };
+      await redis.set(`job:${id}`, JSON.stringify(newJob), { ex: 3600 });
+      console.log(`📝 Created new job ${id} in Redis with updates: ${newJob.status} (${newJob.progress}%)`);
     }
   } catch (error) {
     console.error(`❌ Redis error updating job ${id}:`, error);
