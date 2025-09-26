@@ -1299,20 +1299,32 @@ export default function Home() {
       setRenderProgress({ step: 'Rendering video...', progress: 75, total: 100 });
       const result = await response.json();
       console.log('✅ Video rendering result:', result);
-      
+
       setRenderProgress({ step: 'Processing complete!', progress: 100, total: 100 });
-      
+
       // Store the rendered video
       if (result.video?.videoUrl) {
+        console.log('📹 Setting final video URL:', result.video.videoUrl.substring(0, 100) + '...');
+        console.log('📹 Video URL length:', result.video.videoUrl.length, 'characters');
+        console.log('📹 Video URL type:', typeof result.video.videoUrl);
+        console.log('📹 Is data URL:', result.video.videoUrl.startsWith('data:'));
         setFinalVideos([result.video.videoUrl]);
+        console.log('✅ Final videos state updated, length:', 1);
+      } else {
+        console.error('❌ No video URL in result:', result);
+        console.error('❌ Result structure:', JSON.stringify(result, null, 2).substring(0, 500));
       }
-      
+
       // Navigate to effects tab to show the rendered video
+      console.log('🔄 Switching to effects tab to display video');
       setActiveTab('effects');
-      
-      console.log('Video rendering result:', result);
+      console.log('✅ Active tab set to: effects');
 
     } catch (err) {
+      console.error('❌ Video rendering error:', err);
+      console.error('❌ Error type:', err instanceof Error ? err.constructor.name : typeof err);
+      console.error('❌ Error message:', err instanceof Error ? err.message : String(err));
+      console.error('❌ Error stack:', err instanceof Error ? err.stack : 'No stack trace');
       setError(err instanceof Error ? err.message : 'Failed to render video');
     } finally {
       setRenderingVideo(false);
@@ -3807,6 +3819,15 @@ export default function Home() {
                           controls
                           loop
                           playsInline
+                          onLoadStart={() => console.log('📹 Video load started:', finalVideos[0]?.substring(0, 100))}
+                          onLoadedMetadata={() => console.log('✅ Video metadata loaded')}
+                          onLoadedData={() => console.log('✅ Video data loaded')}
+                          onCanPlay={() => console.log('✅ Video can play')}
+                          onError={(e) => {
+                            console.error('❌ Video element error:', e);
+                            console.error('❌ Video src:', finalVideos[0]?.substring(0, 100));
+                            console.error('❌ Video error details:', (e.target as HTMLVideoElement).error);
+                          }}
                         />
                       </div>
                     </div>
