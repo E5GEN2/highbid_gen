@@ -1451,7 +1451,22 @@ export default function Home() {
             
             try {
               const bytes = await file.async('uint8array');
-              const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
+              // Use more efficient base64 conversion for large files
+              const base64 = await new Promise<string>((resolve, reject) => {
+                try {
+                  const blob = new Blob([bytes]);
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const result = reader.result as string;
+                    resolve(result.split(',')[1]); // Remove data:type;base64, prefix
+                  };
+                  reader.onerror = reject;
+                  reader.readAsDataURL(blob);
+                } catch (error) {
+                  reject(error);
+                }
+              });
+              
               const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
               images[imageKey] = `data:image/${extension};base64,${base64}`;
               console.log('✅ Successfully processed image:', imageKey);
@@ -1473,10 +1488,30 @@ export default function Home() {
             const sceneId = filename.match(/scene-(\d+)/)?.[1];
             console.log('Processing voiceover:', filename, 'Scene ID:', sceneId);
             if (sceneId) {
-              const bytes = await file.async('uint8array');
-              const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
-              const extension = filename.endsWith('.wav') ? 'wav' : 'mpeg';
-              voiceovers[sceneId] = `data:audio/${extension};base64,${base64}`;
+              try {
+                const bytes = await file.async('uint8array');
+                // Use more efficient base64 conversion for large files
+                const base64 = await new Promise<string>((resolve, reject) => {
+                  try {
+                    const blob = new Blob([bytes]);
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const result = reader.result as string;
+                      resolve(result.split(',')[1]); // Remove data:type;base64, prefix
+                    };
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                  } catch (error) {
+                    reject(error);
+                  }
+                });
+                
+                const extension = filename.endsWith('.wav') ? 'wav' : 'mpeg';
+                voiceovers[sceneId] = `data:audio/${extension};base64,${base64}`;
+                console.log('✅ Successfully processed voiceover:', sceneId);
+              } catch (err) {
+                console.error('❌ Failed to process voiceover:', filename, err);
+              }
             }
           }
         }

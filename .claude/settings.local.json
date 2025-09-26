@@ -17,7 +17,8 @@
       "WebFetch(domain:highbid-gen.onrender.com)",
       "Bash(npm run lint)",
       "WebFetch(domain:ai.google.dev)",
-      "Bash(unzip:*)"
+      "Bash(unzip:*)",
+      "Bash(npm run dev:*)"
     ],
     "deny": [],
     "ask": []
