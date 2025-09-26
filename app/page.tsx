@@ -1280,15 +1280,61 @@ export default function Home() {
       console.log('✅ ZIP generated:', zipBlob.size, 'bytes', new Date().toISOString());
       
       setRenderProgress({ step: 'Uploading to render service...', progress: 50, total: 100 });
-      
+
       const formData = new FormData();
       formData.append('projectZip', zipBlob, `${selectedStory.title.replace(/[^a-z0-9]/gi, '-')}-render.zip`);
 
       console.log('📤 Sending ZIP to render API...', zipBlob.size, 'bytes');
-      const response = await fetch('/api/render-video', {
-        method: 'POST',
-        body: formData,
+      console.log('🌐 Starting fetch request to /api/render-video');
+
+      const xhr = new XMLHttpRequest();
+
+      const uploadPromise = new Promise<Response>((resolve, reject) => {
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percentComplete = (e.loaded / e.total) * 100;
+            const uploadProgress = 50 + Math.floor(percentComplete * 0.2); // 50-70% range
+            console.log(`📤 Upload progress: ${e.loaded}/${e.total} bytes (${percentComplete.toFixed(1)}%)`);
+            setRenderProgress({
+              step: `Uploading to render service... (${percentComplete.toFixed(0)}%)`,
+              progress: uploadProgress,
+              total: 100
+            });
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          console.log('✅ Upload complete, status:', xhr.status);
+          if (xhr.status >= 200 && xhr.status < 300) {
+            setRenderProgress({ step: 'Processing video on server...', progress: 70, total: 100 });
+            resolve(new Response(xhr.responseText, {
+              status: xhr.status,
+              statusText: xhr.statusText,
+              headers: new Headers({
+                'Content-Type': 'application/json'
+              })
+            }));
+          } else {
+            console.error('❌ Upload failed with status:', xhr.status);
+            reject(new Error(`Upload failed with status: ${xhr.status}`));
+          }
+        });
+
+        xhr.addEventListener('error', () => {
+          console.error('❌ Network error during upload');
+          reject(new Error('Network error during upload'));
+        });
+
+        xhr.addEventListener('timeout', () => {
+          console.error('❌ Upload timeout');
+          reject(new Error('Upload timeout'));
+        });
+
+        xhr.open('POST', '/api/render-video');
+        xhr.send(formData);
       });
+
+      const response = await uploadPromise;
 
       if (!response.ok) {
         const errorData = await response.json();
