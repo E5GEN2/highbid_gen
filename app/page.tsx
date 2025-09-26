@@ -1440,9 +1440,9 @@ export default function Home() {
       
       for (const [filename, file] of Object.entries(zip.files)) {
         if (!file.dir && filename.startsWith('images/') && filename.match(/\.(png|jpg|jpeg)$/i)) {
-          // Extract the key (e.g., "scene-1_0" from "images/scene-1_0.png")
+          // Extract the key (e.g., "1_0" from "images/scene-1_0.png")
           const baseName = filename.split('/').pop() || filename;
-          const imageKey = baseName.replace(/\.(png|jpg|jpeg)$/i, '');
+          const imageKey = baseName.replace(/\.(png|jpg|jpeg)$/i, '').replace(/^scene-/, '');
           console.log('🔍 Processing image:', filename, 'Key:', imageKey);
           
           try {
