@@ -41,7 +41,7 @@ export async function GET(
         }
       });
     } catch (fileError) {
-      console.log(`📁 No progress file found, checking Redis: ${fileError.message}`);
+      console.log(`📁 No progress file found, checking Redis: ${fileError instanceof Error ? fileError.message : 'Unknown error'}`);
     }
 
     // Fallback to Redis
