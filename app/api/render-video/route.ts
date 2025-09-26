@@ -4,7 +4,12 @@ import { createJob, updateJob } from '@/lib/videoQueue';
 
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
+    console.log('🔄 Starting form data parsing...');
+    const formData = await Promise.race([
+      request.formData(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('FormData parsing timeout')), 10000))
+    ]);
+    console.log('✅ Form data parsed successfully');
     const zipFile = formData.get('projectZip') as File;
 
     if (!zipFile) {
@@ -41,7 +46,7 @@ export async function POST(request: NextRequest) {
 }
 
 // Background processing function
-async function processVideoInBackground(jobId: string, zipBuffer: Buffer) {
+export async function processVideoInBackground(jobId: string, zipBuffer: Buffer) {
   const { updateJob } = await import('@/lib/videoQueue');
   const JSZip = (await import('jszip')).default;
   const { exec } = await import('child_process');
