@@ -1410,8 +1410,10 @@ export default function Home() {
 
   // Upload and restore project from ZIP
   const uploadProjectFromZip = async (file: File) => {
+    console.log('🔄 Starting ZIP upload process...', file.name, file.size);
     try {
       const zip = await JSZip.loadAsync(file);
+      console.log('✅ ZIP loaded successfully');
       
       // Read project metadata
       const metadataFile = zip.file('project-metadata.json');
@@ -1435,17 +1437,27 @@ export default function Home() {
       // Restore images
       const images: { [key: string]: string } = {};
       const imagesFolder = zip.folder('images');
+      console.log('🖼️ Processing images folder...', imagesFolder ? 'found' : 'not found');
+      
       if (imagesFolder) {
+        console.log('📁 Images folder files:', Object.keys(imagesFolder.files));
         for (const [filename, file] of Object.entries(imagesFolder.files)) {
-          if (!file.dir && filename.startsWith('scene-')) {
-            // Extract the full key (e.g., "scene-1_0" from "scene-1_0.png")
-            const imageKey = filename.replace(/\.(png|jpg|jpeg)$/, '');
+          console.log('🔍 Checking file:', filename, 'isDir:', file.dir);
+          if (!file.dir && filename.includes('scene-')) {
+            // Extract the full key (e.g., "scene-1_0" from "images/scene-1_0.png")
+            const baseName = filename.split('/').pop() || filename; // Remove folder path
+            const imageKey = baseName.replace(/\.(png|jpg|jpeg)$/, '');
             console.log('Processing image:', filename, 'Key:', imageKey);
             
-            const bytes = await file.async('uint8array');
-            const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
-            const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
-            images[imageKey] = `data:image/${extension};base64,${base64}`;
+            try {
+              const bytes = await file.async('uint8array');
+              const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
+              const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
+              images[imageKey] = `data:image/${extension};base64,${base64}`;
+              console.log('✅ Successfully processed image:', imageKey);
+            } catch (err) {
+              console.error('❌ Failed to process image:', filename, err);
+            }
           }
         }
       }
