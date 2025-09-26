@@ -154,10 +154,8 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
 
     console.log(`📹 [${jobId}] Final video size:`, videoBuffer.length, 'bytes');
 
-    // Clean up
-    if (tempDir) {
-      await rm(tempDir, { recursive: true, force: true });
-    }
+    // Don't clean up immediately - leave video file for retrieval
+    console.log(`📁 [${jobId}] Video file available at: ${finalVideoPath}`);
 
     // Mark job as complete
     updateJob(jobId, {
@@ -167,6 +165,18 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
     });
 
     console.log(`✅ [${jobId}] Video rendering complete!`);
+
+    // Clean up after 10 minutes to save disk space
+    setTimeout(async () => {
+      try {
+        if (tempDir) {
+          await rm(tempDir, { recursive: true, force: true });
+          console.log(`🧹 [${jobId}] Cleaned up temp directory after 10 minutes`);
+        }
+      } catch (cleanupError) {
+        console.error(`❌ [${jobId}] Cleanup error:`, cleanupError);
+      }
+    }, 10 * 60 * 1000); // 10 minutes
 
   } catch (error) {
     console.error(`❌ [${jobId}] Video rendering error:`, error);
