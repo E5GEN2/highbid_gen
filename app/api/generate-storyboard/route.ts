@@ -1,5 +1,77 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Function to map beats based on total scene count
+function getBeatDistribution(totalScenes: number): { [beat: string]: number[] } {
+  if (totalScenes === 30) {
+    // Original distribution
+    return {
+      "hook": [1, 2],
+      "setup": [3, 4, 5, 6],
+      "inciting": [7, 8, 9],
+      "rise": [10, 11, 12, 13, 14],
+      "midpoint": [15, 16, 17],
+      "complication": [18, 19, 20, 21, 22],
+      "climax": [23, 24, 25, 26],
+      "resolution": [27, 28, 29],
+      "cta": [30]
+    };
+  }
+  
+  // Dynamic distribution for other counts
+  const distribution: { [beat: string]: number[] } = {};
+  const beats = ["hook", "setup", "inciting", "rise", "midpoint", "complication", "climax", "resolution", "cta"];
+  
+  if (totalScenes <= 5) {
+    // Ultra-short: only essential beats
+    distribution["hook"] = [1];
+    distribution["setup"] = [];
+    distribution["inciting"] = [];
+    distribution["rise"] = [2];
+    distribution["midpoint"] = [];
+    distribution["complication"] = [];
+    distribution["climax"] = [3, 4];
+    distribution["resolution"] = [5];
+    distribution["cta"] = [];
+  } else if (totalScenes <= 10) {
+    // Short: core beats only
+    distribution["hook"] = [1];
+    distribution["setup"] = [2];
+    distribution["inciting"] = totalScenes > 6 ? [3] : [];
+    distribution["rise"] = totalScenes > 7 ? [4, 5] : [3, 4];
+    distribution["midpoint"] = totalScenes > 8 ? [6] : [];
+    distribution["complication"] = totalScenes > 9 ? [7] : [];
+    distribution["climax"] = totalScenes > 8 ? [totalScenes - 2, totalScenes - 1] : [totalScenes - 1];
+    distribution["resolution"] = [totalScenes];
+    distribution["cta"] = [];
+  } else {
+    // Proportional distribution for 11-29 scenes
+    const scenesPerBeat = totalScenes / 9; // 9 beats total
+    let currentScene = 1;
+    
+    beats.forEach((beat, index) => {
+      const beatScenes = Math.round(scenesPerBeat * (index === beats.length - 1 ? 0.5 : 1));
+      if (beatScenes > 0 && currentScene <= totalScenes) {
+        distribution[beat] = [];
+        for (let i = 0; i < beatScenes && currentScene <= totalScenes; i++) {
+          distribution[beat].push(currentScene++);
+        }
+      } else {
+        distribution[beat] = [];
+      }
+    });
+    
+    // Ensure CTA is always last scene if we have call_to_action
+    if (currentScene - 1 === totalScenes && distribution["cta"].length === 0) {
+      distribution["cta"] = [totalScenes];
+      if (distribution["resolution"].includes(totalScenes)) {
+        distribution["resolution"] = distribution["resolution"].filter(s => s !== totalScenes);
+      }
+    }
+  }
+  
+  return distribution;
+}
+
 interface StoryboardScene {
   scene_id: number;
   start_ms: number;
@@ -101,7 +173,7 @@ RULES:
 
 export async function POST(request: NextRequest) {
   try {
-    const { storyBulb, apiKey, startScene, endScene, previousScenes, model = 'gemini-2.0-flash-exp' } = await request.json();
+    const { storyBulb, apiKey, startScene, endScene, targetSceneCount, previousScenes, model = 'gemini-2.0-flash-exp' } = await request.json();
 
     if (!storyBulb || !apiKey) {
       return NextResponse.json(
@@ -110,9 +182,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Use targetSceneCount from request, or from storyBulb, or default to 30
+    const totalScenes = targetSceneCount || storyBulb.target_scene_count || 30;
+    
     // Handle single batch generation
     const actualStartScene = startScene || 1;
-    const actualEndScene = endScene || 30;
+    const actualEndScene = endScene || totalScenes;
     
     // Helper function to create compressed context from previous scenes with causality
     const createCompressedContext = (scenes: StoryboardScene[]) => {
@@ -145,7 +220,20 @@ export async function POST(request: NextRequest) {
     const causalityGuidance = storyBulb.domino_sequences ? 
       `\n\nCRITICAL CAUSALITY CHAINS TO FOLLOW:\n${storyBulb.domino_sequences.join('\n')}\n\nSETUPS TO PAY OFF:\n${JSON.stringify(storyBulb.setups_payoffs || [])}` : '';
     
-    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a 30-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
+    // Get beat distribution for total scenes
+    const beatDistribution = getBeatDistribution(totalScenes);
+    
+    // Create beat mapping guidance for the current batch
+    const beatGuidance = Object.entries(beatDistribution)
+      .filter(([, scenes]) => scenes.some(s => s >= actualStartScene && s <= actualEndScene))
+      .map(([beat, scenes]) => {
+        const batchScenes = scenes.filter(s => s >= actualStartScene && s <= actualEndScene);
+        return batchScenes.length > 0 ? `Scenes ${batchScenes.join(', ')}: beat="${beat}"` : '';
+      })
+      .filter(g => g !== '')
+      .join('\n');
+    
+    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}\n\nBEAT DISTRIBUTION FOR THIS BATCH:\n${beatGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a ${totalScenes}-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
     
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,

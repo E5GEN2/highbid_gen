@@ -31,6 +31,8 @@ export default function Home() {
   
   // Script Generation State
   const [scriptTitles, setScriptTitles] = useState<string[]>(['']);
+  const [targetSceneCount, setTargetSceneCount] = useState(30); // Default 30 scenes
+  
   interface StoryBulb {
     title: string;
     runtime_sec: number;
@@ -55,6 +57,7 @@ export default function Home() {
       act2: { turning_point: string; consequence: string };
       act3: { turning_point: string; consequence: string };
     };
+    target_scene_count: number; // Added for variable scenes
   }
   
   interface StoryboardScene {
@@ -376,6 +379,7 @@ export default function Home() {
             title,
             apiKey: googleTtsKey,
             model: geminiModel,
+            targetSceneCount,
           }),
         });
 
@@ -386,6 +390,8 @@ export default function Home() {
         }
 
         if (data.storyBulb) {
+          // Ensure target_scene_count is set
+          data.storyBulb.target_scene_count = targetSceneCount;
           results.push(data.storyBulb);
         }
       }
@@ -410,9 +416,12 @@ export default function Home() {
     setStoryboardsLoading(true);
     setError(null);
     
+    // Get target scene count from selected story, default to 30 if not set
+    const targetScenes = selectedStory.target_scene_count || 30;
+    
     // Calculate starting point for resume functionality
     const batchSize = 5;
-    const totalBatches = Math.ceil(30 / batchSize);
+    const totalBatches = Math.ceil(targetScenes / batchSize);
     const startingBatch = Math.floor((resumeFromScene - 1) / batchSize);
     const existingScenes = resumeFromScene === 1 ? [] : generatedStoryboard.slice(0, resumeFromScene - 1);
     
@@ -425,7 +434,7 @@ export default function Home() {
       currentBatch: startingBatch, 
       totalBatches, 
       currentScene: existingScenes.length, 
-      totalScenes: 30, 
+      totalScenes: targetScenes, 
       status: resumeFromScene === 1 ? 'Starting storyboard generation...' : `Resuming from scene ${resumeFromScene}...` 
     });
     
@@ -434,13 +443,13 @@ export default function Home() {
       
       for (let batchIndex = startingBatch; batchIndex < totalBatches; batchIndex++) {
         const startScene = batchIndex * batchSize + 1;
-        const endScene = Math.min(startScene + batchSize - 1, 30);
+        const endScene = Math.min(startScene + batchSize - 1, targetScenes);
         
         setStoryboardProgress({
           currentBatch: batchIndex + 1,
           totalBatches,
           currentScene: startScene - 1,
-          totalScenes: 30,
+          totalScenes: targetScenes,
           status: `Generating scenes ${startScene}-${endScene}...`
         });
         
@@ -454,6 +463,7 @@ export default function Home() {
             apiKey: googleTtsKey,
             startScene,
             endScene,
+            targetSceneCount: targetScenes,
             previousScenes: allScenes.slice(-10), // Send last 10 scenes for context
             model: geminiModel
           }),
@@ -475,8 +485,8 @@ export default function Home() {
             currentBatch: batchIndex + 1,
             totalBatches,
             currentScene: allScenes.length,
-            totalScenes: 30,
-            status: `Generated ${allScenes.length}/30 scenes - Populating UI...`
+            totalScenes: targetScenes,
+            status: `Generated ${allScenes.length}/${targetScenes} scenes - Populating UI...`
           });
           
           // Auto-switch to storyboard tab after first batch for immediate feedback
@@ -1471,6 +1481,35 @@ export default function Home() {
                       </button>
                     </div>
                   ))}
+                </div>
+
+                {/* Scene Count Slider */}
+                <div className="bg-gray-900/30 p-4 rounded-xl border border-gray-700">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-white font-semibold">Number of Scenes</label>
+                    <div className="text-white font-mono text-xl">{targetSceneCount}</div>
+                  </div>
+                  <input
+                    type="range"
+                    min="5"
+                    max="30"
+                    step="1"
+                    value={targetSceneCount}
+                    onChange={(e) => setTargetSceneCount(parseInt(e.target.value))}
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                  />
+                  <div className="flex justify-between text-sm text-gray-400 mt-2">
+                    <span>5 scenes</span>
+                    <span className="text-center">
+                      Duration: {targetSceneCount * 2} seconds ({Math.floor((targetSceneCount * 2) / 60)}:{String((targetSceneCount * 2) % 60).padStart(2, '0')})
+                    </span>
+                    <span>30 scenes</span>
+                  </div>
+                  <div className="mt-3 text-xs text-gray-500">
+                    {targetSceneCount <= 10 ? "🎯 Quick & Punchy - Perfect for TikTok/Reels" :
+                     targetSceneCount <= 20 ? "📱 Standard Length - Great for Instagram/YouTube Shorts" :
+                     "🎬 Full Story - Ideal for YouTube/Facebook"}
+                  </div>
                 </div>
 
                 <div className="flex gap-4">
