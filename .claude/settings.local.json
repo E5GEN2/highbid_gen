@@ -27,7 +27,8 @@
       "Bash(do echo \"=== Poll $i ===\")",
       "Bash(done)",
       "Bash(for i in {1..20})",
-      "Bash(timeout 10 curl -s https://highbid-gen.onrender.com/api/render-status/25ee80fd36f8cc51b58332ba98c5b0bc)"
+      "Bash(timeout 10 curl -s https://highbid-gen.onrender.com/api/render-status/25ee80fd36f8cc51b58332ba98c5b0bc)",
+      "Bash(for i in {1..30})"
     ],
     "deny": [],
     "ask": []
