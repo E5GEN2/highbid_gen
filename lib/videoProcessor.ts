@@ -1,5 +1,34 @@
 import { updateJob } from '@/lib/videoQueue';
 
+// File-based progress tracking for serverless environment
+async function updateProgress(jobId: string, progress: number, status: string, tempDir: string) {
+  const { writeFile } = await import('fs/promises');
+  const { join } = await import('path');
+
+  const progressData = {
+    jobId,
+    progress,
+    status,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    // Write to temp directory file for immediate access
+    const progressFile = join(tempDir, 'progress.json');
+    await writeFile(progressFile, JSON.stringify(progressData));
+    console.log(`📁 Progress written to file: ${status} (${progress}%)`);
+  } catch (error) {
+    console.error(`❌ Failed to write progress file:`, error);
+  }
+
+  // Also try Redis (may fail silently)
+  try {
+    await updateJob(jobId, { status: status as any, progress });
+  } catch (error) {
+    console.log(`⚠️ Redis update failed (using file fallback):`, error);
+  }
+}
+
 export async function processVideoInBackground(jobId: string, zipBuffer: Buffer) {
   const JSZip = (await import('jszip')).default;
   const { exec } = await import('child_process');
@@ -12,16 +41,16 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
   let tempDir: string | null = null;
 
   try {
-    updateJob(jobId, { status: 'processing', progress: 10 });
-    console.log(`🎬 [${jobId}] Starting video processing...`);
-
-    // Create temporary directory
+    // Create temporary directory first
     tempDir = join(tmpdir(), `video-render-${jobId}`);
     await mkdir(tempDir, { recursive: true });
+
+    await updateProgress(jobId, 10, 'processing', tempDir);
+    console.log(`🎬 [${jobId}] Starting video processing...`);
     console.log(`📁 [${jobId}] Created temp directory:`, tempDir);
 
     // Extract ZIP
-    updateJob(jobId, { progress: 20 });
+    await updateProgress(jobId, 20, 'processing', tempDir);
     const zip = await JSZip.loadAsync(zipBuffer);
 
     // Parse metadata and storyboard
@@ -39,7 +68,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
     console.log(`🎬 [${jobId}] Scenes:`, storyboard.length);
 
     // Extract images and voiceovers
-    updateJob(jobId, { progress: 30 });
+    await updateProgress(jobId, 30, 'processing', tempDir);
     const imageFiles = Object.keys(zip.files).filter(name => name.startsWith('images/scene-'));
     const voiceFiles = Object.keys(zip.files).filter(name => name.startsWith('voiceovers/scene-'));
 
@@ -53,7 +82,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
       }
     }
 
-    updateJob(jobId, { progress: 40 });
+    await updateProgress(jobId, 40, 'processing', tempDir);
     console.log(`🎤 [${jobId}] Extracting ${voiceFiles.length} voiceovers...`);
     for (const voicePath of voiceFiles) {
       const file = zip.file(voicePath);
@@ -65,7 +94,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
     }
 
     // Check FFmpeg
-    updateJob(jobId, { progress: 45 });
+    await updateProgress(jobId, 45, 'processing', tempDir);
     try {
       await execAsync('ffmpeg -version');
       console.log(`✅ [${jobId}] FFmpeg is available`);
@@ -74,7 +103,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
     }
 
     // Build video segments
-    updateJob(jobId, { progress: 50 });
+    await updateProgress(jobId, 50, 'processing', tempDir);
     console.log(`🎥 [${jobId}] Building video with FFmpeg...`);
 
     const concatList: string[] = [];
@@ -131,11 +160,11 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
 
       // Update progress (50-80% range for video processing)
       const progressPercent = 50 + Math.floor(((i + 1) / totalScenes) * 30);
-      updateJob(jobId, { progress: progressPercent });
+      await updateProgress(jobId, progressPercent, 'processing', tempDir);
     }
 
     // Concatenate segments
-    updateJob(jobId, { progress: 85 });
+    await updateProgress(jobId, 85, 'processing', tempDir);
     const concatListPath = join(tempDir, 'concat.txt');
     await writeFile(concatListPath, concatList.join('\n'));
     console.log(`📝 [${jobId}] Created concat list with ${concatList.length} segments`);
@@ -147,7 +176,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
     await execAsync(concatCmd);
 
     // Read and encode video
-    updateJob(jobId, { progress: 95 });
+    await updateProgress(jobId, 95, 'processing', tempDir);
     const { readFileSync } = await import('fs');
     const videoBuffer = readFileSync(finalVideoPath);
     const videoBase64 = `data:video/mp4;base64,${videoBuffer.toString('base64')}`;
@@ -158,11 +187,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
     console.log(`📁 [${jobId}] Video file available at: ${finalVideoPath}`);
 
     // Mark job as complete
-    updateJob(jobId, {
-      status: 'completed',
-      progress: 100,
-      videoUrl: videoBase64
-    });
+    await updateProgress(jobId, 100, 'completed', tempDir);
 
     console.log(`✅ [${jobId}] Video rendering complete!`);
 
@@ -189,9 +214,6 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
       } catch {}
     }
 
-    updateJob(jobId, {
-      status: 'failed',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
+    await updateProgress(jobId, 0, 'failed', tempDir || '/tmp');
   }
 }

@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getJob } from '@/lib/videoQueue';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 export async function GET(
   request: NextRequest,
@@ -7,8 +10,42 @@ export async function GET(
 ) {
   try {
     const { jobId } = await params;
-    const job = await getJob(jobId);
+    console.log(`🔍 Checking status for job: ${jobId}`);
 
+    // First try to read from progress file (background process)
+    try {
+      const tempDir = join(tmpdir(), `video-render-${jobId}`);
+      const progressFile = join(tempDir, 'progress.json');
+      const progressData = await readFile(progressFile, 'utf-8');
+      const progress = JSON.parse(progressData);
+
+      console.log(`📁 Read progress from file: ${progress.status} (${progress.progress}%)`);
+
+      // Convert to job format
+      const job = {
+        id: jobId,
+        status: progress.status,
+        progress: progress.progress,
+        updatedAt: new Date(progress.updatedAt),
+        createdAt: new Date(progress.updatedAt) // Fallback
+      };
+
+      return NextResponse.json({
+        success: true,
+        job: {
+          id: job.id,
+          status: job.status,
+          progress: job.progress,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt
+        }
+      });
+    } catch (fileError) {
+      console.log(`📁 No progress file found, checking Redis: ${fileError.message}`);
+    }
+
+    // Fallback to Redis
+    const job = await getJob(jobId);
     if (!job) {
       return NextResponse.json(
         { error: 'Job not found' },
