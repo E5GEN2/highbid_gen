@@ -1208,43 +1208,59 @@ export default function Home() {
       zip.file('storyboard.json', JSON.stringify(generatedStoryboard, null, 2));
       
       // Add images
+      setRenderProgress({ step: 'Packaging images...', progress: 15, total: 100 });
       const imagesFolder = zip.folder('images');
-      for (const [sceneId, imageUrl] of Object.entries(storyboardImages)) {
+      const imageEntries = Object.entries(storyboardImages);
+      console.log(`📦 Packaging ${imageEntries.length} images...`);
+      
+      for (let i = 0; i < imageEntries.length; i++) {
+        const [sceneId, imageUrl] = imageEntries[i];
         if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('data:image/')) {
           const base64Data = imageUrl.split(',')[1];
-          const binaryData = atob(base64Data);
-          const bytes = new Uint8Array(binaryData.length);
-          for (let i = 0; i < binaryData.length; i++) {
-            bytes[i] = binaryData.charCodeAt(i);
-          }
           const extension = imageUrl.includes('data:image/png') ? 'png' : 'jpg';
-          imagesFolder?.file(`scene-${sceneId}.${extension}`, bytes);
+          // Use base64 directly instead of converting to binary - JSZip can handle it
+          imagesFolder?.file(`scene-${sceneId}.${extension}`, base64Data, { base64: true });
+          
+          if (i % 5 === 0) {
+            console.log(`  ✓ Packaged ${i + 1}/${imageEntries.length} images`);
+          }
         }
       }
+      console.log(`✅ All ${imageEntries.length} images packaged`);
       
       // Add voiceovers
+      setRenderProgress({ step: 'Packaging audio...', progress: 20, total: 100 });
       const voicesFolder = zip.folder('voiceovers');
-      for (const [sceneId, audioUrl] of Object.entries(storyboardVoiceovers)) {
+      const voiceEntries = Object.entries(storyboardVoiceovers);
+      console.log(`📦 Packaging ${voiceEntries.length} voiceovers...`);
+      
+      for (const [sceneId, audioUrl] of voiceEntries) {
         if (audioUrl && typeof audioUrl === 'string' && audioUrl.startsWith('data:audio/')) {
           const base64Data = audioUrl.split(',')[1];
-          const binaryData = atob(base64Data);
-          const bytes = new Uint8Array(binaryData.length);
-          for (let i = 0; i < binaryData.length; i++) {
-            bytes[i] = binaryData.charCodeAt(i);
-          }
           const extension = audioUrl.includes('data:audio/wav') ? 'wav' : 'mp3';
-          voicesFolder?.file(`scene-${sceneId}.${extension}`, bytes);
+          // Use base64 directly instead of converting to binary - JSZip can handle it
+          voicesFolder?.file(`scene-${sceneId}.${extension}`, base64Data, { base64: true });
         }
       }
+      console.log(`✅ All ${voiceEntries.length} voiceovers packaged`);
 
       setRenderProgress({ step: 'Sending to video processor...', progress: 30, total: 100 });
 
       // Generate ZIP blob and send to rendering API
-      const zipBlob = await zip.generateAsync({type: 'blob'});
+      console.log('⏳ Starting ZIP generation...', new Date().toISOString());
+      const zipBlob = await zip.generateAsync({
+        type: 'blob',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 1 } // Fast compression
+      });
+      console.log('✅ ZIP generated:', zipBlob.size, 'bytes', new Date().toISOString());
+      
+      setRenderProgress({ step: 'Uploading to render service...', progress: 50, total: 100 });
       
       const formData = new FormData();
       formData.append('projectZip', zipBlob, `${selectedStory.title.replace(/[^a-z0-9]/gi, '-')}-render.zip`);
 
+      console.log('📤 Sending ZIP to render API...', zipBlob.size, 'bytes');
       const response = await fetch('/api/render-video', {
         method: 'POST',
         body: formData,
@@ -1252,10 +1268,13 @@ export default function Home() {
 
       if (!response.ok) {
         const errorData = await response.json();
+        console.error('❌ Render API error:', errorData);
         throw new Error(errorData.error || 'Video rendering failed');
       }
 
+      setRenderProgress({ step: 'Rendering video...', progress: 75, total: 100 });
       const result = await response.json();
+      console.log('✅ Video rendering result:', result);
       
       setRenderProgress({ step: 'Processing complete!', progress: 100, total: 100 });
       
