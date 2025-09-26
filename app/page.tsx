@@ -1207,8 +1207,7 @@ export default function Home() {
       zip.file('project-metadata.json', JSON.stringify(projectData, null, 2));
       zip.file('storyboard.json', JSON.stringify(generatedStoryboard, null, 2));
       
-      // Add images
-      setRenderProgress({ step: 'Packaging images...', progress: 15, total: 100 });
+      // Add images with detailed progress
       const imagesFolder = zip.folder('images');
       const imageEntries = Object.entries(storyboardImages);
       console.log(`📦 Packaging ${imageEntries.length} images...`);
@@ -1221,6 +1220,14 @@ export default function Home() {
           // Use base64 directly instead of converting to binary - JSZip can handle it
           imagesFolder?.file(`scene-${sceneId}.${extension}`, base64Data, { base64: true });
           
+          // Update progress for each image (15-25% range for images)
+          const imageProgress = 15 + Math.floor((i / imageEntries.length) * 10);
+          setRenderProgress({ 
+            step: `Packaging images... (${i + 1}/${imageEntries.length})`, 
+            progress: imageProgress, 
+            total: 100 
+          });
+          
           if (i % 5 === 0) {
             console.log(`  ✓ Packaged ${i + 1}/${imageEntries.length} images`);
           }
@@ -1228,31 +1235,48 @@ export default function Home() {
       }
       console.log(`✅ All ${imageEntries.length} images packaged`);
       
-      // Add voiceovers
-      setRenderProgress({ step: 'Packaging audio...', progress: 20, total: 100 });
+      // Add voiceovers with detailed progress
       const voicesFolder = zip.folder('voiceovers');
       const voiceEntries = Object.entries(storyboardVoiceovers);
       console.log(`📦 Packaging ${voiceEntries.length} voiceovers...`);
       
-      for (const [sceneId, audioUrl] of voiceEntries) {
+      for (let i = 0; i < voiceEntries.length; i++) {
+        const [sceneId, audioUrl] = voiceEntries[i];
         if (audioUrl && typeof audioUrl === 'string' && audioUrl.startsWith('data:audio/')) {
           const base64Data = audioUrl.split(',')[1];
           const extension = audioUrl.includes('data:audio/wav') ? 'wav' : 'mp3';
           // Use base64 directly instead of converting to binary - JSZip can handle it
           voicesFolder?.file(`scene-${sceneId}.${extension}`, base64Data, { base64: true });
+          
+          // Update progress for each voiceover (26-30% range for audio)
+          const audioProgress = 26 + Math.floor((i / voiceEntries.length) * 4);
+          setRenderProgress({ 
+            step: `Packaging audio... (${i + 1}/${voiceEntries.length})`, 
+            progress: audioProgress, 
+            total: 100 
+          });
         }
       }
       console.log(`✅ All ${voiceEntries.length} voiceovers packaged`);
 
-      setRenderProgress({ step: 'Sending to video processor...', progress: 30, total: 100 });
-
-      // Generate ZIP blob and send to rendering API
+      // Generate ZIP blob with progress reporting
       console.log('⏳ Starting ZIP generation...', new Date().toISOString());
+      setRenderProgress({ step: 'Compressing project files...', progress: 31, total: 100 });
+      
       const zipBlob = await zip.generateAsync({
         type: 'blob',
         compression: 'DEFLATE',
         compressionOptions: { level: 1 } // Fast compression
+      }, (metadata) => {
+        // Progress callback during ZIP generation
+        const zipProgress = 31 + Math.floor(metadata.percent * 0.19); // 31-50% range
+        setRenderProgress({ 
+          step: `Compressing project files... (${Math.floor(metadata.percent)}%)`, 
+          progress: zipProgress, 
+          total: 100 
+        });
       });
+      
       console.log('✅ ZIP generated:', zipBlob.size, 'bytes', new Date().toISOString());
       
       setRenderProgress({ step: 'Uploading to render service...', progress: 50, total: 100 });
@@ -3775,20 +3799,15 @@ export default function Home() {
                         <p className="text-gray-400">60-second vertical video optimized for social media</p>
                       </div>
                       
-                      {/* Video Player Placeholder */}
+                      {/* Video Player */}
                       <div className="max-w-sm mx-auto">
-                        <div className="bg-gray-800 rounded-xl p-8 aspect-[9/16] flex items-center justify-center">
-                          <div className="text-center">
-                            <div className="text-4xl mb-4">🎥</div>
-                            <div className="text-white font-semibold mb-2">Video Preview</div>
-                            <div className="text-sm text-gray-400">
-                              {selectedStory?.title || 'Untitled Story'}
-                            </div>
-                            <div className="text-xs text-gray-500 mt-2">
-                              {generatedStoryboard.length} scenes • 9:16 aspect ratio
-                            </div>
-                          </div>
-                        </div>
+                        <video
+                          src={finalVideos[0]}
+                          className="w-full rounded-xl"
+                          controls
+                          loop
+                          playsInline
+                        />
                       </div>
                     </div>
 
