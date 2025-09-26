@@ -18,7 +18,10 @@
       "Bash(npm run lint)",
       "WebFetch(domain:ai.google.dev)",
       "Bash(unzip:*)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(curl:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

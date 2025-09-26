@@ -1368,29 +1368,66 @@ export default function Home() {
         throw new Error(errorData.error || 'Video rendering failed');
       }
 
-      setRenderProgress({ step: 'Rendering video...', progress: 75, total: 100 });
       const result = await response.json();
-      console.log('✅ Video rendering result:', result);
+      console.log('✅ Render job created:', result);
 
-      setRenderProgress({ step: 'Processing complete!', progress: 100, total: 100 });
+      // Check if we got a job ID (background processing)
+      if (result.jobId) {
+        const jobId = result.jobId;
+        console.log('🎬 Starting to poll for job status:', jobId);
 
-      // Store the rendered video
-      if (result.video?.videoUrl) {
-        console.log('📹 Setting final video URL:', result.video.videoUrl.substring(0, 100) + '...');
-        console.log('📹 Video URL length:', result.video.videoUrl.length, 'characters');
-        console.log('📹 Video URL type:', typeof result.video.videoUrl);
-        console.log('📹 Is data URL:', result.video.videoUrl.startsWith('data:'));
-        setFinalVideos([result.video.videoUrl]);
-        console.log('✅ Final videos state updated, length:', 1);
+        // Poll for job status
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusResponse = await fetch(`/api/render-status/${jobId}`);
+            const statusData = await statusResponse.json();
+
+            if (statusData.success && statusData.job) {
+              const job = statusData.job;
+              console.log(`📊 Job ${jobId} status:`, job.status, `(${job.progress}%)`);
+
+              // Update progress
+              setRenderProgress({
+                step: job.status === 'processing' ? `Rendering video... (${job.progress}%)` : job.status,
+                progress: job.progress,
+                total: 100
+              });
+
+              // Check if complete
+              if (job.status === 'completed') {
+                clearInterval(pollInterval);
+                console.log('✅ Video rendering complete!');
+
+                if (job.videoUrl) {
+                  console.log('📹 Setting final video URL:', job.videoUrl.substring(0, 100) + '...');
+                  setFinalVideos([job.videoUrl]);
+                  setRenderProgress({ step: 'Processing complete!', progress: 100, total: 100 });
+                  setActiveTab('effects');
+                  console.log('✅ Switched to effects tab');
+                } else {
+                  throw new Error('No video URL in completed job');
+                }
+              } else if (job.status === 'failed') {
+                clearInterval(pollInterval);
+                throw new Error(job.error || 'Video rendering failed');
+              }
+            }
+          } catch (pollError) {
+            clearInterval(pollInterval);
+            console.error('❌ Polling error:', pollError);
+            throw pollError;
+          }
+        }, 2000); // Poll every 2 seconds
+
+        // Set a maximum timeout of 10 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          console.error('❌ Rendering timeout after 10 minutes');
+          setError('Video rendering timeout - please try again');
+        }, 600000);
       } else {
-        console.error('❌ No video URL in result:', result);
-        console.error('❌ Result structure:', JSON.stringify(result, null, 2).substring(0, 500));
+        throw new Error('No job ID returned from server');
       }
-
-      // Navigate to effects tab to show the rendered video
-      console.log('🔄 Switching to effects tab to display video');
-      setActiveTab('effects');
-      console.log('✅ Active tab set to: effects');
 
     } catch (err) {
       console.error('❌ Video rendering error:', err);
