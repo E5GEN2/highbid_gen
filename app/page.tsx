@@ -1173,7 +1173,7 @@ export default function Home() {
     }
   };
 
-  // Handle video rendering
+  // Handle video rendering using project ZIP
   const handleVideoRender = async () => {
     if (!selectedStory || generatedStoryboard.length === 0) {
       setError('Please generate a storyboard first');
@@ -1185,56 +1185,89 @@ export default function Home() {
     setRenderProgress({ step: 'Preparing video data...', progress: 0, total: 100 });
 
     try {
-      // Collect all the generated content
-      const videoData = {
-        story: selectedStory,
+      // Create a project ZIP in memory for rendering
+      setRenderProgress({ step: 'Creating project package...', progress: 10, total: 100 });
+      
+      const zip = new JSZip();
+      
+      // Create project metadata
+      const projectData = {
+        projectName: selectedStory.title,
+        createdAt: new Date().toISOString(),
+        targetSceneCount: selectedStory.target_scene_count || generatedStoryboard.length,
+        storyBulb: selectedStory,
         storyboard: generatedStoryboard,
-        images: storyboardImages,
-        voiceovers: storyboardVoiceovers,
-        metadata: {
-          totalScenes: generatedStoryboard.length,
-          imagesGenerated: Object.keys(storyboardImages).length,
-          voiceoversGenerated: Object.keys(storyboardVoiceovers).length,
-          aspectRatio: '9:16', // Vertical format for social media
-          duration: generatedStoryboard.length * 2 // 2 seconds per scene
+        contentCounts: {
+          scenes: generatedStoryboard.length,
+          images: Object.keys(storyboardImages).length,
+          voiceovers: Object.keys(storyboardVoiceovers).length
         }
       };
-
-      setRenderProgress({ step: 'Collecting content...', progress: 20, total: 100 });
-
-      // Simulate video rendering process (replace with actual video generation API later)
-      const steps = [
-        'Processing storyboard...',
-        'Combining images...',
-        'Syncing voiceovers...',
-        'Adding transitions...',
-        'Finalizing video...'
-      ];
-
-      for (let i = 0; i < steps.length; i++) {
-        setRenderProgress({ 
-          step: steps[i], 
-          progress: 20 + (i + 1) * 15, 
-          total: 100 
-        });
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate processing time
+      
+      zip.file('project-metadata.json', JSON.stringify(projectData, null, 2));
+      zip.file('storyboard.json', JSON.stringify(generatedStoryboard, null, 2));
+      
+      // Add images
+      const imagesFolder = zip.folder('images');
+      for (const [sceneId, imageUrl] of Object.entries(storyboardImages)) {
+        if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('data:image/')) {
+          const base64Data = imageUrl.split(',')[1];
+          const binaryData = atob(base64Data);
+          const bytes = new Uint8Array(binaryData.length);
+          for (let i = 0; i < binaryData.length; i++) {
+            bytes[i] = binaryData.charCodeAt(i);
+          }
+          const extension = imageUrl.includes('data:image/png') ? 'png' : 'jpg';
+          imagesFolder?.file(`scene-${sceneId}.${extension}`, bytes);
+        }
+      }
+      
+      // Add voiceovers
+      const voicesFolder = zip.folder('voiceovers');
+      for (const [sceneId, audioUrl] of Object.entries(storyboardVoiceovers)) {
+        if (audioUrl && typeof audioUrl === 'string' && audioUrl.startsWith('data:audio/')) {
+          const base64Data = audioUrl.split(',')[1];
+          const binaryData = atob(base64Data);
+          const bytes = new Uint8Array(binaryData.length);
+          for (let i = 0; i < binaryData.length; i++) {
+            bytes[i] = binaryData.charCodeAt(i);
+          }
+          const extension = audioUrl.includes('data:audio/wav') ? 'wav' : 'mp3';
+          voicesFolder?.file(`scene-${sceneId}.${extension}`, bytes);
+        }
       }
 
-      setRenderProgress({ step: 'Rendering complete!', progress: 100, total: 100 });
+      setRenderProgress({ step: 'Sending to video processor...', progress: 30, total: 100 });
 
-      // For now, we'll just navigate to the Final Video tab
-      // Later this will include the actual rendered video
+      // Generate ZIP blob and send to rendering API
+      const zipBlob = await zip.generateAsync({type: 'blob'});
+      
+      const formData = new FormData();
+      formData.append('projectZip', zipBlob, `${selectedStory.title.replace(/[^a-z0-9]/gi, '-')}-render.zip`);
+
+      const response = await fetch('/api/render-video', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Video rendering failed');
+      }
+
+      const result = await response.json();
+      
+      setRenderProgress({ step: 'Processing complete!', progress: 100, total: 100 });
+      
+      // Store the rendered video
+      if (result.video?.videoUrl) {
+        setFinalVideos([result.video.videoUrl]);
+      }
+      
+      // Navigate to effects tab to show the rendered video
       setActiveTab('effects');
-
-      // Store the video data for the Final Video tab
-      console.log('Video render data:', videoData);
-
-      // Add a placeholder final video (replace with actual video URL later)
-      // Properly encode Unicode characters for base64
-      const jsonString = JSON.stringify(videoData);
-      const encodedString = encodeURIComponent(jsonString);
-      const placeholderVideo = `data:application/json;charset=utf-8,${encodedString}`;
-      setFinalVideos([placeholderVideo]);
+      
+      console.log('Video rendering result:', result);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to render video');
@@ -3283,6 +3316,66 @@ export default function Home() {
                           Export as JSON
                         </button>
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Video Rendering Section */}
+                {selectedStory && generatedStoryboard.length > 0 && (
+                  <div className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 p-6 rounded-xl border border-purple-500/50 mt-6">
+                    <div className="text-center">
+                      <div className="text-4xl mb-4">🎬</div>
+                      <h4 className="text-xl font-bold text-white mb-3">Ready to Create Your Video?</h4>
+                      <p className="text-gray-300 mb-4">
+                        Combine all scenes, images, and voiceovers into a final video
+                      </p>
+                      
+                      {/* Content Status Summary */}
+                      <div className="grid grid-cols-3 gap-4 mb-6 text-sm">
+                        <div className="bg-gray-800/50 p-3 rounded-lg">
+                          <div className="text-white font-semibold">{generatedStoryboard.length}/{selectedStory?.target_scene_count || 30}</div>
+                          <div className="text-gray-400">Scenes</div>
+                        </div>
+                        <div className="bg-gray-800/50 p-3 rounded-lg">
+                          <div className="text-white font-semibold">{Object.keys(storyboardImages).length}/{selectedStory?.target_scene_count || 30}</div>
+                          <div className="text-gray-400">Images</div>
+                        </div>
+                        <div className="bg-gray-800/50 p-3 rounded-lg">
+                          <div className="text-white font-semibold">{Object.keys(storyboardVoiceovers).length}/{selectedStory?.target_scene_count || 30}</div>
+                          <div className="text-gray-400">Voiceovers</div>
+                        </div>
+                      </div>
+                      
+                      <button
+                        onClick={handleVideoRender}
+                        disabled={renderingVideo || generatedStoryboard.length === 0}
+                        className="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white text-lg font-bold rounded-xl hover:from-purple-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:scale-105"
+                      >
+                        {renderingVideo ? (
+                          <div className="flex items-center">
+                            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
+                            Creating Video...
+                          </div>
+                        ) : (
+                          '🎬 CREATE FINAL VIDEO'
+                        )}
+                      </button>
+                      
+                      {/* Rendering Progress */}
+                      {renderingVideo && renderProgress.step && (
+                        <div className="mt-4 bg-gray-900/50 p-4 rounded-xl border border-gray-700">
+                          <div className="text-white font-semibold mb-2">{renderProgress.step}</div>
+                          <div className="w-full bg-gray-800 rounded-full h-2">
+                            <div 
+                              className="bg-gradient-to-r from-purple-500 to-pink-500 h-2 rounded-full transition-all duration-1000"
+                              style={{ width: `${renderProgress.progress}%` }}
+                            ></div>
+                          </div>
+                          <div className="text-sm text-gray-400 mt-2">
+                            {renderProgress.progress}% Complete
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

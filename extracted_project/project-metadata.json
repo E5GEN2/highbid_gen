@@ -1,0 +1,253 @@
+{
+  "projectName": "Putin Invades Gotham",
+  "createdAt": "2025-09-26T11:56:51.966Z",
+  "targetSceneCount": 5,
+  "storyBulb": {
+    "title": "Putin Invades Gotham",
+    "runtime_sec": 60,
+    "tone": "dramatic",
+    "narration_pov": "third_person",
+    "target_viewer": "Political satire enthusiasts, superhero fans, action movie lovers",
+    "premise": "Putin invades Gotham, declaring it a rogue state; Batman must navigate global politics, facing a new kind of threat.",
+    "protagonist": "Batman/Bruce Wayne",
+    "goal": "Expel Putin's forces from Gotham and restore its sovereignty without triggering World War III.",
+    "stakes": "Gotham's freedom, Batman's moral code, global peace, and the delicate balance of international power.",
+    "setting": "A besieged, snow-dusted Gotham City, with military checkpoints replacing traditional criminal hideouts.",
+    "constraint": "Batman cannot use lethal force, nor can he directly engage in international conflict, as it would be an act of war.",
+    "twist": "Putin's true motive isn't conquest but to acquire a specific Wayne Enterprises quantum computing prototype hidden in Gotham.",
+    "call_to_action": "",
+    "visual_style": "colored noir comic cartoon style",
+    "action_emphasis": "Focus on Batman's strategic infiltration and disruption; his actions cause military reactions, leading to tactical cat-and-mouse sequences and counter-strikes.",
+    "domino_sequences": [
+      "Batman sabotages supply lines → Putin's forces retaliate with targeted urban bombardment → innocent civilians are endangered.",
+      "Discovery of prototype's importance → Batman diverts attention with a grand distraction → military resources are stretched thin.",
+      "Putin's elite unit secures prototype → Batman's direct confrontation becomes inevitable → a new, non-lethal weapon is deployed."
+    ],
+    "setups_payoffs": [
+      {
+        "setup": "A seemingly innocuous tech expo brochure from Wayne Enterprises",
+        "payoff": "Reveals the target quantum prototype's location and function."
+      },
+      {
+        "setup": "Alfred's long-forgotten diplomatic contacts from his MI6 days",
+        "payoff": "Provides crucial intelligence and backchannel communication with the UN."
+      },
+      {
+        "setup": "A sonic disrupter prototype in the Batcave designed for crowd control",
+        "payoff": "Used to disable military hardware non-lethally in the climax."
+      }
+    ],
+    "escalation_points": [
+      "Batman's initial sabotage of supply lines causes Putin to declare martial law and deploy advanced surveillance, escalating control.",
+      "Bruce Wayne publicly denounces the invasion, which leads to Putin ordering a direct raid on Wayne Manor, increasing personal risk.",
+      "Batman's attempt to retrieve the prototype directly from the seized facility triggers a full-scale lockdown and a hunt for him."
+    ],
+    "plot_threads": {
+      "act1": {
+        "turning_point": "Batman witnesses the first civilian casualties from the occupation, realizing his traditional methods are insufficient.",
+        "consequence": "He shifts his strategy from containing criminals to disrupting the military occupation, therefore drawing Putin's direct attention."
+      },
+      "act2": {
+        "turning_point": "Batman discovers Putin's true objective (the quantum prototype) hidden within Wayne Enterprises.",
+        "consequence": "This forces him to protect his company's assets while simultaneously trying to expel the invaders, making him a primary target."
+      },
+      "act3": {
+        "turning_point": "Batman corners Putin's elite unit with the prototype, but learns a diplomatic solution is being brokered contingent on his non-interference.",
+        "consequence": "He must choose between direct action to secure Gotham and facilitating a peaceful, if imperfect, withdrawal, defining his role as a global protector."
+      }
+    },
+    "target_scene_count": 5
+  },
+  "storyboard": [
+    {
+      "scene_id": 1,
+      "start_ms": 0,
+      "end_ms": 2000,
+      "beat": "hook",
+      "vo_text": "Gotham falls. Batman must act.",
+      "scene_twist": "Putin's forces establish martial law and occupy Gotham.",
+      "caused_by": "none",
+      "leads_to": "Putin's forces retaliating with targeted urban bombardment, endangering civilians.",
+      "callback_to": "none",
+      "vo_emphasis": "strong",
+      "read_speed_wps": 2.5,
+      "visual_prompt": {
+        "setting": "Snow-dusted Gotham City streets, heavily militarized, Russian tanks rolling past iconic landmarks.",
+        "characters": "Batman, silhouetted against a searchlight; Russian soldiers patrolling.",
+        "action": "Batman stealthily sabotages a military supply truck.",
+        "props": "military vehicles, snow, Gotham architecture",
+        "mood": "tense, oppressive, dramatic",
+        "lighting": "hard",
+        "color_palette": "monochrome",
+        "camera": "low angle, wide shot",
+        "composition": "rule_of_thirds",
+        "aspect_ratio": "9:16",
+        "style_tags": "colored noir comic cartoon style, dramatic, high contrast",
+        "negative_tags": "blurry, extra fingers, watermark",
+        "model_hint": "sdxl",
+        "seed": 101
+      },
+      "text_overlay": {
+        "content": "GOTHAM: OCCUPIED",
+        "position": "top",
+        "weight": "bold"
+      },
+      "transition_in": "cut",
+      "transition_out": "fade",
+      "music_cue": "high"
+    },
+    {
+      "scene_id": 2,
+      "start_ms": 2000,
+      "end_ms": 4000,
+      "beat": "rise",
+      "vo_text": "Innocents suffer. New tactics needed.",
+      "scene_twist": "Batman witnesses civilian casualties, realizing traditional methods are insufficient.",
+      "caused_by": "scene 1: Putin's forces establish martial law and occupy Gotham.",
+      "leads_to": "Batman shifting his strategy from containing criminals to disrupting the military occupation.",
+      "callback_to": "none",
+      "vo_emphasis": "strong",
+      "read_speed_wps": 2.8,
+      "visual_prompt": {
+        "setting": "Destroyed Gotham residential area, smoke rising from buildings.",
+        "characters": "Batman, looking down at injured civilians; a young family huddling.",
+        "action": "Batman observes the devastation, a tech expo brochure subtly visible in his hand.",
+        "props": "rubble, smoke, military debris, Wayne Enterprises brochure",
+        "mood": "somber, urgent, determined",
+        "lighting": "overcast",
+        "color_palette": "cool",
+        "camera": "medium shot, slightly Dutch angle",
+        "composition": "center",
+        "aspect_ratio": "9:16",
+        "style_tags": "colored noir comic cartoon style, dramatic, gritty",
+        "negative_tags": "blurry, extra fingers, watermark",
+        "model_hint": "juggernaut",
+        "seed": 102
+      },
+      "text_overlay": {
+        "content": "THE COST OF WAR",
+        "position": "bottom",
+        "weight": "subtle"
+      },
+      "transition_in": "cut",
+      "transition_out": "cut",
+      "music_cue": "medium"
+    },
+    {
+      "scene_id": 3,
+      "start_ms": 4000,
+      "end_ms": 6000,
+      "beat": "climax",
+      "vo_text": "The prototype. Putin's true goal.",
+      "scene_twist": "Batman uncovers Putin's true motive: acquiring a quantum computing prototype from Wayne Enterprises.",
+      "caused_by": "scene 2: Batman shifts strategy after witnessing civilian casualties.",
+      "leads_to": "Putin's elite unit securing the prototype, forcing Batman into direct confrontation.",
+      "callback_to": "A seemingly innocuous tech expo brochure from Wayne Enterprises",
+      "vo_emphasis": "strong",
+      "read_speed_wps": 3,
+      "visual_prompt": {
+        "setting": "Secret Batcave lab, glowing computer screens showing schematics.",
+        "characters": "Batman and Alfred, looking at a holographic projection of the quantum prototype.",
+        "action": "Alfred points to a secure facility on a digital map, while Batman analyzes data.",
+        "props": "high-tech computers, Batcave equipment, holographic display",
+        "mood": "revelatory, high-stakes, urgent",
+        "lighting": "practical",
+        "color_palette": "teal_orange",
+        "camera": "close up on screen then pull back to characters",
+        "composition": "rule_of_thirds",
+        "aspect_ratio": "9:16",
+        "style_tags": "colored noir comic cartoon style, futuristic, intense",
+        "negative_tags": "blurry, extra fingers, watermark",
+        "model_hint": "flux",
+        "seed": 103
+      },
+      "text_overlay": {
+        "content": "PROJECT QUANTUM",
+        "position": "center",
+        "weight": "bold"
+      },
+      "transition_in": "dolly_in",
+      "transition_out": "cut",
+      "music_cue": "medium"
+    },
+    {
+      "scene_id": 4,
+      "start_ms": 6000,
+      "end_ms": 8000,
+      "beat": "climax",
+      "vo_text": "Elite unit secures it. Batman fights!",
+      "scene_twist": "Batman confronts Putin's elite unit attempting to extract the prototype, deploying a non-lethal sonic weapon.",
+      "caused_by": "scene 3: Batman uncovers Putin's motive for the quantum prototype.",
+      "leads_to": "Batman's choice between direct action to secure Gotham and facilitating a peaceful withdrawal.",
+      "callback_to": "A sonic disrupter prototype in the Batcave designed for crowd control",
+      "vo_emphasis": "strong",
+      "read_speed_wps": 3.2,
+      "visual_prompt": {
+        "setting": "Wayne Enterprises research facility, now a battleground.",
+        "characters": "Batman, dodging laser fire from Putin's elite soldiers; the elite unit carrying a device.",
+        "action": "Batman activates a sonic disrupter from his gauntlet, disabling enemy equipment non-lethally.",
+        "props": "quantum prototype in a secure case, futuristic weaponry, sonic disrupter",
+        "mood": "action-packed, intense, controlled chaos",
+        "lighting": "neon",
+        "color_palette": "cool",
+        "camera": "dynamic action shot, follow camera",
+        "composition": "leading_lines",
+        "aspect_ratio": "9:16",
+        "style_tags": "colored noir comic cartoon style, action movie, cyberpunk elements",
+        "negative_tags": "blurry, extra fingers, watermark",
+        "model_hint": "kling",
+        "seed": 104
+      },
+      "text_overlay": {
+        "content": "NON-LETHAL TAKEDOWN",
+        "position": "caption",
+        "weight": "subtle"
+      },
+      "transition_in": "whip",
+      "transition_out": "whip",
+      "music_cue": "high"
+    },
+    {
+      "scene_id": 5,
+      "start_ms": 8000,
+      "end_ms": 10000,
+      "beat": "resolution",
+      "vo_text": "Peace restored. Gotham is free.",
+      "scene_twist": "Batman enables a diplomatic withdrawal, securing Gotham's sovereignty without triggering global war.",
+      "caused_by": "scene 4: Batman confronts the elite unit as diplomatic solution is brokered.",
+      "leads_to": "none",
+      "callback_to": "Alfred's long-forgotten diplomatic contacts from his MI6 days",
+      "vo_emphasis": "strong",
+      "read_speed_wps": 2.5,
+      "visual_prompt": {
+        "setting": "Snow-covered Gotham skyline at dawn, military convoys departing.",
+        "characters": "Batman stands atop a gargoyle, watching the last of Putin's forces leave.",
+        "action": "Batman observes the peaceful withdrawal, a sense of quiet triumph.",
+        "props": "departing military vehicles, Gotham gargoyles",
+        "mood": "hopeful, resolved, peaceful",
+        "lighting": "golden_hour",
+        "color_palette": "warm",
+        "camera": "high angle, sweeping crane shot",
+        "composition": "rule_of_thirds",
+        "aspect_ratio": "9:16",
+        "style_tags": "colored noir comic cartoon style, epic, cinematic",
+        "negative_tags": "blurry, extra fingers, watermark",
+        "model_hint": "dalle",
+        "seed": 105
+      },
+      "text_overlay": {
+        "content": "GOTHAM: SOVEREIGN AGAIN",
+        "position": "center",
+        "weight": "bold"
+      },
+      "transition_in": "fade",
+      "transition_out": "fade",
+      "music_cue": "low"
+    }
+  ],
+  "contentCounts": {
+    "scenes": 5,
+    "images": 22,
+    "voiceovers": 5
+  }
+}
