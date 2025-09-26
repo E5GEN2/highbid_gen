@@ -37,7 +37,16 @@ export async function createJob(id: string): Promise<RenderJob> {
 
 export async function getJob(id: string): Promise<RenderJob | undefined> {
   try {
-    const data = await redis.get(`job:${id}`);
+    console.log(`🔍 Looking up job ${id} in Redis...`);
+
+    // Add timeout to Redis operations
+    const data = await Promise.race([
+      redis.get(`job:${id}`),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Redis get timeout')), 5000)
+      )
+    ]);
+
     if (data) {
       const job = JSON.parse(data as string);
       console.log(`📖 Retrieved job ${id} from Redis: ${job.status} (${job.progress}%)`);
@@ -54,14 +63,29 @@ export async function getJob(id: string): Promise<RenderJob | undefined> {
 
 export async function updateJob(id: string, updates: Partial<RenderJob>): Promise<void> {
   try {
-    const existing = await getJob(id);
+    console.log(`🔄 Attempting to update job ${id} with:`, updates);
+
+    // Try to get existing job with timeout
+    let existing: RenderJob | undefined;
+    try {
+      existing = await Promise.race([
+        getJob(id),
+        new Promise<undefined>((_, reject) =>
+          setTimeout(() => reject(new Error('Redis timeout')), 5000)
+        )
+      ]);
+    } catch (redisError) {
+      console.error(`❌ Redis getJob failed for ${id}:`, redisError);
+      existing = undefined;
+    }
+
+    let jobToSave: RenderJob;
     if (existing) {
-      const updated = { ...existing, ...updates, updatedAt: new Date() };
-      await redis.set(`job:${id}`, JSON.stringify(updated), { ex: 3600 });
-      console.log(`📝 Updated job ${id} in Redis: ${updated.status} (${updated.progress}%)`);
+      jobToSave = { ...existing, ...updates, updatedAt: new Date() };
+      console.log(`📝 Updating existing job ${id}: ${jobToSave.status} (${jobToSave.progress}%)`);
     } else {
-      // Create new job if not found (for edge cases)
-      const newJob: RenderJob = {
+      // Create new job if not found (for background processes)
+      jobToSave = {
         id,
         status: 'pending',
         progress: 0,
@@ -69,11 +93,24 @@ export async function updateJob(id: string, updates: Partial<RenderJob>): Promis
         updatedAt: new Date(),
         ...updates
       };
-      await redis.set(`job:${id}`, JSON.stringify(newJob), { ex: 3600 });
-      console.log(`📝 Created new job ${id} in Redis with updates: ${newJob.status} (${newJob.progress}%)`);
+      console.log(`📝 Creating new job ${id}: ${jobToSave.status} (${jobToSave.progress}%)`);
+    }
+
+    // Try to save with timeout
+    try {
+      await Promise.race([
+        redis.set(`job:${id}`, JSON.stringify(jobToSave), { ex: 3600 }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis set timeout')), 5000)
+        )
+      ]);
+      console.log(`✅ Successfully saved job ${id} to Redis: ${jobToSave.status} (${jobToSave.progress}%)`);
+    } catch (redisError) {
+      console.error(`❌ Redis set failed for job ${id}:`, redisError);
+      console.log(`⚠️ Job ${id} update lost due to Redis failure`);
     }
   } catch (error) {
-    console.error(`❌ Redis error updating job ${id}:`, error);
+    console.error(`❌ Unexpected error updating job ${id}:`, error);
   }
 }
 
