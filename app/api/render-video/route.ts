@@ -18,40 +18,14 @@ export async function POST(request: NextRequest) {
 
     // Create a job ID
     const jobId = randomBytes(16).toString('hex');
+    console.log('✅ Generated job ID:', jobId);
 
-    // Create job in queue with timeout
-    let job;
-    try {
-      console.log('🔄 Creating job in Redis...');
-      job = await Promise.race([
-        createJob(jobId),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Redis timeout')), 5000))
-      ]);
-      console.log('✅ Created render job:', jobId);
-    } catch (redisError) {
-      console.error('❌ Redis job creation failed:', redisError);
-      // Continue anyway - background processing will still work
-      job = { id: jobId, status: 'pending', progress: 0, createdAt: new Date(), updatedAt: new Date() };
-      console.log('⚠️ Continuing without Redis persistence');
-    }
-
-    // Return job ID immediately - process ZIP in background
-    setImmediate(async () => {
-      try {
-        console.log('🔄 Starting background ZIP processing...');
-        const zipBuffer = Buffer.from(await zipFile.arrayBuffer());
-        await processVideoInBackground(jobId, zipBuffer);
-      } catch (err) {
-        console.error('❌ Background processing error:', err);
-        await updateJob(jobId, { status: 'failed', error: err instanceof Error ? err.message : 'Unknown error' });
-      }
-    });
-
+    // Return immediately - no Redis for now
     return NextResponse.json({
       success: true,
       jobId,
       message: 'Video rendering started',
-      status: job.status
+      status: 'pending'
     });
 
   } catch (error) {
