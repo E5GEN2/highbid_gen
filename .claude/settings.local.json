@@ -21,7 +21,11 @@
       "Bash(npm run dev:*)",
       "WebFetch(domain:github.com)",
       "Bash(curl:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(tee:*)",
+      "Bash(for i in {1..60})",
+      "Bash(do echo \"=== Poll $i ===\")",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
