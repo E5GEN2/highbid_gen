@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { writeFile, mkdir, readdir, unlink, rm } from 'fs/promises';
+import { writeFile, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomBytes } from 'crypto';
@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
     try {
       await execAsync('ffmpeg -version');
       console.log('✅ FFmpeg is available');
-    } catch (error) {
+    } catch {
       console.error('❌ FFmpeg not found');
       throw new Error('FFmpeg is not installed. Please install FFmpeg to render videos.');
     }
@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
         );
         duration = parseFloat(stdout.trim());
         console.log(`⏱️  Scene ${sceneId} duration: ${duration}s`);
-      } catch (error) {
+      } catch {
         console.warn(`⚠️  Could not get duration for ${voiceFile}, using default`);
       }
 
@@ -171,8 +171,8 @@ export async function POST(request: NextRequest) {
     console.log('✅ Video rendering complete!');
 
     // Read the final video and convert to base64
-    const fs = require('fs');
-    const videoBuffer = fs.readFileSync(finalVideoPath);
+    const { readFileSync } = await import('fs');
+    const videoBuffer = readFileSync(finalVideoPath);
     const videoBase64 = `data:video/mp4;base64,${videoBuffer.toString('base64')}`;
 
     console.log('📹 Final video size:', videoBuffer.length, 'bytes');
