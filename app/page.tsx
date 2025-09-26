@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import Image from 'next/image';
+import JSZip from 'jszip';
 
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
@@ -1282,6 +1283,168 @@ export default function Home() {
     }
   };
 
+  // Download all generated content as ZIP
+  const downloadProjectAsZip = async () => {
+    if (!selectedStory || generatedStoryboard.length === 0) {
+      setError('No content to download. Generate a storyboard first.');
+      return;
+    }
+
+    try {
+      const zip = new JSZip();
+      
+      // Create project metadata
+      const projectData = {
+        projectName: selectedStory.title,
+        createdAt: new Date().toISOString(),
+        targetSceneCount: selectedStory.target_scene_count || generatedStoryboard.length,
+        storyBulb: selectedStory,
+        storyboard: generatedStoryboard,
+        contentCounts: {
+          scenes: generatedStoryboard.length,
+          images: Object.keys(storyboardImages).length,
+          voiceovers: Object.keys(storyboardVoiceovers).length
+        }
+      };
+      
+      // Add project metadata
+      zip.file('project-metadata.json', JSON.stringify(projectData, null, 2));
+      
+      // Add storyboard data
+      zip.file('storyboard.json', JSON.stringify(generatedStoryboard, null, 2));
+      
+      // Add images folder
+      const imagesFolder = zip.folder('images');
+      for (const [sceneId, imageUrl] of Object.entries(storyboardImages)) {
+        if (imageUrl && typeof imageUrl === 'string') {
+          try {
+            // Convert base64 to binary for images
+            if (imageUrl.startsWith('data:image/')) {
+              const base64Data = imageUrl.split(',')[1];
+              const binaryData = atob(base64Data);
+              const bytes = new Uint8Array(binaryData.length);
+              for (let i = 0; i < binaryData.length; i++) {
+                bytes[i] = binaryData.charCodeAt(i);
+              }
+              const extension = imageUrl.includes('data:image/png') ? 'png' : 'jpg';
+              imagesFolder?.file(`scene-${sceneId}.${extension}`, bytes);
+            }
+          } catch (err) {
+            console.warn(`Failed to process image for scene ${sceneId}:`, err);
+          }
+        }
+      }
+      
+      // Add voiceovers folder
+      const voicesFolder = zip.folder('voiceovers');
+      for (const [sceneId, audioUrl] of Object.entries(storyboardVoiceovers)) {
+        if (audioUrl && typeof audioUrl === 'string') {
+          try {
+            // Convert base64 to binary for audio
+            if (audioUrl.startsWith('data:audio/')) {
+              const base64Data = audioUrl.split(',')[1];
+              const binaryData = atob(base64Data);
+              const bytes = new Uint8Array(binaryData.length);
+              for (let i = 0; i < binaryData.length; i++) {
+                bytes[i] = binaryData.charCodeAt(i);
+              }
+              const extension = audioUrl.includes('data:audio/wav') ? 'wav' : 'mp3';
+              voicesFolder?.file(`scene-${sceneId}.${extension}`, bytes);
+            }
+          } catch (err) {
+            console.warn(`Failed to process audio for scene ${sceneId}:`, err);
+          }
+        }
+      }
+      
+      // Generate and download ZIP
+      const content = await zip.generateAsync({type: 'blob'});
+      const url = window.URL.createObjectURL(content);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${selectedStory.title.replace(/[^a-z0-9]/gi, '-')}-project.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      console.log('Project downloaded successfully as ZIP');
+    } catch (error) {
+      console.error('Failed to create ZIP:', error);
+      setError('Failed to create download. Please try again.');
+    }
+  };
+
+  // Upload and restore project from ZIP
+  const uploadProjectFromZip = async (file: File) => {
+    try {
+      const zip = await JSZip.loadAsync(file);
+      
+      // Read project metadata
+      const metadataFile = zip.file('project-metadata.json');
+      if (!metadataFile) {
+        throw new Error('Invalid project file: missing metadata');
+      }
+      
+      const metadata = JSON.parse(await metadataFile.async('string'));
+      const storyboardFile = zip.file('storyboard.json');
+      if (!storyboardFile) {
+        throw new Error('Invalid project file: missing storyboard data');
+      }
+      
+      const storyboardData = JSON.parse(await storyboardFile.async('string'));
+      
+      // Restore story bulb and storyboard
+      setSelectedStory(metadata.storyBulb);
+      setGeneratedStoryboard(storyboardData);
+      setTargetSceneCount(metadata.targetSceneCount || 30);
+      
+      // Restore images
+      const images: { [key: string]: string } = {};
+      const imagesFolder = zip.folder('images');
+      if (imagesFolder) {
+        for (const [filename, file] of Object.entries(imagesFolder.files)) {
+          if (!file.dir && filename.startsWith('scene-')) {
+            const sceneId = filename.match(/scene-(\d+)/)?.[1];
+            if (sceneId) {
+              const bytes = await file.async('uint8array');
+              const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
+              const extension = filename.endsWith('.png') ? 'png' : 'jpeg';
+              images[sceneId] = `data:image/${extension};base64,${base64}`;
+            }
+          }
+        }
+      }
+      setStoryboardImages(images);
+      
+      // Restore voiceovers
+      const voiceovers: { [key: string]: string } = {};
+      const voicesFolder = zip.folder('voiceovers');
+      if (voicesFolder) {
+        for (const [filename, file] of Object.entries(voicesFolder.files)) {
+          if (!file.dir && filename.startsWith('scene-')) {
+            const sceneId = filename.match(/scene-(\d+)/)?.[1];
+            if (sceneId) {
+              const bytes = await file.async('uint8array');
+              const base64 = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
+              const extension = filename.endsWith('.wav') ? 'wav' : 'mpeg';
+              voiceovers[sceneId] = `data:audio/${extension};base64,${base64}`;
+            }
+          }
+        }
+      }
+      setStoryboardVoiceovers(voiceovers);
+      
+      // Switch to storyboard tab to show loaded content
+      setActiveTab('storyboard');
+      
+      console.log('Project loaded successfully from ZIP');
+    } catch (error) {
+      console.error('Failed to load ZIP:', error);
+      setError('Failed to load project file. Please check the file format.');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900">
       <div className="container mx-auto px-4 py-8 max-w-7xl">
@@ -2198,7 +2361,39 @@ export default function Home() {
               <div className="space-y-6">
                 <div>
                   <h3 className="text-2xl font-bold text-white mb-4">Visual Storyboard</h3>
-                  <p className="text-gray-400 mb-6">30-scene storyboard with complete visual and audio direction</p>
+                  <p className="text-gray-400 mb-6">Dynamic storyboard with complete visual and audio direction</p>
+                  
+                  {/* Project Import/Export Controls */}
+                  <div className="bg-gray-900/30 p-4 rounded-xl border border-gray-700 mb-6">
+                    <h4 className="text-lg font-bold text-white mb-3">📦 Project Management</h4>
+                    <div className="flex gap-4">
+                      <button
+                        onClick={downloadProjectAsZip}
+                        disabled={!selectedStory || generatedStoryboard.length === 0}
+                        className="px-4 py-2 bg-green-600/20 border border-green-500/30 text-green-300 rounded-xl hover:bg-green-600/30 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                      >
+                        📥 Download Project ZIP
+                      </button>
+                      
+                      <label className="px-4 py-2 bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl hover:bg-blue-600/30 cursor-pointer transition">
+                        📤 Upload Project ZIP
+                        <input
+                          type="file"
+                          accept=".zip"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              uploadProjectFromZip(file);
+                            }
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Download preserves all generated content (scenes, images, voiceovers) with metadata for later restoration
+                    </p>
+                  </div>
                 </div>
 
                 {!selectedStory && !generatedStoryboard.length && (
