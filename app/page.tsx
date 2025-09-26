@@ -1290,6 +1290,9 @@ export default function Home() {
       const xhr = new XMLHttpRequest();
 
       const uploadPromise = new Promise<Response>((resolve, reject) => {
+        let uploadComplete = false;
+        let processingInterval: NodeJS.Timeout;
+
         xhr.upload.addEventListener('progress', (e) => {
           if (e.lengthComputable) {
             const percentComplete = (e.loaded / e.total) * 100;
@@ -1300,13 +1303,35 @@ export default function Home() {
               progress: uploadProgress,
               total: 100
             });
+
+            // When upload is complete, start processing indicator
+            if (percentComplete >= 100 && !uploadComplete) {
+              uploadComplete = true;
+              console.log('✅ Upload finished, waiting for server processing...');
+              setRenderProgress({ step: 'Processing video on server (this may take 1-2 minutes)...', progress: 70, total: 100 });
+
+              // Slowly increment progress while waiting
+              let waitProgress = 70;
+              processingInterval = setInterval(() => {
+                if (waitProgress < 95) {
+                  waitProgress += 1;
+                  setRenderProgress({
+                    step: `Processing video on server (this may take 1-2 minutes)... ${waitProgress - 70}s`,
+                    progress: waitProgress,
+                    total: 100
+                  });
+                }
+              }, 1000);
+            }
           }
         });
 
         xhr.addEventListener('load', () => {
+          clearInterval(processingInterval);
           console.log('✅ Upload complete, status:', xhr.status);
+          console.log('📥 Response received, length:', xhr.responseText?.length || 0, 'bytes');
           if (xhr.status >= 200 && xhr.status < 300) {
-            setRenderProgress({ step: 'Processing video on server...', progress: 70, total: 100 });
+            setRenderProgress({ step: 'Server processing complete!', progress: 95, total: 100 });
             resolve(new Response(xhr.responseText, {
               status: xhr.status,
               statusText: xhr.statusText,
@@ -1316,6 +1341,7 @@ export default function Home() {
             }));
           } else {
             console.error('❌ Upload failed with status:', xhr.status);
+            console.error('❌ Response text:', xhr.responseText);
             reject(new Error(`Upload failed with status: ${xhr.status}`));
           }
         });
