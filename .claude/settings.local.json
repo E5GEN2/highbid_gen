@@ -30,7 +30,8 @@
       "Bash(timeout 10 curl -s https://highbid-gen.onrender.com/api/render-status/25ee80fd36f8cc51b58332ba98c5b0bc)",
       "Bash(for i in {1..30})",
       "Bash(timeout 10 curl -s \"https://highbid-gen.onrender.com/api/render-status/0ee1c31e9e952a41e3b7df6b463fbf2a\")",
-      "Read(//private/tmp/**)"
+      "Read(//private/tmp/**)",
+      "Bash(do echo \"=== Progress Check $i ===\")"
     ],
     "deny": [],
     "ask": []

@@ -1376,6 +1376,9 @@ export default function Home() {
         const jobId = result.jobId;
         console.log('🎬 Starting to poll for job status:', jobId);
 
+        setRenderingVideo(true);
+        setRenderProgress({ step: 'Initializing video render...', progress: 0, total: 100 });
+
         // Poll for job status
         const pollInterval = setInterval(async () => {
           try {
@@ -1398,22 +1401,34 @@ export default function Home() {
                 clearInterval(pollInterval);
                 console.log('✅ Video rendering complete!');
 
-                if (job.videoUrl) {
-                  console.log('📹 Setting final video URL:', job.videoUrl.substring(0, 100) + '...');
-                  setFinalVideos([job.videoUrl]);
-                  setRenderProgress({ step: 'Processing complete!', progress: 100, total: 100 });
-                  setActiveTab('effects');
-                  console.log('✅ Switched to effects tab');
-                } else {
-                  throw new Error('No video URL in completed job');
+                try {
+                  setRenderProgress({ step: 'Fetching video...', progress: 95, total: 100 });
+                  const videoResponse = await fetch(`/api/get-video/${jobId}`);
+                  const videoData = await videoResponse.json();
+
+                  if (videoData.success && videoData.videoUrl) {
+                    console.log('📹 Setting final video URL:', videoData.videoUrl.substring(0, 100) + '...');
+                    setFinalVideos([videoData.videoUrl]);
+                    setRenderProgress({ step: 'Processing complete!', progress: 100, total: 100 });
+                    setRenderingVideo(false);
+                    setActiveTab('effects');
+                    console.log('✅ Switched to effects tab');
+                  } else {
+                    throw new Error('Failed to retrieve video URL');
+                  }
+                } catch (videoError) {
+                  console.error('❌ Failed to fetch video:', videoError);
+                  throw new Error('Failed to retrieve completed video');
                 }
               } else if (job.status === 'failed') {
                 clearInterval(pollInterval);
+                setRenderingVideo(false);
                 throw new Error(job.error || 'Video rendering failed');
               }
             }
           } catch (pollError) {
             clearInterval(pollInterval);
+            setRenderingVideo(false);
             console.error('❌ Polling error:', pollError);
             throw pollError;
           }
@@ -1422,6 +1437,7 @@ export default function Home() {
         // Set a maximum timeout of 10 minutes
         setTimeout(() => {
           clearInterval(pollInterval);
+          setRenderingVideo(false);
           console.error('❌ Rendering timeout after 10 minutes');
           setError('Video rendering timeout - please try again');
         }, 600000);
