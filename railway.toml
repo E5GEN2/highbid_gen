@@ -1,8 +1,0 @@
-[build]
-builder = "nixpacks"
-
-[build.nixpacksPlan]
-providers = ["node"]
-
-[build.nixpacksPlan.phases.setup]
-nixPkgs = ["ffmpeg"]
