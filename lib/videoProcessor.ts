@@ -134,15 +134,19 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
 
       const durationPerImage = duration / sceneImages.length;
 
-      // Create segments
+      // Create segments with proper audio slicing
       for (let imgIdx = 0; imgIdx < sceneImages.length; imgIdx++) {
         const imageFile = sceneImages[imgIdx];
         const segmentOutput = join(tempDir, `segment-${sceneId}-${imgIdx}.mp4`);
+
+        // Calculate audio slice timing for this image
+        const audioStartTime = imgIdx * durationPerImage;
 
         const ffmpegCmd = [
           'ffmpeg -y',
           '-loop 1',
           `-i "${join(tempDir, imageFile)}"`,
+          `-ss ${audioStartTime}`,
           `-i "${audioPath}"`,
           `-t ${durationPerImage}`,
           '-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,zoompan=z=\'min(zoom+0.0015,1.1)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=1080x1920"',
@@ -153,7 +157,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
           `"${segmentOutput}"`
         ].join(' ');
 
-        console.log(`🎬 [${jobId}] Creating segment ${sceneId}-${imgIdx}...`);
+        console.log(`🎬 [${jobId}] Creating segment ${sceneId}-${imgIdx} (audio: ${audioStartTime.toFixed(2)}s-${(audioStartTime + durationPerImage).toFixed(2)}s)...`);
         await execAsync(ffmpegCmd);
         concatList.push(`file '${segmentOutput}'`);
       }
