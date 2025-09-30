@@ -152,7 +152,7 @@ export async function processVideoInBackground(jobId: string, zipBuffer: Buffer)
           '-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,zoompan=z=\'min(zoom+0.0015,1.1)\':d=125:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s=1080x1920"',
           '-c:v libx264',
           '-pix_fmt yuv420p',
-          '-c:a aac',
+          '-c:a copy',
           '-shortest',
           `"${segmentOutput}"`
         ].join(' ');
