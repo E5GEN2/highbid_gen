@@ -1,0 +1,734 @@
+{
+  "version": "1.0",
+  "generated": "2025-09-30T09:53:11.467Z",
+  "canvas": {
+    "width": 1080,
+    "height": 1920
+  },
+  "frames": {
+    "1_full_splash": {
+      "id": "1_full_splash",
+      "filename": "1_full_splash.png",
+      "panelCount": 1,
+      "gridSize": "1x1",
+      "colorMap": {
+        "#ff0000": 2073600
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1080,
+            "height": 1920
+          },
+          "area": 2073600,
+          "centroid": {
+            "x": 540,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": true,
+            "left": true,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "7de0212dd50c1b225c000d3bf9da28c9",
+      "mtime": 1759223989695.7712
+    },
+    "2_two_horizontal": {
+      "id": "2_two_horizontal",
+      "filename": "2_two_horizontal.png",
+      "panelCount": 2,
+      "gridSize": "2x1",
+      "colorMap": {
+        "#ff0000": 1036800,
+        "#00ff00": 1036800
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1080,
+            "height": 960
+          },
+          "area": 1036800,
+          "centroid": {
+            "x": 540,
+            "y": 480
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": false,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 1,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 0,
+            "y": 960,
+            "width": 1080,
+            "height": 960
+          },
+          "area": 1036800,
+          "centroid": {
+            "x": 540,
+            "y": 1440
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": true,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "718d20a40fd7f97a0fc7ac46397ae39c",
+      "mtime": 1759224097288.1116
+    },
+    "3_three_horizontal": {
+      "id": "3_three_horizontal",
+      "filename": "3_three_horizontal.png",
+      "panelCount": 3,
+      "gridSize": "custom",
+      "colorMap": {
+        "#ff0000": 691200,
+        "#00ff00": 691200,
+        "#0000ff": 691200
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1080,
+            "height": 640
+          },
+          "area": 691200,
+          "centroid": {
+            "x": 540,
+            "y": 320
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": false,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 1,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 0,
+            "y": 640,
+            "width": 1080,
+            "height": 640
+          },
+          "area": 691200,
+          "centroid": {
+            "x": 540,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": false,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 2,
+          "color": "#0000ff",
+          "bounds": {
+            "x": 0,
+            "y": 1280,
+            "width": 1080,
+            "height": 640
+          },
+          "area": 691200,
+          "centroid": {
+            "x": 540,
+            "y": 1600
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": true,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "4ba2ce270b0604d09d00c52e4ca89667",
+      "mtime": 1759224029970.3162
+    },
+    "4_two_vertical": {
+      "id": "4_two_vertical",
+      "filename": "4_two_vertical.png",
+      "panelCount": 2,
+      "gridSize": "1x2",
+      "colorMap": {
+        "#ff0000": 1036800,
+        "#00ff00": 1036800
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 540,
+            "height": 1920
+          },
+          "area": 1036800,
+          "centroid": {
+            "x": 270,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": true,
+            "left": true,
+            "right": false
+          }
+        },
+        {
+          "id": 1,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 540,
+            "y": 0,
+            "width": 540,
+            "height": 1920
+          },
+          "area": 1036800,
+          "centroid": {
+            "x": 810,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": true,
+            "left": false,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "b071be78d68a7bb06a6079693256ffc9",
+      "mtime": 1759224117391.024
+    },
+    "5_four_grid": {
+      "id": "5_four_grid",
+      "filename": "5_four_grid.png",
+      "panelCount": 4,
+      "gridSize": "2x2",
+      "colorMap": {
+        "#ff0000": 518400,
+        "#00ff00": 518400,
+        "#0000ff": 518400,
+        "#ffff00": 518400
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 270,
+            "y": 480
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": false,
+            "left": true,
+            "right": false
+          }
+        },
+        {
+          "id": 1,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 540,
+            "y": 0,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 810,
+            "y": 480
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": false,
+            "left": false,
+            "right": true
+          }
+        },
+        {
+          "id": 2,
+          "color": "#0000ff",
+          "bounds": {
+            "x": 0,
+            "y": 960,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 270,
+            "y": 1440
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": true,
+            "right": false
+          }
+        },
+        {
+          "id": 3,
+          "color": "#ffff00",
+          "bounds": {
+            "x": 540,
+            "y": 960,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 810,
+            "y": 1440
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": false,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "0966f2d6d3745212b36066ecce5d126e",
+      "mtime": 1759224137648.9875
+    },
+    "6_big_top_two_bottom": {
+      "id": "6_big_top_two_bottom",
+      "filename": "6_big_top_two_bottom.png",
+      "panelCount": 3,
+      "gridSize": "custom",
+      "colorMap": {
+        "#ff0000": 1036800,
+        "#00ff00": 518400,
+        "#0000ff": 518400
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1080,
+            "height": 960
+          },
+          "area": 1036800,
+          "centroid": {
+            "x": 540,
+            "y": 480
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": false,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 1,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 0,
+            "y": 960,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 270,
+            "y": 1440
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": true,
+            "right": false
+          }
+        },
+        {
+          "id": 2,
+          "color": "#0000ff",
+          "bounds": {
+            "x": 540,
+            "y": 960,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 810,
+            "y": 1440
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": false,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "6b4b3810e6c6f0ee5d5df2b363191fd5",
+      "mtime": 1759224004166.2944
+    },
+    "7_l_shape": {
+      "id": "7_l_shape",
+      "filename": "7_l_shape.png",
+      "panelCount": 3,
+      "gridSize": "custom",
+      "colorMap": {
+        "#ff0000": 1036800,
+        "#00ff00": 518400,
+        "#0000ff": 518400
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 540,
+            "height": 1920
+          },
+          "area": 1036800,
+          "centroid": {
+            "x": 270,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": true,
+            "left": true,
+            "right": false
+          }
+        },
+        {
+          "id": 1,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 540,
+            "y": 0,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 810,
+            "y": 480
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": false,
+            "left": false,
+            "right": true
+          }
+        },
+        {
+          "id": 2,
+          "color": "#0000ff",
+          "bounds": {
+            "x": 540,
+            "y": 960,
+            "width": 540,
+            "height": 960
+          },
+          "area": 518400,
+          "centroid": {
+            "x": 810,
+            "y": 1440
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": false,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "d77c6cbcf3dabc7fa44204ad165a0e59",
+      "mtime": 1759224156808.2932
+    },
+    "8_windowpane": {
+      "id": "8_windowpane",
+      "filename": "8_windowpane.png",
+      "panelCount": 5,
+      "gridSize": "custom",
+      "colorMap": {
+        "#00ff00": 346319,
+        "#ffff00": 231861,
+        "#ff00ff": 230580,
+        "#ff0000": 919601,
+        "#0000ff": 345239
+      },
+      "panels": [
+        {
+          "id": 3,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 181,
+            "y": 321,
+            "width": 719,
+            "height": 1279
+          },
+          "area": 919601,
+          "centroid": {
+            "x": 540,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": false,
+            "left": false,
+            "right": false
+          }
+        },
+        {
+          "id": 0,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1080,
+            "height": 321
+          },
+          "area": 346319,
+          "centroid": {
+            "x": 540,
+            "y": 160
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": false,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 4,
+          "color": "#0000ff",
+          "bounds": {
+            "x": 0,
+            "y": 1600,
+            "width": 1080,
+            "height": 320
+          },
+          "area": 345239,
+          "centroid": {
+            "x": 540,
+            "y": 1760
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": true,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 1,
+          "color": "#ffff00",
+          "bounds": {
+            "x": 0,
+            "y": 320,
+            "width": 181,
+            "height": 1281
+          },
+          "area": 231861,
+          "centroid": {
+            "x": 90,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": false,
+            "left": true,
+            "right": false
+          }
+        },
+        {
+          "id": 2,
+          "color": "#ff00ff",
+          "bounds": {
+            "x": 900,
+            "y": 320,
+            "width": 180,
+            "height": 1281
+          },
+          "area": 230580,
+          "centroid": {
+            "x": 990,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": false,
+            "left": false,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "56465e3c4f5f1ab2fc6796ea9c9b3353",
+      "mtime": 1759224164080.051
+    },
+    "9_diagonal_split": {
+      "id": "9_diagonal_split",
+      "filename": "9_diagonal_split.png",
+      "panelCount": 2,
+      "gridSize": "2x1",
+      "colorMap": {
+        "#00ff00": 1037280,
+        "#ff0000": 1036320
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1080,
+            "height": 1920
+          },
+          "area": 1037280,
+          "centroid": {
+            "x": 719,
+            "y": 640
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": true,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 1,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 1,
+            "width": 1079,
+            "height": 1919
+          },
+          "area": 1036320,
+          "centroid": {
+            "x": 359,
+            "y": 1280
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": true,
+            "left": true,
+            "right": true
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "2800585a9220c4513a816ca2c1f89ddf",
+      "mtime": 1759224170992.8625
+    },
+    "10_inset": {
+      "id": "10_inset",
+      "filename": "10_inset.png",
+      "panelCount": 2,
+      "gridSize": "1x2",
+      "colorMap": {
+        "#ff0000": 1553699,
+        "#00ff00": 519901
+      },
+      "panels": [
+        {
+          "id": 0,
+          "color": "#ff0000",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1080,
+            "height": 1920
+          },
+          "area": 1553699,
+          "centroid": {
+            "x": 539,
+            "y": 959
+          },
+          "edgeTouch": {
+            "top": true,
+            "bottom": true,
+            "left": true,
+            "right": true
+          }
+        },
+        {
+          "id": 1,
+          "color": "#00ff00",
+          "bounds": {
+            "x": 270,
+            "y": 480,
+            "width": 541,
+            "height": 961
+          },
+          "area": 519901,
+          "centroid": {
+            "x": 540,
+            "y": 960
+          },
+          "edgeTouch": {
+            "top": false,
+            "bottom": false,
+            "left": false,
+            "right": false
+          }
+        }
+      ],
+      "dominantPanel": 0,
+      "hash": "c5ce237d5f28067224b5df438ee0a94d",
+      "mtime": 1759224177661.1946
+    }
+  }
+}

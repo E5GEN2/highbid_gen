@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "generated": "2025-09-30T12:57:00.595Z",
+  "canvasSize": {
+    "width": 1080,
+    "height": 1920
+  },
+  "totalPages": 3,
+  "animations": [
+    {
+      "pageIndex": 0,
+      "durationMs": 4000,
+      "ease": "ease-in",
+      "keyframes": [
+        {
+          "t": 0,
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 960,
+            "h": 1707
+          }
+        },
+        {
+          "t": 1,
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1080,
+            "h": 1920
+          }
+        }
+      ]
+    },
+    {
+      "pageIndex": 1,
+      "durationMs": 4000,
+      "ease": "ease-in",
+      "keyframes": [
+        {
+          "t": 0,
+          "rect": {
+            "x": 120,
+            "y": 0,
+            "w": 960,
+            "h": 1707
+          }
+        },
+        {
+          "t": 1,
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1080,
+            "h": 1920
+          }
+        }
+      ]
+    },
+    {
+      "pageIndex": 2,
+      "durationMs": 4000,
+      "ease": "ease-in",
+      "keyframes": [
+        {
+          "t": 0,
+          "rect": {
+            "x": 120,
+            "y": 213,
+            "w": 960,
+            "h": 1707
+          }
+        },
+        {
+          "t": 1,
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1080,
+            "h": 1920
+          }
+        }
+      ]
+    }
+  ]
+}

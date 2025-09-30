@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
 import { createJob } from '@/lib/videoQueue';
 import { processVideoInBackground } from '@/lib/videoProcessor';
+import { processRenderWithPipeline } from '@/lib/finalRenderPipeline';
 
 export async function POST(request: NextRequest) {
   try {
@@ -35,12 +36,30 @@ export async function POST(request: NextRequest) {
       console.log('⚠️ Continuing without Redis persistence');
     }
 
-    // Start background processing
+    // Start background processing with enhanced pipeline
     setImmediate(async () => {
       try {
-        console.log('🔄 Starting background ZIP processing...');
+        console.log('🔄 Starting enhanced background processing...');
         const zipBuffer = Buffer.from(await zipFile.arrayBuffer());
-        await processVideoInBackground(jobId, zipBuffer);
+
+        // Try enhanced processing first, fallback to standard if needed
+        try {
+          await processRenderWithPipeline(zipBuffer, jobId, {
+            useKenBurns: true,
+            panOptions: {
+              durationMs: 4000,
+              ease: 'inOutSine',
+              magnitude: 0.5,
+              targetDominantPanel: true
+            },
+            videoQuality: 'high',
+            outputFormat: 'mp4'
+          });
+          console.log('✅ Enhanced processing completed');
+        } catch (enhancedError) {
+          console.warn('⚠️ Enhanced processing failed, falling back to standard:', enhancedError);
+          await processVideoInBackground(jobId, zipBuffer);
+        }
       } catch (err) {
         console.error('❌ Background processing error:', err);
       }

@@ -1,0 +1,56 @@
+{
+  "version": "1.0",
+  "lastUpdated": "2025-09-30T09:57:26.309Z",
+  "autoSelect": {
+    "allowNonUniform": false,
+    "preferDominantPanel": false
+  },
+  "panAnimation": {
+    "durationMsPerPage": 4000,
+    "ease": "ease-in",
+    "magnitude": 0.25
+  },
+  "templates": {
+    "1_full_splash": {
+      "enabled": true,
+      "priority": 100
+    },
+    "2_two_horizontal": {
+      "enabled": true,
+      "priority": 150
+    },
+    "3_three_horizontal": {
+      "enabled": true,
+      "priority": 60
+    },
+    "4_two_vertical": {
+      "enabled": true,
+      "priority": 90
+    },
+    "5_four_grid": {
+      "enabled": true,
+      "priority": 200
+    },
+    "6_big_top_two_bottom": {
+      "enabled": true,
+      "priority": 60
+    },
+    "7_l_shape": {
+      "enabled": true,
+      "priority": 60
+    },
+    "8_windowpane": {
+      "enabled": true,
+      "priority": 40,
+      "customName": "Complex Window (Disabled)"
+    },
+    "9_diagonal_split": {
+      "enabled": true,
+      "priority": 90
+    },
+    "10_inset": {
+      "enabled": true,
+      "priority": 90
+    }
+  }
+}

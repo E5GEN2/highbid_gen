@@ -3,6 +3,10 @@
 import React, { useState } from 'react';
 import Image from 'next/image';
 import JSZip from 'jszip';
+import { SettingsProvider } from '../lib/settingsContext';
+import { SettingsTab } from '../components/SettingsTab';
+import { PageOverrideControls } from '../components/PageOverrideControls';
+import { StoryboardWithOverrides, createStoryboardWithOverrides } from '../lib/storyboardOverrides';
 
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
@@ -296,7 +300,9 @@ export default function Home() {
     { id: 'storyboard', name: '2. Storyboard', icon: '🎨' },
     { id: 'voiceovers', name: '3. Voice-overs', icon: '🎤' },
     { id: 'images', name: '4. Images', icon: '🖼️' },
-    { id: 'effects', name: '5. Final Video', icon: '🎬' }
+    { id: 'pages', name: '5. Pages', icon: '📄' },
+    { id: 'effects', name: '6. Final Video', icon: '🎬' },
+    { id: 'settings', name: 'Settings', icon: '⚙️' }
   ];
 
   const handleVoiceoverGeneration = async () => {
@@ -1676,7 +1682,8 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900">
+    <SettingsProvider>
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900">
       <div className="container mx-auto px-4 py-8 max-w-7xl">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-white mb-4 bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
@@ -4259,6 +4266,41 @@ Expand this into a 30-scene storyboard in JSONL format.`}</pre>
               </div>
             )}
 
+            {activeTab === 'pages' && (
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-xl font-bold text-white mb-2">5. Page Template Overrides</h2>
+                  <p className="text-gray-400">
+                    Switch frame templates for individual pages and recompose only the affected page.
+                  </p>
+                </div>
+
+                {/* For now, show a placeholder that demonstrates the concept */}
+                <div className="bg-gray-900/50 p-6 rounded-xl border border-gray-700">
+                  <div className="text-center text-gray-400">
+                    <p className="mb-4">🚧 Page Override Controls</p>
+                    <p className="text-sm">
+                      This feature allows you to override the frame template for individual storyboard pages.<br />
+                      Once you have storyboard composition results, you'll be able to:
+                    </p>
+                    <ul className="text-left mt-4 space-y-2 max-w-md mx-auto">
+                      <li>• Switch any page to a different frame template with the same panel count</li>
+                      <li>• Preview alternative layouts for each page</li>
+                      <li>• Apply/remove overrides with real-time recomposition</li>
+                      <li>• See which pages have custom overrides applied</li>
+                    </ul>
+                    <p className="text-xs mt-4 text-gray-500">
+                      Complete the storyboard composition in step 2 to enable this feature.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'settings' && (
+              <SettingsTab />
+            )}
+
             {/* Global Error Display */}
             {error && (
               <div className="mt-6 bg-red-900/20 border border-red-500 text-red-400 px-4 py-3 rounded-xl">
@@ -4268,5 +4310,6 @@ Expand this into a 30-scene storyboard in JSONL format.`}</pre>
         </div>
       </div>
     </div>
+    </SettingsProvider>
   );
 }
