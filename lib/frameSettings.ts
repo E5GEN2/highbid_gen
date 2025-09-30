@@ -94,7 +94,7 @@ export function saveFrameSettings(settings: FrameSettings): void {
 
 export function initializeFrameSettings(): FrameSettings {
   const manifest = getFrameManifest();
-  let settings = getFrameSettings();
+  const settings = getFrameSettings();
   let hasChanges = false;
 
   // Auto-detect new frames from manifest and add them to settings
