@@ -1390,11 +1390,13 @@ export default function Home() {
               console.log(`📊 Job ${jobId} status:`, job.status, `(${job.progress}%)`);
 
               // Update progress
-              setRenderProgress({
+              const newProgress = {
                 step: job.status === 'processing' ? `Rendering video... (${job.progress}%)` : job.status,
                 progress: job.progress,
                 total: 100
-              });
+              };
+              console.log('🔄 Updating renderProgress:', newProgress);
+              setRenderProgress(newProgress);
 
               // Check if complete
               if (job.status === 'completed') {
@@ -3558,7 +3560,10 @@ export default function Home() {
                       </button>
                       
                       {/* Rendering Progress */}
-                      {renderingVideo && renderProgress.step && (
+                      {(() => {
+                        console.log('🎯 UI Render Check:', { renderingVideo, renderProgressStep: renderProgress.step, shouldShow: renderingVideo && renderProgress.step });
+                        return renderingVideo && renderProgress.step;
+                      })() && (
                         <div className="mt-4 bg-gray-900/50 p-4 rounded-xl border border-gray-700">
                           <div className="text-white font-semibold mb-2">{renderProgress.step}</div>
                           <div className="w-full bg-gray-800 rounded-full h-2">
