@@ -285,7 +285,7 @@ function PanSettingsSection() {
             <select
               id="ease"
               value={panSettings.ease}
-              onChange={(e) => updatePanSettings({ ease: e.target.value as any })}
+              onChange={(e) => updatePanSettings({ ease: e.target.value as 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'inOutSine' })}
               className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="linear">Linear</option>

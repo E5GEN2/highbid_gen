@@ -4281,7 +4281,7 @@ Expand this into a 30-scene storyboard in JSONL format.`}</pre>
                     <p className="mb-4">🚧 Page Override Controls</p>
                     <p className="text-sm">
                       This feature allows you to override the frame template for individual storyboard pages.<br />
-                      Once you have storyboard composition results, you'll be able to:
+                      Once you have storyboard composition results, you&apos;ll be able to:
                     </p>
                     <ul className="text-left mt-4 space-y-2 max-w-md mx-auto">
                       <li>• Switch any page to a different frame template with the same panel count</li>
