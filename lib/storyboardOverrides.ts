@@ -1,7 +1,6 @@
 import { CompositionResult, CompositionOptions, composeStoryboard } from './storyboardCompositor';
 import { PagePlan, PlanningResult, createPagePlan } from './pagePlanner';
 import { getEnabledFrames, MergedFrameData } from './frameSettings';
-import { StoryboardScene } from '../types/storyboard';
 
 export interface PageOverride {
   pageIndex: number;
