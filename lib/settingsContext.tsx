@@ -44,6 +44,43 @@ interface SettingsContextType {
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
+// Default templates to use before API loads or if API fails
+const DEFAULT_TEMPLATES: FrameTemplate[] = [
+  {
+    id: '1_full_splash',
+    name: 'Full Splash',
+    panelCount: 1,
+    grid: '1x1',
+    description: 'Single panel layout',
+    edges: 'top, bottom, left, right',
+    enabled: true,
+    filename: '1_full_splash.png',
+    dominantPanel: 0
+  },
+  {
+    id: '2_two_horizontal',
+    name: 'Two Horizontal',
+    panelCount: 2,
+    grid: '2x1',
+    description: '2 panel horizontal layout',
+    edges: 'top, bottom, left, right',
+    enabled: true,
+    filename: '2_two_horizontal.png',
+    dominantPanel: 0
+  },
+  {
+    id: '3_three_horizontal',
+    name: 'Three Horizontal',
+    panelCount: 3,
+    grid: 'custom',
+    description: '3 panel horizontal layout',
+    edges: 'top, bottom, left, right',
+    enabled: true,
+    filename: '3_three_horizontal.png',
+    dominantPanel: 0
+  }
+];
+
 async function loadFrameTemplatesFromAPI(): Promise<FrameTemplate[]> {
   try {
     const response = await fetch('/api/frame-settings');
@@ -54,25 +91,14 @@ async function loadFrameTemplatesFromAPI(): Promise<FrameTemplate[]> {
     return data.frameTemplates;
   } catch (error) {
     console.error('Error loading frame templates:', error);
-    // Return fallback templates if API fails
-    return [
-      {
-        id: 'single_panel',
-        name: 'Single Panel',
-        panelCount: 1,
-        grid: 'single',
-        description: '1 panel layout',
-        edges: 'rounded',
-        enabled: true,
-        filename: 'single_panel.png'
-      }
-    ];
+    // Return default templates if API fails
+    return DEFAULT_TEMPLATES;
   }
 }
 
 function getDefaultSettings(): SettingsState {
   return {
-    frameTemplates: [],
+    frameTemplates: DEFAULT_TEMPLATES,
     autoSelectPreferences: {
       allowNonUniform: true,
       preferDominantPanel: true,
