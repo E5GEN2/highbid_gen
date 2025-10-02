@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
 export interface FrameTemplate {
   id: string;
@@ -44,46 +44,35 @@ interface SettingsContextType {
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
-function createFrameTemplatesFromManifest(): FrameTemplate[] {
-  // For now, return some default frame templates
-  // In production, this would be dynamically loaded from the frame manifest
-  return [
-    {
-      id: 'single_panel',
-      name: 'Single Panel',
-      panelCount: 1,
-      grid: 'single',
-      description: '1 panel layout',
-      edges: 'rounded',
-      enabled: true,
-      filename: 'single_panel.png'
-    },
-    {
-      id: 'two_panel_horizontal',
-      name: 'Two Panel Horizontal',
-      panelCount: 2,
-      grid: 'horizontal',
-      description: '2 panel horizontal layout',
-      edges: 'rounded',
-      enabled: true,
-      filename: 'two_panel_horizontal.png'
-    },
-    {
-      id: 'three_panel_vertical',
-      name: 'Three Panel Vertical',
-      panelCount: 3,
-      grid: 'vertical',
-      description: '3 panel vertical layout',
-      edges: 'rounded',
-      enabled: true,
-      filename: 'three_panel_vertical.png'
+async function loadFrameTemplatesFromAPI(): Promise<FrameTemplate[]> {
+  try {
+    const response = await fetch('/api/frame-settings');
+    if (!response.ok) {
+      throw new Error('Failed to fetch frame templates');
     }
-  ];
+    const data = await response.json();
+    return data.frameTemplates;
+  } catch (error) {
+    console.error('Error loading frame templates:', error);
+    // Return fallback templates if API fails
+    return [
+      {
+        id: 'single_panel',
+        name: 'Single Panel',
+        panelCount: 1,
+        grid: 'single',
+        description: '1 panel layout',
+        edges: 'rounded',
+        enabled: true,
+        filename: 'single_panel.png'
+      }
+    ];
+  }
 }
 
 function getDefaultSettings(): SettingsState {
   return {
-    frameTemplates: createFrameTemplatesFromManifest(),
+    frameTemplates: [],
     autoSelectPreferences: {
       allowNonUniform: true,
       preferDominantPanel: true,
@@ -100,6 +89,21 @@ function getDefaultSettings(): SettingsState {
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<SettingsState>(getDefaultSettings);
+
+  useEffect(() => {
+    async function loadTemplates() {
+      try {
+        const templates = await loadFrameTemplatesFromAPI();
+        setSettings(prev => ({
+          ...prev,
+          frameTemplates: templates
+        }));
+      } catch (error) {
+        console.error('Failed to load frame templates:', error);
+      }
+    }
+    loadTemplates();
+  }, []);
 
   const updateFrameTemplate = (id: string, updates: Partial<FrameTemplate>) => {
     setSettings(prev => ({
@@ -124,8 +128,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }));
   };
 
-  const resetToDefaults = () => {
-    setSettings(getDefaultSettings());
+  const resetToDefaults = async () => {
+    try {
+      const templates = await loadFrameTemplatesFromAPI();
+      setSettings({
+        ...getDefaultSettings(),
+        frameTemplates: templates
+      });
+    } catch (error) {
+      console.error('Failed to reload frame templates:', error);
+      setSettings(getDefaultSettings());
+    }
   };
 
   const getEnabledFrames = () => {
