@@ -1,4 +1,4 @@
-import { Redis } from '@upstash/redis';
+import { getPool } from './db';
 
 interface RenderJob {
   id: string;
@@ -10,115 +10,153 @@ interface RenderJob {
   updatedAt: Date;
 }
 
-// Redis configuration for Upstash
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!
-});
+// Cleanup old jobs (older than 1 hour) - called lazily
+async function cleanupOldJobs(): Promise<void> {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `DELETE FROM render_jobs WHERE created_at < NOW() - INTERVAL '1 hour'`
+    );
+    if (result.rowCount && result.rowCount > 0) {
+      console.log(`Cleaned up ${result.rowCount} old jobs`);
+    }
+  } catch (error) {
+    console.error('Error cleaning up old jobs:', error);
+  }
+}
+
+function rowToJob(row: {
+  id: string;
+  status: string;
+  progress: number;
+  video_url: string | null;
+  error: string | null;
+  created_at: Date;
+  updated_at: Date;
+}): RenderJob {
+  return {
+    id: row.id,
+    status: row.status as RenderJob['status'],
+    progress: row.progress,
+    videoUrl: row.video_url || undefined,
+    error: row.error || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 export async function createJob(id: string): Promise<RenderJob> {
-  const job: RenderJob = {
-    id,
-    status: 'pending',
-    progress: 0,
-    createdAt: new Date(),
-    updatedAt: new Date()
-  };
-
   try {
-    await redis.set(`job:${id}`, JSON.stringify(job), { ex: 3600 }); // 1 hour expiry
-    console.log(`📝 Created job ${id} in Redis`);
+    // Lazily cleanup old jobs
+    cleanupOldJobs().catch(() => {});
+
+    const pool = await getPool();
+    const result = await pool.query(
+      `INSERT INTO render_jobs (id, status, progress, created_at, updated_at)
+       VALUES ($1, 'pending', 0, NOW(), NOW())
+       RETURNING *`,
+      [id]
+    );
+
+    const job = rowToJob(result.rows[0]);
+    console.log(`Created job ${id} in PostgreSQL`);
     return job;
   } catch (error) {
-    console.error(`❌ Redis error creating job ${id}:`, error);
+    console.error(`PostgreSQL error creating job ${id}:`, error);
     throw error;
   }
 }
 
 export async function getJob(id: string): Promise<RenderJob | undefined> {
   try {
-    console.log(`🔍 Looking up job ${id} in Redis...`);
+    console.log(`Looking up job ${id} in PostgreSQL...`);
 
-    // Add timeout to Redis operations
-    const data = await Promise.race([
-      redis.get(`job:${id}`),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Redis get timeout')), 5000)
-      )
-    ]);
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT * FROM render_jobs WHERE id = $1`,
+      [id]
+    );
 
-    if (data) {
-      const job = JSON.parse(data as string);
-      console.log(`📖 Retrieved job ${id} from Redis: ${job.status} (${job.progress}%)`);
+    if (result.rows.length > 0) {
+      const job = rowToJob(result.rows[0]);
+      console.log(`Retrieved job ${id} from PostgreSQL: ${job.status} (${job.progress}%)`);
       return job;
     } else {
-      console.log(`❌ Job ${id} not found in Redis`);
+      console.log(`Job ${id} not found in PostgreSQL`);
       return undefined;
     }
   } catch (error) {
-    console.error(`❌ Redis error getting job ${id}:`, error);
+    console.error(`PostgreSQL error getting job ${id}:`, error);
     return undefined;
   }
 }
 
 export async function updateJob(id: string, updates: Partial<RenderJob>): Promise<void> {
   try {
-    console.log(`🔄 Attempting to update job ${id} with:`, updates);
+    console.log(`Attempting to update job ${id} with:`, updates);
 
-    // Try to get existing job with timeout
-    let existing: RenderJob | undefined;
-    try {
-      existing = await Promise.race([
-        getJob(id),
-        new Promise<undefined>((_, reject) =>
-          setTimeout(() => reject(new Error('Redis timeout')), 5000)
-        )
-      ]);
-    } catch (redisError) {
-      console.error(`❌ Redis getJob failed for ${id}:`, redisError);
-      existing = undefined;
-    }
+    const pool = await getPool();
 
-    let jobToSave: RenderJob;
+    // Check if job exists
+    const existing = await getJob(id);
+
     if (existing) {
-      jobToSave = { ...existing, ...updates, updatedAt: new Date() };
-      console.log(`📝 Updating existing job ${id}: ${jobToSave.status} (${jobToSave.progress}%)`);
+      // Build dynamic UPDATE query
+      const setClauses: string[] = ['updated_at = NOW()'];
+      const values: (string | number)[] = [];
+      let paramIndex = 1;
+
+      if (updates.status !== undefined) {
+        setClauses.push(`status = $${paramIndex++}`);
+        values.push(updates.status);
+      }
+      if (updates.progress !== undefined) {
+        setClauses.push(`progress = $${paramIndex++}`);
+        values.push(updates.progress);
+      }
+      if (updates.videoUrl !== undefined) {
+        setClauses.push(`video_url = $${paramIndex++}`);
+        values.push(updates.videoUrl);
+      }
+      if (updates.error !== undefined) {
+        setClauses.push(`error = $${paramIndex++}`);
+        values.push(updates.error);
+      }
+
+      values.push(id);
+
+      await pool.query(
+        `UPDATE render_jobs SET ${setClauses.join(', ')} WHERE id = $${paramIndex}`,
+        values
+      );
+
+      console.log(`Successfully updated job ${id} in PostgreSQL`);
     } else {
       // Create new job if not found (for background processes)
-      jobToSave = {
-        id,
-        status: 'pending',
-        progress: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        ...updates
-      };
-      console.log(`📝 Creating new job ${id}: ${jobToSave.status} (${jobToSave.progress}%)`);
-    }
+      const status = updates.status || 'pending';
+      const progress = updates.progress || 0;
+      const videoUrl = updates.videoUrl || null;
+      const error = updates.error || null;
 
-    // Try to save with timeout
-    try {
-      await Promise.race([
-        redis.set(`job:${id}`, JSON.stringify(jobToSave), { ex: 3600 }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Redis set timeout')), 5000)
-        )
-      ]);
-      console.log(`✅ Successfully saved job ${id} to Redis: ${jobToSave.status} (${jobToSave.progress}%)`);
-    } catch (redisError) {
-      console.error(`❌ Redis set failed for job ${id}:`, redisError);
-      console.log(`⚠️ Job ${id} update lost due to Redis failure`);
+      await pool.query(
+        `INSERT INTO render_jobs (id, status, progress, video_url, error, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+        [id, status, progress, videoUrl, error]
+      );
+
+      console.log(`Created new job ${id} in PostgreSQL: ${status} (${progress}%)`);
     }
   } catch (error) {
-    console.error(`❌ Unexpected error updating job ${id}:`, error);
+    console.error(`PostgreSQL error updating job ${id}:`, error);
   }
 }
 
 export async function deleteJob(id: string): Promise<void> {
   try {
-    await redis.del(`job:${id}`);
-    console.log(`🗑️  Deleted job ${id} from Redis`);
+    const pool = await getPool();
+    await pool.query(`DELETE FROM render_jobs WHERE id = $1`, [id]);
+    console.log(`Deleted job ${id} from PostgreSQL`);
   } catch (error) {
-    console.error(`❌ Redis error deleting job ${id}:`, error);
+    console.error(`PostgreSQL error deleting job ${id}:`, error);
   }
 }

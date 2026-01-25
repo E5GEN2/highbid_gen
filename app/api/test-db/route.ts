@@ -4,35 +4,35 @@ import { randomBytes } from 'crypto';
 
 export async function GET() {
   try {
-    // Test Redis operations
+    // Test PostgreSQL operations
     const testId = randomBytes(8).toString('hex');
 
-    console.log('🧪 Testing Redis with job ID:', testId);
+    console.log('Testing PostgreSQL with job ID:', testId);
 
     // Create a test job
     const job = await createJob(testId);
-    console.log('✅ Created test job:', job);
+    console.log('Created test job:', job);
 
     // Retrieve the job
     const retrievedJob = await getJob(testId);
-    console.log('✅ Retrieved test job:', retrievedJob);
+    console.log('Retrieved test job:', retrievedJob);
 
     // Update the job
     await updateJob(testId, { status: 'processing', progress: 50 });
-    console.log('✅ Updated test job');
+    console.log('Updated test job');
 
     // Retrieve updated job
     const updatedJob = await getJob(testId);
-    console.log('✅ Retrieved updated job:', updatedJob);
+    console.log('Retrieved updated job:', updatedJob);
 
     return NextResponse.json({
       success: true,
-      message: 'Redis operations successful',
+      message: 'PostgreSQL operations successful',
       testJob: updatedJob
     });
 
   } catch (error) {
-    console.error('❌ Redis test error:', error);
+    console.error('PostgreSQL test error:', error);
     return NextResponse.json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
