@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Image from 'next/image';
 import JSZip from 'jszip';
-import { SettingsProvider } from '../lib/settingsContext';
+import { SettingsProvider, useSettings } from '../lib/settingsContext';
 import { SettingsTab } from '../components/SettingsTab';
 import { PageOverrideControls } from '../components/PageOverrideControls';
 import { StoryboardWithOverrides, createStoryboardWithOverrides } from '../lib/storyboardOverrides';
@@ -21,18 +21,28 @@ const calculateImageColumns = (durationSeconds: number): number => {
   return Math.max(1, Math.ceil(durationSeconds / 2)); // One column per 2 seconds, minimum 1
 };
 
+// Wrapper component that provides the context
 export default function Home() {
-  const [apiKey, setApiKey] = useState('');
-  const [elevenLabsKey, setElevenLabsKey] = useState('');
-  const [googleTtsKey, setGoogleTtsKey] = useState('');
-  const [highbidApiUrl, setHighbidApiUrl] = useState('');
-  const [kokoroUrl, setKokoroUrl] = useState('');
+  return (
+    <SettingsProvider>
+      <HomeContent />
+    </SettingsProvider>
+  );
+}
+
+// Main content component that uses the settings context
+function HomeContent() {
+  const { settings } = useSettings();
+
+  // Get API keys from context
+  const apiKey = settings.apiKeys.openRouterKey;
+  const elevenLabsKey = settings.apiKeys.elevenLabsKey;
+  const googleTtsKey = settings.apiKeys.googleTtsKey;
+  const highbidApiUrl = settings.apiKeys.highbidApiUrl;
+  const kokoroUrl = settings.apiKeys.kokoroUrl;
+  const papaiApiKey = settings.apiKeys.papaiApiKey;
+
   const [activeTab, setActiveTab] = useState('scripts');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [showElevenLabsKey, setShowElevenLabsKey] = useState(false);
-  const [showGoogleTtsKey, setShowGoogleTtsKey] = useState(false);
-  const [showHighbidUrl, setShowHighbidUrl] = useState(false);
-  const [showKokoroUrl, setShowKokoroUrl] = useState(false);
   
   // Script Generation State
   const [scriptTitles, setScriptTitles] = useState<string[]>(['']);
@@ -107,8 +117,6 @@ export default function Home() {
   const [scriptsLoading, setScriptsLoading] = useState(false);
   const [showStoryBulbPrompt, setShowStoryBulbPrompt] = useState(false);
   const [showStoryboardPrompt, setShowStoryboardPrompt] = useState(false);
-  const [papaiApiKey, setPapaiApiKey] = useState('');
-  const [showPapaiKey, setShowPapaiKey] = useState(false);
   
   // Storyboard State
   const [selectedStory, setSelectedStory] = useState<StoryBulb | null>(null);
@@ -1881,7 +1889,6 @@ export default function Home() {
   }, [selectedStory, generatedStoryboard, saveProject]);
 
   return (
-    <SettingsProvider>
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 flex">
         {/* Sidebar Navigation */}
         <aside className="w-16 bg-gray-900/80 border-r border-gray-700 flex flex-col items-center py-4 fixed h-full z-50">
@@ -2054,147 +2061,24 @@ export default function Home() {
           </p>
         </div>
 
-        {/* API Keys Section */}
-        <div className="bg-gray-800/50 backdrop-blur-xl rounded-2xl p-6 border border-gray-700 mb-8">
-          <div className="grid md:grid-cols-3 gap-6">
-            <div>
-              <label className="block text-white text-sm font-semibold mb-3">
-                OpenRouter API Key (for Images & Scripts)
-              </label>
-              <div className="relative">
-                <input
-                  type={showApiKey ? 'text' : 'password'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Enter your OpenRouter API key"
-                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
-                <button
-                  onClick={() => setShowApiKey(!showApiKey)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
-                >
-                  {showApiKey ? '👁️' : '👁️‍🗨️'}
-                </button>
+        {/* API Keys Notice */}
+        {(!apiKey && !googleTtsKey && !elevenLabsKey) && (
+          <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-2xl p-4 mb-8 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">🔑</span>
+              <div>
+                <p className="text-yellow-300 font-medium">API Keys Required</p>
+                <p className="text-yellow-300/70 text-sm">Configure your API keys in Settings to start generating content</p>
               </div>
             </div>
-            
-            <div>
-              <label className="block text-white text-sm font-semibold mb-3">
-                ElevenLabs API Key (for Voice-overs)
-              </label>
-              <div className="relative">
-                <input
-                  type={showElevenLabsKey ? 'text' : 'password'}
-                  value={elevenLabsKey}
-                  onChange={(e) => {
-                    setElevenLabsKey(e.target.value);
-                    setVoicesLoaded(false);
-                  }}
-                  placeholder="Enter your ElevenLabs API key"
-                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
-                <button
-                  onClick={() => setShowElevenLabsKey(!showElevenLabsKey)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
-                >
-                  {showElevenLabsKey ? '👁️' : '👁️‍🗨️'}
-                </button>
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-white text-sm font-semibold mb-3">
-                Google Gemini TTS API Key (Alternative Voice)
-              </label>
-              <div className="relative">
-                <input
-                  type={showGoogleTtsKey ? 'text' : 'password'}
-                  value={googleTtsKey}
-                  onChange={(e) => {
-                    setGoogleTtsKey(e.target.value);
-                    setGoogleVoicesLoaded(false);
-                  }}
-                  placeholder="Enter your Google API key"
-                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
-                <button
-                  onClick={() => setShowGoogleTtsKey(!showGoogleTtsKey)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
-                >
-                  {showGoogleTtsKey ? '👁️' : '👁️‍🗨️'}
-                </button>
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-white text-sm font-semibold mb-3">
-                PapAI API Key (for Story & Script Generation)
-              </label>
-              <div className="relative">
-                <input
-                  type={showPapaiKey ? 'text' : 'password'}
-                  value={papaiApiKey}
-                  onChange={(e) => setPapaiApiKey(e.target.value)}
-                  placeholder="Enter your PapAI API key (sk_live_...)"
-                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                />
-                <button
-                  onClick={() => setShowPapaiKey(!showPapaiKey)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
-                >
-                  {showPapaiKey ? '👁️' : '👁️‍🗨️'}
-                </button>
-              </div>
-              <p className="text-xs text-gray-400 mt-2">
-                Get your API key from papaiapi.com - $0.50 per 1,000 calls
-              </p>
-            </div>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className="px-4 py-2 bg-yellow-600/20 text-yellow-300 rounded-xl hover:bg-yellow-600/30 transition"
+            >
+              Go to Settings
+            </button>
           </div>
-          
-          {/* Highbid API URL - Full width row */}
-          <div className="mt-6">
-            <label className="block text-white text-sm font-semibold mb-3">
-              Highbid API URL (for High-Quality Image Generation)
-            </label>
-            <div className="relative">
-              <input
-                type={showHighbidUrl ? 'text' : 'password'}
-                value={highbidApiUrl}
-                onChange={(e) => setHighbidApiUrl(e.target.value)}
-                placeholder="Enter your Highbid/ngrok API URL (e.g., https://xxxx.ngrok-free.app)"
-                className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition"
-              />
-              <button
-                onClick={() => setShowHighbidUrl(!showHighbidUrl)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
-              >
-                {showHighbidUrl ? '👁️' : '👁️‍🗨️'}
-              </button>
-            </div>
-          </div>
-
-          {/* Kokoro TTS URL */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Kokoro TTS URL (optional)
-            </label>
-            <div className="relative">
-              <input
-                type={showKokoroUrl ? 'text' : 'password'}
-                value={kokoroUrl}
-                onChange={(e) => setKokoroUrl(e.target.value)}
-                placeholder="Enter your Kokoro/ngrok URL (e.g., https://xxxx.ngrok-free.app)"
-                className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition"
-              />
-              <button
-                onClick={() => setShowKokoroUrl(!showKokoroUrl)}
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition"
-              >
-                {showKokoroUrl ? '👁️' : '👁️‍🗨️'}
-              </button>
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Tab Navigation */}
         <div className="bg-gray-800/50 backdrop-blur-xl rounded-2xl border border-gray-700 overflow-hidden">
@@ -4675,6 +4559,5 @@ Expand this into a 30-scene storyboard in JSONL format.`}</pre>
           )}
         </div>
       </div>
-    </SettingsProvider>
   );
 }

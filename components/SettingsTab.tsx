@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useSettings, FrameTemplate } from '../lib/settingsContext';
+import { useSettings, FrameTemplate, ApiKeys } from '../lib/settingsContext';
 import { FramePreview } from './FramePreview';
 
 interface FrameTemplateRowProps {
@@ -345,11 +345,88 @@ function PanSettingsSection() {
   );
 }
 
+function ApiKeysSection() {
+  const { settings, updateApiKeys } = useSettings();
+  const apiKeys = settings.apiKeys;
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
+
+  const toggleShowKey = (key: string) => {
+    setShowKeys(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const keyFields: { id: keyof ApiKeys; label: string; placeholder: string; description: string }[] = [
+    { id: 'openRouterKey', label: 'OpenRouter API Key', placeholder: 'sk-or-...', description: 'For image generation and scripts' },
+    { id: 'googleTtsKey', label: 'Google Gemini API Key', placeholder: 'AIza...', description: 'For TTS voice generation and Gemini image generation' },
+    { id: 'elevenLabsKey', label: 'ElevenLabs API Key', placeholder: 'xi-...', description: 'For premium voice generation' },
+    { id: 'papaiApiKey', label: 'PapAI API Key', placeholder: 'pap-...', description: 'For story and script generation' },
+    { id: 'highbidApiUrl', label: 'Highbid API URL', placeholder: 'https://...', description: 'Custom image generation endpoint' },
+    { id: 'kokoroUrl', label: 'Kokoro TTS URL', placeholder: 'http://localhost:8880', description: 'Local Kokoro TTS server' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-medium text-white">API Keys</h3>
+        <p className="text-sm text-gray-300">
+          Configure your API keys for various services. Keys are stored in your browser.
+        </p>
+      </div>
+
+      <div className="space-y-4">
+        {keyFields.map(({ id, label, placeholder, description }) => (
+          <div key={id} className="bg-gray-800/30 p-4 rounded-lg border border-gray-700">
+            <label className="block text-sm font-medium text-white mb-1">
+              {label}
+            </label>
+            <p className="text-xs text-gray-400 mb-2">{description}</p>
+            <div className="relative">
+              <input
+                type={showKeys[id] ? 'text' : 'password'}
+                value={apiKeys[id]}
+                onChange={(e) => updateApiKeys({ [id]: e.target.value })}
+                placeholder={placeholder}
+                className="w-full px-4 py-2 pr-12 bg-gray-900/50 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:ring-purple-500 focus:border-purple-500"
+              />
+              <button
+                type="button"
+                onClick={() => toggleShowKey(id)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+              >
+                {showKeys[id] ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                )}
+              </button>
+            </div>
+            {apiKeys[id] && (
+              <div className="mt-1 text-xs text-green-400">Key configured</div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-4">
+        <p className="text-sm text-yellow-300">
+          <strong>Note:</strong> API keys are stored locally in your browser and never sent to our servers.
+          They are only used to make direct requests to the respective API providers.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsTab() {
   const { resetToDefaults } = useSettings();
-  const [activeSection, setActiveSection] = useState('templates');
+  const [activeSection, setActiveSection] = useState('apikeys');
 
   const sections = [
+    { id: 'apikeys', name: 'API Keys', icon: '🔑' },
     { id: 'templates', name: 'Frame Templates', icon: '🖼️' },
     { id: 'autoselect', name: 'Auto-Selection', icon: '🎯' },
     { id: 'pan', name: 'Camera Pan', icon: '🎬' }
@@ -394,6 +471,7 @@ export function SettingsTab() {
 
       {/* Main Content */}
       <div className="flex-1 p-6 overflow-y-auto">
+        {activeSection === 'apikeys' && <ApiKeysSection />}
         {activeSection === 'templates' && <FrameTemplatesSection />}
         {activeSection === 'autoselect' && <AutoSelectPreferencesSection />}
         {activeSection === 'pan' && <PanSettingsSection />}

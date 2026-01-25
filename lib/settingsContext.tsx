@@ -27,10 +27,20 @@ export interface PanSettings {
   targetDominantPanel: boolean;
 }
 
+export interface ApiKeys {
+  openRouterKey: string;
+  elevenLabsKey: string;
+  googleTtsKey: string;
+  papaiApiKey: string;
+  highbidApiUrl: string;
+  kokoroUrl: string;
+}
+
 export interface SettingsState {
   frameTemplates: FrameTemplate[];
   autoSelectPreferences: AutoSelectPreferences;
   panSettings: PanSettings;
+  apiKeys: ApiKeys;
 }
 
 interface SettingsContextType {
@@ -38,6 +48,7 @@ interface SettingsContextType {
   updateFrameTemplate: (id: string, updates: Partial<FrameTemplate>) => void;
   updateAutoSelectPreferences: (updates: Partial<AutoSelectPreferences>) => void;
   updatePanSettings: (updates: Partial<PanSettings>) => void;
+  updateApiKeys: (updates: Partial<ApiKeys>) => void;
   resetToDefaults: () => void;
   getEnabledFrames: () => FrameTemplate[];
 }
@@ -109,6 +120,14 @@ function getDefaultSettings(): SettingsState {
       ease: 'inOutSine',
       magnitude: 0.5,
       targetDominantPanel: true
+    },
+    apiKeys: {
+      openRouterKey: '',
+      elevenLabsKey: '',
+      googleTtsKey: '',
+      papaiApiKey: '',
+      highbidApiUrl: '',
+      kokoroUrl: ''
     }
   };
 }
@@ -154,6 +173,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }));
   };
 
+  const updateApiKeys = (updates: Partial<ApiKeys>) => {
+    setSettings(prev => ({
+      ...prev,
+      apiKeys: { ...prev.apiKeys, ...updates }
+    }));
+  };
+
   const resetToDefaults = async () => {
     try {
       const templates = await loadFrameTemplatesFromAPI();
@@ -176,6 +202,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     updateFrameTemplate,
     updateAutoSelectPreferences,
     updatePanSettings,
+    updateApiKeys,
     resetToDefaults,
     getEnabledFrames
   };
