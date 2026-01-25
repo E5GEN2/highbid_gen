@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Image from 'next/image';
 import JSZip from 'jszip';
 import { SettingsProvider } from '../lib/settingsContext';
@@ -220,6 +220,20 @@ export default function Home() {
   });
   
   const [error, setError] = useState<string | null>(null);
+
+  // Sidebar Navigation State
+  const [currentView, setCurrentView] = useState<'creator' | 'library'>('creator');
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [libraryProjects, setLibraryProjects] = useState<{
+    id: string;
+    title: string;
+    thumbnail: string | null;
+    updatedAt: string;
+  }[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});
@@ -1680,10 +1694,357 @@ export default function Home() {
     }
   };
 
+  // Generate a unique project ID
+  const generateProjectId = () => {
+    return `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  };
+
+  // Save project to database
+  const saveProject = useCallback(async () => {
+    if (!selectedStory) return;
+
+    // Generate ID if this is a new project
+    const projectId = currentProjectId || generateProjectId();
+    if (!currentProjectId) {
+      setCurrentProjectId(projectId);
+    }
+
+    setIsSaving(true);
+    try {
+      // Get first scene image as thumbnail
+      const thumbnail = storyboardImages['1_0'] || storyboardImages['1'] || null;
+
+      const projectData = {
+        storyBulb: selectedStory,
+        storyboard: generatedStoryboard,
+        storyboardImages,
+        storyboardVoiceovers,
+        voiceoverDurations,
+        activeTab
+      };
+
+      const response = await fetch('/api/projects/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: projectId,
+          title: selectedStory.title,
+          thumbnail,
+          projectData
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setLastSaved(new Date());
+        console.log('Project saved:', projectId);
+      } else {
+        console.error('Failed to save project:', data.error);
+      }
+    } catch (err) {
+      console.error('Error saving project:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [selectedStory, currentProjectId, generatedStoryboard, storyboardImages, storyboardVoiceovers, voiceoverDurations, activeTab]);
+
+  // Debounced auto-save
+  const debouncedSave = useCallback(() => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      saveProject();
+    }, 2000);
+  }, [saveProject]);
+
+  // Load project from database
+  const loadProject = async (projectId: string) => {
+    try {
+      const response = await fetch(`/api/projects/${projectId}`);
+      const data = await response.json();
+
+      if (data.success && data.project) {
+        const { projectData } = data.project;
+
+        // Restore all state
+        if (projectData.storyBulb) {
+          setGeneratedStories([projectData.storyBulb]);
+          setSelectedStory(projectData.storyBulb);
+        }
+        if (projectData.storyboard) {
+          setGeneratedStoryboard(projectData.storyboard);
+        }
+        if (projectData.storyboardImages) {
+          setStoryboardImages(projectData.storyboardImages);
+        }
+        if (projectData.storyboardVoiceovers) {
+          setStoryboardVoiceovers(projectData.storyboardVoiceovers);
+        }
+        if (projectData.voiceoverDurations) {
+          setVoiceoverDurations(projectData.voiceoverDurations);
+        }
+        if (projectData.activeTab) {
+          setActiveTab(projectData.activeTab);
+        }
+
+        setCurrentProjectId(projectId);
+        setCurrentView('creator');
+        setLastSaved(new Date(data.project.updatedAt));
+        console.log('Project loaded:', projectId);
+      }
+    } catch (err) {
+      console.error('Error loading project:', err);
+      setError('Failed to load project');
+    }
+  };
+
+  // Delete project from database
+  const deleteProject = async (projectId: string) => {
+    if (!confirm('Are you sure you want to delete this project?')) return;
+
+    try {
+      const response = await fetch(`/api/projects/${projectId}`, {
+        method: 'DELETE'
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        // Refresh library
+        fetchLibraryProjects();
+        // If we deleted the current project, clear it
+        if (currentProjectId === projectId) {
+          setCurrentProjectId(null);
+        }
+      }
+    } catch (err) {
+      console.error('Error deleting project:', err);
+    }
+  };
+
+  // Fetch library projects
+  const fetchLibraryProjects = async () => {
+    setLibraryLoading(true);
+    try {
+      const response = await fetch('/api/projects');
+      const data = await response.json();
+
+      if (data.success) {
+        setLibraryProjects(data.projects);
+      }
+    } catch (err) {
+      console.error('Error fetching projects:', err);
+    } finally {
+      setLibraryLoading(false);
+    }
+  };
+
+  // Start a new project
+  const startNewProject = () => {
+    setCurrentProjectId(null);
+    setGeneratedStories([]);
+    setSelectedStory(null);
+    setGeneratedStoryboard([]);
+    setStoryboardImages({});
+    setStoryboardVoiceovers({});
+    setVoiceoverDurations({});
+    setActiveTab('scripts');
+    setLastSaved(null);
+    setCurrentView('creator');
+  };
+
+  // Auto-save triggers
+  useEffect(() => {
+    if (selectedStory && generatedStoryboard.length > 0) {
+      debouncedSave();
+    }
+  }, [selectedStory, generatedStoryboard, storyboardImages, storyboardVoiceovers, debouncedSave]);
+
+  // Fetch library when switching to library view
+  useEffect(() => {
+    if (currentView === 'library') {
+      fetchLibraryProjects();
+    }
+  }, [currentView]);
+
+  // Save on page unload
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (selectedStory && generatedStoryboard.length > 0) {
+        // Synchronous save attempt (may not complete)
+        saveProject();
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [selectedStory, generatedStoryboard, saveProject]);
+
   return (
     <SettingsProvider>
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900">
-      <div className="container mx-auto px-4 py-8 max-w-7xl">
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 flex">
+        {/* Sidebar Navigation */}
+        <aside className="w-16 bg-gray-900/80 border-r border-gray-700 flex flex-col items-center py-4 fixed h-full z-50">
+          {/* Logo */}
+          <div className="mb-6">
+            <div className="w-10 h-10 bg-gradient-to-br from-purple-600 to-pink-600 rounded-xl flex items-center justify-center text-white font-bold text-lg">
+              H
+            </div>
+          </div>
+
+          {/* Navigation */}
+          <nav className="flex-1 flex flex-col gap-2">
+            <button
+              onClick={() => setCurrentView('creator')}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                currentView === 'creator'
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+              title="Creator"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setCurrentView('library')}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                currentView === 'library'
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+              title="Library"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
+            </button>
+          </nav>
+
+          {/* Bottom Section */}
+          <div className="flex flex-col gap-2 items-center">
+            {/* Save Status */}
+            {currentView === 'creator' && selectedStory && (
+              <div className="w-10 h-10 flex items-center justify-center" title={lastSaved ? `Last saved: ${lastSaved.toLocaleTimeString()}` : 'Not saved'}>
+                {isSaving ? (
+                  <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                ) : lastSaved ? (
+                  <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                  </svg>
+                )}
+              </div>
+            )}
+
+            {/* New Project */}
+            <button
+              onClick={startNewProject}
+              className="w-10 h-10 bg-gray-800 text-gray-400 hover:bg-purple-600 hover:text-white rounded-xl flex items-center justify-center transition-all"
+              title="New Project"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+          </div>
+        </aside>
+
+        {/* Main Content Area */}
+        <div className="flex-1 ml-16">
+          {currentView === 'library' ? (
+            /* Library View */
+            <div className="container mx-auto px-4 py-8 max-w-7xl">
+              <div className="text-center mb-8">
+                <h1 className="text-4xl font-bold text-white mb-4 bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
+                  Project Library
+                </h1>
+                <p className="text-gray-400 max-w-2xl mx-auto">
+                  Browse and manage your saved projects
+                </p>
+              </div>
+
+              {libraryLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500" />
+                </div>
+              ) : libraryProjects.length === 0 ? (
+                <div className="text-center py-20">
+                  <div className="text-6xl mb-4">📁</div>
+                  <h3 className="text-xl font-semibold text-white mb-2">No projects yet</h3>
+                  <p className="text-gray-400 mb-6">Create your first project to get started</p>
+                  <button
+                    onClick={startNewProject}
+                    className="px-6 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition"
+                  >
+                    Create New Project
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {libraryProjects.map((project) => (
+                    <div
+                      key={project.id}
+                      className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden hover:border-purple-500 transition-all group"
+                    >
+                      {/* Thumbnail */}
+                      <div
+                        className="aspect-video bg-gray-900 flex items-center justify-center cursor-pointer"
+                        onClick={() => loadProject(project.id)}
+                      >
+                        {project.thumbnail ? (
+                          <img
+                            src={project.thumbnail}
+                            alt={project.title}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="text-4xl text-gray-600">🎬</div>
+                        )}
+                      </div>
+
+                      {/* Info */}
+                      <div className="p-4">
+                        <h3
+                          className="font-semibold text-white truncate cursor-pointer hover:text-purple-400"
+                          onClick={() => loadProject(project.id)}
+                        >
+                          {project.title}
+                        </h3>
+                        <p className="text-sm text-gray-400 mt-1">
+                          {new Date(project.updatedAt).toLocaleDateString()} {new Date(project.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+
+                        {/* Actions */}
+                        <div className="flex gap-2 mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => loadProject(project.id)}
+                            className="flex-1 px-3 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 transition"
+                          >
+                            Open
+                          </button>
+                          <button
+                            onClick={() => deleteProject(project.id)}
+                            className="px-3 py-2 bg-red-600/20 text-red-400 text-sm rounded-lg hover:bg-red-600/40 transition"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Creator View - Original Content */
+            <div className="container mx-auto px-4 py-8 max-w-7xl">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-white mb-4 bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
             AI Video Production Pipeline
@@ -4309,9 +4670,11 @@ Expand this into a 30-scene storyboard in JSONL format.`}</pre>
                 <p className="text-sm">{error}</p>
               </div>
             )}
+            </div>
+          </div>
+          )}
         </div>
       </div>
-    </div>
     </SettingsProvider>
   );
 }

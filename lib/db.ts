@@ -35,6 +35,22 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_render_jobs_created_at ON render_jobs(created_at)
     `);
 
+    // Projects table for sidebar persistence
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id VARCHAR(64) PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        thumbnail TEXT,
+        project_data JSONB NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC)
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
