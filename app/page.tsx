@@ -1861,9 +1861,9 @@ function HomeContent() {
     setCurrentView('creator');
   };
 
-  // Auto-save triggers
+  // Auto-save triggers - save when story bulb is generated (don't require storyboard)
   useEffect(() => {
-    if (selectedStory && generatedStoryboard.length > 0) {
+    if (selectedStory) {
       debouncedSave();
     }
   }, [selectedStory, generatedStoryboard, storyboardImages, storyboardVoiceovers, debouncedSave]);
@@ -1878,7 +1878,7 @@ function HomeContent() {
   // Save on page unload
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (selectedStory && generatedStoryboard.length > 0) {
+      if (selectedStory) {
         // Synchronous save attempt (may not complete)
         saveProject();
       }
@@ -1886,7 +1886,7 @@ function HomeContent() {
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [selectedStory, generatedStoryboard, saveProject]);
+  }, [selectedStory, saveProject]);
 
   return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 flex">
