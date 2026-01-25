@@ -386,8 +386,8 @@ function HomeContent() {
   };
 
   const handleScriptGeneration = async () => {
-    if (!googleTtsKey || scriptTitles.filter(t => t.trim()).length === 0) {
-      setError('Please provide Google API key and at least one title');
+    if (!papaiApiKey || scriptTitles.filter(t => t.trim()).length === 0) {
+      setError('Please provide PapAI API key in Settings and at least one title');
       return;
     }
     
@@ -2062,7 +2062,7 @@ function HomeContent() {
         </div>
 
         {/* API Keys Notice */}
-        {(!apiKey && !googleTtsKey && !elevenLabsKey) && (
+        {(!papaiApiKey && !apiKey && !googleTtsKey) && (
           <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-2xl p-4 mb-8 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className="text-2xl">🔑</span>
@@ -2168,7 +2168,7 @@ function HomeContent() {
                   </button>
                   <button
                     onClick={handleScriptGeneration}
-                    disabled={scriptsLoading || !googleTtsKey}
+                    disabled={scriptsLoading || !papaiApiKey}
                     className="px-8 py-3 bg-gradient-to-r from-green-500 to-blue-600 text-white font-semibold rounded-xl hover:from-green-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
                   >
                     {scriptsLoading ? 'Generating Stories...' : 'Generate Stories'}
