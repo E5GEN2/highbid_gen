@@ -16,11 +16,11 @@ function getBeatDistribution(totalScenes: number): { [beat: string]: number[] } 
       "cta": [30]
     };
   }
-  
+
   // Dynamic distribution for other counts
   const distribution: { [beat: string]: number[] } = {};
   const beats = ["hook", "setup", "inciting", "rise", "midpoint", "complication", "climax", "resolution", "cta"];
-  
+
   if (totalScenes <= 5) {
     // Ultra-short: only essential beats
     distribution["hook"] = [1];
@@ -47,7 +47,7 @@ function getBeatDistribution(totalScenes: number): { [beat: string]: number[] } 
     // Proportional distribution for 11-29 scenes
     const scenesPerBeat = totalScenes / 9; // 9 beats total
     let currentScene = 1;
-    
+
     beats.forEach((beat, index) => {
       const beatScenes = Math.round(scenesPerBeat * (index === beats.length - 1 ? 0.5 : 1));
       if (beatScenes > 0 && currentScene <= totalScenes) {
@@ -59,7 +59,7 @@ function getBeatDistribution(totalScenes: number): { [beat: string]: number[] } 
         distribution[beat] = [];
       }
     });
-    
+
     // Ensure CTA is always last scene if we have call_to_action
     if (currentScene - 1 === totalScenes && distribution["cta"].length === 0) {
       distribution["cta"] = [totalScenes];
@@ -68,7 +68,7 @@ function getBeatDistribution(totalScenes: number): { [beat: string]: number[] } 
       }
     }
   }
-  
+
   return distribution;
 }
 
@@ -110,9 +110,8 @@ interface StoryboardScene {
   music_cue: string;
 }
 
-const STORYBOARD_PROMPT = `SYSTEM:
-You are a storyboard generator.
-You must output JSON lines (JSONL format) for the requested scene range. 
+const STORYBOARD_PROMPT = `You are a storyboard generator.
+You must output JSON lines (JSONL format) for the requested scene range.
 Each line must be a valid JSON object conforming to the schema below.
 No prose, no explanations, no comments, no markdown formatting, no code blocks.
 
@@ -174,7 +173,7 @@ RULES:
 
 export async function POST(request: NextRequest) {
   try {
-    const { storyBulb, apiKey, startScene, endScene, targetSceneCount, previousScenes, model = 'gemini-2.0-flash-exp' } = await request.json();
+    const { storyBulb, apiKey, startScene, endScene, targetSceneCount, previousScenes } = await request.json();
 
     if (!storyBulb || !apiKey) {
       return NextResponse.json(
@@ -185,15 +184,15 @@ export async function POST(request: NextRequest) {
 
     // Use targetSceneCount from request, or from storyBulb, or default to 30
     const totalScenes = targetSceneCount || storyBulb.target_scene_count || 30;
-    
+
     // Handle single batch generation
     const actualStartScene = startScene || 1;
     const actualEndScene = endScene || totalScenes;
-    
+
     // Helper function to create compressed context from previous scenes with causality
     const createCompressedContext = (scenes: StoryboardScene[]) => {
       if (!scenes || scenes.length === 0) return '';
-      
+
       const context = scenes.map(scene => ({
         scene_id: scene.scene_id,
         beat: scene.beat,
@@ -206,24 +205,24 @@ export async function POST(request: NextRequest) {
         characters: scene.visual_prompt?.characters,
         seed: scene.visual_prompt?.seed
       }));
-      
+
       // Get the last 3 scenes' consequences for immediate context
-      const recentConsequences = scenes.slice(-3).map(s => 
+      const recentConsequences = scenes.slice(-3).map(s =>
         `Scene ${s.scene_id}: ${s.scene_twist} → LEADS TO: ${s.leads_to}`
       ).join('\n');
-      
+
       return `\nPrevious scenes with CAUSALITY CHAIN:\n${JSON.stringify(context, null, 2)}\n\nIMPORTANT - Recent consequences that MUST influence next scenes:\n${recentConsequences}`;
     };
 
     const contextPrompt = createCompressedContext(previousScenes || []);
-    
+
     // Add story's causality guidance
-    const causalityGuidance = storyBulb.domino_sequences ? 
+    const causalityGuidance = storyBulb.domino_sequences ?
       `\n\nCRITICAL CAUSALITY CHAINS TO FOLLOW:\n${storyBulb.domino_sequences.join('\n')}\n\nSETUPS TO PAY OFF:\n${JSON.stringify(storyBulb.setups_payoffs || [])}` : '';
-    
+
     // Get beat distribution for total scenes
     const beatDistribution = getBeatDistribution(totalScenes);
-    
+
     // Create beat mapping guidance for the current batch
     const beatGuidance = Object.entries(beatDistribution)
       .filter(([, scenes]) => scenes.some(s => s >= actualStartScene && s <= actualEndScene))
@@ -233,55 +232,56 @@ export async function POST(request: NextRequest) {
       })
       .filter(g => g !== '')
       .join('\n');
-    
+
     // Add story compression guidance for shorter videos
-    const compressionGuidance = totalScenes < 20 ? 
+    const compressionGuidance = totalScenes < 20 ?
       `\n\nCRITICAL STORY COMPRESSION FOR ${totalScenes} SCENES:\n- You MUST fit the protagonist's entire journey (goal + stakes + twist + resolution) into ${totalScenes} scenes\n- Every story element from the Story Bulb MUST appear: premise, goal, stakes, constraint, twist, call_to_action\n- Compress multiple story beats into single scenes if necessary\n- Scene 1 should establish the premise and protagonist goal\n- Final scene should deliver the twist and resolution\n- NO story elements can be omitted - compress, don't cut` : '';
-    
-    const batchPrompt = `${STORYBOARD_PROMPT}\n\nUSER:\nHere is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}${compressionGuidance}\n\nBEAT DISTRIBUTION FOR THIS BATCH:\n${beatGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a ${totalScenes}-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
-    
+
+    const userPrompt = `Here is the Story Bulb JSON:\n${JSON.stringify(storyBulb, null, 2)}${contextPrompt}${causalityGuidance}${compressionGuidance}\n\nBEAT DISTRIBUTION FOR THIS BATCH:\n${beatGuidance}\n\nGenerate scenes ${actualStartScene} to ${actualEndScene} (inclusive) of a ${totalScenes}-scene storyboard in JSONL format. Start with scene_id=${actualStartScene}. REMEMBER: Each scene MUST be caused by previous events, creating a domino effect.`;
+
+    // Generate storyboard using PapAI API (OpenAI-compatible)
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      'https://papaiapi.com/v1/chat/completions',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: batchPrompt
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.8,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 8192,
-            responseMimeType: "text/plain"
-          }
+          model: 'gemini-flash',
+          messages: [
+            {
+              role: 'system',
+              content: STORYBOARD_PROMPT
+            },
+            {
+              role: 'user',
+              content: userPrompt
+            }
+          ]
         })
       }
     );
-    
+
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Gemini API Error:`, errorText);
+      console.error('PapAI API Error:', errorText);
       return NextResponse.json(
-        { error: `Gemini API error: ${response.status} - ${errorText}` },
+        { error: `PapAI API error: ${response.status} - ${errorText}` },
         { status: response.status }
       );
     }
-    
+
     const data = await response.json();
-    console.log('Gemini response structure:', JSON.stringify(data, null, 2));
-    
-    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.log('PapAI response structure:', JSON.stringify(data, null, 2));
+
+    const generatedText = data.choices?.[0]?.message?.content || '';
     console.log('Generated text length:', generatedText.length);
     console.log('Generated text preview:', generatedText.substring(0, 200));
-    
+
     if (!generatedText) {
-      console.error('Empty generated text from Gemini');
+      console.error('Empty generated text from PapAI');
       return NextResponse.json(
         { error: 'No storyboard generated' },
         { status: 500 }
@@ -291,27 +291,27 @@ export async function POST(request: NextRequest) {
     // Parse the generated scenes
     const allScenes: StoryboardScene[] = [];
     let cleanedText = generatedText.trim();
-    
+
     try {
-      
+
       // More aggressive markdown cleaning
       if (cleanedText.includes('```')) {
         // Remove all markdown code blocks
         cleanedText = cleanedText.replace(/```jsonl?\s*/gi, '').replace(/```\s*/g, '');
         cleanedText = cleanedText.trim();
       }
-      
+
       // Split into lines and filter out empty ones
       const lines = cleanedText.split('\n').filter((line: string) => {
         const trimmed = line.trim();
         return trimmed && trimmed.startsWith('{') && trimmed.endsWith('}');
       });
-      
+
       console.log(`Found ${lines.length} potential JSON lines`);
-      
+
       for (const line of lines) {
         if (!line.trim()) continue;
-        
+
         try {
           const scene = JSON.parse(line.trim());
           allScenes.push(scene);
@@ -325,7 +325,7 @@ export async function POST(request: NextRequest) {
       console.error(`Cleaned text length:`, cleanedText?.length);
       console.error(`Cleaned text preview:`, cleanedText?.substring(0, 300));
     }
-    
+
     console.log(`Generated ${allScenes.length} scenes for range ${actualStartScene}-${actualEndScene}`);
 
     if (allScenes.length === 0) {
@@ -334,7 +334,7 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
-    
+
     return NextResponse.json({
       success: true,
       storyboard: allScenes,

@@ -107,7 +107,8 @@ export default function Home() {
   const [scriptsLoading, setScriptsLoading] = useState(false);
   const [showStoryBulbPrompt, setShowStoryBulbPrompt] = useState(false);
   const [showStoryboardPrompt, setShowStoryboardPrompt] = useState(false);
-  const [geminiModel, setGeminiModel] = useState('gemini-2.0-flash-exp');
+  const [papaiApiKey, setPapaiApiKey] = useState('');
+  const [showPapaiKey, setShowPapaiKey] = useState(false);
   
   // Storyboard State
   const [selectedStory, setSelectedStory] = useState<StoryBulb | null>(null);
@@ -384,8 +385,7 @@ export default function Home() {
           },
           body: JSON.stringify({
             title,
-            apiKey: googleTtsKey,
-            model: geminiModel,
+            apiKey: papaiApiKey,
             targetSceneCount,
           }),
         });
@@ -415,8 +415,8 @@ export default function Home() {
   };
   
   const handleStoryboardGeneration = async (resumeFromScene = 1) => {
-    if (!googleTtsKey || !selectedStory) {
-      setError('Please provide Google API key and select a story');
+    if (!papaiApiKey || !selectedStory) {
+      setError('Please provide PapAI API key and select a story');
       return;
     }
     
@@ -467,12 +467,11 @@ export default function Home() {
           },
           body: JSON.stringify({
             storyBulb: selectedStory,
-            apiKey: googleTtsKey,
+            apiKey: papaiApiKey,
             startScene,
             endScene,
             targetSceneCount: targetScenes,
             previousScenes: allScenes.slice(-10), // Send last 10 scenes for context
-            model: geminiModel
           }),
         });
         
@@ -1768,22 +1767,25 @@ export default function Home() {
             
             <div>
               <label className="block text-white text-sm font-semibold mb-3">
-                🤖 Gemini Model Selection
+                PapAI API Key (for Story & Script Generation)
               </label>
-              <select
-                value={geminiModel}
-                onChange={(e) => setGeminiModel(e.target.value)}
-                className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-              >
-                <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Experimental (Recommended)</option>
-                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-                <option value="gemini-1.5-flash-8b">Gemini 1.5 Flash 8B</option>
-                <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                <option value="gemini-exp-1206">Gemini Experimental 1206</option>
-              </select>
+              <div className="relative">
+                <input
+                  type={showPapaiKey ? 'text' : 'password'}
+                  value={papaiApiKey}
+                  onChange={(e) => setPapaiApiKey(e.target.value)}
+                  placeholder="Enter your PapAI API key (sk_live_...)"
+                  className="w-full px-4 py-3 pr-12 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+                <button
+                  onClick={() => setShowPapaiKey(!showPapaiKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition"
+                >
+                  {showPapaiKey ? '👁️' : '👁️‍🗨️'}
+                </button>
+              </div>
               <p className="text-xs text-gray-400 mt-2">
-                Different models have varying capabilities. Experimental models may provide better causality but could be less stable.
+                Get your API key from papaiapi.com - $0.50 per 1,000 calls
               </p>
             </div>
           </div>
@@ -1924,7 +1926,7 @@ export default function Home() {
                     disabled={scriptsLoading || !googleTtsKey}
                     className="px-8 py-3 bg-gradient-to-r from-green-500 to-blue-600 text-white font-semibold rounded-xl hover:from-green-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
                   >
-                    {scriptsLoading ? 'Generating Stories...' : 'Generate Stories with Gemini'}
+                    {scriptsLoading ? 'Generating Stories...' : 'Generate Stories'}
                   </button>
                 </div>
 

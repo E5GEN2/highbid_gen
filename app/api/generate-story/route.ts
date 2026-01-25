@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const STORY_BULB_PROMPT = `SYSTEM:
-You are a story generator. 
+const STORY_BULB_PROMPT = `You are a story generator.
 You must output valid JSON only, with no explanations, no prose, no comments.
 
 The JSON object must have the following keys:
@@ -47,7 +46,7 @@ RULES:
 
 export async function POST(request: NextRequest) {
   try {
-    const { title, apiKey, model = 'gemini-2.0-flash-exp' } = await request.json();
+    const { title, apiKey } = await request.json();
 
     if (!title || !apiKey) {
       return NextResponse.json(
@@ -56,45 +55,45 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate story using Google Gemini API
+    // Generate story using PapAI API (OpenAI-compatible)
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      'https://papaiapi.com/v1/chat/completions',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `${STORY_BULB_PROMPT}\n\nUSER:\nGenerate a Story Bulb JSON for this viral title: "${title}"`
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.9,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 4096,
-            responseMimeType: "text/plain"
-          }
+          model: 'gemini-flash',
+          messages: [
+            {
+              role: 'system',
+              content: STORY_BULB_PROMPT
+            },
+            {
+              role: 'user',
+              content: `Generate a Story Bulb JSON for this viral title: "${title}"`
+            }
+          ]
         })
       }
     );
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Gemini API Error:', errorText);
+      console.error('PapAI API Error:', errorText);
       return NextResponse.json(
-        { error: `Gemini API error: ${response.status} - ${errorText}` },
+        { error: `PapAI API error: ${response.status} - ${errorText}` },
         { status: response.status }
       );
     }
 
     const data = await response.json();
-    
-    // Extract the generated JSON from the response
-    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    
+
+    // Extract the generated JSON from OpenAI-compatible response
+    const generatedText = data.choices?.[0]?.message?.content;
+
     if (!generatedText) {
       return NextResponse.json(
         { error: 'No story generated' },
@@ -105,24 +104,24 @@ export async function POST(request: NextRequest) {
     try {
       // Clean the response - remove markdown code blocks if present
       let cleanedText = generatedText.trim();
-      
+
       // More aggressive markdown cleaning
       if (cleanedText.includes('```')) {
         // Remove all markdown code blocks
         cleanedText = cleanedText.replace(/```json\s*/g, '').replace(/```\s*/g, '');
         cleanedText = cleanedText.trim();
       }
-      
+
       // Ensure it starts with { and ends with }
       const firstBrace = cleanedText.indexOf('{');
       const lastBrace = cleanedText.lastIndexOf('}');
       if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
         cleanedText = cleanedText.substring(firstBrace, lastBrace + 1);
       }
-      
+
       // Parse the JSON to validate it
       const storyBulb = JSON.parse(cleanedText);
-      
+
       // Ensure all required fields have default values if missing
       // Handle plot_threads which might be missing consequence fields
       const plot_threads = storyBulb.plot_threads || {};
@@ -132,21 +131,21 @@ export async function POST(request: NextRequest) {
         setups_payoffs: storyBulb.setups_payoffs || [],
         escalation_points: storyBulb.escalation_points || [],
         plot_threads: {
-          act1: { 
-            turning_point: plot_threads.act1?.turning_point || plot_threads.act_1?.turning_point || "", 
+          act1: {
+            turning_point: plot_threads.act1?.turning_point || plot_threads.act_1?.turning_point || "",
             consequence: plot_threads.act1?.consequence || plot_threads.act_1?.consequence || ""
           },
-          act2: { 
-            turning_point: plot_threads.act2?.turning_point || plot_threads.act_2?.turning_point || "", 
+          act2: {
+            turning_point: plot_threads.act2?.turning_point || plot_threads.act_2?.turning_point || "",
             consequence: plot_threads.act2?.consequence || plot_threads.act_2?.consequence || ""
           },
-          act3: { 
-            turning_point: plot_threads.act3?.turning_point || plot_threads.act_3?.turning_point || "", 
+          act3: {
+            turning_point: plot_threads.act3?.turning_point || plot_threads.act_3?.turning_point || "",
             consequence: plot_threads.act3?.consequence || plot_threads.act_3?.consequence || ""
           }
         }
       };
-      
+
       return NextResponse.json({
         success: true,
         storyBulb: completeStoryBulb
