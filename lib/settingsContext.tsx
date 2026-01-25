@@ -132,9 +132,45 @@ function getDefaultSettings(): SettingsState {
   };
 }
 
+const API_KEYS_STORAGE_KEY = 'highbid_api_keys';
+
+function loadApiKeysFromStorage(): ApiKeys | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const stored = localStorage.getItem(API_KEYS_STORAGE_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.error('Failed to load API keys from storage:', error);
+  }
+  return null;
+}
+
+function saveApiKeysToStorage(apiKeys: ApiKeys): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(apiKeys));
+  } catch (error) {
+    console.error('Failed to save API keys to storage:', error);
+  }
+}
+
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<SettingsState>(getDefaultSettings);
 
+  // Load API keys from localStorage on mount
+  useEffect(() => {
+    const storedApiKeys = loadApiKeysFromStorage();
+    if (storedApiKeys) {
+      setSettings(prev => ({
+        ...prev,
+        apiKeys: storedApiKeys
+      }));
+    }
+  }, []);
+
+  // Load frame templates from API
   useEffect(() => {
     async function loadTemplates() {
       try {
@@ -174,10 +210,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   };
 
   const updateApiKeys = (updates: Partial<ApiKeys>) => {
-    setSettings(prev => ({
-      ...prev,
-      apiKeys: { ...prev.apiKeys, ...updates }
-    }));
+    setSettings(prev => {
+      const newApiKeys = { ...prev.apiKeys, ...updates };
+      saveApiKeysToStorage(newApiKeys);
+      return {
+        ...prev,
+        apiKeys: newApiKeys
+      };
+    });
   };
 
   const resetToDefaults = async () => {
