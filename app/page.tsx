@@ -261,7 +261,6 @@ function HomeContent() {
     }>;
   } | null>(null);
   const [spyLoading, setSpyLoading] = useState(false);
-  const [spySyncing, setSpySyncing] = useState(false);
   const [spySort, setSpySort] = useState('view_count');
   const [spyMinViews, setSpyMinViews] = useState('0');
   const [spyMaxAge, setSpyMaxAge] = useState('');
@@ -1888,22 +1887,6 @@ function HomeContent() {
     }
   };
 
-  // Feed Spy: sync from xgodo → our DB
-  const syncSpyData = async () => {
-    setSpySyncing(true);
-    try {
-      const response = await fetch('/api/feed-spy/sync', { method: 'POST' });
-      const data = await response.json();
-      console.log('Spy sync result:', data);
-      // Refresh data after sync
-      await fetchSpyData();
-    } catch (err) {
-      console.error('Error syncing spy data:', err);
-    } finally {
-      setSpySyncing(false);
-    }
-  };
-
   // Start a new project
   const startNewProject = () => {
     setCurrentProjectId(null);
@@ -2040,24 +2023,11 @@ function HomeContent() {
             /* Feed Spy View */
             <div className="container mx-auto px-4 py-8 max-w-7xl">
               {/* Header */}
-              <div className="flex items-center justify-between mb-8">
-                <div>
-                  <h1 className="text-3xl font-bold text-white mb-2">
-                    <span className="bg-gradient-to-r from-red-400 to-orange-500 bg-clip-text text-transparent">Feed Spy</span>
-                  </h1>
-                  <p className="text-gray-400">YouTube Shorts intelligence — discover trending niches and rising channels</p>
-                </div>
-                <button
-                  onClick={syncSpyData}
-                  disabled={spySyncing}
-                  className="px-5 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 disabled:opacity-50 transition flex items-center gap-2"
-                >
-                  {spySyncing ? (
-                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Syncing...</>
-                  ) : (
-                    <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Sync New Data</>
-                  )}
-                </button>
+              <div className="mb-8">
+                <h1 className="text-3xl font-bold text-white mb-2">
+                  <span className="bg-gradient-to-r from-red-400 to-orange-500 bg-clip-text text-transparent">Feed Spy</span>
+                </h1>
+                <p className="text-gray-400">YouTube Shorts intelligence — discover trending niches and rising channels</p>
               </div>
 
               {/* Stats Bar */}
