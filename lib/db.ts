@@ -51,6 +51,65 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC)
     `);
 
+    // Shorts spy: channels (deduplicated, updated on each sync)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shorts_channels (
+        channel_id VARCHAR(64) PRIMARY KEY,
+        channel_name VARCHAR(255),
+        channel_url TEXT,
+        channel_creation_date TIMESTAMP WITH TIME ZONE,
+        first_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        last_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        sighting_count INTEGER DEFAULT 1
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_shorts_channels_created ON shorts_channels(channel_creation_date DESC)
+    `);
+
+    // Shorts spy: video sightings (same video can appear multiple times = trend tracking)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shorts_videos (
+        id SERIAL PRIMARY KEY,
+        video_id VARCHAR(32) NOT NULL,
+        video_url TEXT,
+        title TEXT,
+        duration_seconds INTEGER,
+        upload_date TEXT,
+        channel_id VARCHAR(64) REFERENCES shorts_channels(channel_id),
+        view_count BIGINT,
+        like_count BIGINT,
+        comment_count BIGINT,
+        collected_at TIMESTAMP WITH TIME ZONE,
+        collection_id VARCHAR(64)
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_shorts_videos_video_id ON shorts_videos(video_id)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_shorts_videos_channel ON shorts_videos(channel_id)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_shorts_videos_views ON shorts_videos(view_count DESC NULLS LAST)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_shorts_videos_collected ON shorts_videos(collected_at DESC)
+    `);
+
+    // Shorts spy: collection runs (tracks each xgodo task we ingested)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shorts_collections (
+        id VARCHAR(64) PRIMARY KEY,
+        xgodo_task_id VARCHAR(64) NOT NULL UNIQUE,
+        video_count INTEGER DEFAULT 0,
+        collected_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        confirmed_at TIMESTAMP WITH TIME ZONE
+      )
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

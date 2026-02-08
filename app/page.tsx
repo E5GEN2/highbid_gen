@@ -230,7 +230,7 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
 
   // Sidebar Navigation State
-  const [currentView, setCurrentView] = useState<'creator' | 'library'>('creator');
+  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy'>('creator');
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -242,6 +242,29 @@ function HomeContent() {
   }[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Feed Spy State
+  const [spyData, setSpyData] = useState<{
+    videos: Array<{
+      video_id: string; video_url: string; title: string | null; duration_seconds: number;
+      upload_date: string | null; view_count: number | null; like_count: number | null;
+      comment_count: number | null; collected_at: string;
+      channel_id: string; channel_name: string; channel_url: string;
+      channel_creation_date: string | null; sighting_count: number;
+    }>;
+    total: number;
+    stats: { total_videos: string; total_channels: string; total_sightings: string; total_collections: string };
+    risingStars: Array<{
+      channel_id: string; channel_name: string; channel_url: string;
+      channel_creation_date: string; sighting_count: number;
+      max_views: string; video_count: string; total_views: string;
+    }>;
+  } | null>(null);
+  const [spyLoading, setSpyLoading] = useState(false);
+  const [spySyncing, setSpySyncing] = useState(false);
+  const [spySort, setSpySort] = useState('view_count');
+  const [spyMinViews, setSpyMinViews] = useState('0');
+  const [spyMaxAge, setSpyMaxAge] = useState('');
 
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});
@@ -1847,6 +1870,40 @@ function HomeContent() {
     }
   };
 
+  // Feed Spy: fetch data from our DB
+  const fetchSpyData = async () => {
+    setSpyLoading(true);
+    try {
+      const params = new URLSearchParams({ sort: spySort, limit: '200', minViews: spyMinViews });
+      if (spyMaxAge) params.set('maxChannelAge', spyMaxAge);
+      const response = await fetch(`/api/feed-spy?${params}`);
+      const data = await response.json();
+      if (data.success) {
+        setSpyData(data);
+      }
+    } catch (err) {
+      console.error('Error fetching spy data:', err);
+    } finally {
+      setSpyLoading(false);
+    }
+  };
+
+  // Feed Spy: sync from xgodo → our DB
+  const syncSpyData = async () => {
+    setSpySyncing(true);
+    try {
+      const response = await fetch('/api/feed-spy/sync', { method: 'POST' });
+      const data = await response.json();
+      console.log('Spy sync result:', data);
+      // Refresh data after sync
+      await fetchSpyData();
+    } catch (err) {
+      console.error('Error syncing spy data:', err);
+    } finally {
+      setSpySyncing(false);
+    }
+  };
+
   // Start a new project
   const startNewProject = () => {
     setCurrentProjectId(null);
@@ -1868,10 +1925,12 @@ function HomeContent() {
     }
   }, [selectedStory, generatedStoryboard, storyboardImages, storyboardVoiceovers, debouncedSave]);
 
-  // Fetch library when switching to library view
+  // Fetch data when switching views
   useEffect(() => {
     if (currentView === 'library') {
       fetchLibraryProjects();
+    } else if (currentView === 'spy') {
+      fetchSpyData();
     }
   }, [currentView]);
 
@@ -1927,6 +1986,20 @@ function HomeContent() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
               </svg>
             </button>
+            <button
+              onClick={() => setCurrentView('spy')}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                currentView === 'spy'
+                  ? 'bg-red-600 text-white'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+              title="Feed Spy"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+            </button>
           </nav>
 
           {/* Bottom Section */}
@@ -1963,7 +2036,218 @@ function HomeContent() {
 
         {/* Main Content Area */}
         <div className="flex-1 ml-16">
-          {currentView === 'library' ? (
+          {currentView === 'spy' ? (
+            /* Feed Spy View */
+            <div className="container mx-auto px-4 py-8 max-w-7xl">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h1 className="text-3xl font-bold text-white mb-2">
+                    <span className="bg-gradient-to-r from-red-400 to-orange-500 bg-clip-text text-transparent">Feed Spy</span>
+                  </h1>
+                  <p className="text-gray-400">YouTube Shorts intelligence — discover trending niches and rising channels</p>
+                </div>
+                <button
+                  onClick={syncSpyData}
+                  disabled={spySyncing}
+                  className="px-5 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 disabled:opacity-50 transition flex items-center gap-2"
+                >
+                  {spySyncing ? (
+                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Syncing...</>
+                  ) : (
+                    <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Sync New Data</>
+                  )}
+                </button>
+              </div>
+
+              {/* Stats Bar */}
+              {spyData?.stats && (
+                <div className="grid grid-cols-4 gap-4 mb-8">
+                  {[
+                    { label: 'Videos Tracked', value: parseInt(spyData.stats.total_videos).toLocaleString(), color: 'from-blue-500 to-cyan-500' },
+                    { label: 'Channels', value: parseInt(spyData.stats.total_channels).toLocaleString(), color: 'from-purple-500 to-pink-500' },
+                    { label: 'Data Points', value: parseInt(spyData.stats.total_sightings).toLocaleString(), color: 'from-orange-500 to-red-500' },
+                    { label: 'Collections', value: parseInt(spyData.stats.total_collections).toLocaleString(), color: 'from-green-500 to-emerald-500' },
+                  ].map((stat, i) => (
+                    <div key={i} className="bg-gray-800/50 rounded-xl border border-gray-700 p-4">
+                      <div className={`text-2xl font-bold bg-gradient-to-r ${stat.color} bg-clip-text text-transparent`}>{stat.value}</div>
+                      <div className="text-sm text-gray-400">{stat.label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Rising Stars */}
+              {spyData?.risingStars && spyData.risingStars.length > 0 && (
+                <div className="mb-8">
+                  <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                    <span className="text-2xl">🚀</span> Rising Stars
+                    <span className="text-sm font-normal text-gray-400">— channels &lt;6 months old with highest total views</span>
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    {spyData.risingStars.slice(0, 8).map((star) => {
+                      const ageDays = star.channel_creation_date
+                        ? Math.floor((Date.now() - new Date(star.channel_creation_date).getTime()) / 86400000)
+                        : null;
+                      return (
+                        <div key={star.channel_id} className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl border border-orange-500/30 p-4 hover:border-orange-500/60 transition">
+                          <div className="flex items-start justify-between mb-2">
+                            <a href={star.channel_url} target="_blank" rel="noopener noreferrer" className="text-white font-semibold hover:text-orange-400 transition truncate">
+                              {star.channel_name}
+                            </a>
+                            {ageDays !== null && (
+                              <span className="text-xs bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full whitespace-nowrap ml-2">
+                                {ageDays}d old
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-2xl font-bold text-orange-400">{parseInt(star.total_views).toLocaleString()}</div>
+                          <div className="text-xs text-gray-400">total views across {star.video_count} video{parseInt(star.video_count) !== 1 ? 's' : ''}</div>
+                          <div className="mt-2 text-xs text-gray-500">
+                            Best: {parseInt(star.max_views).toLocaleString()} views | Seen {star.sighting_count}x
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Filters */}
+              <div className="bg-gray-800/50 rounded-xl border border-gray-700 p-4 mb-6 flex flex-wrap gap-4 items-center">
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Sort by</label>
+                  <select
+                    value={spySort}
+                    onChange={(e) => { setSpySort(e.target.value); }}
+                    className="bg-gray-900 border border-gray-600 rounded-lg px-3 py-1.5 text-white text-sm"
+                  >
+                    <option value="view_count">Views</option>
+                    <option value="like_count">Likes</option>
+                    <option value="comment_count">Comments</option>
+                    <option value="duration_seconds">Duration</option>
+                    <option value="collected_at">Recently Collected</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Min Views</label>
+                  <select
+                    value={spyMinViews}
+                    onChange={(e) => { setSpyMinViews(e.target.value); }}
+                    className="bg-gray-900 border border-gray-600 rounded-lg px-3 py-1.5 text-white text-sm"
+                  >
+                    <option value="0">All</option>
+                    <option value="1000">1K+</option>
+                    <option value="10000">10K+</option>
+                    <option value="100000">100K+</option>
+                    <option value="1000000">1M+</option>
+                    <option value="10000000">10M+</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Channel Age</label>
+                  <select
+                    value={spyMaxAge}
+                    onChange={(e) => { setSpyMaxAge(e.target.value); }}
+                    className="bg-gray-900 border border-gray-600 rounded-lg px-3 py-1.5 text-white text-sm"
+                  >
+                    <option value="">Any age</option>
+                    <option value="30">Under 30 days</option>
+                    <option value="90">Under 90 days</option>
+                    <option value="180">Under 6 months</option>
+                    <option value="365">Under 1 year</option>
+                  </select>
+                </div>
+                <button
+                  onClick={fetchSpyData}
+                  className="mt-4 px-4 py-1.5 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition text-sm"
+                >
+                  Apply Filters
+                </button>
+                {spyData && <span className="mt-4 text-sm text-gray-400">{spyData.total} results</span>}
+              </div>
+
+              {/* Video Table */}
+              {spyLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-500" />
+                </div>
+              ) : !spyData || spyData.videos.length === 0 ? (
+                <div className="text-center py-20">
+                  <div className="text-6xl mb-4">📡</div>
+                  <h3 className="text-xl font-semibold text-white mb-2">No data yet</h3>
+                  <p className="text-gray-400 mb-6">Click &quot;Sync New Data&quot; to pull data from the feed spy</p>
+                </div>
+              ) : (
+                <div className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-gray-700 text-left">
+                          <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase">Video</th>
+                          <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase">Channel</th>
+                          <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase text-right">Views</th>
+                          <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase text-right">Likes</th>
+                          <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase text-right">Comments</th>
+                          <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase text-right">Duration</th>
+                          <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase text-right">Ch. Age</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-700/50">
+                        {spyData.videos.map((video, idx) => {
+                          const ageDays = video.channel_creation_date
+                            ? Math.floor((Date.now() - new Date(video.channel_creation_date).getTime()) / 86400000)
+                            : null;
+                          const isNewChannel = ageDays !== null && ageDays < 180;
+                          return (
+                            <tr key={`${video.video_id}-${idx}`} className={`hover:bg-gray-700/30 transition ${isNewChannel ? 'bg-orange-500/5' : ''}`}>
+                              <td className="px-4 py-3 max-w-xs">
+                                <a href={video.video_url} target="_blank" rel="noopener noreferrer" className="text-sm text-white hover:text-blue-400 transition line-clamp-2">
+                                  {video.title || video.video_id}
+                                </a>
+                                {video.upload_date && <div className="text-xs text-gray-500 mt-0.5">{video.upload_date}</div>}
+                              </td>
+                              <td className="px-4 py-3">
+                                <a href={video.channel_url} target="_blank" rel="noopener noreferrer" className="text-sm text-gray-300 hover:text-white transition">
+                                  {video.channel_name}
+                                </a>
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                {video.view_count ? (
+                                  <span className={`text-sm font-medium ${video.view_count >= 10000000 ? 'text-orange-400' : video.view_count >= 1000000 ? 'text-yellow-400' : 'text-white'}`}>
+                                    {video.view_count >= 1000000
+                                      ? `${(video.view_count / 1000000).toFixed(1)}M`
+                                      : video.view_count >= 1000
+                                        ? `${(video.view_count / 1000).toFixed(1)}K`
+                                        : video.view_count.toLocaleString()
+                                    }
+                                  </span>
+                                ) : <span className="text-gray-600">—</span>}
+                              </td>
+                              <td className="px-4 py-3 text-right text-sm text-gray-300">
+                                {video.like_count ? `${(video.like_count / 1000).toFixed(1)}K` : '—'}
+                              </td>
+                              <td className="px-4 py-3 text-right text-sm text-gray-300">
+                                {video.comment_count ? video.comment_count.toLocaleString() : '—'}
+                              </td>
+                              <td className="px-4 py-3 text-right text-sm text-gray-300">{video.duration_seconds}s</td>
+                              <td className="px-4 py-3 text-right">
+                                {ageDays !== null ? (
+                                  <span className={`text-sm ${isNewChannel ? 'text-orange-400 font-medium' : 'text-gray-400'}`}>
+                                    {ageDays < 30 ? `${ageDays}d` : ageDays < 365 ? `${Math.floor(ageDays / 30)}mo` : `${Math.floor(ageDays / 365)}y`}
+                                  </span>
+                                ) : <span className="text-gray-600">—</span>}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : currentView === 'library' ? (
             /* Library View */
             <div className="container mx-auto px-4 py-8 max-w-7xl">
               <div className="text-center mb-8">
