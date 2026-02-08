@@ -19,12 +19,10 @@ export async function GET() {
     }));
 
     return NextResponse.json({ frameTemplates });
-  } catch (error) {
-    console.error('Error loading frame settings:', error);
-    return NextResponse.json(
-      { error: 'Failed to load frame settings' },
-      { status: 500 }
-    );
+  } catch {
+    // Frame manifest not available (e.g. production without local frames dir)
+    // Return empty list — client falls back to DEFAULT_TEMPLATES
+    return NextResponse.json({ frameTemplates: [] });
   }
 }
 
