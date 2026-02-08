@@ -250,13 +250,13 @@ function HomeContent() {
       upload_date: string | null; view_count: number | null; like_count: number | null;
       comment_count: number | null; collected_at: string;
       channel_id: string; channel_name: string; channel_url: string;
-      channel_creation_date: string | null; sighting_count: number;
+      channel_creation_date: string | null; sighting_count: number; avatar_url: string | null;
     }>;
     total: number;
     stats: { total_videos: string; total_channels: string; total_sightings: string; total_collections: string };
     risingStars: Array<{
       channel_id: string; channel_name: string; channel_url: string;
-      channel_creation_date: string; sighting_count: number;
+      channel_creation_date: string; sighting_count: number; avatar_url: string | null;
       max_views: string; video_count: string; total_views: string;
     }>;
   } | null>(null);
@@ -2104,15 +2104,22 @@ function HomeContent() {
                         : null;
                       return (
                         <div key={star.channel_id} className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl border border-orange-500/30 p-4 hover:border-orange-500/60 transition">
-                          <div className="flex items-start justify-between mb-2">
-                            <a href={star.channel_url} target="_blank" rel="noopener noreferrer" className="text-white font-semibold hover:text-orange-400 transition truncate">
-                              {star.channel_name}
-                            </a>
-                            {ageDays !== null && (
-                              <span className="text-xs bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full whitespace-nowrap ml-2">
-                                {ageDays}d old
-                              </span>
+                          <div className="flex items-start gap-3 mb-2">
+                            {star.avatar_url ? (
+                              <img src={star.avatar_url} alt="" className="w-10 h-10 rounded-full flex-shrink-0" />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-gray-400 text-sm font-bold flex-shrink-0">
+                                {star.channel_name?.charAt(0)?.toUpperCase() || '?'}
+                              </div>
                             )}
+                            <div className="flex-1 min-w-0">
+                              <a href={star.channel_url} target="_blank" rel="noopener noreferrer" className="text-white font-semibold hover:text-orange-400 transition truncate block">
+                                {star.channel_name}
+                              </a>
+                              {ageDays !== null && (
+                                <span className="text-xs text-orange-300/70">{ageDays}d old</span>
+                              )}
+                            </div>
                           </div>
                           <div className="text-2xl font-bold text-orange-400">{parseInt(star.total_views).toLocaleString()}</div>
                           <div className="text-xs text-gray-400">total views across {star.video_count} video{parseInt(star.video_count) !== 1 ? 's' : ''}</div>
@@ -2221,7 +2228,14 @@ function HomeContent() {
                                 {video.upload_date && <div className="text-xs text-gray-500 mt-0.5">{video.upload_date}</div>}
                               </td>
                               <td className="px-4 py-3">
-                                <a href={video.channel_url} target="_blank" rel="noopener noreferrer" className="text-sm text-gray-300 hover:text-white transition">
+                                <a href={video.channel_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-gray-300 hover:text-white transition">
+                                  {video.avatar_url ? (
+                                    <img src={video.avatar_url} alt="" className="w-6 h-6 rounded-full flex-shrink-0" />
+                                  ) : (
+                                    <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-gray-400 text-[10px] font-bold flex-shrink-0">
+                                      {video.channel_name?.charAt(0)?.toUpperCase() || '?'}
+                                    </div>
+                                  )}
                                   {video.channel_name}
                                 </a>
                               </td>

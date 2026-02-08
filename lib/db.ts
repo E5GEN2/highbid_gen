@@ -64,6 +64,11 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // Add avatar_url column if missing (migration for existing DBs)
+    await client.query(`
+      ALTER TABLE shorts_channels ADD COLUMN IF NOT EXISTS avatar_url TEXT
+    `);
+
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_shorts_channels_created ON shorts_channels(channel_creation_date DESC)
     `);

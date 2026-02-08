@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
       SELECT DISTINCT ON (v.video_id)
         v.video_id, v.video_url, v.title, v.duration_seconds, v.upload_date,
         v.view_count, v.like_count, v.comment_count, v.collected_at,
-        c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count
+        c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url
       FROM shorts_videos v
       JOIN shorts_channels c ON v.channel_id = c.channel_id
       ${whereClause}
@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
 
     const risingResult = await pool.query(`
       SELECT
-        c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count,
+        c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url,
         MAX(v.view_count) as max_views,
         COUNT(DISTINCT v.video_id) as video_count,
         SUM(v.view_count) as total_views
@@ -100,7 +100,7 @@ export async function GET(req: NextRequest) {
       JOIN shorts_videos v ON c.channel_id = v.channel_id
       WHERE c.channel_creation_date >= NOW() - INTERVAL '${rsMaxAgeDays} days'
         AND v.view_count IS NOT NULL
-      GROUP BY c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count
+      GROUP BY c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url
       ${rsHaving}
       ORDER BY total_views DESC
       LIMIT ${rsMaxChannels}
