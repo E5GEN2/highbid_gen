@@ -230,7 +230,7 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
 
   // Sidebar Navigation State
-  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy'>('creator');
+  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy'>('spy');
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
