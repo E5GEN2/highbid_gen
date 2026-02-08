@@ -36,6 +36,11 @@ export default function AdminPage() {
   const [scheduleResult, setScheduleResult] = useState<{ scheduled: number } | null>(null);
   const [scheduleError, setScheduleError] = useState('');
 
+  // Fetch avatars state
+  const [fetchingAvatars, setFetchingAvatars] = useState(false);
+  const [avatarResult, setAvatarResult] = useState<{ fetched: number; total: number; message?: string } | null>(null);
+  const [avatarError, setAvatarError] = useState('');
+
   // Check auth on mount
   useEffect(() => {
     fetch('/api/admin/auth')
@@ -163,6 +168,27 @@ export default function AdminPage() {
       setSyncError(err instanceof Error ? err.message : 'Sync failed');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleFetchAvatars = async () => {
+    setFetchingAvatars(true);
+    setAvatarResult(null);
+    setAvatarError('');
+
+    try {
+      const res = await fetch('/api/admin/fetch-avatars', { method: 'POST' });
+      const data = await res.json();
+
+      if (data.success) {
+        setAvatarResult({ fetched: data.fetched, total: data.total || 0, message: data.message });
+      } else {
+        setAvatarError(data.error || 'Failed to fetch avatars');
+      }
+    } catch (err) {
+      setAvatarError(err instanceof Error ? err.message : 'Failed to fetch avatars');
+    } finally {
+      setFetchingAvatars(false);
     }
   };
 
@@ -309,6 +335,50 @@ export default function AdminPage() {
             <div className="mt-4 bg-red-900/20 border border-red-600/30 rounded-xl p-4">
               <div className="text-red-400 font-medium mb-1">Sync Failed</div>
               <div className="text-sm text-red-300/70">{syncError}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Fetch Avatars */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
+          <h2 className="text-lg font-bold text-white mb-2">Channel Avatars</h2>
+          <p className="text-gray-400 text-sm mb-6">
+            Fetch YouTube profile pictures for channels that are missing avatars. Uses the YouTube Data API key from config.
+          </p>
+
+          <button
+            onClick={handleFetchAvatars}
+            disabled={fetchingAvatars}
+            className="px-6 py-3 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition flex items-center gap-3"
+          >
+            {fetchingAvatars ? (
+              <>
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                Fetching avatars...
+              </>
+            ) : (
+              <>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Fetch Missing Avatars
+              </>
+            )}
+          </button>
+
+          {avatarResult && (
+            <div className="mt-4 bg-green-900/20 border border-green-600/30 rounded-xl p-4">
+              <div className="text-green-400 font-medium mb-1">Done</div>
+              <div className="text-sm text-green-300/70">
+                {avatarResult.message || `${avatarResult.fetched} of ${avatarResult.total} missing avatars fetched`}
+              </div>
+            </div>
+          )}
+
+          {avatarError && (
+            <div className="mt-4 bg-red-900/20 border border-red-600/30 rounded-xl p-4">
+              <div className="text-red-400 font-medium mb-1">Failed</div>
+              <div className="text-sm text-red-300/70">{avatarError}</div>
             </div>
           )}
         </div>
