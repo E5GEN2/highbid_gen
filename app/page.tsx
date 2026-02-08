@@ -2055,7 +2055,11 @@ function HomeContent() {
                     <span className="text-sm font-normal text-gray-400">— channels &lt;6 months old with highest total views</span>
                   </h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {spyData.risingStars.slice(0, 8).map((star) => {
+                    {[...spyData.risingStars].sort((a, b) => {
+                      const ageA = a.channel_creation_date ? Date.now() - new Date(a.channel_creation_date).getTime() : Infinity;
+                      const ageB = b.channel_creation_date ? Date.now() - new Date(b.channel_creation_date).getTime() : Infinity;
+                      return ageA - ageB;
+                    }).slice(0, 8).map((star) => {
                       const ageDays = star.channel_creation_date
                         ? Math.floor((Date.now() - new Date(star.channel_creation_date).getTime()) / 86400000)
                         : null;
