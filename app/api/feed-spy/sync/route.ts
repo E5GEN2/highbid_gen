@@ -167,7 +167,7 @@ export async function POST() {
     if (YT_API_KEY) {
       try {
         const missingData = await pool.query(
-          `SELECT channel_id FROM shorts_channels WHERE avatar_url IS NULL OR subscriber_count IS NULL`
+          `SELECT channel_id FROM shorts_channels WHERE avatar_url IS NULL OR subscriber_count IS NULL OR total_video_count IS NULL`
         );
         const channelIds = missingData.rows.map((r: { channel_id: string }) => r.channel_id);
 
@@ -184,9 +184,12 @@ export async function POST() {
               const subCount = item.statistics?.subscriberCount
                 ? parseInt(item.statistics.subscriberCount)
                 : null;
+              const vidCount = item.statistics?.videoCount
+                ? parseInt(item.statistics.videoCount)
+                : null;
               await pool.query(
-                'UPDATE shorts_channels SET avatar_url = COALESCE($1, avatar_url), subscriber_count = COALESCE($2, subscriber_count) WHERE channel_id = $3',
-                [avatarUrl, subCount, item.id]
+                'UPDATE shorts_channels SET avatar_url = COALESCE($1, avatar_url), subscriber_count = COALESCE($2, subscriber_count), total_video_count = COALESCE($3, total_video_count) WHERE channel_id = $4',
+                [avatarUrl, subCount, vidCount, item.id]
               );
             }
           }

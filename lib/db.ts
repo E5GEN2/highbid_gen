@@ -71,6 +71,9 @@ export async function initSchema(): Promise<void> {
     await client.query(`
       ALTER TABLE shorts_channels ADD COLUMN IF NOT EXISTS subscriber_count BIGINT
     `);
+    await client.query(`
+      ALTER TABLE shorts_channels ADD COLUMN IF NOT EXISTS total_video_count BIGINT
+    `);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_shorts_channels_created ON shorts_channels(channel_creation_date DESC)
