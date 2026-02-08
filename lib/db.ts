@@ -110,6 +110,15 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // Admin config key-value store
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS admin_config (
+        key VARCHAR(128) PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

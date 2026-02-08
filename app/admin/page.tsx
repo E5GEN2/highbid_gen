@@ -20,6 +20,12 @@ export default function AdminPage() {
     total_sightings: string; total_collections: string;
   } | null>(null);
 
+  // Config state
+  const [xgodoToken, setXgodoToken] = useState('');
+  const [xgodoJobId, setXgodoJobId] = useState('');
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configSaved, setConfigSaved] = useState(false);
+
   // Check auth on mount
   useEffect(() => {
     fetch('/api/admin/auth')
@@ -46,6 +52,42 @@ export default function AdminPage() {
       fetchStats();
     } else {
       setLoginError('Invalid credentials');
+    }
+  };
+
+  const fetchConfig = async () => {
+    try {
+      const res = await fetch('/api/admin/config');
+      const data = await res.json();
+      if (data.config) {
+        setXgodoToken(data.config.xgodo_api_token || '');
+        setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
+      }
+    } catch (err) {
+      console.error('Failed to fetch config:', err);
+    }
+  };
+
+  const saveConfig = async () => {
+    setConfigSaving(true);
+    setConfigSaved(false);
+    try {
+      await fetch('/api/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            xgodo_api_token: xgodoToken,
+            xgodo_shorts_spy_job_id: xgodoJobId,
+          },
+        }),
+      });
+      setConfigSaved(true);
+      setTimeout(() => setConfigSaved(false), 3000);
+    } catch (err) {
+      console.error('Failed to save config:', err);
+    } finally {
+      setConfigSaving(false);
     }
   };
 
@@ -82,7 +124,10 @@ export default function AdminPage() {
   };
 
   useEffect(() => {
-    if (authenticated) fetchStats();
+    if (authenticated) {
+      fetchStats();
+      fetchConfig();
+    }
   }, [authenticated]);
 
   if (checking) {
@@ -225,9 +270,47 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* Future admin sections */}
-        <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 text-center text-gray-500">
-          <p className="text-sm">More admin controls coming soon.</p>
+        {/* xgodo Config */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+          <h2 className="text-lg font-bold text-white mb-2">xgodo Configuration</h2>
+          <p className="text-gray-400 text-sm mb-6">API token and job IDs for xgodo integrations.</p>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">xgodo API Token</label>
+              <input
+                type="password"
+                value={xgodoToken}
+                onChange={(e) => setXgodoToken(e.target.value)}
+                placeholder="Bearer token from xgodo"
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Shorts Spy Job ID</label>
+              <input
+                type="text"
+                value={xgodoJobId}
+                onChange={(e) => setXgodoJobId(e.target.value)}
+                placeholder="e.g. 698709196049e1a09a72fb4e"
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+              />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={saveConfig}
+                disabled={configSaving}
+                className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition"
+              >
+                {configSaving ? 'Saving...' : 'Save Config'}
+              </button>
+              {configSaved && (
+                <span className="text-green-400 text-sm">Saved</span>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

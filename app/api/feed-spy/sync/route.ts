@@ -20,9 +20,14 @@ interface VideoData {
   collection_order: number;
 }
 
-async function xgodoFetch(endpoint: string, body: object, method = 'POST') {
-  const token = process.env.XGODO_API_TOKEN;
-  if (!token) throw new Error('XGODO_API_TOKEN not configured');
+async function getConfig(pool: import('pg').Pool): Promise<Record<string, string>> {
+  const result = await pool.query('SELECT key, value FROM admin_config');
+  const config: Record<string, string> = {};
+  for (const row of result.rows) config[row.key] = row.value;
+  return config;
+}
+
+async function xgodoFetch(token: string, endpoint: string, body: object, method = 'POST') {
 
   const res = await fetch(`${XGODO_BASE}${endpoint}`, {
     method,
@@ -55,11 +60,15 @@ export async function POST() {
   try {
     const pool = await getPool();
 
-    const JOB_ID = process.env.XGODO_SHORTS_SPY_JOB_ID;
-    if (!JOB_ID) throw new Error('XGODO_SHORTS_SPY_JOB_ID not configured');
+    // Read config from DB (fall back to env vars)
+    const config = await getConfig(pool);
+    const XGODO_TOKEN = config.xgodo_api_token || process.env.XGODO_API_TOKEN;
+    const JOB_ID = config.xgodo_shorts_spy_job_id || process.env.XGODO_SHORTS_SPY_JOB_ID;
+    if (!XGODO_TOKEN) throw new Error('xgodo API token not configured — set it in Admin → Config');
+    if (!JOB_ID) throw new Error('xgodo job ID not configured — set it in Admin → Config');
 
     // 1. Fetch pending (=completed) tasks from xgodo
-    const xgodoResult = await xgodoFetch('/jobs/applicants', {
+    const xgodoResult = await xgodoFetch(XGODO_TOKEN, '/jobs/applicants', {
       job_id: JOB_ID,
       status: 'pending',
       page: 1,
@@ -156,7 +165,7 @@ export async function POST() {
     // 5. Mark tasks as confirmed on xgodo
     if (confirmedTaskIds.length > 0) {
       try {
-        await xgodoFetch('/jobs/applicants', {
+        await xgodoFetch(XGODO_TOKEN, '/jobs/applicants', {
           job_id: JOB_ID,
           JobTasks_Ids: confirmedTaskIds,
           status: 'confirmed',
