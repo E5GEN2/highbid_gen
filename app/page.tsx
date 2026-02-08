@@ -2103,8 +2103,14 @@ function HomeContent() {
                       const ageDays = star.channel_creation_date
                         ? Math.floor((Date.now() - new Date(star.channel_creation_date).getTime()) / 86400000)
                         : null;
+                      const isNew = star.first_seen_at && new Date(star.first_seen_at).toDateString() === new Date().toDateString();
                       return (
-                        <div key={star.channel_id} className="bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl border border-orange-500/30 p-4 hover:border-orange-500/60 transition">
+                        <div key={star.channel_id} className={`bg-gradient-to-br from-gray-800/80 to-gray-900/80 rounded-xl border p-4 hover:border-orange-500/60 transition relative ${isNew ? 'border-green-500/50' : 'border-orange-500/30'}`}>
+                          {isNew && (
+                            <span className="absolute -top-2 -right-2 bg-green-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-lg">
+                              NEW!
+                            </span>
+                          )}
                           <div className="flex items-start gap-3 mb-2">
                             {star.avatar_url ? (
                               <img src={star.avatar_url} alt="" className="w-10 h-10 rounded-full flex-shrink-0" />
