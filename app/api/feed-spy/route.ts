@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '100'), 500);
     const offset = parseInt(searchParams.get('offset') || '0');
     const minViews = searchParams.get('minViews') || '0';
-    const maxChannelAgeDays = searchParams.get('maxChannelAge'); // filter new channels
+    const maxChannelAgeDays = searchParams.get('maxChannelAge');
 
     const allowedSorts: Record<string, string> = {
       view_count: 'v.view_count',
@@ -22,7 +22,6 @@ export async function GET(req: NextRequest) {
     };
     const sortCol = allowedSorts[sortBy] || 'v.view_count';
     const sortOrder = order === 'ASC' ? 'ASC' : 'DESC';
-    const nullsPos = sortOrder === 'DESC' ? 'NULLS LAST' : 'NULLS FIRST';
 
     let whereClause = 'WHERE 1=1';
     const params: (string | number)[] = [];
@@ -38,48 +37,6 @@ export async function GET(req: NextRequest) {
       whereClause += ` AND c.channel_creation_date >= NOW() - INTERVAL '${parseInt(maxChannelAgeDays)} days'`;
     }
 
-    // Get videos with channel info — deduplicated by video_id (latest sighting)
-    const videosResult = await pool.query(`
-      SELECT DISTINCT ON (v.video_id)
-        v.video_id, v.video_url, v.title, v.duration_seconds, v.upload_date,
-        v.view_count, v.like_count, v.comment_count, v.collected_at,
-        c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url
-      FROM shorts_videos v
-      JOIN shorts_channels c ON v.channel_id = c.channel_id
-      ${whereClause}
-      ORDER BY v.video_id, v.collected_at DESC
-    `, params);
-
-    // Sort in JS since DISTINCT ON requires matching ORDER BY prefix
-    const videos = videosResult.rows;
-    videos.sort((a: Record<string, unknown>, b: Record<string, unknown>) => {
-      const colMap: Record<string, string> = {
-        'v.view_count': 'view_count',
-        'v.like_count': 'like_count',
-        'v.comment_count': 'comment_count',
-        'v.duration_seconds': 'duration_seconds',
-        'v.collected_at': 'collected_at',
-        'c.channel_creation_date': 'channel_creation_date',
-      };
-      const key = colMap[sortCol] || 'view_count';
-      const aVal = a[key] ?? (sortOrder === 'DESC' ? -Infinity : Infinity);
-      const bVal = b[key] ?? (sortOrder === 'DESC' ? -Infinity : Infinity);
-      if (sortOrder === 'DESC') return (bVal as number) > (aVal as number) ? 1 : -1;
-      return (aVal as number) > (bVal as number) ? 1 : -1;
-    });
-
-    const paged = videos.slice(offset, offset + limit);
-
-    // Stats
-    const statsResult = await pool.query(`
-      SELECT
-        COUNT(DISTINCT v.video_id) as total_videos,
-        COUNT(DISTINCT v.channel_id) as total_channels,
-        COUNT(*) as total_sightings,
-        (SELECT COUNT(*) FROM shorts_collections) as total_collections
-      FROM shorts_videos v
-    `);
-
     // Rising stars settings
     const rsMaxChannels = Math.min(parseInt(searchParams.get('rsMaxChannels') || '12'), 50);
     const rsMaxAgeDays = parseInt(searchParams.get('rsMaxAge') || '180');
@@ -90,37 +47,85 @@ export async function GET(req: NextRequest) {
       rsHaving = `HAVING SUM(v.view_count) >= ${rsMinViews}`;
     }
 
-    const risingResult = await pool.query(`
-      SELECT
-        c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url,
-        c.first_seen_at, c.last_seen_at, c.subscriber_count, c.total_video_count,
-        MAX(v.view_count) as max_views,
-        COUNT(DISTINCT v.video_id) as video_count,
-        SUM(v.view_count) as total_views
-      FROM shorts_channels c
-      JOIN shorts_videos v ON c.channel_id = v.channel_id
-      WHERE c.channel_creation_date >= NOW() - INTERVAL '${rsMaxAgeDays} days'
-        AND v.view_count IS NOT NULL
-      GROUP BY c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url, c.first_seen_at, c.last_seen_at, c.subscriber_count, c.total_video_count
-      ${rsHaving}
-      ORDER BY total_views DESC
-      LIMIT ${rsMaxChannels}
-    `);
+    // Run all queries in parallel
+    const [videosResult, statsResult, risingResult, rsCountResult] = await Promise.all([
+      // 1. Videos with channel info
+      pool.query(`
+        SELECT DISTINCT ON (v.video_id)
+          v.video_id, v.video_url, v.title, v.duration_seconds, v.upload_date,
+          v.view_count, v.like_count, v.comment_count, v.collected_at,
+          c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url
+        FROM shorts_videos v
+        JOIN shorts_channels c ON v.channel_id = c.channel_id
+        ${whereClause}
+        ORDER BY v.video_id, v.collected_at DESC
+      `, params),
 
-    // Rising stars counts (total matching filter + added today)
-    const rsCountResult = await pool.query(`
-      SELECT
-        COUNT(*) as total,
-        COUNT(*) FILTER (WHERE c.first_seen_at >= CURRENT_DATE) as added_today
-      FROM shorts_channels c
-      JOIN shorts_videos v ON c.channel_id = v.channel_id
-      WHERE c.channel_creation_date >= NOW() - INTERVAL '${rsMaxAgeDays} days'
-        AND v.view_count IS NOT NULL
-      GROUP BY c.channel_id
-      ${rsHaving}
-    `);
-    const rsTotal = rsCountResult.rows.length;
-    const rsAddedToday = rsCountResult.rows.filter((r: { added_today: string }) => parseInt(r.added_today) > 0).length;
+      // 2. Stats
+      pool.query(`
+        SELECT
+          COUNT(DISTINCT v.video_id) as total_videos,
+          COUNT(DISTINCT v.channel_id) as total_channels,
+          COUNT(*) as total_sightings,
+          (SELECT COUNT(*) FROM shorts_collections) as total_collections
+        FROM shorts_videos v
+      `),
+
+      // 3. Rising stars (top N)
+      pool.query(`
+        SELECT
+          c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url,
+          c.first_seen_at, c.last_seen_at, c.subscriber_count, c.total_video_count,
+          MAX(v.view_count) as max_views,
+          COUNT(DISTINCT v.video_id) as video_count,
+          SUM(v.view_count) as total_views
+        FROM shorts_channels c
+        JOIN shorts_videos v ON c.channel_id = v.channel_id
+        WHERE c.channel_creation_date >= NOW() - INTERVAL '${rsMaxAgeDays} days'
+          AND v.view_count IS NOT NULL
+        GROUP BY c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count, c.avatar_url, c.first_seen_at, c.last_seen_at, c.subscriber_count, c.total_video_count
+        ${rsHaving}
+        ORDER BY total_views DESC
+        LIMIT ${rsMaxChannels}
+      `),
+
+      // 4. Rising stars count (total + added today) — lightweight count-only query
+      pool.query(`
+        SELECT
+          COUNT(*) as total,
+          COUNT(*) FILTER (WHERE first_seen_at >= CURRENT_DATE) as added_today
+        FROM (
+          SELECT c.channel_id, c.first_seen_at
+          FROM shorts_channels c
+          JOIN shorts_videos v ON c.channel_id = v.channel_id
+          WHERE c.channel_creation_date >= NOW() - INTERVAL '${rsMaxAgeDays} days'
+            AND v.view_count IS NOT NULL
+          GROUP BY c.channel_id, c.first_seen_at
+          ${rsHaving}
+        ) sub
+      `),
+    ]);
+
+    // Sort videos in JS since DISTINCT ON requires matching ORDER BY prefix
+    const videos = videosResult.rows;
+    const colMap: Record<string, string> = {
+      'v.view_count': 'view_count',
+      'v.like_count': 'like_count',
+      'v.comment_count': 'comment_count',
+      'v.duration_seconds': 'duration_seconds',
+      'v.collected_at': 'collected_at',
+      'c.channel_creation_date': 'channel_creation_date',
+    };
+    const key = colMap[sortCol] || 'view_count';
+    videos.sort((a: Record<string, unknown>, b: Record<string, unknown>) => {
+      const aVal = a[key] ?? (sortOrder === 'DESC' ? -Infinity : Infinity);
+      const bVal = b[key] ?? (sortOrder === 'DESC' ? -Infinity : Infinity);
+      if (sortOrder === 'DESC') return (bVal as number) > (aVal as number) ? 1 : -1;
+      return (aVal as number) > (bVal as number) ? 1 : -1;
+    });
+
+    const paged = videos.slice(offset, offset + limit);
+    const countRow = rsCountResult.rows[0] || { total: 0, added_today: 0 };
 
     return NextResponse.json({
       success: true,
@@ -128,7 +133,7 @@ export async function GET(req: NextRequest) {
       total: videos.length,
       stats: statsResult.rows[0],
       risingStars: risingResult.rows,
-      risingStarsCount: { total: rsTotal, addedToday: rsAddedToday },
+      risingStarsCount: { total: parseInt(countRow.total), addedToday: parseInt(countRow.added_today) },
     });
   } catch (error) {
     console.error('Feed spy query error:', error);
