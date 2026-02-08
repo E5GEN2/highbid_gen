@@ -257,7 +257,7 @@ function HomeContent() {
     risingStars: Array<{
       channel_id: string; channel_name: string; channel_url: string;
       channel_creation_date: string; sighting_count: number; avatar_url: string | null;
-      first_seen_at: string; last_seen_at: string;
+      first_seen_at: string; last_seen_at: string; subscriber_count: string | null;
       max_views: string; video_count: string; total_views: string;
     }>;
   } | null>(null);
@@ -2124,6 +2124,15 @@ function HomeContent() {
                           </div>
                           <div className="text-2xl font-bold text-orange-400">{parseInt(star.total_views).toLocaleString()}</div>
                           <div className="text-xs text-gray-400">total views across {star.video_count} video{parseInt(star.video_count) !== 1 ? 's' : ''}</div>
+                          {star.subscriber_count && (
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {parseInt(star.subscriber_count) >= 1000000
+                                ? `${(parseInt(star.subscriber_count) / 1000000).toFixed(1)}M subs`
+                                : parseInt(star.subscriber_count) >= 1000
+                                  ? `${(parseInt(star.subscriber_count) / 1000).toFixed(1)}K subs`
+                                  : `${parseInt(star.subscriber_count)} subs`}
+                            </div>
+                          )}
                           <div className="mt-2 flex items-center justify-between">
                             <div className="text-xs text-gray-500">
                               Best: {parseInt(star.max_views).toLocaleString()} views | Seen {star.sighting_count}x

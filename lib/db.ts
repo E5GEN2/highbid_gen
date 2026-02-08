@@ -64,9 +64,12 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
-    // Add avatar_url column if missing (migration for existing DBs)
+    // Add columns if missing (migration for existing DBs)
     await client.query(`
       ALTER TABLE shorts_channels ADD COLUMN IF NOT EXISTS avatar_url TEXT
+    `);
+    await client.query(`
+      ALTER TABLE shorts_channels ADD COLUMN IF NOT EXISTS subscriber_count BIGINT
     `);
 
     await client.query(`

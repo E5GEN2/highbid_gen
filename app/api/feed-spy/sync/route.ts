@@ -162,39 +162,37 @@ export async function POST() {
       tasksSynced++;
     }
 
-    // 5. Fetch missing channel avatars via YouTube Data API
+    // 5. Fetch missing channel avatars + subscriber counts via YouTube Data API
     const YT_API_KEY = config.youtube_api_key;
     if (YT_API_KEY) {
       try {
-        // Find channels without avatars
-        const missingAvatars = await pool.query(
-          `SELECT channel_id FROM shorts_channels WHERE avatar_url IS NULL`
+        const missingData = await pool.query(
+          `SELECT channel_id FROM shorts_channels WHERE avatar_url IS NULL OR subscriber_count IS NULL`
         );
-        const channelIds = missingAvatars.rows.map((r: { channel_id: string }) => r.channel_id);
+        const channelIds = missingData.rows.map((r: { channel_id: string }) => r.channel_id);
 
-        // YouTube API allows up to 50 IDs per request
         for (let i = 0; i < channelIds.length; i += 50) {
           const batch = channelIds.slice(i, i + 50);
           const ytRes = await fetch(
-            `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${batch.join(',')}&key=${YT_API_KEY}`
+            `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${batch.join(',')}&key=${YT_API_KEY}`
           );
           if (ytRes.ok) {
             const ytData = await ytRes.json();
             for (const item of ytData.items || []) {
               const avatarUrl = item.snippet?.thumbnails?.medium?.url
                 || item.snippet?.thumbnails?.default?.url;
-              if (avatarUrl) {
-                await pool.query(
-                  'UPDATE shorts_channels SET avatar_url = $1 WHERE channel_id = $2',
-                  [avatarUrl, item.id]
-                );
-              }
+              const subCount = item.statistics?.subscriberCount
+                ? parseInt(item.statistics.subscriberCount)
+                : null;
+              await pool.query(
+                'UPDATE shorts_channels SET avatar_url = COALESCE($1, avatar_url), subscriber_count = COALESCE($2, subscriber_count) WHERE channel_id = $3',
+                [avatarUrl, subCount, item.id]
+              );
             }
           }
         }
       } catch (err) {
-        console.error('Failed to fetch YouTube avatars:', err);
-        // Non-critical — continue without avatars
+        console.error('Failed to fetch YouTube channel data:', err);
       }
     }
 
