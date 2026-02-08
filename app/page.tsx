@@ -257,6 +257,7 @@ function HomeContent() {
     risingStars: Array<{
       channel_id: string; channel_name: string; channel_url: string;
       channel_creation_date: string; sighting_count: number; avatar_url: string | null;
+      first_seen_at: string; last_seen_at: string;
       max_views: string; video_count: string; total_views: string;
     }>;
   } | null>(null);
@@ -2123,8 +2124,24 @@ function HomeContent() {
                           </div>
                           <div className="text-2xl font-bold text-orange-400">{parseInt(star.total_views).toLocaleString()}</div>
                           <div className="text-xs text-gray-400">total views across {star.video_count} video{parseInt(star.video_count) !== 1 ? 's' : ''}</div>
-                          <div className="mt-2 text-xs text-gray-500">
-                            Best: {parseInt(star.max_views).toLocaleString()} views | Seen {star.sighting_count}x
+                          <div className="mt-2 flex items-center justify-between">
+                            <div className="text-xs text-gray-500">
+                              Best: {parseInt(star.max_views).toLocaleString()} views | Seen {star.sighting_count}x
+                            </div>
+                            <div className="relative group">
+                              <svg className="w-4 h-4 text-gray-600 hover:text-gray-400 cursor-help transition" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              <div className="absolute bottom-full right-0 mb-2 w-48 bg-gray-900 border border-gray-700 rounded-lg p-2.5 text-xs hidden group-hover:block z-10 shadow-xl">
+                                <div className="text-gray-400 space-y-1">
+                                  <div>First seen: <span className="text-gray-200">{new Date(star.first_seen_at).toLocaleDateString()}</span></div>
+                                  <div>Last updated: <span className="text-gray-200">{new Date(star.last_seen_at).toLocaleDateString()}</span></div>
+                                  {star.channel_creation_date && (
+                                    <div>Created: <span className="text-gray-200">{new Date(star.channel_creation_date).toLocaleDateString()}</span></div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       );
