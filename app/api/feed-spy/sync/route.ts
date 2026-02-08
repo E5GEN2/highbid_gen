@@ -2,8 +2,6 @@ import { NextResponse } from 'next/server';
 import { getPool } from '../../../../lib/db';
 
 const XGODO_BASE = 'https://xgodo.com/api/v2';
-const XGODO_TOKEN = process.env.XGODO_API_TOKEN!;
-const JOB_ID = process.env.XGODO_SHORTS_SPY_JOB_ID!;
 
 interface VideoData {
   video_id: string;
@@ -23,10 +21,13 @@ interface VideoData {
 }
 
 async function xgodoFetch(endpoint: string, body: object, method = 'POST') {
+  const token = process.env.XGODO_API_TOKEN;
+  if (!token) throw new Error('XGODO_API_TOKEN not configured');
+
   const res = await fetch(`${XGODO_BASE}${endpoint}`, {
     method,
     headers: {
-      'Authorization': `Bearer ${XGODO_TOKEN}`,
+      'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -53,6 +54,9 @@ function parseISODate(s: string | null): string | null {
 export async function POST() {
   try {
     const pool = await getPool();
+
+    const JOB_ID = process.env.XGODO_SHORTS_SPY_JOB_ID;
+    if (!JOB_ID) throw new Error('XGODO_SHORTS_SPY_JOB_ID not configured');
 
     // 1. Fetch pending (=completed) tasks from xgodo
     const xgodoResult = await xgodoFetch('/jobs/applicants', {
