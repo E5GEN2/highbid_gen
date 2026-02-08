@@ -80,7 +80,16 @@ export async function GET(req: NextRequest) {
       FROM shorts_videos v
     `);
 
-    // Rising stars: new channels (<180 days) with highest views
+    // Rising stars settings
+    const rsMaxChannels = Math.min(parseInt(searchParams.get('rsMaxChannels') || '12'), 50);
+    const rsMaxAgeDays = parseInt(searchParams.get('rsMaxAge') || '180');
+    const rsMinViews = parseInt(searchParams.get('rsMinViews') || '0');
+
+    let rsHaving = '';
+    if (rsMinViews > 0) {
+      rsHaving = `HAVING SUM(v.view_count) >= ${rsMinViews}`;
+    }
+
     const risingResult = await pool.query(`
       SELECT
         c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count,
@@ -89,11 +98,12 @@ export async function GET(req: NextRequest) {
         SUM(v.view_count) as total_views
       FROM shorts_channels c
       JOIN shorts_videos v ON c.channel_id = v.channel_id
-      WHERE c.channel_creation_date >= NOW() - INTERVAL '180 days'
+      WHERE c.channel_creation_date >= NOW() - INTERVAL '${rsMaxAgeDays} days'
         AND v.view_count IS NOT NULL
       GROUP BY c.channel_id, c.channel_name, c.channel_url, c.channel_creation_date, c.sighting_count
+      ${rsHaving}
       ORDER BY total_views DESC
-      LIMIT 20
+      LIMIT ${rsMaxChannels}
     `);
 
     return NextResponse.json({

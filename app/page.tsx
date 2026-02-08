@@ -265,6 +265,11 @@ function HomeContent() {
   const [spyMinViews, setSpyMinViews] = useState('0');
   const [spyMaxAge, setSpyMaxAge] = useState('');
 
+  // Rising Stars settings
+  const [rsMaxChannels, setRsMaxChannels] = useState('12');
+  const [rsMaxAge, setRsMaxAge] = useState('180');
+  const [rsMinViews, setRsMinViews] = useState('0');
+
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});
   const [uploadedFileTypes, setUploadedFileTypes] = useState<{[sceneId: number]: 'video' | 'image'}>({});
@@ -1873,7 +1878,7 @@ function HomeContent() {
   const fetchSpyData = async () => {
     setSpyLoading(true);
     try {
-      const params = new URLSearchParams({ sort: spySort, limit: '200', minViews: spyMinViews });
+      const params = new URLSearchParams({ sort: spySort, limit: '200', minViews: spyMinViews, rsMaxChannels, rsMaxAge, rsMinViews });
       if (spyMaxAge) params.set('maxChannelAge', spyMaxAge);
       const response = await fetch(`/api/feed-spy?${params}`);
       const data = await response.json();
@@ -1908,14 +1913,14 @@ function HomeContent() {
     }
   }, [selectedStory, generatedStoryboard, storyboardImages, storyboardVoiceovers, debouncedSave]);
 
-  // Fetch data when switching views
+  // Fetch data when switching views or filters change
   useEffect(() => {
     if (currentView === 'library') {
       fetchLibraryProjects();
     } else if (currentView === 'spy') {
       fetchSpyData();
     }
-  }, [currentView]);
+  }, [currentView, spySort, spyMinViews, spyMaxAge, rsMaxChannels, rsMaxAge, rsMinViews]);
 
   // Save on page unload
   useEffect(() => {
@@ -2050,16 +2055,50 @@ function HomeContent() {
               {/* Rising Stars */}
               {spyData?.risingStars && spyData.risingStars.length > 0 && (
                 <div className="mb-8">
-                  <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-                    <span className="text-2xl">🚀</span> Rising Stars
-                    <span className="text-sm font-normal text-gray-400">— channels &lt;6 months old with highest total views</span>
-                  </h2>
+                  <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                      <span className="text-2xl">🚀</span> Rising Stars
+                      <span className="text-sm font-normal text-gray-400">— young channels with highest total views</span>
+                    </h2>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-xs text-gray-500">Show</label>
+                        <select value={rsMaxChannels} onChange={(e) => setRsMaxChannels(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs">
+                          <option value="4">4</option>
+                          <option value="8">8</option>
+                          <option value="12">12</option>
+                          <option value="20">20</option>
+                          <option value="50">50</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-xs text-gray-500">Max age</label>
+                        <select value={rsMaxAge} onChange={(e) => setRsMaxAge(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs">
+                          <option value="30">30 days</option>
+                          <option value="90">90 days</option>
+                          <option value="180">6 months</option>
+                          <option value="365">1 year</option>
+                          <option value="730">2 years</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-xs text-gray-500">Min views</label>
+                        <select value={rsMinViews} onChange={(e) => setRsMinViews(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs">
+                          <option value="0">All</option>
+                          <option value="1000">1K+</option>
+                          <option value="10000">10K+</option>
+                          <option value="100000">100K+</option>
+                          <option value="1000000">1M+</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     {[...spyData.risingStars].sort((a, b) => {
                       const ageA = a.channel_creation_date ? Date.now() - new Date(a.channel_creation_date).getTime() : Infinity;
                       const ageB = b.channel_creation_date ? Date.now() - new Date(b.channel_creation_date).getTime() : Infinity;
                       return ageA - ageB;
-                    }).slice(0, 8).map((star) => {
+                    }).map((star) => {
                       const ageDays = star.channel_creation_date
                         ? Math.floor((Date.now() - new Date(star.channel_creation_date).getTime()) / 86400000)
                         : null;
