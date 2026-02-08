@@ -1877,7 +1877,7 @@ function HomeContent() {
   };
 
   // Feed Spy: fetch data from our DB
-  const fetchSpyData = async () => {
+  const fetchSpyData = useCallback(async () => {
     setSpyLoading(true);
     try {
       const params = new URLSearchParams({ sort: spySort, limit: '200', minViews: spyMinViews, rsMaxChannels, rsMaxAge, rsMinViews });
@@ -1892,7 +1892,7 @@ function HomeContent() {
     } finally {
       setSpyLoading(false);
     }
-  };
+  }, [spySort, spyMinViews, spyMaxAge, rsMaxChannels, rsMaxAge, rsMinViews]);
 
   // Start a new project
   const startNewProject = () => {
@@ -1922,7 +1922,7 @@ function HomeContent() {
     } else if (currentView === 'spy') {
       fetchSpyData();
     }
-  }, [currentView, spySort, spyMinViews, spyMaxAge, rsMaxChannels, rsMaxAge, rsMinViews]);
+  }, [currentView, fetchSpyData]);
 
   // Save on page unload
   useEffect(() => {
