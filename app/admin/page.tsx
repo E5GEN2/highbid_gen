@@ -26,6 +26,16 @@ export default function AdminPage() {
   const [configSaving, setConfigSaving] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
 
+  // Schedule state
+  const [schedNumVideos, setSchedNumVideos] = useState(20);
+  const [schedFetchAge, setSchedFetchAge] = useState(true);
+  const [schedYoutubeKey, setSchedYoutubeKey] = useState('');
+  const [schedFetchVideoCount, setSchedFetchVideoCount] = useState(false);
+  const [schedTaskCount, setSchedTaskCount] = useState(1);
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduleResult, setScheduleResult] = useState<{ scheduled: number } | null>(null);
+  const [scheduleError, setScheduleError] = useState('');
+
   // Check auth on mount
   useEffect(() => {
     fetch('/api/admin/auth')
@@ -62,9 +72,41 @@ export default function AdminPage() {
       if (data.config) {
         setXgodoToken(data.config.xgodo_api_token || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
+        setSchedYoutubeKey(data.config.youtube_api_key || '');
       }
     } catch (err) {
       console.error('Failed to fetch config:', err);
+    }
+  };
+
+  const handleSchedule = async () => {
+    setScheduling(true);
+    setScheduleResult(null);
+    setScheduleError('');
+
+    try {
+      const res = await fetch('/api/admin/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          numVideos: schedNumVideos,
+          fetchChannelAge: schedFetchAge,
+          youtubeApiKey: schedYoutubeKey,
+          fetchChannelVideoCount: schedFetchVideoCount,
+          taskCount: schedTaskCount,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setScheduleResult({ scheduled: data.scheduled });
+      } else {
+        setScheduleError(data.error || 'Failed to schedule');
+      }
+    } catch (err) {
+      setScheduleError(err instanceof Error ? err.message : 'Failed to schedule');
+    } finally {
+      setScheduling(false);
     }
   };
 
@@ -79,6 +121,7 @@ export default function AdminPage() {
           config: {
             xgodo_api_token: xgodoToken,
             xgodo_shorts_spy_job_id: xgodoJobId,
+            youtube_api_key: schedYoutubeKey,
           },
         }),
       });
@@ -270,6 +313,132 @@ export default function AdminPage() {
           )}
         </div>
 
+        {/* Schedule Tasks */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
+          <h2 className="text-lg font-bold text-white mb-2">Feed Spy — Schedule Tasks</h2>
+          <p className="text-gray-400 text-sm mb-6">
+            Submit planned spy tasks to xgodo. Each task will collect YouTube Shorts feed data with the specified parameters.
+          </p>
+
+          <div className="space-y-5">
+            {/* Task Count */}
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Number of tasks to schedule</label>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={schedTaskCount}
+                onChange={(e) => setSchedTaskCount(Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))}
+                className="w-32 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">All tasks will use the same inputs below (max 100)</p>
+            </div>
+
+            <div className="border-t border-gray-800 pt-5">
+              <div className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-4">Task Inputs</div>
+
+              {/* Num Videos */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Num videos <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={schedNumVideos}
+                  onChange={(e) => setSchedNumVideos(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-32 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                />
+                <p className="text-xs text-gray-500 mt-1">Number of videos to collect per task</p>
+              </div>
+
+              {/* Fetch Channel Age */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-300 mb-2">Fetch channel age</label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={schedFetchAge}
+                    onChange={(e) => setSchedFetchAge(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+                  />
+                  <span className="text-sm text-gray-300">Enabled</span>
+                </label>
+              </div>
+
+              {/* YouTube API Key */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  YouTube API key
+                  <span className="text-gray-500 text-xs ml-1">{schedFetchAge ? '(required)' : '(optional)'}</span>
+                </label>
+                <input
+                  type="password"
+                  value={schedYoutubeKey}
+                  onChange={(e) => setSchedYoutubeKey(e.target.value)}
+                  placeholder="Only required when fetching channel age"
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+                />
+              </div>
+
+              {/* Fetch Channel Video Count */}
+              <div className="mb-2">
+                <label className="block text-sm font-medium text-gray-300 mb-2">Fetch channel video count</label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={schedFetchVideoCount}
+                    onChange={(e) => setSchedFetchVideoCount(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+                  />
+                  <span className="text-sm text-gray-300">Fetch number of videos of the channel</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Submit */}
+            <div className="border-t border-gray-800 pt-5">
+              <button
+                onClick={handleSchedule}
+                disabled={scheduling || schedNumVideos < 1}
+                className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition flex items-center gap-3"
+              >
+                {scheduling ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Scheduling...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6l4 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Schedule {schedTaskCount} Task{schedTaskCount > 1 ? 's' : ''}
+                  </>
+                )}
+              </button>
+            </div>
+
+            {scheduleResult && (
+              <div className="bg-green-900/20 border border-green-600/30 rounded-xl p-4">
+                <div className="text-green-400 font-medium mb-1">Tasks Scheduled</div>
+                <div className="text-sm text-green-300/70">
+                  {scheduleResult.scheduled} task{scheduleResult.scheduled > 1 ? 's' : ''} submitted to xgodo. They will be picked up by workers and results will appear after syncing.
+                </div>
+              </div>
+            )}
+
+            {scheduleError && (
+              <div className="bg-red-900/20 border border-red-600/30 rounded-xl p-4">
+                <div className="text-red-400 font-medium mb-1">Schedule Failed</div>
+                <div className="text-sm text-red-300/70">{scheduleError}</div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* xgodo Config */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
           <h2 className="text-lg font-bold text-white mb-2">xgodo Configuration</h2>
@@ -294,6 +463,17 @@ export default function AdminPage() {
                 value={xgodoJobId}
                 onChange={(e) => setXgodoJobId(e.target.value)}
                 placeholder="e.g. 698709196049e1a09a72fb4e"
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">YouTube API Key</label>
+              <input
+                type="password"
+                value={schedYoutubeKey}
+                onChange={(e) => setSchedYoutubeKey(e.target.value)}
+                placeholder="For channel age fetching in spy tasks"
                 className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
               />
             </div>
