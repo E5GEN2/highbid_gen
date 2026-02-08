@@ -107,12 +107,28 @@ export async function GET(req: NextRequest) {
       LIMIT ${rsMaxChannels}
     `);
 
+    // Rising stars counts (total matching filter + added today)
+    const rsCountResult = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE c.first_seen_at >= CURRENT_DATE) as added_today
+      FROM shorts_channels c
+      JOIN shorts_videos v ON c.channel_id = v.channel_id
+      WHERE c.channel_creation_date >= NOW() - INTERVAL '${rsMaxAgeDays} days'
+        AND v.view_count IS NOT NULL
+      GROUP BY c.channel_id
+      ${rsHaving}
+    `);
+    const rsTotal = rsCountResult.rows.length;
+    const rsAddedToday = rsCountResult.rows.filter((r: { added_today: string }) => parseInt(r.added_today) > 0).length;
+
     return NextResponse.json({
       success: true,
       videos: paged,
       total: videos.length,
       stats: statsResult.rows[0],
       risingStars: risingResult.rows,
+      risingStarsCount: { total: rsTotal, addedToday: rsAddedToday },
     });
   } catch (error) {
     console.error('Feed spy query error:', error);

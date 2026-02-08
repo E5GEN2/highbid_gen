@@ -260,6 +260,7 @@ function HomeContent() {
       first_seen_at: string; last_seen_at: string; subscriber_count: string | null;
       max_views: string; video_count: string; total_views: string;
     }>;
+    risingStarsCount: { total: number; addedToday: number };
   } | null>(null);
   const [spyLoading, setSpyLoading] = useState(false);
   const [spySort, setSpySort] = useState('view_count');
@@ -2057,9 +2058,16 @@ function HomeContent() {
               {spyData?.risingStars && spyData.risingStars.length > 0 && (
                 <div className="mb-8">
                   <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <h2 className="text-xl font-bold text-white flex items-center gap-2 flex-wrap">
                       <span className="text-2xl">🚀</span> Rising Stars
-                      <span className="text-sm font-normal text-gray-400">— young channels with highest total views</span>
+                      {spyData.risingStarsCount && (
+                        <span className="text-sm font-normal text-gray-400">
+                          — {spyData.risingStarsCount.total} total
+                          {spyData.risingStarsCount.addedToday > 0 && (
+                            <span className="text-green-400 ml-1">(+{spyData.risingStarsCount.addedToday} today)</span>
+                          )}
+                        </span>
+                      )}
                     </h2>
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="flex items-center gap-1.5">
