@@ -33,6 +33,22 @@ export interface FeedChannel {
   videos: FeedVideo[];
 }
 
+export interface FeedFilters {
+  maxAge: string;   // days, '0' = no limit
+  minSubs: string;  // '0' = no limit
+  maxSubs: string;  // '0' = no limit
+  minViews: string; // '0' = no limit
+  sort: string;     // 'velocity' | 'views' | 'newest' | 'subs'
+}
+
+export const DEFAULT_FEED_FILTERS: FeedFilters = {
+  maxAge: '0',
+  minSubs: '0',
+  maxSubs: '0',
+  minViews: '0',
+  sort: 'velocity',
+};
+
 interface FeedViewerProps {
   channels: FeedChannel[];
   loading: boolean;
@@ -41,6 +57,9 @@ interface FeedViewerProps {
   onChannelChange: (index: number) => void;
   onVideoChange: (index: number) => void;
   onLoadMore: () => void;
+  onFetchChannelVideos?: (channelId: string) => Promise<void>;
+  filters: FeedFilters;
+  onFiltersChange: (filters: FeedFilters) => void;
 }
 
 function formatCount(n: number | null): string {
@@ -101,6 +120,9 @@ export default function FeedViewer({
   onChannelChange,
   onVideoChange,
   onLoadMore,
+  onFetchChannelVideos,
+  filters,
+  onFiltersChange,
 }: FeedViewerProps) {
   const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
   const playerRef = useRef<any>(null);
@@ -112,6 +134,9 @@ export default function FeedViewer({
   const [paused, setPaused] = useState(false);
   const [started, setStarted] = useState(false); // tracks if user has initiated first play
   const startedRef = useRef(false);
+  const [fetchingMore, setFetchingMore] = useState(false);
+  const fetchedChannelsRef = useRef<Set<string>>(new Set());
+  const [showSettings, setShowSettings] = useState(false);
 
   const channel = channels[channelIndex];
   const video = channel?.videos?.[videoIndex];
@@ -208,6 +233,16 @@ export default function FeedViewer({
       onLoadMore();
     }
   }, [channelIndex, channels.length, onLoadMore]);
+
+  // Auto-fetch more videos when landing on a channel with few videos
+  useEffect(() => {
+    if (!channel || !onFetchChannelVideos) return;
+    if (channel.videos.length > 3) return;
+    if (fetchedChannelsRef.current.has(channel.channel_id)) return;
+    fetchedChannelsRef.current.add(channel.channel_id);
+    setFetchingMore(true);
+    onFetchChannelVideos(channel.channel_id).finally(() => setFetchingMore(false));
+  }, [channelIndex, channel, onFetchChannelVideos]);
 
   // Reset pause state on video change
   useEffect(() => {
@@ -406,7 +441,124 @@ export default function FeedViewer({
             </svg>
           )}
         </button>
+
+        <button
+          onClick={() => setShowSettings((s) => !s)}
+          className={`w-9 h-9 sm:w-10 sm:h-10 backdrop-blur-sm rounded-full flex items-center justify-center text-white active:bg-black/80 transition ${showSettings ? 'bg-pink-600/80' : 'bg-black/60'}`}
+          title="Feed Settings"
+        >
+          <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
       </div>
+
+      {/* Settings panel */}
+      {showSettings && (
+        <div
+          className="absolute left-1/2 -translate-x-1/2 z-[60] w-[calc(100%-2rem)] max-w-sm"
+          style={{ top: 'max(3.5rem, calc(3rem + env(safe-area-inset-top, 0px)))' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="bg-gray-900/95 backdrop-blur-md rounded-2xl border border-gray-700/50 p-4 shadow-2xl">
+            <h3 className="text-white text-sm font-semibold mb-3">Feed Settings</h3>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-gray-400 block mb-1">Sort by</label>
+                <select
+                  value={filters.sort}
+                  onChange={(e) => onFiltersChange({ ...filters, sort: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                >
+                  <option value="velocity">Velocity</option>
+                  <option value="views">Total Views</option>
+                  <option value="newest">Newest Channels</option>
+                  <option value="subs">Most Subs</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] text-gray-400 block mb-1">Max channel age</label>
+                <select
+                  value={filters.maxAge}
+                  onChange={(e) => onFiltersChange({ ...filters, maxAge: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                >
+                  <option value="0">No limit</option>
+                  <option value="30">30 days</option>
+                  <option value="90">90 days</option>
+                  <option value="180">6 months</option>
+                  <option value="365">1 year</option>
+                  <option value="730">2 years</option>
+                  <option value="1095">3 years</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] text-gray-400 block mb-1">Min subscribers</label>
+                <select
+                  value={filters.minSubs}
+                  onChange={(e) => onFiltersChange({ ...filters, minSubs: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                >
+                  <option value="0">No min</option>
+                  <option value="100">100+</option>
+                  <option value="1000">1K+</option>
+                  <option value="5000">5K+</option>
+                  <option value="10000">10K+</option>
+                  <option value="50000">50K+</option>
+                  <option value="100000">100K+</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] text-gray-400 block mb-1">Max subscribers</label>
+                <select
+                  value={filters.maxSubs}
+                  onChange={(e) => onFiltersChange({ ...filters, maxSubs: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                >
+                  <option value="0">No max</option>
+                  <option value="1000">1K</option>
+                  <option value="10000">10K</option>
+                  <option value="50000">50K</option>
+                  <option value="100000">100K</option>
+                  <option value="500000">500K</option>
+                  <option value="1000000">1M</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] text-gray-400 block mb-1">Min video views</label>
+                <select
+                  value={filters.minViews}
+                  onChange={(e) => onFiltersChange({ ...filters, minViews: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                >
+                  <option value="0">No min</option>
+                  <option value="1000">1K+</option>
+                  <option value="10000">10K+</option>
+                  <option value="50000">50K+</option>
+                  <option value="100000">100K+</option>
+                  <option value="1000000">1M+</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Active filters summary */}
+            {(filters.maxAge !== '0' || filters.minSubs !== '0' || filters.maxSubs !== '0' || filters.minViews !== '0' || filters.sort !== 'velocity') && (
+              <button
+                onClick={() => onFiltersChange({ ...DEFAULT_FEED_FILTERS })}
+                className="mt-3 text-[10px] text-pink-400 hover:text-pink-300 transition"
+              >
+                Reset all filters
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Video container */}
       <div
@@ -605,6 +757,14 @@ export default function FeedViewer({
         {/* Swipe hints (first load only) */}
         {!started && <SwipeHints />}
       </div>
+
+      {fetchingMore && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50">
+          <span className="bg-black/60 backdrop-blur-sm text-gray-300 text-[10px] sm:text-xs px-3 py-1 rounded-full animate-pulse">
+            Loading more videos...
+          </span>
+        </div>
+      )}
 
       {loading && channels.length > 0 && (
         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-50" style={{ bottom: 'max(0.5rem, env(safe-area-inset-bottom, 0.5rem))' }}>

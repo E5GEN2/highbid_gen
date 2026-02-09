@@ -8,6 +8,62 @@ export async function GET(req: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
     const offset = parseInt(searchParams.get('offset') || '0');
 
+    // Filter params
+    const maxAgeDays = parseInt(searchParams.get('maxAge') || '0');   // 0 = no limit
+    const minSubs = parseInt(searchParams.get('minSubs') || '0');
+    const maxSubs = parseInt(searchParams.get('maxSubs') || '0');     // 0 = no limit
+    const minViews = parseInt(searchParams.get('minViews') || '0');
+    const sort = searchParams.get('sort') || 'velocity';              // velocity | views | newest | subs
+
+    // Build WHERE clauses
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    let paramIdx = 1;
+
+    if (maxAgeDays > 0) {
+      conditions.push(`c.channel_creation_date > NOW() - INTERVAL '${maxAgeDays} days'`);
+    }
+    if (minSubs > 0) {
+      conditions.push(`c.subscriber_count >= $${paramIdx}`);
+      params.push(minSubs);
+      paramIdx++;
+    }
+    if (maxSubs > 0) {
+      conditions.push(`c.subscriber_count <= $${paramIdx}`);
+      params.push(maxSubs);
+      paramIdx++;
+    }
+
+    const whereClause = conditions.length > 0
+      ? 'WHERE ' + conditions.join(' AND ')
+      : '';
+
+    // Build HAVING clause for min views (aggregate filter)
+    const havingClause = minViews > 0
+      ? `HAVING MAX(v.view_count) >= ${parseInt(String(minViews))}`
+      : '';
+
+    // Sort order
+    let orderBy: string;
+    switch (sort) {
+      case 'views':
+        orderBy = 'SUM(v.view_count) DESC NULLS LAST';
+        break;
+      case 'newest':
+        orderBy = 'c.channel_creation_date DESC NULLS LAST';
+        break;
+      case 'subs':
+        orderBy = 'c.subscriber_count DESC NULLS LAST';
+        break;
+      default: // velocity
+        orderBy = `SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST`;
+        break;
+    }
+
+    const limitIdx = paramIdx;
+    const offsetIdx = paramIdx + 1;
+    params.push(limit, offset);
+
     const result = await pool.query(`
       SELECT
         c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
@@ -31,15 +87,14 @@ export async function GET(req: NextRequest) {
         FROM shorts_videos
         ORDER BY video_id, collected_at DESC
       ) v ON v.channel_id = c.channel_id
+      ${whereClause}
       GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
                c.subscriber_count, c.total_video_count, c.channel_creation_date,
                c.first_seen_at, c.sighting_count
-      ORDER BY
-        SUM(v.view_count) /
-        GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1)
-        DESC NULLS LAST
-      LIMIT $1 OFFSET $2
-    `, [limit, offset]);
+      ${havingClause}
+      ORDER BY ${orderBy}
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `, params);
 
     return NextResponse.json({
       success: true,

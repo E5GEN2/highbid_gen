@@ -7,7 +7,7 @@ import { SettingsProvider, useSettings } from '../lib/settingsContext';
 import { SettingsTab } from '../components/SettingsTab';
 import { PageOverrideControls } from '../components/PageOverrideControls';
 import { StoryboardWithOverrides, createStoryboardWithOverrides } from '../lib/storyboardOverrides';
-import FeedViewer, { FeedChannel } from '../components/FeedViewer';
+import FeedViewer, { FeedChannel, FeedFilters, DEFAULT_FEED_FILTERS } from '../components/FeedViewer';
 
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
@@ -280,6 +280,7 @@ function HomeContent() {
   const [feedVideoIndex, setFeedVideoIndex] = useState(0);
   const [feedOffset, setFeedOffset] = useState(0);
   const [feedHasMore, setFeedHasMore] = useState(true);
+  const [feedFilters, setFeedFilters] = useState<FeedFilters>(DEFAULT_FEED_FILTERS);
 
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});
@@ -1903,12 +1904,23 @@ function HomeContent() {
     }
   }, [spySort, spyMinViews, spyMaxAge, rsMaxChannels, rsMaxAge, rsMinViews]);
 
+  // Build feed query params from filters
+  const buildFeedParams = useCallback((offset: number) => {
+    const params = new URLSearchParams({ limit: '50', offset: String(offset) });
+    if (feedFilters.maxAge !== '0') params.set('maxAge', feedFilters.maxAge);
+    if (feedFilters.minSubs !== '0') params.set('minSubs', feedFilters.minSubs);
+    if (feedFilters.maxSubs !== '0') params.set('maxSubs', feedFilters.maxSubs);
+    if (feedFilters.minViews !== '0') params.set('minViews', feedFilters.minViews);
+    if (feedFilters.sort !== 'velocity') params.set('sort', feedFilters.sort);
+    return params.toString();
+  }, [feedFilters]);
+
   // Shorts Feed: fetch channels with nested videos
   const fetchFeedData = useCallback(async () => {
     if (feedLoading) return;
     setFeedLoading(true);
     try {
-      const response = await fetch(`/api/feed-spy/feed?limit=50&offset=0`);
+      const response = await fetch(`/api/feed-spy/feed?${buildFeedParams(0)}`);
       const data = await response.json();
       if (data.success) {
         setFeedChannels(data.channels);
@@ -1922,13 +1934,13 @@ function HomeContent() {
     } finally {
       setFeedLoading(false);
     }
-  }, [feedLoading]);
+  }, [feedLoading, buildFeedParams]);
 
   const loadMoreFeedData = useCallback(async () => {
     if (feedLoading || !feedHasMore) return;
     setFeedLoading(true);
     try {
-      const response = await fetch(`/api/feed-spy/feed?limit=50&offset=${feedOffset}`);
+      const response = await fetch(`/api/feed-spy/feed?${buildFeedParams(feedOffset)}`);
       const data = await response.json();
       if (data.success) {
         setFeedChannels((prev) => [...prev, ...data.channels]);
@@ -1940,7 +1952,38 @@ function HomeContent() {
     } finally {
       setFeedLoading(false);
     }
-  }, [feedLoading, feedHasMore, feedOffset]);
+  }, [feedLoading, feedHasMore, feedOffset, buildFeedParams]);
+
+  // Fetch full shorts catalog for a channel via YouTube Data API
+  const fetchChannelVideos = useCallback(async (channelId: string) => {
+    try {
+      const response = await fetch(`/api/feed-spy/channel-videos?channelId=${encodeURIComponent(channelId)}`);
+      const data = await response.json();
+      if (data.success && data.videos) {
+        setFeedChannels((prev) =>
+          prev.map((ch) => {
+            if (ch.channel_id !== channelId) return ch;
+            // Merge: keep existing videos, add new ones by video_id
+            const existingIds = new Set(ch.videos.map((v) => v.video_id));
+            const newVideos = data.videos.filter((v: { video_id: string }) => !existingIds.has(v.video_id));
+            if (newVideos.length === 0) return ch;
+            return { ...ch, videos: [...ch.videos, ...newVideos] };
+          })
+        );
+      }
+    } catch (err) {
+      console.error('Error fetching channel videos:', err);
+    }
+  }, []);
+
+  // Re-fetch feed when filters change
+  const feedFiltersKey = JSON.stringify(feedFilters);
+  useEffect(() => {
+    if (currentView === 'feed') {
+      fetchFeedData();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedFiltersKey]);
 
   // Start a new project
   const startNewProject = () => {
@@ -2101,6 +2144,9 @@ function HomeContent() {
             onChannelChange={setFeedChannelIndex}
             onVideoChange={setFeedVideoIndex}
             onLoadMore={loadMoreFeedData}
+            onFetchChannelVideos={fetchChannelVideos}
+            filters={feedFilters}
+            onFiltersChange={setFeedFilters}
           />
         )}
 
