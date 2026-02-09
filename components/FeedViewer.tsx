@@ -2,6 +2,14 @@
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+declare global {
+  interface Window {
+    YT: any;
+    onYouTubeIframeAPIReady: (() => void) | undefined;
+  }
+}
+
 export interface FeedVideo {
   video_id: string;
   title: string | null;
@@ -60,6 +68,31 @@ function ageBadgeColor(dateStr: string | null): string {
   return 'bg-gray-600/80';
 }
 
+// Load the YouTube IFrame API script once
+let ytApiLoading = false;
+let ytApiReady = false;
+const ytReadyCallbacks: (() => void)[] = [];
+
+function loadYTApi(callback: () => void) {
+  if (ytApiReady && window.YT?.Player) {
+    callback();
+    return;
+  }
+  ytReadyCallbacks.push(callback);
+  if (ytApiLoading) return;
+  ytApiLoading = true;
+
+  window.onYouTubeIframeAPIReady = () => {
+    ytApiReady = true;
+    ytReadyCallbacks.forEach((cb) => cb());
+    ytReadyCallbacks.length = 0;
+  };
+
+  const tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+}
+
 export default function FeedViewer({
   channels,
   loading,
@@ -70,11 +103,13 @@ export default function FeedViewer({
   onLoadMore,
 }: FeedViewerProps) {
   const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const playerRef = useRef<any>(null);
+  const playerContainerRef = useRef<HTMLDivElement>(null);
   const [transitioning, setTransitioning] = useState(false);
-  const [iframeLoaded, setIframeLoaded] = useState(false);
+  const [playerReady, setPlayerReady] = useState(false);
   const [muted, setMuted] = useState(true);
   const [paused, setPaused] = useState(false);
+  const [started, setStarted] = useState(false); // tracks if user has initiated first play
 
   const channel = channels[channelIndex];
   const video = channel?.videos?.[videoIndex];
@@ -82,7 +117,6 @@ export default function FeedViewer({
   // Prevent iOS overscroll/bounce when in feed view
   useEffect(() => {
     const preventDefault = (e: TouchEvent) => {
-      // Allow scrolling inside elements that need it, but prevent body bounce
       if (!(e.target as HTMLElement).closest('[data-scrollable]')) {
         e.preventDefault();
       }
@@ -101,6 +135,65 @@ export default function FeedViewer({
     };
   }, []);
 
+  // Initialize YouTube Player API
+  useEffect(() => {
+    if (!video) return;
+
+    loadYTApi(() => {
+      // Destroy old player if exists
+      if (playerRef.current) {
+        try { playerRef.current.destroy(); } catch { /* ignore */ }
+        playerRef.current = null;
+      }
+      setPlayerReady(false);
+
+      // Need a fresh div for each player instance
+      if (playerContainerRef.current) {
+        playerContainerRef.current.innerHTML = '<div id="yt-feed-player"></div>';
+      }
+
+      playerRef.current = new window.YT.Player('yt-feed-player', {
+        videoId: video.video_id,
+        playerVars: {
+          autoplay: started ? 1 : 0, // Only autoplay after user has started once
+          mute: muted ? 1 : 0,
+          controls: 0,
+          playsinline: 1,
+          loop: 1,
+          playlist: video.video_id,
+          rel: 0,
+          modestbranding: 1,
+          fs: 0,
+          iv_load_policy: 3,
+          disablekb: 1,
+        },
+        events: {
+          onReady: () => {
+            setPlayerReady(true);
+            if (started) {
+              playerRef.current?.playVideo();
+            }
+          },
+          onStateChange: (event: any) => {
+            // YT.PlayerState.ENDED = 0 — loop
+            if (event.data === 0) {
+              playerRef.current?.seekTo(0);
+              playerRef.current?.playVideo();
+            }
+          },
+        },
+      });
+    });
+
+    return () => {
+      if (playerRef.current) {
+        try { playerRef.current.destroy(); } catch { /* ignore */ }
+        playerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [video?.video_id, muted]);
+
   // Trigger load more when approaching end
   useEffect(() => {
     if (channels.length > 0 && channelIndex >= channels.length - 5) {
@@ -108,28 +201,30 @@ export default function FeedViewer({
     }
   }, [channelIndex, channels.length, onLoadMore]);
 
-  // Reset iframe loaded state + unpause on video change
+  // Reset pause state on video change
   useEffect(() => {
-    setIframeLoaded(false);
     setPaused(false);
   }, [channelIndex, videoIndex]);
 
-  // Send pause/play commands via YouTube IFrame API postMessage
-  const sendPlayerCommand = useCallback((func: string) => {
-    if (iframeRef.current?.contentWindow) {
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({ event: 'command', func, args: '' }),
-        '*'
-      );
-    }
-  }, []);
-
   const togglePause = useCallback(() => {
+    if (!playerRef.current) return;
     setPaused((p) => {
-      sendPlayerCommand(p ? 'playVideo' : 'pauseVideo');
+      if (p) {
+        playerRef.current?.playVideo();
+      } else {
+        playerRef.current?.pauseVideo();
+      }
       return !p;
     });
-  }, [sendPlayerCommand]);
+  }, []);
+
+  // "Tap to start" — user gesture that kicks off the first play
+  const handleStart = useCallback(() => {
+    setStarted(true);
+    if (playerRef.current) {
+      playerRef.current.playVideo();
+    }
+  }, []);
 
   const navigate = useCallback(
     (dir: 'up' | 'down' | 'left' | 'right') => {
@@ -159,12 +254,20 @@ export default function FeedViewer({
       else if (e.key === 'ArrowDown') { e.preventDefault(); navigate('up'); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); navigate('right'); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); navigate('left'); }
-      else if (e.key === 'm') { setMuted((m) => !m); }
-      else if (e.key === ' ') { e.preventDefault(); togglePause(); }
+      else if (e.key === 'm') {
+        setMuted((m) => {
+          const next = !m;
+          if (playerRef.current) {
+            next ? playerRef.current.mute() : playerRef.current.unMute();
+          }
+          return next;
+        });
+      }
+      else if (e.key === ' ') { e.preventDefault(); if (started) togglePause(); else handleStart(); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [navigate, togglePause]);
+  }, [navigate, togglePause, handleStart, started]);
 
   const onTouchStart = useCallback((e: React.TouchEvent) => {
     const t = e.touches[0];
@@ -186,9 +289,12 @@ export default function FeedViewer({
       const minDist = 50;
       const maxTime = 500;
 
-      // Tap to pause/play (small movement, quick tap)
+      // Tap detection
       if (absDx < 10 && absDy < 10 && dt < 300) {
-        // Ignore taps on the right-side stats area
+        if (!started) {
+          handleStart();
+          return;
+        }
         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
         const relX = startX - rect.left;
         if (relX < rect.width * 0.8) {
@@ -205,7 +311,7 @@ export default function FeedViewer({
         navigate(dx < 0 ? 'left' : 'right');
       }
     },
-    [navigate, togglePause]
+    [navigate, togglePause, handleStart, started]
   );
 
   // Loading state
@@ -232,7 +338,6 @@ export default function FeedViewer({
     );
   }
 
-  const embedUrl = `https://www.youtube.com/embed/${video.video_id}?autoplay=1&loop=1&controls=0&playsinline=1&rel=0&enablejsapi=1&mute=${muted ? 1 : 0}&playlist=${video.video_id}`;
   const age = channelAge(channel.channel_creation_date);
   const ageColor = ageBadgeColor(channel.channel_creation_date);
 
@@ -241,22 +346,21 @@ export default function FeedViewer({
       className="fixed inset-0 bg-black flex items-center justify-center z-40"
       style={{ touchAction: 'none' }}
     >
-      {/* Channel counter — respects safe area top */}
+      {/* Channel counter */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
         <span className="bg-black/60 backdrop-blur-sm text-white text-xs sm:text-sm px-3 py-1.5 rounded-full shadow-text">
           {channelIndex + 1}/{channels.length}
         </span>
       </div>
 
-      {/* Top-right controls — respects safe area */}
+      {/* Top-right controls */}
       <div className="absolute right-2 sm:right-4 z-50 flex gap-1.5 sm:gap-2" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
-        {/* Pause/Play */}
         <button
-          onClick={togglePause}
+          onClick={() => { if (started) togglePause(); else handleStart(); }}
           className="w-9 h-9 sm:w-10 sm:h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white active:bg-black/80 transition"
           title={paused ? 'Play (Space)' : 'Pause (Space)'}
         >
-          {paused ? (
+          {paused || !started ? (
             <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />
             </svg>
@@ -267,9 +371,16 @@ export default function FeedViewer({
           )}
         </button>
 
-        {/* Mute toggle */}
         <button
-          onClick={() => setMuted((m) => !m)}
+          onClick={() => {
+            setMuted((m) => {
+              const next = !m;
+              if (playerRef.current) {
+                next ? playerRef.current.mute() : playerRef.current.unMute();
+              }
+              return next;
+            });
+          }}
           className="w-9 h-9 sm:w-10 sm:h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white active:bg-black/80 transition"
           title={muted ? 'Unmute (M)' : 'Mute (M)'}
         >
@@ -286,40 +397,51 @@ export default function FeedViewer({
         </button>
       </div>
 
-      {/* Video container — fills screen on mobile, constrained 9:16 on desktop */}
+      {/* Video container */}
       <div
         className="relative w-full h-full md:max-w-[calc(100vh*9/16)] mx-auto"
         style={{ transition: 'opacity 150ms ease', opacity: transitioning ? 0 : 1 }}
       >
-        {/* Background placeholder while loading */}
-        {!iframeLoaded && (
+        {/* YouTube Player API container */}
+        <div
+          ref={playerContainerRef}
+          className="absolute inset-0 w-full h-full"
+          style={{ pointerEvents: 'none' }}
+        >
+          <div id="yt-feed-player" />
+        </div>
+
+        {/* Loading placeholder */}
+        {!playerReady && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 z-10">
             {channel.avatar_url && (
-              <img
-                src={channel.avatar_url}
-                alt=""
-                className="w-16 h-16 sm:w-20 sm:h-20 rounded-full mb-4 animate-pulse"
-              />
+              <img src={channel.avatar_url} alt="" className="w-16 h-16 sm:w-20 sm:h-20 rounded-full mb-4 animate-pulse" />
             )}
             <p className="text-gray-400 animate-pulse text-sm sm:text-base">{channel.channel_name}</p>
             <div className="w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full animate-spin mt-4" />
           </div>
         )}
 
-        {/* YouTube embed */}
-        <iframe
-          ref={iframeRef}
-          key={`${video.video_id}-${muted}`}
-          src={embedUrl}
-          className="absolute inset-0 w-full h-full"
-          style={{ pointerEvents: 'none' }}
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          allowFullScreen
-          onLoad={() => setIframeLoaded(true)}
-        />
+        {/* "Tap to start" overlay — shown until user initiates first play */}
+        {playerReady && !started && (
+          <div
+            className="absolute inset-0 z-30 flex items-center justify-center cursor-pointer"
+            onClick={handleStart}
+          >
+            <div className="bg-black/60 backdrop-blur-sm rounded-2xl px-6 py-4 text-center">
+              <div className="w-16 h-16 sm:w-20 sm:h-20 bg-pink-600 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-8 h-8 sm:w-10 sm:h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </div>
+              <p className="text-white text-sm sm:text-base font-medium">Tap to start</p>
+              <p className="text-gray-400 text-[10px] sm:text-xs mt-1">Swipe to browse channels</p>
+            </div>
+          </div>
+        )}
 
         {/* Paused overlay */}
-        {paused && (
+        {started && paused && (
           <div className="absolute inset-0 z-[15] bg-black/30 flex items-center justify-center pointer-events-none">
             <div className="w-14 h-14 sm:w-16 sm:h-16 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center">
               <svg className="w-7 h-7 sm:w-8 sm:h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
@@ -329,27 +451,36 @@ export default function FeedViewer({
           </div>
         )}
 
-        {/* Touch overlay */}
-        <div
-          className="absolute inset-0 z-20"
-          onTouchStart={onTouchStart}
-          onTouchEnd={onTouchEnd}
-          onClick={(e) => {
-            // Desktop click to pause/play (only left 80% of screen)
-            const rect = e.currentTarget.getBoundingClientRect();
-            const relX = e.clientX - rect.left;
-            if (relX < rect.width * 0.8) {
-              togglePause();
-            }
-          }}
-        />
+        {/* Touch overlay — captures swipes and taps */}
+        {started && (
+          <div
+            className="absolute inset-0 z-20"
+            onTouchStart={onTouchStart}
+            onTouchEnd={onTouchEnd}
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const relX = e.clientX - rect.left;
+              if (relX < rect.width * 0.8) {
+                togglePause();
+              }
+            }}
+          />
+        )}
 
-        {/* Stats overlay — right side (TikTok style) */}
+        {/* Swipe overlay for navigation before started (no pause on tap) */}
+        {!started && playerReady && (
+          <div
+            className="absolute inset-0 z-20"
+            onTouchStart={onTouchStart}
+            onTouchEnd={onTouchEnd}
+          />
+        )}
+
+        {/* Stats overlay — right side */}
         <div
           className="absolute right-2 sm:right-3 z-30 flex flex-col items-center gap-4 sm:gap-5"
           style={{ bottom: 'max(7rem, calc(5rem + env(safe-area-inset-bottom, 0px)))' }}
         >
-          {/* Views */}
           <div className="flex flex-col items-center">
             <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
               <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -360,7 +491,6 @@ export default function FeedViewer({
             <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.view_count)}</span>
           </div>
 
-          {/* Likes */}
           <div className="flex flex-col items-center">
             <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
               <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
@@ -370,7 +500,6 @@ export default function FeedViewer({
             <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.like_count)}</span>
           </div>
 
-          {/* Comments */}
           <div className="flex flex-col items-center">
             <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
               <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -380,7 +509,6 @@ export default function FeedViewer({
             <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.comment_count)}</span>
           </div>
 
-          {/* Avatar */}
           <a
             href={channel.channel_url}
             target="_blank"
@@ -389,11 +517,7 @@ export default function FeedViewer({
             onClick={(e) => e.stopPropagation()}
           >
             {channel.avatar_url ? (
-              <img
-                src={channel.avatar_url}
-                alt={channel.channel_name}
-                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white"
-              />
+              <img src={channel.avatar_url} alt={channel.channel_name} className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white" />
             ) : (
               <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white bg-gray-700 flex items-center justify-center text-white font-bold text-xs sm:text-sm">
                 {channel.channel_name?.charAt(0) || '?'}
@@ -402,12 +526,11 @@ export default function FeedViewer({
           </a>
         </div>
 
-        {/* Bottom info overlay — respects safe area bottom */}
+        {/* Bottom info overlay */}
         <div
           className="absolute left-2 sm:left-3 right-14 sm:right-16 z-30"
           style={{ bottom: 'max(1rem, calc(0.5rem + env(safe-area-inset-bottom, 0px)))' }}
         >
-          {/* Channel name + age badge */}
           <div className="flex items-center gap-1.5 sm:gap-2 mb-1 sm:mb-1.5">
             <a
               href={channel.channel_url}
@@ -425,12 +548,10 @@ export default function FeedViewer({
             )}
           </div>
 
-          {/* Video title */}
           <p className="text-white text-xs sm:text-sm shadow-text mb-1 line-clamp-2">
             {video.title || 'Untitled'}
           </p>
 
-          {/* Channel stats */}
           <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
             {channel.subscriber_count && (
               <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
@@ -447,7 +568,6 @@ export default function FeedViewer({
             </span>
           </div>
 
-          {/* Video dots + video counter */}
           {channel.videos.length > 1 && (
             <div className="flex items-center justify-center gap-1 sm:gap-1.5 mt-2 sm:mt-3">
               <span className="text-gray-400 text-[10px] sm:text-xs mr-1 sm:mr-2 shadow-text">
@@ -471,11 +591,10 @@ export default function FeedViewer({
           )}
         </div>
 
-        {/* Swipe hints (shown briefly on first load) */}
-        <SwipeHints />
+        {/* Swipe hints (first load only) */}
+        {!started && <SwipeHints />}
       </div>
 
-      {/* Loading more indicator */}
       {loading && channels.length > 0 && (
         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-50" style={{ bottom: 'max(0.5rem, env(safe-area-inset-bottom, 0.5rem))' }}>
           <span className="bg-black/60 text-gray-300 text-[10px] sm:text-xs px-3 py-1 rounded-full">
@@ -488,30 +607,17 @@ export default function FeedViewer({
 }
 
 function SwipeHints() {
-  const [visible, setVisible] = useState(true);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setVisible(false), 3000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  if (!visible) return null;
-
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
-      <div className="bg-black/70 backdrop-blur-sm rounded-2xl px-5 sm:px-6 py-3 sm:py-4 text-center">
-        <p className="text-white text-xs sm:text-sm mb-2">Swipe to navigate</p>
-        <div className="flex items-center justify-center gap-4 text-gray-300 text-[10px] sm:text-xs">
-          <span>
-            <span className="block text-base sm:text-lg mb-1">&#8593;&#8595;</span>
-            Channels
-          </span>
-          <span>
-            <span className="block text-base sm:text-lg mb-1">&#8592;&#8594;</span>
-            Videos
-          </span>
-        </div>
-        <p className="text-gray-500 text-[10px] sm:text-xs mt-2">Tap to pause</p>
+    <div className="absolute inset-x-0 bottom-1/3 z-20 flex justify-center pointer-events-none">
+      <div className="flex items-center justify-center gap-4 text-gray-400 text-[10px] sm:text-xs">
+        <span>
+          <span className="block text-base sm:text-lg mb-1 text-center">&#8593;&#8595;</span>
+          Channels
+        </span>
+        <span>
+          <span className="block text-base sm:text-lg mb-1 text-center">&#8592;&#8594;</span>
+          Videos
+        </span>
       </div>
     </div>
   );
