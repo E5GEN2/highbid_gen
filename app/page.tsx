@@ -7,6 +7,7 @@ import { SettingsProvider, useSettings } from '../lib/settingsContext';
 import { SettingsTab } from '../components/SettingsTab';
 import { PageOverrideControls } from '../components/PageOverrideControls';
 import { StoryboardWithOverrides, createStoryboardWithOverrides } from '../lib/storyboardOverrides';
+import FeedViewer, { FeedChannel } from '../components/FeedViewer';
 
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
@@ -230,7 +231,7 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
 
   // Sidebar Navigation State
-  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy'>('spy');
+  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed'>('spy');
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -271,6 +272,14 @@ function HomeContent() {
   const [rsMaxChannels, setRsMaxChannels] = useState('12');
   const [rsMaxAge, setRsMaxAge] = useState('180');
   const [rsMinViews, setRsMinViews] = useState('0');
+
+  // Shorts Feed State
+  const [feedChannels, setFeedChannels] = useState<FeedChannel[]>([]);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedChannelIndex, setFeedChannelIndex] = useState(0);
+  const [feedVideoIndex, setFeedVideoIndex] = useState(0);
+  const [feedOffset, setFeedOffset] = useState(0);
+  const [feedHasMore, setFeedHasMore] = useState(true);
 
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});
@@ -1894,6 +1903,45 @@ function HomeContent() {
     }
   }, [spySort, spyMinViews, spyMaxAge, rsMaxChannels, rsMaxAge, rsMinViews]);
 
+  // Shorts Feed: fetch channels with nested videos
+  const fetchFeedData = useCallback(async () => {
+    if (feedLoading) return;
+    setFeedLoading(true);
+    try {
+      const response = await fetch(`/api/feed-spy/feed?limit=50&offset=0`);
+      const data = await response.json();
+      if (data.success) {
+        setFeedChannels(data.channels);
+        setFeedOffset(data.channels.length);
+        setFeedHasMore(data.hasMore);
+        setFeedChannelIndex(0);
+        setFeedVideoIndex(0);
+      }
+    } catch (err) {
+      console.error('Error fetching feed data:', err);
+    } finally {
+      setFeedLoading(false);
+    }
+  }, [feedLoading]);
+
+  const loadMoreFeedData = useCallback(async () => {
+    if (feedLoading || !feedHasMore) return;
+    setFeedLoading(true);
+    try {
+      const response = await fetch(`/api/feed-spy/feed?limit=50&offset=${feedOffset}`);
+      const data = await response.json();
+      if (data.success) {
+        setFeedChannels((prev) => [...prev, ...data.channels]);
+        setFeedOffset((prev) => prev + data.channels.length);
+        setFeedHasMore(data.hasMore);
+      }
+    } catch (err) {
+      console.error('Error loading more feed data:', err);
+    } finally {
+      setFeedLoading(false);
+    }
+  }, [feedLoading, feedHasMore, feedOffset]);
+
   // Start a new project
   const startNewProject = () => {
     setCurrentProjectId(null);
@@ -1921,7 +1969,10 @@ function HomeContent() {
       fetchLibraryProjects();
     } else if (currentView === 'spy') {
       fetchSpyData();
+    } else if (currentView === 'feed' && feedChannels.length === 0) {
+      fetchFeedData();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentView, fetchSpyData]);
 
   // Save on page unload
@@ -1990,6 +2041,20 @@ function HomeContent() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
               </svg>
             </button>
+            <button
+              onClick={() => setCurrentView('feed')}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                currentView === 'feed'
+                  ? 'bg-pink-600 text-white'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+              title="Shorts Feed"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </button>
           </nav>
 
           {/* Bottom Section */}
@@ -2023,6 +2088,19 @@ function HomeContent() {
             </button>
           </div>
         </aside>
+
+        {/* Shorts Feed View — edge to edge, sidebar floats on top */}
+        {currentView === 'feed' && (
+          <FeedViewer
+            channels={feedChannels}
+            loading={feedLoading}
+            channelIndex={feedChannelIndex}
+            videoIndex={feedVideoIndex}
+            onChannelChange={setFeedChannelIndex}
+            onVideoChange={setFeedVideoIndex}
+            onLoadMore={loadMoreFeedData}
+          />
+        )}
 
         {/* Main Content Area */}
         <div className="flex-1 ml-16">
