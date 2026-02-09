@@ -51,6 +51,15 @@ function channelAge(dateStr: string | null): string {
   return `${(days / 365).toFixed(1)}y old`;
 }
 
+function ageBadgeColor(dateStr: string | null): string {
+  if (!dateStr) return 'bg-gray-600/80';
+  const days = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
+  if (days <= 30) return 'bg-green-500/90';
+  if (days <= 90) return 'bg-yellow-500/90';
+  if (days <= 180) return 'bg-orange-500/90';
+  return 'bg-gray-600/80';
+}
+
 export default function FeedViewer({
   channels,
   loading,
@@ -61,9 +70,11 @@ export default function FeedViewer({
   onLoadMore,
 }: FeedViewerProps) {
   const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const [transitioning, setTransitioning] = useState(false);
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [muted, setMuted] = useState(true);
+  const [paused, setPaused] = useState(false);
 
   const channel = channels[channelIndex];
   const video = channel?.videos?.[videoIndex];
@@ -75,10 +86,28 @@ export default function FeedViewer({
     }
   }, [channelIndex, channels.length, onLoadMore]);
 
-  // Reset iframe loaded state on video change
+  // Reset iframe loaded state + unpause on video change
   useEffect(() => {
     setIframeLoaded(false);
+    setPaused(false);
   }, [channelIndex, videoIndex]);
+
+  // Send pause/play commands via YouTube IFrame API postMessage
+  const sendPlayerCommand = useCallback((func: string) => {
+    if (iframeRef.current?.contentWindow) {
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: 'command', func, args: '' }),
+        '*'
+      );
+    }
+  }, []);
+
+  const togglePause = useCallback(() => {
+    setPaused((p) => {
+      sendPlayerCommand(p ? 'playVideo' : 'pauseVideo');
+      return !p;
+    });
+  }, [sendPlayerCommand]);
 
   const navigate = useCallback(
     (dir: 'up' | 'down' | 'left' | 'right') => {
@@ -109,10 +138,11 @@ export default function FeedViewer({
       else if (e.key === 'ArrowLeft') { e.preventDefault(); navigate('right'); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); navigate('left'); }
       else if (e.key === 'm') { setMuted((m) => !m); }
+      else if (e.key === ' ') { e.preventDefault(); togglePause(); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [navigate]);
+  }, [navigate, togglePause]);
 
   const onTouchStart = useCallback((e: React.TouchEvent) => {
     const t = e.touches[0];
@@ -126,12 +156,25 @@ export default function FeedViewer({
       const dx = t.clientX - touchRef.current.startX;
       const dy = t.clientY - touchRef.current.startY;
       const dt = Date.now() - touchRef.current.startTime;
+      const startX = touchRef.current.startX;
+      const startY = touchRef.current.startY;
       touchRef.current = null;
 
       const absDx = Math.abs(dx);
       const absDy = Math.abs(dy);
       const minDist = 50;
       const maxTime = 500;
+
+      // Tap to pause/play (small movement, quick tap)
+      if (absDx < 10 && absDy < 10 && dt < 300) {
+        // Ignore taps on the right-side stats area
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        const relX = startX - rect.left;
+        if (relX < rect.width * 0.8) {
+          togglePause();
+        }
+        return;
+      }
 
       if (dt > maxTime) return;
 
@@ -141,7 +184,7 @@ export default function FeedViewer({
         navigate(dx < 0 ? 'left' : 'right');
       }
     },
-    [navigate]
+    [navigate, togglePause]
   );
 
   // Loading state
@@ -168,8 +211,9 @@ export default function FeedViewer({
     );
   }
 
-  const embedUrl = `https://www.youtube.com/embed/${video.video_id}?autoplay=1&loop=1&controls=0&playsinline=1&rel=0&mute=${muted ? 1 : 0}&playlist=${video.video_id}`;
+  const embedUrl = `https://www.youtube.com/embed/${video.video_id}?autoplay=1&loop=1&controls=0&playsinline=1&rel=0&enablejsapi=1&mute=${muted ? 1 : 0}&playlist=${video.video_id}`;
   const age = channelAge(channel.channel_creation_date);
+  const ageColor = ageBadgeColor(channel.channel_creation_date);
 
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center z-40">
@@ -180,23 +224,43 @@ export default function FeedViewer({
         </span>
       </div>
 
-      {/* Mute toggle */}
-      <button
-        onClick={() => setMuted((m) => !m)}
-        className="absolute top-4 right-4 z-50 w-10 h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white hover:bg-black/80 transition"
-        title={muted ? 'Unmute (M)' : 'Mute (M)'}
-      >
-        {muted ? (
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
-          </svg>
-        ) : (
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-          </svg>
-        )}
-      </button>
+      {/* Top-right controls */}
+      <div className="absolute top-4 right-4 z-50 flex gap-2">
+        {/* Pause/Play */}
+        <button
+          onClick={togglePause}
+          className="w-10 h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white hover:bg-black/80 transition"
+          title={paused ? 'Play (Space)' : 'Pause (Space)'}
+        >
+          {paused ? (
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+            </svg>
+          )}
+        </button>
+
+        {/* Mute toggle */}
+        <button
+          onClick={() => setMuted((m) => !m)}
+          className="w-10 h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white hover:bg-black/80 transition"
+          title={muted ? 'Unmute (M)' : 'Mute (M)'}
+        >
+          {muted ? (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+            </svg>
+          )}
+        </button>
+      </div>
 
       {/* Video container — 9:16 aspect */}
       <div
@@ -220,6 +284,7 @@ export default function FeedViewer({
 
         {/* YouTube embed */}
         <iframe
+          ref={iframeRef}
           key={`${video.video_id}-${muted}`}
           src={embedUrl}
           className="absolute inset-0 w-full h-full"
@@ -229,11 +294,30 @@ export default function FeedViewer({
           onLoad={() => setIframeLoaded(true)}
         />
 
+        {/* Paused overlay */}
+        {paused && (
+          <div className="absolute inset-0 z-15 bg-black/30 flex items-center justify-center pointer-events-none">
+            <div className="w-16 h-16 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center">
+              <svg className="w-8 h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </div>
+          </div>
+        )}
+
         {/* Touch overlay */}
         <div
           className="absolute inset-0 z-20"
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
+          onClick={(e) => {
+            // Desktop click to pause/play (only left 80% of screen)
+            const rect = e.currentTarget.getBoundingClientRect();
+            const relX = e.clientX - rect.left;
+            if (relX < rect.width * 0.8) {
+              togglePause();
+            }
+          }}
         />
 
         {/* Stats overlay — right side (TikTok style) */}
@@ -293,8 +377,8 @@ export default function FeedViewer({
 
         {/* Bottom info overlay */}
         <div className="absolute bottom-4 left-3 right-16 z-30">
-          {/* Channel name + age */}
-          <div className="flex items-center gap-2 mb-1">
+          {/* Channel name + age badge */}
+          <div className="flex items-center gap-2 mb-1.5">
             <a
               href={channel.channel_url}
               target="_blank"
@@ -305,7 +389,9 @@ export default function FeedViewer({
               @{channel.channel_name}
             </a>
             {age && (
-              <span className="text-gray-300 text-xs shadow-text">[{age}]</span>
+              <span className={`${ageColor} text-white text-xs font-semibold px-2 py-0.5 rounded-full`}>
+                {age}
+              </span>
             )}
           </div>
 
@@ -315,15 +401,29 @@ export default function FeedViewer({
           </p>
 
           {/* Channel stats */}
-          <p className="text-gray-300 text-xs shadow-text">
-            {channel.subscriber_count ? `${formatCount(parseInt(channel.subscriber_count))} subs` : ''}
-            {channel.total_video_count ? ` · ${formatCount(parseInt(channel.total_video_count))} videos` : ''}
-          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            {channel.subscriber_count && (
+              <span className="bg-black/50 backdrop-blur-sm text-white text-xs px-2 py-0.5 rounded-full">
+                {formatCount(parseInt(channel.subscriber_count))} subs
+              </span>
+            )}
+            {channel.total_video_count && (
+              <span className="bg-black/50 backdrop-blur-sm text-white text-xs px-2 py-0.5 rounded-full">
+                {formatCount(parseInt(channel.total_video_count))} videos
+              </span>
+            )}
+            <span className="bg-black/50 backdrop-blur-sm text-white text-xs px-2 py-0.5 rounded-full">
+              seen {channel.sighting_count}x
+            </span>
+          </div>
 
-          {/* Video dots */}
+          {/* Video dots + video counter */}
           {channel.videos.length > 1 && (
             <div className="flex items-center justify-center gap-1.5 mt-3">
-              {channel.videos.map((_, i) => (
+              <span className="text-gray-400 text-xs mr-2 shadow-text">
+                {videoIndex + 1}/{channel.videos.length}
+              </span>
+              {channel.videos.slice(0, 15).map((_, i) => (
                 <button
                   key={i}
                   onClick={() => onVideoChange(i)}
@@ -334,6 +434,9 @@ export default function FeedViewer({
                   }`}
                 />
               ))}
+              {channel.videos.length > 15 && (
+                <span className="text-gray-400 text-xs ml-1">+{channel.videos.length - 15}</span>
+              )}
             </div>
           )}
         </div>
@@ -378,7 +481,7 @@ function SwipeHints() {
             Videos
           </span>
         </div>
-        <p className="text-gray-500 text-xs mt-2">M to unmute</p>
+        <p className="text-gray-500 text-xs mt-2">Space = pause &middot; M = unmute</p>
       </div>
     </div>
   );

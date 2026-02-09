@@ -34,7 +34,10 @@ export async function GET(req: NextRequest) {
       GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
                c.subscriber_count, c.total_video_count, c.channel_creation_date,
                c.first_seen_at, c.sighting_count
-      ORDER BY SUM(v.view_count) DESC NULLS LAST
+      ORDER BY
+        SUM(v.view_count) /
+        GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1)
+        DESC NULLS LAST
       LIMIT $1 OFFSET $2
     `, [limit, offset]);
 
