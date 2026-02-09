@@ -9,6 +9,7 @@ import { SettingsTab } from '../components/SettingsTab';
 import { PageOverrideControls } from '../components/PageOverrideControls';
 import { StoryboardWithOverrides, createStoryboardWithOverrides } from '../lib/storyboardOverrides';
 import FeedViewer, { FeedChannel, FeedFilters, DEFAULT_FEED_FILTERS } from '../components/FeedViewer';
+import AuthButton from '../components/AuthButton';
 
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
@@ -2152,6 +2153,9 @@ function HomeContent() {
                 )}
               </div>
             )}
+
+            {/* Auth */}
+            <AuthButton variant="sidebar" />
 
             {/* New Project */}
             <button

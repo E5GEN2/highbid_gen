@@ -418,7 +418,7 @@ export default function FeedViewer({
 
       {/* Top-right controls */}
       <div className="absolute right-2 sm:right-4 z-50 flex gap-1.5 sm:gap-2" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
-        <AuthButton />
+        <div className="md:hidden"><AuthButton /></div>
         <button
           onClick={() => { if (started) togglePause(); else handleStart(); }}
           className="w-9 h-9 sm:w-10 sm:h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white active:bg-black/80 transition"
