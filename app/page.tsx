@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Image from 'next/image';
 import JSZip from 'jszip';
+import { useSession } from 'next-auth/react';
 import { SettingsProvider, useSettings } from '../lib/settingsContext';
 import { SettingsTab } from '../components/SettingsTab';
 import { PageOverrideControls } from '../components/PageOverrideControls';
@@ -33,6 +34,7 @@ export default function Home() {
 
 // Main content component that uses the settings context
 function HomeContent() {
+  const { data: session } = useSession();
   const { settings } = useSettings();
 
   // Get API keys from context
@@ -281,6 +283,36 @@ function HomeContent() {
   const [feedOffset, setFeedOffset] = useState(0);
   const [feedHasMore, setFeedHasMore] = useState(true);
   const [feedFilters, setFeedFilters] = useState<FeedFilters>(DEFAULT_FEED_FILTERS);
+  const prefsLoaded = useRef(false);
+  const prefsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Load saved preferences on sign-in
+  useEffect(() => {
+    if (!session?.user?.id || prefsLoaded.current) return;
+    prefsLoaded.current = true;
+    fetch('/api/user/preferences')
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.feedFilters && Object.keys(data.feedFilters).length > 0) {
+          setFeedFilters((prev) => ({ ...prev, ...data.feedFilters }));
+        }
+      })
+      .catch(() => {});
+  }, [session?.user?.id]);
+
+  // Debounced save preferences on filter change
+  useEffect(() => {
+    if (!session?.user?.id || !prefsLoaded.current) return;
+    if (prefsSaveTimer.current) clearTimeout(prefsSaveTimer.current);
+    prefsSaveTimer.current = setTimeout(() => {
+      fetch('/api/user/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedFilters }),
+      }).catch(() => {});
+    }, 1000);
+    return () => { if (prefsSaveTimer.current) clearTimeout(prefsSaveTimer.current); };
+  }, [feedFilters, session?.user?.id]);
 
   // Storyboard Images State
   const [storyboardImages, setStoryboardImages] = useState<{[key: string]: string}>({});

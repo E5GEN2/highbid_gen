@@ -130,6 +130,29 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // Auth: users table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        google_id VARCHAR(128) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255),
+        image TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `);
+
+    // Auth: user preferences
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_preferences (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        feed_filters JSONB DEFAULT '{}',
+        hidden_channel_ids TEXT[] DEFAULT '{}',
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
