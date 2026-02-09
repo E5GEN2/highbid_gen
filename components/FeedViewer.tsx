@@ -108,8 +108,10 @@ export default function FeedViewer({
   const [transitioning, setTransitioning] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [muted, setMuted] = useState(true);
+  const mutedRef = useRef(true);
   const [paused, setPaused] = useState(false);
   const [started, setStarted] = useState(false); // tracks if user has initiated first play
+  const startedRef = useRef(false);
 
   const channel = channels[channelIndex];
   const video = channel?.videos?.[videoIndex];
@@ -158,7 +160,7 @@ export default function FeedViewer({
         videoId: video.video_id,
         playerVars: {
           autoplay: started ? 1 : 0, // Only autoplay after user has started once
-          mute: muted ? 1 : 0,
+          mute: 1, // Always start muted for autoplay; unmute via API after
           controls: 0,
           playsinline: 1,
           loop: 1,
@@ -172,8 +174,12 @@ export default function FeedViewer({
         events: {
           onReady: () => {
             setPlayerReady(true);
-            if (started) {
+            if (startedRef.current) {
               playerRef.current?.playVideo();
+              // Restore mute state after autoplay starts
+              if (!mutedRef.current) {
+                playerRef.current?.unMute();
+              }
             }
           },
           onStateChange: (event: any) => {
@@ -194,7 +200,7 @@ export default function FeedViewer({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [video?.video_id, muted]);
+  }, [video?.video_id]);
 
   // Trigger load more when approaching end
   useEffect(() => {
@@ -223,6 +229,7 @@ export default function FeedViewer({
   // "Tap to start" — user gesture that kicks off the first play
   const handleStart = useCallback(() => {
     setStarted(true);
+    startedRef.current = true;
     if (playerRef.current) {
       playerRef.current.playVideo();
     }
@@ -259,6 +266,7 @@ export default function FeedViewer({
       else if (e.key === 'm') {
         setMuted((m) => {
           const next = !m;
+          mutedRef.current = next;
           if (playerRef.current) {
             next ? playerRef.current.mute() : playerRef.current.unMute();
           }
@@ -377,6 +385,7 @@ export default function FeedViewer({
           onClick={() => {
             setMuted((m) => {
               const next = !m;
+              mutedRef.current = next;
               if (playerRef.current) {
                 next ? playerRef.current.mute() : playerRef.current.unMute();
               }
