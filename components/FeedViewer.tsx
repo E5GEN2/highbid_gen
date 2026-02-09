@@ -42,8 +42,8 @@ export interface FeedFilters {
 }
 
 export const DEFAULT_FEED_FILTERS: FeedFilters = {
-  maxAge: '0',
-  minSubs: '0',
+  maxAge: '90',
+  minSubs: '10000',
   maxSubs: '0',
   minViews: '0',
   sort: 'velocity',
