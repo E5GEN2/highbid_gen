@@ -79,6 +79,28 @@ export default function FeedViewer({
   const channel = channels[channelIndex];
   const video = channel?.videos?.[videoIndex];
 
+  // Prevent iOS overscroll/bounce when in feed view
+  useEffect(() => {
+    const preventDefault = (e: TouchEvent) => {
+      // Allow scrolling inside elements that need it, but prevent body bounce
+      if (!(e.target as HTMLElement).closest('[data-scrollable]')) {
+        e.preventDefault();
+      }
+    };
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.width = '100%';
+    document.body.style.height = '100%';
+    document.addEventListener('touchmove', preventDefault, { passive: false });
+    return () => {
+      document.body.style.overflow = '';
+      document.body.style.position = '';
+      document.body.style.width = '';
+      document.body.style.height = '';
+      document.removeEventListener('touchmove', preventDefault);
+    };
+  }, []);
+
   // Trigger load more when approaching end
   useEffect(() => {
     if (channels.length > 0 && channelIndex >= channels.length - 5) {
@@ -157,7 +179,6 @@ export default function FeedViewer({
       const dy = t.clientY - touchRef.current.startY;
       const dt = Date.now() - touchRef.current.startTime;
       const startX = touchRef.current.startX;
-      const startY = touchRef.current.startY;
       touchRef.current = null;
 
       const absDx = Math.abs(dx);
@@ -216,28 +237,31 @@ export default function FeedViewer({
   const ageColor = ageBadgeColor(channel.channel_creation_date);
 
   return (
-    <div className="fixed inset-0 bg-black flex items-center justify-center z-40">
-      {/* Channel counter */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50">
-        <span className="bg-black/60 backdrop-blur-sm text-white text-sm px-3 py-1.5 rounded-full shadow-text">
-          channel {channelIndex + 1}/{channels.length}
+    <div
+      className="fixed inset-0 bg-black flex items-center justify-center z-40"
+      style={{ touchAction: 'none' }}
+    >
+      {/* Channel counter — respects safe area top */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
+        <span className="bg-black/60 backdrop-blur-sm text-white text-xs sm:text-sm px-3 py-1.5 rounded-full shadow-text">
+          {channelIndex + 1}/{channels.length}
         </span>
       </div>
 
-      {/* Top-right controls */}
-      <div className="absolute top-4 right-4 z-50 flex gap-2">
+      {/* Top-right controls — respects safe area */}
+      <div className="absolute right-2 sm:right-4 z-50 flex gap-1.5 sm:gap-2" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
         {/* Pause/Play */}
         <button
           onClick={togglePause}
-          className="w-10 h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white hover:bg-black/80 transition"
+          className="w-9 h-9 sm:w-10 sm:h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white active:bg-black/80 transition"
           title={paused ? 'Play (Space)' : 'Pause (Space)'}
         >
           {paused ? (
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />
             </svg>
           ) : (
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
             </svg>
           )}
@@ -246,25 +270,25 @@ export default function FeedViewer({
         {/* Mute toggle */}
         <button
           onClick={() => setMuted((m) => !m)}
-          className="w-10 h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white hover:bg-black/80 transition"
+          className="w-9 h-9 sm:w-10 sm:h-10 bg-black/60 backdrop-blur-sm rounded-full flex items-center justify-center text-white active:bg-black/80 transition"
           title={muted ? 'Unmute (M)' : 'Mute (M)'}
         >
           {muted ? (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
             </svg>
           ) : (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
             </svg>
           )}
         </button>
       </div>
 
-      {/* Video container — 9:16 aspect */}
+      {/* Video container — fills screen on mobile, constrained 9:16 on desktop */}
       <div
-        className="relative w-full h-full max-w-[calc(100vh*9/16)] mx-auto"
+        className="relative w-full h-full md:max-w-[calc(100vh*9/16)] mx-auto"
         style={{ transition: 'opacity 150ms ease', opacity: transitioning ? 0 : 1 }}
       >
         {/* Background placeholder while loading */}
@@ -274,10 +298,10 @@ export default function FeedViewer({
               <img
                 src={channel.avatar_url}
                 alt=""
-                className="w-20 h-20 rounded-full mb-4 animate-pulse"
+                className="w-16 h-16 sm:w-20 sm:h-20 rounded-full mb-4 animate-pulse"
               />
             )}
-            <p className="text-gray-400 animate-pulse">{channel.channel_name}</p>
+            <p className="text-gray-400 animate-pulse text-sm sm:text-base">{channel.channel_name}</p>
             <div className="w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full animate-spin mt-4" />
           </div>
         )}
@@ -296,9 +320,9 @@ export default function FeedViewer({
 
         {/* Paused overlay */}
         {paused && (
-          <div className="absolute inset-0 z-15 bg-black/30 flex items-center justify-center pointer-events-none">
-            <div className="w-16 h-16 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-8 h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+          <div className="absolute inset-0 z-[15] bg-black/30 flex items-center justify-center pointer-events-none">
+            <div className="w-14 h-14 sm:w-16 sm:h-16 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center">
+              <svg className="w-7 h-7 sm:w-8 sm:h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M8 5v14l11-7z" />
               </svg>
             </div>
@@ -321,36 +345,39 @@ export default function FeedViewer({
         />
 
         {/* Stats overlay — right side (TikTok style) */}
-        <div className="absolute right-3 bottom-32 z-30 flex flex-col items-center gap-5">
+        <div
+          className="absolute right-2 sm:right-3 z-30 flex flex-col items-center gap-4 sm:gap-5"
+          style={{ bottom: 'max(7rem, calc(5rem + env(safe-area-inset-bottom, 0px)))' }}
+        >
           {/* Views */}
           <div className="flex flex-col items-center">
-            <div className="w-10 h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
+              <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
               </svg>
             </div>
-            <span className="text-white text-xs mt-1 shadow-text">{formatCount(video.view_count)}</span>
+            <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.view_count)}</span>
           </div>
 
           {/* Likes */}
           <div className="flex flex-col items-center">
-            <div className="w-10 h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
+              <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
               </svg>
             </div>
-            <span className="text-white text-xs mt-1 shadow-text">{formatCount(video.like_count)}</span>
+            <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.like_count)}</span>
           </div>
 
           {/* Comments */}
           <div className="flex flex-col items-center">
-            <div className="w-10 h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
+              <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
             </div>
-            <span className="text-white text-xs mt-1 shadow-text">{formatCount(video.comment_count)}</span>
+            <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.comment_count)}</span>
           </div>
 
           {/* Avatar */}
@@ -365,77 +392,80 @@ export default function FeedViewer({
               <img
                 src={channel.avatar_url}
                 alt={channel.channel_name}
-                className="w-11 h-11 rounded-full border-2 border-white"
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white"
               />
             ) : (
-              <div className="w-11 h-11 rounded-full border-2 border-white bg-gray-700 flex items-center justify-center text-white font-bold text-sm">
+              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white bg-gray-700 flex items-center justify-center text-white font-bold text-xs sm:text-sm">
                 {channel.channel_name?.charAt(0) || '?'}
               </div>
             )}
           </a>
         </div>
 
-        {/* Bottom info overlay */}
-        <div className="absolute bottom-4 left-3 right-16 z-30">
+        {/* Bottom info overlay — respects safe area bottom */}
+        <div
+          className="absolute left-2 sm:left-3 right-14 sm:right-16 z-30"
+          style={{ bottom: 'max(1rem, calc(0.5rem + env(safe-area-inset-bottom, 0px)))' }}
+        >
           {/* Channel name + age badge */}
-          <div className="flex items-center gap-2 mb-1.5">
+          <div className="flex items-center gap-1.5 sm:gap-2 mb-1 sm:mb-1.5">
             <a
               href={channel.channel_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-white font-bold text-sm shadow-text hover:underline z-30"
+              className="text-white font-bold text-xs sm:text-sm shadow-text hover:underline z-30 truncate max-w-[60%]"
               onClick={(e) => e.stopPropagation()}
             >
               @{channel.channel_name}
             </a>
             {age && (
-              <span className={`${ageColor} text-white text-xs font-semibold px-2 py-0.5 rounded-full`}>
+              <span className={`${ageColor} text-white text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-full whitespace-nowrap`}>
                 {age}
               </span>
             )}
           </div>
 
           {/* Video title */}
-          <p className="text-white text-sm shadow-text mb-1 line-clamp-2">
+          <p className="text-white text-xs sm:text-sm shadow-text mb-1 line-clamp-2">
             {video.title || 'Untitled'}
           </p>
 
           {/* Channel stats */}
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
             {channel.subscriber_count && (
-              <span className="bg-black/50 backdrop-blur-sm text-white text-xs px-2 py-0.5 rounded-full">
+              <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
                 {formatCount(parseInt(channel.subscriber_count))} subs
               </span>
             )}
             {channel.total_video_count && (
-              <span className="bg-black/50 backdrop-blur-sm text-white text-xs px-2 py-0.5 rounded-full">
+              <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
                 {formatCount(parseInt(channel.total_video_count))} videos
               </span>
             )}
-            <span className="bg-black/50 backdrop-blur-sm text-white text-xs px-2 py-0.5 rounded-full">
+            <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
               seen {channel.sighting_count}x
             </span>
           </div>
 
           {/* Video dots + video counter */}
           {channel.videos.length > 1 && (
-            <div className="flex items-center justify-center gap-1.5 mt-3">
-              <span className="text-gray-400 text-xs mr-2 shadow-text">
+            <div className="flex items-center justify-center gap-1 sm:gap-1.5 mt-2 sm:mt-3">
+              <span className="text-gray-400 text-[10px] sm:text-xs mr-1 sm:mr-2 shadow-text">
                 {videoIndex + 1}/{channel.videos.length}
               </span>
-              {channel.videos.slice(0, 15).map((_, i) => (
+              {channel.videos.slice(0, 10).map((_, i) => (
                 <button
                   key={i}
                   onClick={() => onVideoChange(i)}
                   className={`rounded-full transition-all z-30 ${
                     i === videoIndex
-                      ? 'w-2.5 h-2.5 bg-white'
-                      : 'w-1.5 h-1.5 bg-white/50 hover:bg-white/80'
+                      ? 'w-2 h-2 sm:w-2.5 sm:h-2.5 bg-white'
+                      : 'w-1 h-1 sm:w-1.5 sm:h-1.5 bg-white/50 active:bg-white/80'
                   }`}
                 />
               ))}
-              {channel.videos.length > 15 && (
-                <span className="text-gray-400 text-xs ml-1">+{channel.videos.length - 15}</span>
+              {channel.videos.length > 10 && (
+                <span className="text-gray-400 text-[10px] sm:text-xs ml-1">+{channel.videos.length - 10}</span>
               )}
             </div>
           )}
@@ -447,8 +477,8 @@ export default function FeedViewer({
 
       {/* Loading more indicator */}
       {loading && channels.length > 0 && (
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-50">
-          <span className="bg-black/60 text-gray-300 text-xs px-3 py-1 rounded-full">
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-50" style={{ bottom: 'max(0.5rem, env(safe-area-inset-bottom, 0.5rem))' }}>
+          <span className="bg-black/60 text-gray-300 text-[10px] sm:text-xs px-3 py-1 rounded-full">
             Loading more channels...
           </span>
         </div>
@@ -469,19 +499,19 @@ function SwipeHints() {
 
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
-      <div className="bg-black/70 backdrop-blur-sm rounded-2xl px-6 py-4 text-center">
-        <p className="text-white text-sm mb-2">Swipe to navigate</p>
-        <div className="flex items-center justify-center gap-4 text-gray-300 text-xs">
+      <div className="bg-black/70 backdrop-blur-sm rounded-2xl px-5 sm:px-6 py-3 sm:py-4 text-center">
+        <p className="text-white text-xs sm:text-sm mb-2">Swipe to navigate</p>
+        <div className="flex items-center justify-center gap-4 text-gray-300 text-[10px] sm:text-xs">
           <span>
-            <span className="block text-lg mb-1">&#8593;&#8595;</span>
+            <span className="block text-base sm:text-lg mb-1">&#8593;&#8595;</span>
             Channels
           </span>
           <span>
-            <span className="block text-lg mb-1">&#8592;&#8594;</span>
+            <span className="block text-base sm:text-lg mb-1">&#8592;&#8594;</span>
             Videos
           </span>
         </div>
-        <p className="text-gray-500 text-xs mt-2">Space = pause &middot; M = unmute</p>
+        <p className="text-gray-500 text-[10px] sm:text-xs mt-2">Tap to pause</p>
       </div>
     </div>
   );

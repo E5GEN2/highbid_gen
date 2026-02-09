@@ -231,7 +231,7 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
 
   // Sidebar Navigation State
-  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed'>('spy');
+  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed'>('feed');
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -1990,8 +1990,10 @@ function HomeContent() {
 
   return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 flex">
-        {/* Sidebar Navigation */}
-        <aside className="w-16 bg-gray-900/80 border-r border-gray-700 flex flex-col items-center py-4 fixed h-full z-50">
+        {/* Sidebar Navigation — hidden on mobile when in feed view */}
+        <aside className={`w-16 bg-gray-900/80 border-r border-gray-700 flex flex-col items-center py-4 fixed h-full z-50 transition-transform ${
+          currentView === 'feed' ? 'max-md:-translate-x-full' : ''
+        }`}>
           {/* Logo */}
           <div className="mb-6">
             <div className="w-10 h-10 bg-gradient-to-br from-purple-600 to-pink-600 rounded-xl flex items-center justify-center text-white font-bold text-lg">
