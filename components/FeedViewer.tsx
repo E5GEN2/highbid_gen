@@ -162,19 +162,24 @@ export default function FeedViewer({
     };
   }, []);
 
-  // Initialize YouTube Player API
+  // Initialize YouTube Player once, then reuse via loadVideoById
   useEffect(() => {
     if (!video) return;
 
-    loadYTApi(() => {
-      // Destroy old player if exists
-      if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch { /* ignore */ }
-        playerRef.current = null;
-      }
+    // If player already exists, just swap the video (preserves mute/gesture context)
+    if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
       setPlayerReady(false);
+      if (startedRef.current) {
+        playerRef.current.loadVideoById({ videoId: video.video_id });
+      } else {
+        playerRef.current.cueVideoById({ videoId: video.video_id });
+      }
+      setPlayerReady(true);
+      return;
+    }
 
-      // Need a fresh div for each player instance
+    loadYTApi(() => {
+      // Need a fresh div for the initial player
       if (playerContainerRef.current) {
         playerContainerRef.current.innerHTML = '<div id="yt-feed-player"></div>';
       }
@@ -184,8 +189,8 @@ export default function FeedViewer({
         height: '100%',
         videoId: video.video_id,
         playerVars: {
-          autoplay: started ? 1 : 0, // Only autoplay after user has started once
-          mute: 1, // Always start muted for autoplay; unmute via API after
+          autoplay: started ? 1 : 0,
+          mute: 1, // Always start muted for autoplay
           controls: 0,
           playsinline: 1,
           loop: 1,
@@ -204,9 +209,15 @@ export default function FeedViewer({
             }
           },
           onStateChange: (event: any) => {
-            // YT.PlayerState.PLAYING = 1 — unmute after playback starts
+            // YT.PlayerState.PLAYING = 1
             if (event.data === 1 && !mutedRef.current) {
-              playerRef.current?.unMute();
+              // Delay unmute so mobile browsers don't block playback
+              setTimeout(() => {
+                if (playerRef.current) {
+                  playerRef.current.unMute();
+                  playerRef.current.setVolume(100);
+                }
+              }, 300);
             }
             // YT.PlayerState.ENDED = 0 — loop
             if (event.data === 0) {
@@ -218,14 +229,20 @@ export default function FeedViewer({
       });
     });
 
+    // Only destroy on full unmount, not on video change
+    return () => {};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [video?.video_id]);
+
+  // Cleanup player on unmount only
+  useEffect(() => {
     return () => {
       if (playerRef.current) {
         try { playerRef.current.destroy(); } catch { /* ignore */ }
         playerRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [video?.video_id]);
+  }, []);
 
   // Trigger load more when approaching end
   useEffect(() => {
