@@ -176,13 +176,13 @@ export default function FeedViewer({
             setPlayerReady(true);
             if (startedRef.current) {
               playerRef.current?.playVideo();
-              // Restore mute state after autoplay starts
-              if (!mutedRef.current) {
-                playerRef.current?.unMute();
-              }
             }
           },
           onStateChange: (event: any) => {
+            // YT.PlayerState.PLAYING = 1 — unmute after playback starts
+            if (event.data === 1 && !mutedRef.current) {
+              playerRef.current?.unMute();
+            }
             // YT.PlayerState.ENDED = 0 — loop
             if (event.data === 0) {
               playerRef.current?.seekTo(0);
