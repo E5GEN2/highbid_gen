@@ -153,6 +153,8 @@ export default function FeedViewer({
       }
 
       playerRef.current = new window.YT.Player('yt-feed-player', {
+        width: '100%',
+        height: '100%',
         videoId: video.video_id,
         playerVars: {
           autoplay: started ? 1 : 0, // Only autoplay after user has started once
