@@ -2,18 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../lib/db';
 import { classifyNiche } from '../../../../lib/niches';
 
-export async function GET(req: NextRequest) {
-  // Auth check
+function checkAuth(req: NextRequest): boolean {
   const token = req.cookies.get('admin_token')?.value;
-  if (!token) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  if (!token) return false;
   try {
     const decoded = Buffer.from(token, 'base64').toString();
-    if (!decoded.startsWith('admin:') || !decoded.endsWith(':rofe_admin_secret')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    return decoded.startsWith('admin:') && decoded.endsWith(':rofe_admin_secret');
   } catch {
+    return false;
+  }
+}
+
+export async function GET(req: NextRequest) {
+  if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -25,6 +26,7 @@ export async function GET(req: NextRequest) {
     const minSubs = parseInt(searchParams.get('minSubs') || '10000');
     const maxSubs = parseInt(searchParams.get('maxSubs') || '0');
     const minViews = parseInt(searchParams.get('minViews') || '0');
+    const includePosted = searchParams.get('includePosted') === 'true';
 
     // Build WHERE conditions
     const conditions: string[] = ['c.first_seen_at::date = $1::date'];
@@ -45,6 +47,11 @@ export async function GET(req: NextRequest) {
       paramIdx++;
     }
 
+    // Exclude already-posted channels by default
+    if (!includePosted) {
+      conditions.push('xp.channel_id IS NULL');
+    }
+
     const havingClause = minViews > 0
       ? `HAVING MAX(v.view_count) >= ${parseInt(String(minViews))}`
       : '';
@@ -57,6 +64,8 @@ export async function GET(req: NextRequest) {
         c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
         c.subscriber_count, c.total_video_count, c.channel_creation_date,
         c.first_seen_at, c.sighting_count,
+        xp.posted_at, xp.post_type,
+        CASE WHEN xp.channel_id IS NOT NULL THEN true ELSE false END AS is_posted,
         json_agg(
           json_build_object(
             'video_id', v.video_id,
@@ -75,10 +84,11 @@ export async function GET(req: NextRequest) {
         FROM shorts_videos
         ORDER BY video_id, collected_at DESC
       ) v ON v.channel_id = c.channel_id
+      LEFT JOIN x_posted_channels xp ON xp.channel_id = c.channel_id
       WHERE ${whereClause}
       GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
                c.subscriber_count, c.total_video_count, c.channel_creation_date,
-               c.first_seen_at, c.sighting_count
+               c.first_seen_at, c.sighting_count, xp.channel_id, xp.posted_at, xp.post_type
       ${havingClause}
       ORDER BY SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST
     `, params);
@@ -95,6 +105,9 @@ export async function GET(req: NextRequest) {
         ...ch,
         subscriber_count: ch.subscriber_count ? Number(ch.subscriber_count) : null,
         total_video_count: ch.total_video_count ? Number(ch.total_video_count) : null,
+        is_posted: ch.is_posted,
+        posted_at: ch.posted_at || null,
+        post_type: ch.post_type || null,
         niche,
         age_days: ageDays,
         total_views: totalViews,
@@ -128,6 +141,69 @@ export async function GET(req: NextRequest) {
     console.error('X-posts API error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Query failed' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  if (!checkAuth(req)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const pool = await getPool();
+    const { channelIds, postType } = await req.json();
+
+    if (!Array.isArray(channelIds) || channelIds.length === 0) {
+      return NextResponse.json({ error: 'channelIds array required' }, { status: 400 });
+    }
+
+    // Build a multi-row INSERT with ON CONFLICT DO NOTHING
+    const values: string[] = [];
+    const params: string[] = [];
+    let paramIdx = 1;
+    for (const id of channelIds) {
+      values.push(`($${paramIdx}, $${paramIdx + 1})`);
+      params.push(id, postType || 'unknown');
+      paramIdx += 2;
+    }
+
+    const result = await pool.query(
+      `INSERT INTO x_posted_channels (channel_id, post_type) VALUES ${values.join(', ')} ON CONFLICT DO NOTHING`,
+      params
+    );
+
+    return NextResponse.json({ success: true, marked: result.rowCount || 0 });
+  } catch (error) {
+    console.error('X-posts POST error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to mark channels' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  if (!checkAuth(req)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const pool = await getPool();
+    const { channelId } = await req.json();
+
+    if (!channelId || typeof channelId !== 'string') {
+      return NextResponse.json({ error: 'channelId string required' }, { status: 400 });
+    }
+
+    await pool.query('DELETE FROM x_posted_channels WHERE channel_id = $1', [channelId]);
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('X-posts DELETE error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to unmark channel' },
       { status: 500 }
     );
   }

@@ -28,6 +28,9 @@ interface Channel {
   total_views: number;
   velocity: number;
   videos: Video[];
+  is_posted: boolean;
+  posted_at: string | null;
+  post_type: string | null;
 }
 
 interface Stats {
@@ -79,31 +82,35 @@ const HOOKS = [
   'Wild growth rate.',
 ];
 
-function CollapsibleSection({ title, subtitle, children, defaultOpen = true }: {
+function CollapsibleSection({ title, subtitle, children, defaultOpen = true, headerRight }: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  headerRight?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between p-5 text-left hover:bg-gray-800/50 transition"
-      >
-        <div>
-          <h3 className="text-white font-bold text-lg">{title}</h3>
-          {subtitle && <p className="text-gray-500 text-sm mt-0.5">{subtitle}</p>}
-        </div>
-        <svg
-          className={`w-5 h-5 text-gray-500 transition-transform ${open ? 'rotate-180' : ''}`}
-          fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
+      <div className="flex items-center justify-between p-5">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-3 text-left hover:opacity-80 transition flex-1"
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
+          <svg
+            className={`w-5 h-5 text-gray-500 transition-transform ${open ? 'rotate-180' : ''}`}
+            fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+          <div>
+            <h3 className="text-white font-bold text-lg">{title}</h3>
+            {subtitle && <p className="text-gray-500 text-sm mt-0.5">{subtitle}</p>}
+          </div>
+        </button>
+        {headerRight && <div className="ml-3 flex-shrink-0">{headerRight}</div>}
+      </div>
       {open && <div className="px-5 pb-5 space-y-4">{children}</div>}
     </div>
   );
@@ -129,6 +136,12 @@ export default function XPostsPage() {
   const [maxSubs, setMaxSubs] = useState('0');
   const [minViews, setMinViews] = useState('0');
 
+  // Posted tracking
+  const [hidePosted, setHidePosted] = useState(true);
+  const [markingSection, setMarkingSection] = useState<string | null>(null);
+  const [postedChannels, setPostedChannels] = useState<Channel[]>([]);
+  const [postedLoading, setPostedLoading] = useState(false);
+
   // Auth check
   useEffect(() => {
     fetch('/api/admin/auth')
@@ -153,7 +166,10 @@ export default function XPostsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ date, maxAge, minSubs, maxSubs, minViews });
+      const params = new URLSearchParams({
+        date, maxAge, minSubs, maxSubs, minViews,
+        includePosted: hidePosted ? 'false' : 'true',
+      });
       const res = await fetch(`/api/admin/x-posts?${params}`);
       const data = await res.json();
       setChannels(data.channels || []);
@@ -163,11 +179,32 @@ export default function XPostsPage() {
     } finally {
       setLoading(false);
     }
-  }, [date, maxAge, minSubs, maxSubs, minViews]);
+  }, [date, maxAge, minSubs, maxSubs, minViews, hidePosted]);
+
+  const fetchPostedChannels = useCallback(async () => {
+    setPostedLoading(true);
+    try {
+      const params = new URLSearchParams({
+        date, maxAge: '0', minSubs: '0', maxSubs: '0', minViews: '0',
+        includePosted: 'true',
+      });
+      const res = await fetch(`/api/admin/x-posts?${params}`);
+      const data = await res.json();
+      setPostedChannels((data.channels || []).filter((ch: Channel) => ch.is_posted));
+    } catch (err) {
+      console.error('Failed to fetch posted channels:', err);
+    } finally {
+      setPostedLoading(false);
+    }
+  }, [date]);
 
   useEffect(() => {
     if (authenticated) fetchData();
   }, [authenticated, fetchData]);
+
+  useEffect(() => {
+    if (authenticated) fetchPostedChannels();
+  }, [authenticated, fetchPostedChannels]);
 
   const showCopyFeedback = (msg: string) => {
     setCopyFeedback(msg);
@@ -179,17 +216,59 @@ export default function XPostsPage() {
     showCopyFeedback('All tweets copied!');
   };
 
+  const markAsPosted = async (channelIds: string[], postType: string) => {
+    setMarkingSection(postType);
+    try {
+      const res = await fetch('/api/admin/x-posts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelIds, postType }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showCopyFeedback(`Marked ${data.marked} channel${data.marked !== 1 ? 's' : ''} as posted`);
+        fetchData();
+        fetchPostedChannels();
+      }
+    } catch (err) {
+      console.error('Failed to mark as posted:', err);
+    } finally {
+      setMarkingSection(null);
+    }
+  };
+
+  const unmarkChannel = async (channelId: string) => {
+    try {
+      const res = await fetch('/api/admin/x-posts', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showCopyFeedback('Channel unmarked');
+        fetchData();
+        fetchPostedChannels();
+      }
+    } catch (err) {
+      console.error('Failed to unmark channel:', err);
+    }
+  };
+
   // --- Generate post content ---
+
+  // Filter out posted channels for generation
+  const freshChannels = channels.filter(ch => !ch.is_posted);
 
   // 1. Daily Leaderboard Thread (5 tweets)
   const generateThread = (): { text: string; media?: string[] }[] => {
-    if (channels.length === 0) return [];
-    const top5 = channels.slice(0, 5);
+    if (freshChannels.length === 0) return [];
+    const top5 = freshChannels.slice(0, 5);
     const tweets: { text: string; media?: string[] }[] = [];
 
     // T1
     tweets.push({
-      text: `We just discovered ${stats?.totalChannels || channels.length} new YouTube Shorts channels today.\n\nHere are the fastest growing ones`,
+      text: `We just discovered ${stats?.totalChannels || freshChannels.length} new YouTube Shorts channels today.\n\nHere are the fastest growing ones`,
       media: [], // leaderboard card rendered separately
     });
 
@@ -212,8 +291,8 @@ export default function XPostsPage() {
 
   // 2. Single Banger Post
   const generateSingleBanger = (): { text: string; media: string[] } | null => {
-    if (channels.length === 0) return null;
-    const ch = channels[0];
+    if (freshChannels.length === 0) return null;
+    const ch = freshChannels[0];
     const topVideo = getTopVideo(ch.videos);
 
     return {
@@ -224,17 +303,17 @@ export default function XPostsPage() {
 
   // 3. Stats-Only Post
   const generateStatsPost = (): { text: string } | null => {
-    if (!stats || channels.length === 0) return null;
-    const topCh = channels[0];
+    if (!stats || freshChannels.length === 0) return null;
+    const topCh = freshChannels[0];
     return {
       text: `Today's YouTube Shorts discovery:\n\n${stats.totalChannels} new channels found\nAverage age: ${stats.avgAgeDays} days\nCombined views: ${formatNumber(stats.totalViews)}\nTop niche: ${stats.topNiche}\n\nThe fastest one hit ${formatNumber(topCh.subscriber_count)} subs in ${topCh.age_days ?? '?'} days.`,
     };
   };
 
   // 4. Niche Roundup
-  const generateNicheRoundups = (): { niche: string; text: string; media: string[] }[] => {
+  const generateNicheRoundups = (): { niche: string; text: string; media: string[]; channelIds: string[] }[] => {
     const nicheMap: Record<string, Channel[]> = {};
-    for (const ch of channels) {
+    for (const ch of freshChannels) {
       if (!nicheMap[ch.niche]) nicheMap[ch.niche] = [];
       nicheMap[ch.niche].push(ch);
     }
@@ -251,9 +330,15 @@ export default function XPostsPage() {
           niche,
           text: `${niche} Shorts are exploding.\n\nWe found ${chs.length} channels today:\n${listed}\n\nCombined: ${formatNumber(totalViews)} views`,
           media: getThumbnails(chs[0].videos, 4),
+          channelIds: chs.map(ch => ch.channel_id),
         };
       });
   };
+
+  // Get channel IDs used in each section
+  const getThreadChannelIds = () => freshChannels.slice(0, 5).map(ch => ch.channel_id);
+  const getBangerChannelIds = () => freshChannels.length > 0 ? [freshChannels[0].channel_id] : [];
+  const getStatsChannelIds = () => freshChannels.length > 0 ? [freshChannels[0].channel_id] : [];
 
   // --- Render ---
 
@@ -317,8 +402,8 @@ export default function XPostsPage() {
           </a>
         </div>
 
-        {/* Date picker */}
-        <div className="flex items-center gap-3 mb-6">
+        {/* Date picker + Hide posted toggle */}
+        <div className="flex items-center gap-3 mb-6 flex-wrap">
           <input
             type="date"
             value={date}
@@ -332,6 +417,19 @@ export default function XPostsPage() {
           >
             {loading ? 'Loading...' : 'Refresh'}
           </button>
+          <label className="flex items-center gap-2 ml-auto cursor-pointer select-none">
+            <div className="relative">
+              <input
+                type="checkbox"
+                checked={hidePosted}
+                onChange={e => setHidePosted(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-gray-700 rounded-full peer-checked:bg-green-600 transition-colors" />
+              <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
+            </div>
+            <span className="text-sm text-gray-400">Hide posted</span>
+          </label>
           {copyFeedback && (
             <span className="text-green-400 text-sm animate-pulse">{copyFeedback}</span>
           )}
@@ -454,17 +552,36 @@ export default function XPostsPage() {
           <div className="text-center py-20">
             <div className="text-gray-600 text-6xl mb-4">0</div>
             <div className="text-gray-400 text-lg font-medium">No channels discovered on this date</div>
-            <p className="text-gray-600 text-sm mt-2">Try picking a different date</p>
+            <p className="text-gray-600 text-sm mt-2">Try picking a different date{hidePosted ? ' or toggle "Hide posted" off' : ''}</p>
           </div>
         )}
 
         {/* Post sections */}
         {!loading && channels.length > 0 && (
           <div className="space-y-6">
+            {/* Posted badges helper */}
+            {!hidePosted && channels.some(ch => ch.is_posted) && (
+              <div className="text-xs text-gray-500 flex items-center gap-2">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400 border border-green-800">Posted</span>
+                <span>= already posted to X</span>
+              </div>
+            )}
+
             {/* 1. Daily Leaderboard Thread */}
             <CollapsibleSection
               title="Daily Leaderboard Thread"
               subtitle={`${threadTweets.length} tweets`}
+              headerRight={
+                getThreadChannelIds().length > 0 && (
+                  <button
+                    onClick={() => markAsPosted(getThreadChannelIds(), 'thread')}
+                    disabled={markingSection === 'thread'}
+                    className="px-3 py-1.5 text-xs bg-green-900/50 text-green-400 border border-green-800 rounded-lg hover:bg-green-900 disabled:opacity-50 transition"
+                  >
+                    {markingSection === 'thread' ? 'Marking...' : 'Mark as Posted'}
+                  </button>
+                )
+              }
             >
               <div className="flex items-center justify-between mb-3">
                 <span className="text-xs text-gray-500">Thread preview</span>
@@ -476,8 +593,22 @@ export default function XPostsPage() {
                 </button>
               </div>
 
+              {/* Channel badges */}
+              {!hidePosted && (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {freshChannels.slice(0, 5).map(ch => (
+                    <span key={ch.channel_id} className="text-xs text-gray-400">
+                      {ch.channel_name}
+                      {ch.is_posted && (
+                        <span className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400 border border-green-800">Posted</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {/* Leaderboard card for T1 */}
-              <LeaderboardCard channels={channels.slice(0, 5)} date={date} />
+              <LeaderboardCard channels={freshChannels.slice(0, 5)} date={date} />
 
               <div className="mt-4">
                 <XThread tweets={threadTweets} />
@@ -489,9 +620,25 @@ export default function XPostsPage() {
               <CollapsibleSection
                 title="Single Banger Post"
                 subtitle="Best channel feature"
+                headerRight={
+                  getBangerChannelIds().length > 0 && (
+                    <button
+                      onClick={() => markAsPosted(getBangerChannelIds(), 'banger')}
+                      disabled={markingSection === 'banger'}
+                      className="px-3 py-1.5 text-xs bg-green-900/50 text-green-400 border border-green-800 rounded-lg hover:bg-green-900 disabled:opacity-50 transition"
+                    >
+                      {markingSection === 'banger' ? 'Marking...' : 'Mark as Posted'}
+                    </button>
+                  )
+                }
               >
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs text-gray-500">Single tweet</span>
+                  <span className="text-xs text-gray-500">
+                    Single tweet
+                    {!hidePosted && freshChannels[0]?.is_posted && (
+                      <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400 border border-green-800">Posted</span>
+                    )}
+                  </span>
                   <button
                     onClick={() => { navigator.clipboard.writeText(singleBanger.text); showCopyFeedback('Copied!'); }}
                     className="px-3 py-1.5 text-xs bg-gray-800 text-gray-400 rounded-lg hover:bg-gray-700 hover:text-white transition"
@@ -502,14 +649,14 @@ export default function XPostsPage() {
 
                 {/* Spotlight card */}
                 <ChannelSpotlightCard
-                  channelName={channels[0].channel_name}
-                  avatarUrl={channels[0].avatar_url}
-                  niche={channels[0].niche}
-                  subscriberCount={channels[0].subscriber_count}
-                  ageDays={channels[0].age_days}
-                  totalViews={channels[0].total_views}
-                  videoCount={channels[0].total_video_count}
-                  thumbnails={getThumbnails(channels[0].videos, 4)}
+                  channelName={freshChannels[0].channel_name}
+                  avatarUrl={freshChannels[0].avatar_url}
+                  niche={freshChannels[0].niche}
+                  subscriberCount={freshChannels[0].subscriber_count}
+                  ageDays={freshChannels[0].age_days}
+                  totalViews={freshChannels[0].total_views}
+                  videoCount={freshChannels[0].total_video_count}
+                  thumbnails={getThumbnails(freshChannels[0].videos, 4)}
                 />
 
                 <div className="mt-4">
@@ -527,6 +674,17 @@ export default function XPostsPage() {
               <CollapsibleSection
                 title="Stats-Only Post"
                 subtitle="Numbers only, no media"
+                headerRight={
+                  getStatsChannelIds().length > 0 && (
+                    <button
+                      onClick={() => markAsPosted(getStatsChannelIds(), 'stats')}
+                      disabled={markingSection === 'stats'}
+                      className="px-3 py-1.5 text-xs bg-green-900/50 text-green-400 border border-green-800 rounded-lg hover:bg-green-900 disabled:opacity-50 transition"
+                    >
+                      {markingSection === 'stats' ? 'Marking...' : 'Mark as Posted'}
+                    </button>
+                  )
+                }
               >
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs text-gray-500">Single tweet</span>
@@ -549,6 +707,15 @@ export default function XPostsPage() {
               <CollapsibleSection
                 title="Niche Roundup"
                 subtitle={`${nicheRoundups.length} niche${nicheRoundups.length !== 1 ? 's' : ''} with 2+ channels`}
+                headerRight={
+                  <button
+                    onClick={() => markAsPosted(nicheRoundups.flatMap(r => r.channelIds), 'niche_roundup')}
+                    disabled={markingSection === 'niche_roundup'}
+                    className="px-3 py-1.5 text-xs bg-green-900/50 text-green-400 border border-green-800 rounded-lg hover:bg-green-900 disabled:opacity-50 transition"
+                  >
+                    {markingSection === 'niche_roundup' ? 'Marking...' : 'Mark as Posted'}
+                  </button>
+                }
               >
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs text-gray-500">{nicheRoundups.length} tweet{nicheRoundups.length !== 1 ? 's' : ''}</span>
@@ -571,6 +738,54 @@ export default function XPostsPage() {
                 </div>
               </CollapsibleSection>
             )}
+          </div>
+        )}
+
+        {/* Posted Channels History */}
+        {postedChannels.length > 0 && (
+          <div className="mt-8">
+            <CollapsibleSection
+              title="Posted Channels"
+              subtitle={`${postedChannels.length} channel${postedChannels.length !== 1 ? 's' : ''} already posted`}
+              defaultOpen={false}
+            >
+              {postedLoading ? (
+                <div className="flex items-center justify-center py-6">
+                  <div className="w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {postedChannels.map(ch => (
+                    <div
+                      key={ch.channel_id}
+                      className="flex items-center justify-between px-4 py-3 bg-gray-800/50 border border-gray-700/50 rounded-xl"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {ch.avatar_url && (
+                          <img src={ch.avatar_url} alt="" className="w-8 h-8 rounded-full flex-shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-white text-sm font-medium truncate">{ch.channel_name}</div>
+                          <div className="text-gray-500 text-xs flex items-center gap-2">
+                            <span>{ch.post_type || 'unknown'}</span>
+                            <span>·</span>
+                            <span>{ch.posted_at ? new Date(ch.posted_at).toLocaleDateString() : '?'}</span>
+                            <span>·</span>
+                            <span>{formatNumber(ch.subscriber_count)} subs</span>
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => unmarkChannel(ch.channel_id)}
+                        className="px-3 py-1.5 text-xs bg-red-900/30 text-red-400 border border-red-900/50 rounded-lg hover:bg-red-900/50 transition flex-shrink-0 ml-3"
+                      >
+                        Unmark
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CollapsibleSection>
           </div>
         )}
       </div>

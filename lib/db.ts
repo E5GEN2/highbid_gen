@@ -163,6 +163,15 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // X Posts: track channels that have been posted to X
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS x_posted_channels (
+        channel_id VARCHAR(64) PRIMARY KEY REFERENCES shorts_channels(channel_id) ON DELETE CASCADE,
+        posted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        post_type VARCHAR(32)
+      )
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
