@@ -423,7 +423,7 @@ export default function FeedViewer({
       className="fixed inset-0 bg-black flex items-center justify-center z-40"
       style={{ touchAction: 'none' }}
     >
-      {/* Left-side stats — desktop only */}
+      {/* Left-side stats — desktop */}
       <div className="hidden md:flex absolute left-20 top-1/2 -translate-y-1/2 z-50 flex-col gap-3 items-center">
         <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
           <div className="text-lg font-bold text-white">{totalChannels || channels.length}</div>
@@ -433,6 +433,20 @@ export default function FeedViewer({
           <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
             <div className="text-lg font-bold text-green-400">{unseenChannels}</div>
             <div className="text-[10px] text-gray-400 leading-tight">unseen</div>
+          </div>
+        )}
+      </div>
+
+      {/* Top-left stats — mobile only */}
+      <div className="md:hidden absolute left-2 z-50 flex gap-1.5" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
+        <div className="bg-black/60 backdrop-blur-sm rounded-full px-2.5 py-1 flex items-center gap-1">
+          <span className="text-xs font-bold text-white">{totalChannels || channels.length}</span>
+          <span className="text-[9px] text-gray-400">total</span>
+        </div>
+        {unseenChannels != null && (
+          <div className="bg-black/60 backdrop-blur-sm rounded-full px-2.5 py-1 flex items-center gap-1">
+            <span className="text-xs font-bold text-green-400">{unseenChannels}</span>
+            <span className="text-[9px] text-gray-400">unseen</span>
           </div>
         )}
       </div>

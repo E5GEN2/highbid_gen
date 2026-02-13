@@ -46,6 +46,19 @@ export async function GET(req: NextRequest) {
     // Sort order
     const userId = searchParams.get('userId');
 
+    // For logged-in users, add LEFT JOIN + filter to exclude already-seen channels
+    let seenJoin = '';
+    if (userId) {
+      conditions.push(`seen.channel_id IS NULL`);
+      seenJoin = `LEFT JOIN user_seen_channels seen ON seen.channel_id = c.channel_id AND seen.user_id = $${paramIdx}`;
+      params.push(userId);
+      paramIdx++;
+    }
+
+    const whereClauseFinal = conditions.length > 0
+      ? 'WHERE ' + conditions.join(' AND ')
+      : '';
+
     let orderBy: string;
     switch (sort) {
       case 'views':
@@ -82,7 +95,7 @@ export async function GET(req: NextRequest) {
     // Count params are the same minus limit/offset
     const countParams = params.slice(0, -2);
 
-    const [result, countResult] = await Promise.all([
+    const [result, countResult, totalResult] = await Promise.all([
       pool.query(`
         SELECT
           c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
@@ -106,7 +119,8 @@ export async function GET(req: NextRequest) {
           FROM shorts_videos
           ORDER BY video_id, collected_at DESC
         ) v ON v.channel_id = c.channel_id
-        ${whereClause}
+        ${seenJoin}
+        ${whereClauseFinal}
         GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
                  c.subscriber_count, c.total_video_count, c.channel_creation_date,
                  c.first_seen_at, c.sighting_count
@@ -114,6 +128,23 @@ export async function GET(req: NextRequest) {
         ORDER BY ${orderBy}
         LIMIT $${limitIdx} OFFSET $${offsetIdx}
       `, params),
+      // Count of unseen channels (same filters including seen exclusion)
+      pool.query(`
+        SELECT COUNT(*) AS total FROM (
+          SELECT c.channel_id
+          FROM shorts_channels c
+          JOIN (
+            SELECT DISTINCT ON (video_id) *
+            FROM shorts_videos
+            ORDER BY video_id, collected_at DESC
+          ) v ON v.channel_id = c.channel_id
+          ${seenJoin}
+          ${whereClauseFinal}
+          GROUP BY c.channel_id
+          ${havingClause}
+        ) sub
+      `, countParams),
+      // Total channels matching filters (regardless of seen status)
       pool.query(`
         SELECT COUNT(*) AS total FROM (
           SELECT c.channel_id
@@ -127,35 +158,18 @@ export async function GET(req: NextRequest) {
           GROUP BY c.channel_id
           ${havingClause}
         ) sub
-      `, countParams),
+      `, (() => {
+        // totalResult uses original whereClause (no seen filter, no userId param)
+        // Build params: only the filter params (minSubs, maxSubs) without userId and limit/offset
+        const totalParams: (string | number)[] = [];
+        if (minSubs > 0) totalParams.push(minSubs);
+        if (maxSubs > 0) totalParams.push(maxSubs);
+        return totalParams;
+      })()),
     ]);
 
-    const totalChannels = parseInt(countResult.rows[0].total);
-
-    // If userId is provided, count how many matching channels they haven't seen
-    let unseenChannels: number | null = null;
-    if (userId) {
-      try {
-        const unseenResult = await pool.query(`
-          SELECT COUNT(*) AS unseen FROM (
-            SELECT c.channel_id
-            FROM shorts_channels c
-            JOIN (
-              SELECT DISTINCT ON (video_id) *
-              FROM shorts_videos
-              ORDER BY video_id, collected_at DESC
-            ) v ON v.channel_id = c.channel_id
-            LEFT JOIN user_seen_channels s ON s.channel_id = c.channel_id AND s.user_id = $${countParams.length + 1}
-            ${whereClause ? whereClause + ' AND s.channel_id IS NULL' : 'WHERE s.channel_id IS NULL'}
-            GROUP BY c.channel_id
-            ${havingClause}
-          ) sub
-        `, [...countParams, userId]);
-        unseenChannels = parseInt(unseenResult.rows[0].unseen);
-      } catch (err) {
-        console.error('Feed unseen count error:', err);
-      }
-    }
+    const unseenChannels = userId ? parseInt(countResult.rows[0].total) : null;
+    const totalChannels = parseInt(totalResult.rows[0].total);
 
     return NextResponse.json({
       success: true,
