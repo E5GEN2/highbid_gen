@@ -75,13 +75,17 @@ export async function POST() {
       limit: 50,
     });
 
-    // Debug: log the top-level keys xgodo returns
-    console.log('xgodo response keys:', Object.keys(xgodoResult));
-    console.log('xgodo response (first 2000 chars):', JSON.stringify(xgodoResult).slice(0, 2000));
-
     const tasks = xgodoResult.job_tasks || [];
     if (tasks.length === 0) {
-      return NextResponse.json({ success: true, message: 'No new tasks to sync', synced: 0, debug_keys: Object.keys(xgodoResult) });
+      return NextResponse.json({
+        success: true,
+        message: 'No new tasks to sync',
+        synced: 0,
+        _debug: {
+          xgodo_keys: Object.keys(xgodoResult),
+          xgodo_preview: JSON.stringify(xgodoResult).slice(0, 3000),
+        },
+      });
     }
 
     let totalVideosSynced = 0;
