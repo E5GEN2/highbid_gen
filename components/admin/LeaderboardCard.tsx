@@ -35,17 +35,24 @@ export default function LeaderboardCard({ channels, date }: LeaderboardCardProps
   const cardRef = useRef<HTMLDivElement>(null);
 
   const handleDownload = async () => {
-    const html2canvas = (await import('html2canvas')).default;
-    if (!cardRef.current) return;
-    const canvas = await html2canvas(cardRef.current, {
-      backgroundColor: null,
-      scale: 2,
-      useCORS: true,
-    });
-    const link = document.createElement('a');
-    link.download = `leaderboard-${date}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+    try {
+      const html2canvas = (await import('html2canvas')).default;
+      if (!cardRef.current) return;
+      const canvas = await html2canvas(cardRef.current, {
+        backgroundColor: null,
+        scale: 2,
+        useCORS: true,
+        allowTaint: false,
+        logging: false,
+      });
+      const link = document.createElement('a');
+      link.download = `leaderboard-${date}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch (err) {
+      console.error('Download failed:', err);
+      alert('Download failed — check console for details');
+    }
   };
 
   return (
