@@ -77,22 +77,12 @@ export async function POST() {
 
     const tasks = xgodoResult.job_tasks || [];
     if (tasks.length === 0) {
-      return NextResponse.json({
-        success: true,
-        message: 'No new tasks to sync',
-        synced: 0,
-        _debug: {
-          xgodo_keys: Object.keys(xgodoResult),
-          xgodo_preview: JSON.stringify(xgodoResult).slice(0, 3000),
-        },
-      });
+      return NextResponse.json({ success: true, message: 'No new tasks to sync', synced: 0 });
     }
 
     let totalVideosSynced = 0;
     let tasksSynced = 0;
     const confirmedTaskIds: string[] = [];
-    const skippedTaskIds: string[] = [];
-    const taskDebug: { id: string; has_proof: boolean; proof_keys: string[]; video_count: number }[] = [];
 
     for (const task of tasks) {
       const taskId = task._id || task.job_task_id;
@@ -102,21 +92,15 @@ export async function POST() {
         'SELECT id FROM shorts_collections WHERE xgodo_task_id = $1',
         [taskId]
       );
-      if (existing.rows.length > 0) { skippedTaskIds.push(taskId); continue; }
+      if (existing.rows.length > 0) continue;
 
       // Parse job_proof
       let videos: VideoData[] = [];
       try {
         const proof = JSON.parse(task.job_proof || '{}');
         videos = proof.collection_result?.videos || [];
-        taskDebug.push({
-          id: taskId,
-          has_proof: !!task.job_proof,
-          proof_keys: Object.keys(proof),
-          video_count: videos.length,
-        });
       } catch {
-        taskDebug.push({ id: taskId, has_proof: !!task.job_proof, proof_keys: ['PARSE_ERROR'], video_count: 0 });
+        console.error('Failed to parse job_proof for task:', taskId);
         continue;
       }
 
@@ -242,13 +226,6 @@ export async function POST() {
       synced: tasksSynced,
       videos: totalVideosSynced,
       confirmed: confirmedTaskIds.length,
-      _debug: {
-        total_fetched: tasks.length,
-        skipped_already_collected: skippedTaskIds.length,
-        skipped_ids: skippedTaskIds,
-        task_details: taskDebug,
-        sample_task_keys: tasks.length > 0 ? Object.keys(tasks[0]) : [],
-      },
     });
   } catch (error) {
     console.error('Feed spy sync error:', error);
