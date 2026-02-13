@@ -411,11 +411,16 @@ export default function FeedViewer({
       className="fixed inset-0 bg-black flex items-center justify-center z-40"
       style={{ touchAction: 'none' }}
     >
-      {/* Channel counter */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
-        <span className="bg-black/60 backdrop-blur-sm text-white text-xs sm:text-sm px-3 py-1.5 rounded-full shadow-text">
-          {channelIndex + 1} of {totalChannels || channels.length}{totalChannels ? ` · ${Math.max(0, totalChannels - channelIndex - 1)} unseen` : ''}
-        </span>
+      {/* Left-side stats — desktop only */}
+      <div className="hidden md:flex absolute left-4 top-1/2 -translate-y-1/2 z-50 flex-col gap-3 items-center">
+        <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
+          <div className="text-lg font-bold text-white">{totalChannels || channels.length}</div>
+          <div className="text-[10px] text-gray-400 leading-tight">channels</div>
+        </div>
+        <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
+          <div className="text-lg font-bold text-green-400">{Math.max(0, (totalChannels || channels.length) - channelIndex - 1)}</div>
+          <div className="text-[10px] text-gray-400 leading-tight">unseen</div>
+        </div>
       </div>
 
       {/* Top-right controls */}
