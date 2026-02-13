@@ -62,6 +62,8 @@ interface FeedViewerProps {
   filters: FeedFilters;
   onFiltersChange: (filters: FeedFilters) => void;
   totalChannels?: number;
+  unseenChannels?: number | null;
+  onChannelSeen?: (channelId: string) => void;
 }
 
 function formatCount(n: number | null): string {
@@ -126,6 +128,8 @@ export default function FeedViewer({
   filters,
   onFiltersChange,
   totalChannels,
+  unseenChannels,
+  onChannelSeen,
 }: FeedViewerProps) {
   const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
   const playerRef = useRef<any>(null);
@@ -246,6 +250,14 @@ export default function FeedViewer({
       }
     };
   }, []);
+
+  // Mark channel as seen when user views it
+  useEffect(() => {
+    const ch = channels[channelIndex];
+    if (ch && onChannelSeen) {
+      onChannelSeen(ch.channel_id);
+    }
+  }, [channelIndex, channels, onChannelSeen]);
 
   // Trigger load more when approaching end
   useEffect(() => {
@@ -415,12 +427,14 @@ export default function FeedViewer({
       <div className="hidden md:flex absolute left-20 top-1/2 -translate-y-1/2 z-50 flex-col gap-3 items-center">
         <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
           <div className="text-lg font-bold text-white">{totalChannels || channels.length}</div>
-          <div className="text-[10px] text-gray-400 leading-tight">channels</div>
+          <div className="text-[10px] text-gray-400 leading-tight">total</div>
         </div>
-        <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
-          <div className="text-lg font-bold text-green-400">{Math.max(0, (totalChannels || channels.length) - channelIndex - 1)}</div>
-          <div className="text-[10px] text-gray-400 leading-tight">unseen</div>
-        </div>
+        {unseenChannels != null && (
+          <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
+            <div className="text-lg font-bold text-green-400">{unseenChannels}</div>
+            <div className="text-[10px] text-gray-400 leading-tight">unseen</div>
+          </div>
+        )}
       </div>
 
       {/* Top-right controls */}

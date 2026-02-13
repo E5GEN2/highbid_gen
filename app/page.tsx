@@ -284,6 +284,7 @@ function HomeContent() {
   const [feedOffset, setFeedOffset] = useState(0);
   const [feedHasMore, setFeedHasMore] = useState(true);
   const [feedTotalChannels, setFeedTotalChannels] = useState(0);
+  const [feedUnseenChannels, setFeedUnseenChannels] = useState<number | null>(null);
   const [feedFilters, setFeedFilters] = useState<FeedFilters>(DEFAULT_FEED_FILTERS);
   const prefsLoaded = useRef(false);
   const prefsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1961,6 +1962,7 @@ function HomeContent() {
         setFeedOffset(data.channels.length);
         setFeedHasMore(data.hasMore);
         setFeedTotalChannels(data.totalChannels ?? 0);
+        if (data.unseenChannels != null) setFeedUnseenChannels(data.unseenChannels);
         setFeedChannelIndex(0);
         setFeedVideoIndex(0);
       }
@@ -2010,6 +2012,18 @@ function HomeContent() {
       console.error('Error fetching channel videos:', err);
     }
   }, []);
+
+  // Mark a channel as seen (logged-in users only)
+  const markChannelSeen = useCallback((channelId: string) => {
+    if (!session?.user?.id) return;
+    fetch('/api/user/seen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId }),
+    }).then(() => {
+      setFeedUnseenChannels((prev) => prev != null ? Math.max(0, prev - 1) : null);
+    }).catch(() => {});
+  }, [session?.user?.id]);
 
   // Re-fetch feed when filters change
   const feedFiltersKey = JSON.stringify(feedFilters);
@@ -2186,6 +2200,8 @@ function HomeContent() {
             filters={feedFilters}
             onFiltersChange={setFeedFilters}
             totalChannels={feedTotalChannels}
+            unseenChannels={feedUnseenChannels}
+            onChannelSeen={markChannelSeen}
           />
         )}
 

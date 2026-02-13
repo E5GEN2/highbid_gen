@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../lib/db';
+import { auth } from '@/lib/auth';
 
 export async function GET(req: NextRequest) {
   try {
@@ -115,10 +116,37 @@ export async function GET(req: NextRequest) {
       `, countParams),
     ]);
 
+    const totalChannels = parseInt(countResult.rows[0].total);
+
+    // If user is logged in, count how many matching channels they haven't seen
+    let unseenChannels: number | null = null;
+    try {
+      const session = await auth();
+      if (session?.user?.id) {
+        const unseenResult = await pool.query(`
+          SELECT COUNT(*) AS unseen FROM (
+            SELECT c.channel_id
+            FROM shorts_channels c
+            JOIN (
+              SELECT DISTINCT ON (video_id) *
+              FROM shorts_videos
+              ORDER BY video_id, collected_at DESC
+            ) v ON v.channel_id = c.channel_id
+            LEFT JOIN user_seen_channels s ON s.channel_id = c.channel_id AND s.user_id = $${countParams.length + 1}
+            ${whereClause ? whereClause + ' AND s.channel_id IS NULL' : 'WHERE s.channel_id IS NULL'}
+            GROUP BY c.channel_id
+            ${havingClause}
+          ) sub
+        `, [...countParams, session.user.id]);
+        unseenChannels = parseInt(unseenResult.rows[0].unseen);
+      }
+    } catch {}
+
     return NextResponse.json({
       success: true,
       channels: result.rows,
-      totalChannels: parseInt(countResult.rows[0].total),
+      totalChannels,
+      unseenChannels,
       hasMore: result.rows.length === limit,
     });
   } catch (error) {

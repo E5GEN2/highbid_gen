@@ -143,6 +143,16 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // Auth: channels seen by each user
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_seen_channels (
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        channel_id VARCHAR(64) REFERENCES shorts_channels(channel_id) ON DELETE CASCADE,
+        seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        PRIMARY KEY (user_id, channel_id)
+      )
+    `);
+
     // Auth: user preferences
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_preferences (
