@@ -2034,14 +2034,15 @@ function HomeContent() {
     }).catch(() => {});
   }, [session?.user?.id]);
 
-  // Re-fetch feed when filters change
+  // Re-fetch feed when filters change or session loads
   const feedFiltersKey = JSON.stringify(feedFilters);
+  const sessionUserId = session?.user?.id || '';
   useEffect(() => {
     if (currentView === 'feed') {
       fetchFeedData();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [feedFiltersKey]);
+  }, [feedFiltersKey, sessionUserId]);
 
   // Start a new project
   const startNewProject = () => {
