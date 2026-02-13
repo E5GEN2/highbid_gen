@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../lib/db';
-import { auth } from '@/lib/auth';
 
 export async function GET(req: NextRequest) {
   try {
@@ -118,11 +117,11 @@ export async function GET(req: NextRequest) {
 
     const totalChannels = parseInt(countResult.rows[0].total);
 
-    // If user is logged in, count how many matching channels they haven't seen
+    // If userId is provided, count how many matching channels they haven't seen
+    const userId = searchParams.get('userId');
     let unseenChannels: number | null = null;
-    try {
-      const session = await auth();
-      if (session?.user?.id) {
+    if (userId) {
+      try {
         const unseenResult = await pool.query(`
           SELECT COUNT(*) AS unseen FROM (
             SELECT c.channel_id
@@ -137,10 +136,12 @@ export async function GET(req: NextRequest) {
             GROUP BY c.channel_id
             ${havingClause}
           ) sub
-        `, [...countParams, session.user.id]);
+        `, [...countParams, userId]);
         unseenChannels = parseInt(unseenResult.rows[0].unseen);
+      } catch (err) {
+        console.error('Feed unseen count error:', err);
       }
-    } catch {}
+    }
 
     return NextResponse.json({
       success: true,

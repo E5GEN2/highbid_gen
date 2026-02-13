@@ -1955,8 +1955,9 @@ function HomeContent() {
     if (feedFilters.maxSubs !== '0') params.set('maxSubs', feedFilters.maxSubs);
     if (feedFilters.minViews !== '0') params.set('minViews', feedFilters.minViews);
     if (feedFilters.sort !== 'velocity') params.set('sort', feedFilters.sort);
+    if (session?.user?.id) params.set('userId', session.user.id);
     return params.toString();
-  }, [feedFilters]);
+  }, [feedFilters, session?.user?.id]);
 
   // Shorts Feed: fetch channels with nested videos
   const fetchFeedData = useCallback(async () => {
