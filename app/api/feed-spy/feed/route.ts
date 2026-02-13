@@ -60,9 +60,14 @@ export async function GET(req: NextRequest) {
       default: // velocity
         if (!userId) {
           // Anonymous users: boost recently discovered channels
-          // Score = velocity * recency_boost (channels found in last 7 days get up to 3x boost)
+          // <6h = 5x, 6-24h = 3x tapering, 24-48h = 2x tapering, >48h = 1x
           orderBy = `(SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
-            * GREATEST(1, 3 - 2 * EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (7 * 86400))
+            * CASE
+                WHEN c.first_seen_at > NOW() - INTERVAL '6 hours' THEN 5
+                WHEN c.first_seen_at > NOW() - INTERVAL '24 hours' THEN 3 - 1 * EXTRACT(EPOCH FROM (NOW() - c.first_seen_at - INTERVAL '6 hours')) / (18 * 3600)
+                WHEN c.first_seen_at > NOW() - INTERVAL '48 hours' THEN 2 - 1 * EXTRACT(EPOCH FROM (NOW() - c.first_seen_at - INTERVAL '24 hours')) / (24 * 3600)
+                ELSE 1
+              END
             DESC NULLS LAST`;
         } else {
           orderBy = `SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST`;
