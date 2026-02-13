@@ -287,6 +287,7 @@ function HomeContent() {
   // Shorts Feed State
   const [feedChannels, setFeedChannels] = useState<FeedChannel[]>([]);
   const [feedLoading, setFeedLoading] = useState(false);
+  const feedLoadingRef = useRef(false);
   const [feedChannelIndex, setFeedChannelIndex] = useState(0);
   const [feedVideoIndex, setFeedVideoIndex] = useState(0);
   const [feedOffset, setFeedOffset] = useState(0);
@@ -1961,7 +1962,6 @@ function HomeContent() {
 
   // Shorts Feed: fetch channels with nested videos
   const fetchFeedData = useCallback(async () => {
-    if (feedLoading) return;
     setFeedLoading(true);
     try {
       const response = await fetch(`/api/feed-spy/feed?${buildFeedParams(0)}`);
@@ -1972,6 +1972,7 @@ function HomeContent() {
         setFeedHasMore(data.hasMore);
         setFeedTotalChannels(data.totalChannels ?? 0);
         if (data.unseenChannels != null) setFeedUnseenChannels(data.unseenChannels);
+        else setFeedUnseenChannels(null);
         setFeedChannelIndex(0);
         setFeedVideoIndex(0);
       }
@@ -1980,10 +1981,11 @@ function HomeContent() {
     } finally {
       setFeedLoading(false);
     }
-  }, [feedLoading, buildFeedParams]);
+  }, [buildFeedParams]);
 
   const loadMoreFeedData = useCallback(async () => {
-    if (feedLoading || !feedHasMore) return;
+    if (feedLoadingRef.current || !feedHasMore) return;
+    feedLoadingRef.current = true;
     setFeedLoading(true);
     try {
       const response = await fetch(`/api/feed-spy/feed?${buildFeedParams(feedOffset)}`);
@@ -1996,9 +1998,10 @@ function HomeContent() {
     } catch (err) {
       console.error('Error loading more feed data:', err);
     } finally {
+      feedLoadingRef.current = false;
       setFeedLoading(false);
     }
-  }, [feedLoading, feedHasMore, feedOffset, buildFeedParams]);
+  }, [feedHasMore, feedOffset, buildFeedParams]);
 
   // Fetch full shorts catalog for a channel via YouTube Data API
   const fetchChannelVideos = useCallback(async (channelId: string) => {
