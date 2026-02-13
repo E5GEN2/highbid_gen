@@ -91,6 +91,7 @@ export async function POST() {
     let totalVideosSynced = 0;
     let tasksSynced = 0;
     const confirmedTaskIds: string[] = [];
+    const skippedTaskIds: string[] = [];
 
     for (const task of tasks) {
       const taskId = task._id || task.job_task_id;
@@ -100,7 +101,7 @@ export async function POST() {
         'SELECT id FROM shorts_collections WHERE xgodo_task_id = $1',
         [taskId]
       );
-      if (existing.rows.length > 0) continue;
+      if (existing.rows.length > 0) { skippedTaskIds.push(taskId); continue; }
 
       // Parse job_proof
       let videos: VideoData[] = [];
@@ -234,6 +235,11 @@ export async function POST() {
       synced: tasksSynced,
       videos: totalVideosSynced,
       confirmed: confirmedTaskIds.length,
+      _debug: {
+        total_fetched: tasks.length,
+        skipped_already_collected: skippedTaskIds.length,
+        skipped_ids: skippedTaskIds,
+      },
     });
   } catch (error) {
     console.error('Feed spy sync error:', error);
