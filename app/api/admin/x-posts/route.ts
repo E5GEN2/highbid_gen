@@ -19,8 +19,37 @@ export async function GET(req: NextRequest) {
 
   try {
     const pool = await getPool();
-    const dateParam = req.nextUrl.searchParams.get('date');
-    const date = dateParam || new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const searchParams = req.nextUrl.searchParams;
+    const date = searchParams.get('date') || new Date().toISOString().split('T')[0];
+    const maxAgeDays = parseInt(searchParams.get('maxAge') || '90');
+    const minSubs = parseInt(searchParams.get('minSubs') || '10000');
+    const maxSubs = parseInt(searchParams.get('maxSubs') || '0');
+    const minViews = parseInt(searchParams.get('minViews') || '0');
+
+    // Build WHERE conditions
+    const conditions: string[] = ['c.first_seen_at::date = $1::date'];
+    const params: (string | number)[] = [date];
+    let paramIdx = 2;
+
+    if (maxAgeDays > 0) {
+      conditions.push(`c.channel_creation_date > NOW() - INTERVAL '${maxAgeDays} days'`);
+    }
+    if (minSubs > 0) {
+      conditions.push(`c.subscriber_count >= $${paramIdx}`);
+      params.push(minSubs);
+      paramIdx++;
+    }
+    if (maxSubs > 0) {
+      conditions.push(`c.subscriber_count <= $${paramIdx}`);
+      params.push(maxSubs);
+      paramIdx++;
+    }
+
+    const havingClause = minViews > 0
+      ? `HAVING MAX(v.view_count) >= ${parseInt(String(minViews))}`
+      : '';
+
+    const whereClause = conditions.join(' AND ');
 
     // Query channels first seen on the given date, with their latest video data
     const result = await pool.query(`
@@ -46,12 +75,13 @@ export async function GET(req: NextRequest) {
         FROM shorts_videos
         ORDER BY video_id, collected_at DESC
       ) v ON v.channel_id = c.channel_id
-      WHERE c.first_seen_at::date = $1::date
+      WHERE ${whereClause}
       GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
                c.subscriber_count, c.total_video_count, c.channel_creation_date,
                c.first_seen_at, c.sighting_count
+      ${havingClause}
       ORDER BY SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST
-    `, [date]);
+    `, params);
 
     // Classify niches and compute stats
     const channels = result.rows.map((ch) => {

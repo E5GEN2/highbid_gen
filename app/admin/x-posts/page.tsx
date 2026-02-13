@@ -121,6 +121,13 @@ export default function XPostsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Filters — defaults match Feed Spy defaults
+  const [maxAge, setMaxAge] = useState('90');
+  const [minSubs, setMinSubs] = useState('10000');
+  const [maxSubs, setMaxSubs] = useState('0');
+  const [minViews, setMinViews] = useState('0');
 
   // Auth check
   useEffect(() => {
@@ -146,7 +153,8 @@ export default function XPostsPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/admin/x-posts?date=${date}`);
+      const params = new URLSearchParams({ date, maxAge, minSubs, maxSubs, minViews });
+      const res = await fetch(`/api/admin/x-posts?${params}`);
       const data = await res.json();
       setChannels(data.channels || []);
       setStats(data.stats || null);
@@ -155,7 +163,7 @@ export default function XPostsPage() {
     } finally {
       setLoading(false);
     }
-  }, [date]);
+  }, [date, maxAge, minSubs, maxSubs, minViews]);
 
   useEffect(() => {
     if (authenticated) fetchData();
@@ -326,6 +334,94 @@ export default function XPostsPage() {
           </button>
           {copyFeedback && (
             <span className="text-green-400 text-sm animate-pulse">{copyFeedback}</span>
+          )}
+        </div>
+
+        {/* Filters */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl mb-6 overflow-hidden">
+          <button
+            onClick={() => setFiltersOpen(!filtersOpen)}
+            className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-gray-800/50 transition"
+          >
+            <div className="flex items-center gap-2">
+              <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
+              </svg>
+              <span className="text-sm font-medium text-gray-300">Channel Filters</span>
+              <span className="text-xs text-gray-600">
+                ({maxAge !== '0' ? `≤${maxAge}d` : 'any age'}
+                {minSubs !== '0' ? `, ≥${Number(minSubs).toLocaleString()} subs` : ''}
+                {maxSubs !== '0' ? `, ≤${Number(maxSubs).toLocaleString()} subs` : ''}
+                {minViews !== '0' ? `, ≥${Number(minViews).toLocaleString()} views` : ''})
+              </span>
+            </div>
+            <svg
+              className={`w-4 h-4 text-gray-500 transition-transform ${filtersOpen ? 'rotate-180' : ''}`}
+              fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {filtersOpen && (
+            <div className="px-5 pb-5 pt-2 border-t border-gray-800">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Max channel age (days)</label>
+                  <input
+                    type="number" min={0} value={maxAge}
+                    onChange={e => setMaxAge(e.target.value)}
+                    placeholder="0 = no limit"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-0.5">0 = no limit</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Min subscribers</label>
+                  <input
+                    type="number" min={0} value={minSubs}
+                    onChange={e => setMinSubs(e.target.value)}
+                    placeholder="0 = no limit"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-0.5">0 = no limit</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Max subscribers</label>
+                  <input
+                    type="number" min={0} value={maxSubs}
+                    onChange={e => setMaxSubs(e.target.value)}
+                    placeholder="0 = no limit"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-0.5">0 = no limit</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Min views (top video)</label>
+                  <input
+                    type="number" min={0} value={minViews}
+                    onChange={e => setMinViews(e.target.value)}
+                    placeholder="0 = no limit"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-0.5">0 = no limit</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mt-4">
+                <button
+                  onClick={fetchData}
+                  disabled={loading}
+                  className="px-4 py-2 bg-purple-600 text-white text-sm font-semibold rounded-lg hover:bg-purple-700 disabled:opacity-50 transition"
+                >
+                  Apply Filters
+                </button>
+                <button
+                  onClick={() => { setMaxAge('90'); setMinSubs('10000'); setMaxSubs('0'); setMinViews('0'); }}
+                  className="px-4 py-2 bg-gray-800 text-gray-400 text-sm rounded-lg hover:bg-gray-700 hover:text-white transition"
+                >
+                  Reset to Defaults
+                </button>
+              </div>
+            </div>
           )}
         </div>
 
