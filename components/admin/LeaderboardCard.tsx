@@ -36,7 +36,7 @@ export default function LeaderboardCard({ channels, date }: LeaderboardCardProps
 
   const handleDownload = async () => {
     try {
-      const html2canvas = (await import('html2canvas')).default;
+      const html2canvas = (await import('html2canvas-pro')).default;
       if (!cardRef.current) return;
       const canvas = await html2canvas(cardRef.current, {
         backgroundColor: null,
