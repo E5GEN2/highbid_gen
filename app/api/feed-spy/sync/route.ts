@@ -83,6 +83,7 @@ export async function POST() {
     let totalVideosSynced = 0;
     let tasksSynced = 0;
     const confirmedTaskIds: string[] = [];
+    const emptyTaskIds: string[] = [];
 
     for (const task of tasks) {
       const taskId = task._id || task.job_task_id;
@@ -104,9 +105,19 @@ export async function POST() {
         continue;
       }
 
-      if (videos.length === 0) continue;
-
       const collectionId = `col_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+      if (videos.length === 0) {
+        // Record empty collection so we don't re-fetch, but still confirm on xgodo
+        await pool.query(
+          `INSERT INTO shorts_collections (id, xgodo_task_id, video_count, collected_at)
+           VALUES ($1, $2, 0, NOW())`,
+          [collectionId, taskId]
+        );
+        emptyTaskIds.push(taskId);
+        confirmedTaskIds.push(taskId);
+        continue;
+      }
 
       // 2. Insert channels (upsert)
       for (const video of videos) {
@@ -226,6 +237,7 @@ export async function POST() {
       synced: tasksSynced,
       videos: totalVideosSynced,
       confirmed: confirmedTaskIds.length,
+      emptyTaskIds,
     });
   } catch (error) {
     console.error('Feed spy sync error:', error);

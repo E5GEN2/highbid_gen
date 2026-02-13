@@ -11,7 +11,7 @@ export default function AdminPage() {
 
   // Sync state
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<{ synced: number; videos: number; confirmed: number } | null>(null);
+  const [syncResult, setSyncResult] = useState<{ synced: number; videos: number; confirmed: number; emptyTaskIds?: string[] } | null>(null);
   const [syncError, setSyncError] = useState('');
 
   // DB stats
@@ -159,7 +159,7 @@ export default function AdminPage() {
       const data = await res.json();
 
       if (data.success) {
-        setSyncResult({ synced: data.synced, videos: data.videos, confirmed: data.confirmed });
+        setSyncResult({ synced: data.synced, videos: data.videos, confirmed: data.confirmed, emptyTaskIds: data.emptyTaskIds });
         fetchStats();
       } else {
         setSyncError(data.error || 'Sync failed');
@@ -325,7 +325,19 @@ export default function AdminPage() {
             </div>
           )}
 
-          {syncResult && syncResult.synced === 0 && (
+          {syncResult && syncResult.emptyTaskIds && syncResult.emptyTaskIds.length > 0 && (
+            <div className="mt-4 bg-yellow-900/20 border border-yellow-600/30 rounded-xl p-4">
+              <div className="text-yellow-400 font-medium mb-2">Empty Tasks ({syncResult.emptyTaskIds.length})</div>
+              <div className="text-xs text-yellow-300/70 mb-2">These tasks returned 0 videos and were confirmed as paid:</div>
+              <div className="flex flex-wrap gap-1.5">
+                {syncResult.emptyTaskIds.map((id) => (
+                  <code key={id} className="px-2 py-0.5 bg-yellow-900/30 border border-yellow-700/30 rounded text-xs text-yellow-300 font-mono">{id}</code>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {syncResult && syncResult.synced === 0 && (!syncResult.emptyTaskIds || syncResult.emptyTaskIds.length === 0) && (
             <div className="mt-4 bg-gray-800 border border-gray-700 rounded-xl p-4">
               <div className="text-gray-300 text-sm">No new tasks to sync. All pending data has been collected.</div>
             </div>
