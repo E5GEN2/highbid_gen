@@ -26,9 +26,9 @@ function formatNumber(n: number | null): string {
 
 function formatAge(days: number | null): string {
   if (days === null) return '?';
-  if (days < 30) return `${days}d`;
-  if (days < 365) return `${Math.round(days / 30)}mo`;
-  return `${(days / 365).toFixed(1)}y`;
+  if (days < 30) return `${days} days`;
+  if (days < 365) return `${Math.round(days / 30)} months`;
+  return `${(days / 365).toFixed(1)} years`;
 }
 
 export default function LeaderboardCard({ channels, date }: LeaderboardCardProps) {

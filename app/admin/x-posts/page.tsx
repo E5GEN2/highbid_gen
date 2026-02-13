@@ -54,12 +54,6 @@ function formatAge(days: number | null): string {
   return `${(days / 365).toFixed(1)} years`;
 }
 
-function formatAgeShort(days: number | null): string {
-  if (days === null) return '?';
-  if (days < 30) return `${days}d`;
-  if (days < 365) return `${Math.round(days / 30)}mo`;
-  return `${(days / 365).toFixed(1)}y`;
-}
 
 function getThumbnails(videos: Video[], count = 4): string[] {
   return videos
@@ -75,11 +69,11 @@ function getTopVideo(videos: Video[]): Video | null {
 }
 
 const HOOKS = [
-  'The Shorts algorithm is unreal.',
-  'This is just getting started.',
-  'Pure organic growth.',
-  'No slowing down.',
-  'Wild growth rate.',
+  'We found this channel before most people even heard of it.',
+  'Discovered this one early. It\'s just getting started.',
+  'Caught this channel while it\'s still fresh.',
+  'This is what early discovery looks like.',
+  'Most people won\'t find this channel for months.',
 ];
 
 function CollapsibleSection({ title, subtitle, children, defaultOpen = true, headerRight }: {
@@ -268,7 +262,7 @@ export default function XPostsPage() {
 
     // T1
     tweets.push({
-      text: `We just discovered ${stats?.totalChannels || freshChannels.length} new YouTube Shorts channels today.\n\nHere are the fastest growing ones`,
+      text: `We scan thousands of Shorts daily to find channels most people don't know about yet.\n\nToday we discovered ${stats?.totalChannels || freshChannels.length} fresh channels.\n\nHere are the fastest growing ones`,
       media: [], // leaderboard card rendered separately
     });
 
@@ -283,7 +277,7 @@ export default function XPostsPage() {
 
     // T5
     tweets.push({
-      text: `We track these daily at rofe.ai\n\nFollow @rofe_ai for tomorrow's drop`,
+      text: `We discover channels like these every single day before they blow up.\n\nFollow @rofe_ai so you never miss one.`,
     });
 
     return tweets;
@@ -296,7 +290,7 @@ export default function XPostsPage() {
     const topVideo = getTopVideo(ch.videos);
 
     return {
-      text: `This Shorts channel didn't exist ${formatAge(ch.age_days)} ago.\n\n${ch.channel_name} — ${ch.niche}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views\n\nThe Shorts algorithm is unreal.`,
+      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${ch.niche}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views\n\nMost people won't find this channel for months. We found it today.`,
       media: getThumbnails(ch.videos, 4),
     };
   };
@@ -306,7 +300,7 @@ export default function XPostsPage() {
     if (!stats || freshChannels.length === 0) return null;
     const topCh = freshChannels[0];
     return {
-      text: `Today's YouTube Shorts discovery:\n\n${stats.totalChannels} new channels found\nAverage age: ${stats.avgAgeDays} days\nCombined views: ${formatNumber(stats.totalViews)}\nTop niche: ${stats.topNiche}\n\nThe fastest one hit ${formatNumber(topCh.subscriber_count)} subs in ${topCh.age_days ?? '?'} days.`,
+      text: `Every day we discover YouTube Shorts channels before they blow up.\n\nToday's finds:\n${stats.totalChannels} new channels discovered\nAverage channel age: ${stats.avgAgeDays} days\nCombined views: ${formatNumber(stats.totalViews)}\nTop niche: ${stats.topNiche}\n\nThe freshest one hit ${formatNumber(topCh.subscriber_count)} subscribers in just ${topCh.age_days ?? '?'} days — and we caught it early.`,
     };
   };
 
@@ -323,12 +317,12 @@ export default function XPostsPage() {
       .map(([niche, chs]) => {
         const totalViews = chs.reduce((sum, ch) => sum + ch.total_views, 0);
         const listed = chs.slice(0, 4).map(ch =>
-          `• ${ch.channel_name} — ${formatNumber(ch.subscriber_count)} subs (${formatAgeShort(ch.age_days)})`
+          `• ${ch.channel_name} — ${formatNumber(ch.subscriber_count)} subs (${formatAge(ch.age_days)} old)`
         ).join('\n');
 
         return {
           niche,
-          text: `${niche} Shorts are exploding.\n\nWe found ${chs.length} channels today:\n${listed}\n\nCombined: ${formatNumber(totalViews)} views`,
+          text: `We just discovered ${chs.length} fresh ${niche} Shorts channels today.\n\n${listed}\n\nCombined: ${formatNumber(totalViews)} views\n\nThese channels are brand new and growing fast. We found them before most people will.`,
           media: getThumbnails(chs[0].videos, 4),
           channelIds: chs.map(ch => ch.channel_id),
         };
