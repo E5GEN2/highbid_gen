@@ -20,6 +20,17 @@ export default function AdminPage() {
     total_sightings: string; total_collections: string;
   } | null>(null);
 
+  // Visible tabs state
+  const ALL_TABS = [
+    { id: 'creator', label: 'Creator' },
+    { id: 'library', label: 'Library' },
+    { id: 'spy', label: 'Feed Spy' },
+    { id: 'feed', label: 'Shorts Feed' },
+  ];
+  const [visibleTabs, setVisibleTabs] = useState<string[]>(['feed']);
+  const [tabsSaving, setTabsSaving] = useState(false);
+  const [tabsSaved, setTabsSaved] = useState(false);
+
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
   const [xgodoJobId, setXgodoJobId] = useState('');
@@ -78,6 +89,9 @@ export default function AdminPage() {
         setXgodoToken(data.config.xgodo_api_token || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
+        try {
+          if (data.config.visible_tabs) setVisibleTabs(JSON.parse(data.config.visible_tabs));
+        } catch {}
       }
     } catch (err) {
       console.error('Failed to fetch config:', err);
@@ -518,6 +532,59 @@ export default function AdminPage() {
                 <div className="text-sm text-red-300/70">{scheduleError}</div>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Visible Tabs */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
+          <h2 className="text-lg font-bold text-white mb-2">Visible Tabs</h2>
+          <p className="text-gray-400 text-sm mb-6">
+            Toggle which tabs are visible to regular users. Hidden tabs are still accessible via direct URL.
+          </p>
+
+          <div className="space-y-3">
+            {ALL_TABS.map((tab) => (
+              <label key={tab.id} className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={visibleTabs.includes(tab.id)}
+                  onChange={(e) => {
+                    setVisibleTabs((prev) =>
+                      e.target.checked
+                        ? [...prev, tab.id]
+                        : prev.filter((t) => t !== tab.id)
+                    );
+                    setTabsSaved(false);
+                  }}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+                />
+                <span className="text-sm text-gray-300">{tab.label}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3 mt-5">
+            <button
+              onClick={async () => {
+                setTabsSaving(true);
+                setTabsSaved(false);
+                try {
+                  await fetch('/api/admin/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: { visible_tabs: JSON.stringify(visibleTabs) } }),
+                  });
+                  setTabsSaved(true);
+                  setTimeout(() => setTabsSaved(false), 3000);
+                } catch {}
+                setTabsSaving(false);
+              }}
+              disabled={tabsSaving}
+              className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition"
+            >
+              {tabsSaving ? 'Saving...' : 'Save'}
+            </button>
+            {tabsSaved && <span className="text-green-400 text-sm">Saved</span>}
           </div>
         </div>
 

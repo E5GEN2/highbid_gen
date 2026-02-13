@@ -233,6 +233,14 @@ function HomeContent() {
   
   const [error, setError] = useState<string | null>(null);
 
+  // Visible tabs config
+  const [visibleTabs, setVisibleTabs] = useState<string[]>(['feed']);
+  useEffect(() => {
+    fetch('/api/config').then(r => r.json()).then(data => {
+      if (data.visibleTabs) setVisibleTabs(data.visibleTabs);
+    }).catch(() => {});
+  }, []);
+
   // Sidebar Navigation State
   const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed'>('feed');
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
@@ -2095,60 +2103,68 @@ function HomeContent() {
 
           {/* Navigation */}
           <nav className="flex-1 flex flex-col gap-2">
-            <button
-              onClick={() => setCurrentView('creator')}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
-                currentView === 'creator'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
-              }`}
-              title="Creator"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setCurrentView('library')}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
-                currentView === 'library'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
-              }`}
-              title="Library"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setCurrentView('spy')}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
-                currentView === 'spy'
-                  ? 'bg-red-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
-              }`}
-              title="Feed Spy"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setCurrentView('feed')}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
-                currentView === 'feed'
-                  ? 'bg-pink-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
-              }`}
-              title="Shorts Feed"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </button>
+            {visibleTabs.includes('creator') && (
+              <button
+                onClick={() => setCurrentView('creator')}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                  currentView === 'creator'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                }`}
+                title="Creator"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              </button>
+            )}
+            {visibleTabs.includes('library') && (
+              <button
+                onClick={() => setCurrentView('library')}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                  currentView === 'library'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                }`}
+                title="Library"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                </svg>
+              </button>
+            )}
+            {visibleTabs.includes('spy') && (
+              <button
+                onClick={() => setCurrentView('spy')}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                  currentView === 'spy'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                }`}
+                title="Feed Spy"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
+              </button>
+            )}
+            {visibleTabs.includes('feed') && (
+              <button
+                onClick={() => setCurrentView('feed')}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                  currentView === 'feed'
+                    ? 'bg-pink-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                }`}
+                title="Shorts Feed"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+            )}
           </nav>
 
           {/* Bottom Section */}
