@@ -44,6 +44,8 @@ export async function GET(req: NextRequest) {
       : '';
 
     // Sort order
+    const userId = searchParams.get('userId');
+
     let orderBy: string;
     switch (sort) {
       case 'views':
@@ -56,7 +58,15 @@ export async function GET(req: NextRequest) {
         orderBy = 'c.subscriber_count DESC NULLS LAST';
         break;
       default: // velocity
-        orderBy = `SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST`;
+        if (!userId) {
+          // Anonymous users: boost recently discovered channels
+          // Score = velocity * recency_boost (channels found in last 7 days get up to 3x boost)
+          orderBy = `(SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
+            * GREATEST(1, 3 - 2 * EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (7 * 86400))
+            DESC NULLS LAST`;
+        } else {
+          orderBy = `SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST`;
+        }
         break;
     }
 
@@ -118,7 +128,6 @@ export async function GET(req: NextRequest) {
     const totalChannels = parseInt(countResult.rows[0].total);
 
     // If userId is provided, count how many matching channels they haven't seen
-    const userId = searchParams.get('userId');
     let unseenChannels: number | null = null;
     if (userId) {
       try {
