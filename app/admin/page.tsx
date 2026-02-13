@@ -2,6 +2,18 @@
 
 import React, { useState, useEffect } from 'react';
 
+function timeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return date.toLocaleDateString();
+}
+
 export default function AdminPage() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -46,6 +58,19 @@ export default function AdminPage() {
   const [scheduling, setScheduling] = useState(false);
   const [scheduleResult, setScheduleResult] = useState<{ scheduled: number } | null>(null);
   const [scheduleError, setScheduleError] = useState('');
+
+  // Users state
+  interface UserRow {
+    id: string;
+    name: string | null;
+    email: string;
+    image: string | null;
+    created_at: string;
+    last_login: string;
+    channels_seen: number;
+    last_active: string | null;
+  }
+  const [users, setUsers] = useState<UserRow[]>([]);
 
   // Fetch avatars state
   const [fetchingAvatars, setFetchingAvatars] = useState(false);
@@ -206,10 +231,19 @@ export default function AdminPage() {
     }
   };
 
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch('/api/admin/users');
+      const data = await res.json();
+      if (data.users) setUsers(data.users);
+    } catch {}
+  };
+
   useEffect(() => {
     if (authenticated) {
       fetchStats();
       fetchConfig();
+      fetchUsers();
     }
   }, [authenticated]);
 
@@ -302,6 +336,69 @@ export default function AdminPage() {
             ))}
           </div>
         )}
+
+        {/* Users */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-bold text-white">Users</h2>
+              <p className="text-gray-400 text-sm">{users.length} registered user{users.length !== 1 ? 's' : ''}</p>
+            </div>
+            <button
+              onClick={fetchUsers}
+              className="px-3 py-1.5 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition text-sm"
+            >
+              Refresh
+            </button>
+          </div>
+
+          {users.length === 0 ? (
+            <div className="text-gray-500 text-sm py-4">No users yet</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 text-xs uppercase tracking-wider border-b border-gray-800">
+                    <th className="pb-2 pr-4">User</th>
+                    <th className="pb-2 pr-4">Joined</th>
+                    <th className="pb-2 pr-4">Last active</th>
+                    <th className="pb-2 pr-4 text-right">Channels seen</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800/50">
+                  {users.map((u) => (
+                    <tr key={u.id} className="text-gray-300">
+                      <td className="py-2.5 pr-4">
+                        <div className="flex items-center gap-2.5">
+                          {u.image ? (
+                            <img src={u.image} alt="" className="w-7 h-7 rounded-full" />
+                          ) : (
+                            <div className="w-7 h-7 rounded-full bg-purple-600 flex items-center justify-center text-white text-xs font-bold">
+                              {(u.name?.[0] ?? '?').toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="text-white text-sm truncate">{u.name || 'Unknown'}</div>
+                            <div className="text-gray-500 text-xs truncate">{u.email}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 pr-4 text-xs text-gray-400 whitespace-nowrap">
+                        {new Date(u.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="py-2.5 pr-4 text-xs text-gray-400 whitespace-nowrap">
+                        {u.last_active ? timeAgo(new Date(u.last_active)) : 'Never'}
+                      </td>
+                      <td className="py-2.5 pr-4 text-right font-mono text-xs">
+                        {u.channels_seen}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
 
         {/* Feed Spy Sync */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
