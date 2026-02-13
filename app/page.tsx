@@ -1961,11 +1961,19 @@ function HomeContent() {
   }, [feedFilters, session?.user?.id]);
 
   // Shorts Feed: fetch channels with nested videos
+  const feedAbortRef = useRef<AbortController | null>(null);
   const fetchFeedData = useCallback(async () => {
+    // Cancel any in-flight feed request
+    if (feedAbortRef.current) feedAbortRef.current.abort();
+    const controller = new AbortController();
+    feedAbortRef.current = controller;
     setFeedLoading(true);
     try {
-      const response = await fetch(`/api/feed-spy/feed?${buildFeedParams(0)}`);
+      const response = await fetch(`/api/feed-spy/feed?${buildFeedParams(0)}`, {
+        signal: controller.signal,
+      });
       const data = await response.json();
+      if (controller.signal.aborted) return;
       if (data.success) {
         setFeedChannels(data.channels);
         setFeedOffset(data.channels.length);
@@ -1976,10 +1984,11 @@ function HomeContent() {
         setFeedChannelIndex(0);
         setFeedVideoIndex(0);
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       console.error('Error fetching feed data:', err);
     } finally {
-      setFeedLoading(false);
+      if (!controller.signal.aborted) setFeedLoading(false);
     }
   }, [buildFeedParams]);
 
