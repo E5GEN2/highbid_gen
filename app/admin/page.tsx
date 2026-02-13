@@ -320,6 +320,22 @@ export default function AdminPage() {
           </a>
         </div>
 
+        {/* Navigation */}
+        <a
+          href="/admin/x-posts"
+          className="block bg-gray-900 border border-gray-800 rounded-2xl p-5 mb-8 hover:border-purple-600/50 hover:bg-gray-900/80 transition group"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-white font-bold text-lg group-hover:text-purple-400 transition">Daily X Posts</h2>
+              <p className="text-gray-500 text-sm mt-0.5">Generate &amp; preview tweet content from today&apos;s discoveries</p>
+            </div>
+            <svg className="w-5 h-5 text-gray-600 group-hover:text-purple-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </div>
+        </a>
+
         {/* Stats */}
         {stats && (
           <div className="grid grid-cols-4 gap-4 mb-10">
