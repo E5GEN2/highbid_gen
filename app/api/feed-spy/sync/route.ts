@@ -92,6 +92,7 @@ export async function POST() {
     let tasksSynced = 0;
     const confirmedTaskIds: string[] = [];
     const skippedTaskIds: string[] = [];
+    const taskDebug: { id: string; has_proof: boolean; proof_keys: string[]; video_count: number }[] = [];
 
     for (const task of tasks) {
       const taskId = task._id || task.job_task_id;
@@ -108,8 +109,14 @@ export async function POST() {
       try {
         const proof = JSON.parse(task.job_proof || '{}');
         videos = proof.collection_result?.videos || [];
+        taskDebug.push({
+          id: taskId,
+          has_proof: !!task.job_proof,
+          proof_keys: Object.keys(proof),
+          video_count: videos.length,
+        });
       } catch {
-        console.error('Failed to parse job_proof for task:', taskId);
+        taskDebug.push({ id: taskId, has_proof: !!task.job_proof, proof_keys: ['PARSE_ERROR'], video_count: 0 });
         continue;
       }
 
@@ -239,6 +246,8 @@ export async function POST() {
         total_fetched: tasks.length,
         skipped_already_collected: skippedTaskIds.length,
         skipped_ids: skippedTaskIds,
+        task_details: taskDebug,
+        sample_task_keys: tasks.length > 0 ? Object.keys(tasks[0]) : [],
       },
     });
   } catch (error) {
