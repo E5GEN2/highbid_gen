@@ -412,7 +412,7 @@ export default function FeedViewer({
       style={{ touchAction: 'none' }}
     >
       {/* Left-side stats — desktop only */}
-      <div className="hidden md:flex absolute left-4 top-1/2 -translate-y-1/2 z-50 flex-col gap-3 items-center">
+      <div className="hidden md:flex absolute left-20 top-1/2 -translate-y-1/2 z-50 flex-col gap-3 items-center">
         <div className="bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center min-w-[4.5rem]">
           <div className="text-lg font-bold text-white">{totalChannels || channels.length}</div>
           <div className="text-[10px] text-gray-400 leading-tight">channels</div>
