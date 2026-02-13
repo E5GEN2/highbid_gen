@@ -61,6 +61,7 @@ interface FeedViewerProps {
   onFetchChannelVideos?: (channelId: string) => Promise<void>;
   filters: FeedFilters;
   onFiltersChange: (filters: FeedFilters) => void;
+  totalChannels?: number;
 }
 
 function formatCount(n: number | null): string {
@@ -124,6 +125,7 @@ export default function FeedViewer({
   onFetchChannelVideos,
   filters,
   onFiltersChange,
+  totalChannels,
 }: FeedViewerProps) {
   const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
   const playerRef = useRef<any>(null);
@@ -412,7 +414,7 @@ export default function FeedViewer({
       {/* Channel counter */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50" style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}>
         <span className="bg-black/60 backdrop-blur-sm text-white text-xs sm:text-sm px-3 py-1.5 rounded-full shadow-text">
-          {channelIndex + 1}/{channels.length}
+          {channelIndex + 1} of {totalChannels || channels.length}{totalChannels ? ` · ${Math.max(0, totalChannels - channelIndex - 1)} unseen` : ''}
         </span>
       </div>
 

@@ -64,41 +64,61 @@ export async function GET(req: NextRequest) {
     const offsetIdx = paramIdx + 1;
     params.push(limit, offset);
 
-    const result = await pool.query(`
-      SELECT
-        c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
-        c.subscriber_count, c.total_video_count, c.channel_creation_date,
-        c.first_seen_at, c.sighting_count,
-        json_agg(
-          json_build_object(
-            'video_id', v.video_id,
-            'title', v.title,
-            'duration_seconds', v.duration_seconds,
-            'view_count', v.view_count,
-            'like_count', v.like_count,
-            'comment_count', v.comment_count,
-            'upload_date', v.upload_date
-          )
-          ORDER BY v.view_count DESC NULLS LAST
-        ) AS videos
-      FROM shorts_channels c
-      JOIN (
-        SELECT DISTINCT ON (video_id) *
-        FROM shorts_videos
-        ORDER BY video_id, collected_at DESC
-      ) v ON v.channel_id = c.channel_id
-      ${whereClause}
-      GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
-               c.subscriber_count, c.total_video_count, c.channel_creation_date,
-               c.first_seen_at, c.sighting_count
-      ${havingClause}
-      ORDER BY ${orderBy}
-      LIMIT $${limitIdx} OFFSET $${offsetIdx}
-    `, params);
+    // Count params are the same minus limit/offset
+    const countParams = params.slice(0, -2);
+
+    const [result, countResult] = await Promise.all([
+      pool.query(`
+        SELECT
+          c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
+          c.subscriber_count, c.total_video_count, c.channel_creation_date,
+          c.first_seen_at, c.sighting_count,
+          json_agg(
+            json_build_object(
+              'video_id', v.video_id,
+              'title', v.title,
+              'duration_seconds', v.duration_seconds,
+              'view_count', v.view_count,
+              'like_count', v.like_count,
+              'comment_count', v.comment_count,
+              'upload_date', v.upload_date
+            )
+            ORDER BY v.view_count DESC NULLS LAST
+          ) AS videos
+        FROM shorts_channels c
+        JOIN (
+          SELECT DISTINCT ON (video_id) *
+          FROM shorts_videos
+          ORDER BY video_id, collected_at DESC
+        ) v ON v.channel_id = c.channel_id
+        ${whereClause}
+        GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
+                 c.subscriber_count, c.total_video_count, c.channel_creation_date,
+                 c.first_seen_at, c.sighting_count
+        ${havingClause}
+        ORDER BY ${orderBy}
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}
+      `, params),
+      pool.query(`
+        SELECT COUNT(*) AS total FROM (
+          SELECT c.channel_id
+          FROM shorts_channels c
+          JOIN (
+            SELECT DISTINCT ON (video_id) *
+            FROM shorts_videos
+            ORDER BY video_id, collected_at DESC
+          ) v ON v.channel_id = c.channel_id
+          ${whereClause}
+          GROUP BY c.channel_id
+          ${havingClause}
+        ) sub
+      `, countParams),
+    ]);
 
     return NextResponse.json({
       success: true,
       channels: result.rows,
+      totalChannels: parseInt(countResult.rows[0].total),
       hasMore: result.rows.length === limit,
     });
   } catch (error) {

@@ -283,6 +283,7 @@ function HomeContent() {
   const [feedVideoIndex, setFeedVideoIndex] = useState(0);
   const [feedOffset, setFeedOffset] = useState(0);
   const [feedHasMore, setFeedHasMore] = useState(true);
+  const [feedTotalChannels, setFeedTotalChannels] = useState(0);
   const [feedFilters, setFeedFilters] = useState<FeedFilters>(DEFAULT_FEED_FILTERS);
   const prefsLoaded = useRef(false);
   const prefsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1959,6 +1960,7 @@ function HomeContent() {
         setFeedChannels(data.channels);
         setFeedOffset(data.channels.length);
         setFeedHasMore(data.hasMore);
+        setFeedTotalChannels(data.totalChannels ?? 0);
         setFeedChannelIndex(0);
         setFeedVideoIndex(0);
       }
@@ -2183,6 +2185,7 @@ function HomeContent() {
             onFetchChannelVideos={fetchChannelVideos}
             filters={feedFilters}
             onFiltersChange={setFeedFilters}
+            totalChannels={feedTotalChannels}
           />
         )}
 
