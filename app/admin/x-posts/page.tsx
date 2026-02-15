@@ -148,6 +148,7 @@ export default function XPostsPage() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyPreview, setApiKeyPreview] = useState<string | null>(null);
   const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [concurrency, setConcurrency] = useState('3');
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState<{
     total: number; done: number; failed: number; analyzing: number; pending: number;
@@ -306,7 +307,7 @@ export default function XPostsPage() {
     fetch('/api/admin/x-posts/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channelIds: ids, rerunFailed }),
+      body: JSON.stringify({ channelIds: ids, rerunFailed, concurrency: parseInt(concurrency) || 3 }),
     }).then(() => {
       // Final poll after completion
       pollAnalysis(ids).then(() => {
@@ -670,28 +671,35 @@ export default function XPostsPage() {
                 </div>
               }
             >
-              {/* API Key */}
+              {/* API Key + Concurrency */}
               <div className="flex items-center gap-2 mb-4">
-                <div className="flex-1 flex items-center gap-2">
-                  <input
-                    type="password"
-                    value={apiKeyInput}
-                    onChange={e => setApiKeyInput(e.target.value)}
-                    placeholder={apiKeyPreview ? `Current: ${apiKeyPreview}` : 'Enter PapaiAPI key...'}
-                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    onKeyDown={e => e.key === 'Enter' && saveApiKey()}
-                  />
-                  <button
-                    onClick={saveApiKey}
-                    disabled={!apiKeyInput.trim() || apiKeySaving}
-                    className="px-3 py-2 text-xs bg-gray-800 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white disabled:opacity-50 transition whitespace-nowrap"
-                  >
-                    {apiKeySaving ? 'Saving...' : 'Save Key'}
-                  </button>
-                </div>
+                <input
+                  type="password"
+                  value={apiKeyInput}
+                  onChange={e => setApiKeyInput(e.target.value)}
+                  placeholder={apiKeyPreview ? `Current: ${apiKeyPreview}` : 'Enter PapaiAPI key...'}
+                  className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  onKeyDown={e => e.key === 'Enter' && saveApiKey()}
+                />
+                <button
+                  onClick={saveApiKey}
+                  disabled={!apiKeyInput.trim() || apiKeySaving}
+                  className="px-3 py-2 text-xs bg-gray-800 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white disabled:opacity-50 transition whitespace-nowrap"
+                >
+                  {apiKeySaving ? 'Saving...' : 'Save Key'}
+                </button>
                 {apiKeyPreview && !apiKeyInput && (
                   <span className="text-[10px] text-green-500 whitespace-nowrap">Key configured</span>
                 )}
+                <div className="flex items-center gap-1.5 ml-2">
+                  <label className="text-[10px] text-gray-500 whitespace-nowrap">Threads</label>
+                  <input
+                    type="number" min={1} max={10}
+                    value={concurrency}
+                    onChange={e => setConcurrency(e.target.value)}
+                    className="w-14 px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
               </div>
 
               {/* Progress bar */}

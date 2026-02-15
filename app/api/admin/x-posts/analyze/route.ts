@@ -106,7 +106,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const { channelIds, rerunFailed } = body;
+    const { channelIds, rerunFailed, concurrency: rawConcurrency } = body;
+    const concurrency = Math.max(1, Math.min(10, parseInt(rawConcurrency) || 3));
 
     if (!Array.isArray(channelIds) || channelIds.length === 0) {
       return NextResponse.json({ error: 'channelIds array required' }, { status: 400 });
@@ -166,31 +167,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Process channels sequentially
-    let doneCount = 0;
-    let failedCount = 0;
-
-    for (const channelId of channelIds) {
+    // Process a single channel
+    async function processChannel(channelId: string): Promise<'done' | 'failed' | 'skipped'> {
       const ch = channelMap.get(channelId);
-      if (!ch) continue;
+      if (!ch) return 'skipped';
 
-      // Check current status — skip if already done (for rerunFailed mode)
       const statusCheck = await pool.query(
         'SELECT status FROM channel_analysis WHERE channel_id = $1',
         [channelId]
       );
       const currentStatus = statusCheck.rows[0]?.status;
-      if (currentStatus === 'done' && rerunFailed) {
-        doneCount++;
-        continue;
-      }
-      if (currentStatus !== 'pending') {
-        if (currentStatus === 'done') doneCount++;
-        if (currentStatus === 'failed') failedCount++;
-        continue;
-      }
+      if (currentStatus === 'done' && rerunFailed) return 'done';
+      if (currentStatus !== 'pending') return currentStatus === 'done' ? 'done' : currentStatus === 'failed' ? 'failed' : 'skipped';
 
-      // Mark as analyzing
       await pool.query(
         `UPDATE channel_analysis SET status = 'analyzing', updated_at = NOW() WHERE channel_id = $1`,
         [channelId]
@@ -206,30 +195,14 @@ export async function POST(req: NextRequest) {
 
         await pool.query(
           `UPDATE channel_analysis SET
-            status = 'done',
-            niche = $2,
-            sub_niche = $3,
-            content_style = $4,
-            is_ai_generated = $5,
-            channel_summary = $6,
-            tags = $7,
-            raw_response = $8,
-            error_message = NULL,
-            analyzed_at = NOW(),
-            updated_at = NOW()
+            status = 'done', niche = $2, sub_niche = $3, content_style = $4,
+            is_ai_generated = $5, channel_summary = $6, tags = $7, raw_response = $8,
+            error_message = NULL, analyzed_at = NOW(), updated_at = NOW()
            WHERE channel_id = $1`,
-          [
-            channelId,
-            result.niche,
-            result.sub_niche,
-            result.content_style,
-            result.is_ai_generated,
-            result.channel_summary,
-            result.tags,
-            JSON.stringify(result),
-          ]
+          [channelId, result.niche, result.sub_niche, result.content_style,
+           result.is_ai_generated, result.channel_summary, result.tags, JSON.stringify(result)]
         );
-        doneCount++;
+        return 'done';
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown error';
         await pool.query(
@@ -237,8 +210,21 @@ export async function POST(req: NextRequest) {
            WHERE channel_id = $1`,
           [channelId, errorMsg]
         );
-        failedCount++;
         console.error(`Analysis failed for ${ch.channel_name}:`, errorMsg);
+        return 'failed';
+      }
+    }
+
+    // Process in parallel batches
+    let doneCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < channelIds.length; i += concurrency) {
+      const batch = channelIds.slice(i, i + concurrency);
+      const results = await Promise.all(batch.map(processChannel));
+      for (const r of results) {
+        if (r === 'done') doneCount++;
+        else if (r === 'failed') failedCount++;
       }
     }
 
