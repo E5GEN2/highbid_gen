@@ -187,7 +187,6 @@ export async function POST(req: NextRequest) {
 
       try {
         const result = await analyzeChannel(
-          ch.channel_name,
           ch.videos || [],
           apiKey
         );

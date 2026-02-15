@@ -14,7 +14,6 @@ interface VideoInfo {
 }
 
 export async function analyzeChannel(
-  channelName: string,
   videos: VideoInfo[],
   apiKey: string
 ): Promise<AnalysisResult> {
@@ -26,7 +25,7 @@ export async function analyzeChannel(
 
   const videoUrl = `https://www.youtube.com/shorts/${topVideo.video_id}`;
 
-  const prompt = `Watch this YouTube Short and analyze the channel "${channelName}" based on it.
+  const prompt = `Watch this YouTube Short and analyze the channel based on it.
 
 ${videoUrl}
 
