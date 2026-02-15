@@ -13,7 +13,14 @@ function checkAuth(req: NextRequest): boolean {
   }
 }
 
-// GET: Poll analysis progress for given channel IDs
+async function getApiKey(pool: import('pg').Pool): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT value FROM admin_config WHERE key = 'papai_api_key'`
+  );
+  return result.rows[0]?.value || process.env.PAPAI_API_KEY || null;
+}
+
+// GET: Poll analysis progress, or fetch config when no channelIds
 export async function GET(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -24,8 +31,13 @@ export async function GET(req: NextRequest) {
     const channelIdsParam = req.nextUrl.searchParams.get('channelIds') || '';
     const channelIds = channelIdsParam.split(',').filter(Boolean);
 
+    // No channelIds = return config info
     if (channelIds.length === 0) {
-      return NextResponse.json({ error: 'channelIds required' }, { status: 400 });
+      const apiKey = await getApiKey(pool);
+      return NextResponse.json({
+        hasApiKey: !!apiKey,
+        apiKeyPreview: apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : null,
+      });
     }
 
     // Fetch all analysis rows for these channels
@@ -78,15 +90,31 @@ export async function POST(req: NextRequest) {
 
   try {
     const pool = await getPool();
-    const { channelIds, rerunFailed } = await req.json();
+    const body = await req.json();
+
+    // Save API key if provided
+    if (body.apiKey && typeof body.apiKey === 'string') {
+      await pool.query(
+        `INSERT INTO admin_config (key, value, updated_at)
+         VALUES ('papai_api_key', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+        [body.apiKey.trim()]
+      );
+      // If no channelIds, just saving the key
+      if (!body.channelIds) {
+        return NextResponse.json({ success: true, saved: true });
+      }
+    }
+
+    const { channelIds, rerunFailed } = body;
 
     if (!Array.isArray(channelIds) || channelIds.length === 0) {
       return NextResponse.json({ error: 'channelIds array required' }, { status: 400 });
     }
 
-    const apiKey = process.env.PAPAI_API_KEY;
+    const apiKey = await getApiKey(pool);
     if (!apiKey) {
-      return NextResponse.json({ error: 'PAPAI_API_KEY not configured' }, { status: 500 });
+      return NextResponse.json({ error: 'API key not configured. Enter your PapaiAPI key above.' }, { status: 400 });
     }
 
     // Fetch channel data + top 3 videos for each channel

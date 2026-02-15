@@ -145,6 +145,9 @@ export default function XPostsPage() {
   const [postedLoading, setPostedLoading] = useState(false);
 
   // AI Analysis
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [apiKeyPreview, setApiKeyPreview] = useState<string | null>(null);
+  const [apiKeySaving, setApiKeySaving] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState<{
     total: number; done: number; failed: number; analyzing: number; pending: number;
@@ -162,6 +165,17 @@ export default function XPostsPage() {
       .then(data => { if (data.authenticated) setAuthenticated(true); })
       .finally(() => setChecking(false));
   }, []);
+
+  // Fetch API key config
+  useEffect(() => {
+    if (!authenticated) return;
+    fetch('/api/admin/x-posts/analyze')
+      .then(res => res.json())
+      .then(data => {
+        if (data.apiKeyPreview) setApiKeyPreview(data.apiKeyPreview);
+      })
+      .catch(() => {});
+  }, [authenticated]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -314,6 +328,28 @@ export default function XPostsPage() {
 
     // Safety: clear interval after 10 minutes
     setTimeout(() => clearInterval(interval), 600000);
+  };
+
+  const saveApiKey = async () => {
+    if (!apiKeyInput.trim()) return;
+    setApiKeySaving(true);
+    try {
+      const res = await fetch('/api/admin/x-posts/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: apiKeyInput.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setApiKeyPreview(`${apiKeyInput.trim().slice(0, 8)}...${apiKeyInput.trim().slice(-4)}`);
+        setApiKeyInput('');
+        showCopyFeedback('API key saved');
+      }
+    } catch (err) {
+      console.error('Failed to save API key:', err);
+    } finally {
+      setApiKeySaving(false);
+    }
   };
 
   // --- Generate post content ---
@@ -634,6 +670,30 @@ export default function XPostsPage() {
                 </div>
               }
             >
+              {/* API Key */}
+              <div className="flex items-center gap-2 mb-4">
+                <div className="flex-1 flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={apiKeyInput}
+                    onChange={e => setApiKeyInput(e.target.value)}
+                    placeholder={apiKeyPreview ? `Current: ${apiKeyPreview}` : 'Enter PapaiAPI key...'}
+                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    onKeyDown={e => e.key === 'Enter' && saveApiKey()}
+                  />
+                  <button
+                    onClick={saveApiKey}
+                    disabled={!apiKeyInput.trim() || apiKeySaving}
+                    className="px-3 py-2 text-xs bg-gray-800 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white disabled:opacity-50 transition whitespace-nowrap"
+                  >
+                    {apiKeySaving ? 'Saving...' : 'Save Key'}
+                  </button>
+                </div>
+                {apiKeyPreview && !apiKeyInput && (
+                  <span className="text-[10px] text-green-500 whitespace-nowrap">Key configured</span>
+                )}
+              </div>
+
               {/* Progress bar */}
               {analysisProgress && analysisProgress.total > 0 && (
                 <div className="mb-4">
