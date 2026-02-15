@@ -83,7 +83,6 @@ function getTopVideo(videos: Video[]): Video | null {
 // Pain-point hooks mapped to the 5 core user questions
 const HOOKS_DISCOVERY = [
   'You\'ve never heard of this channel. Nobody has — yet.',
-  'This wasn\'t on anyone\'s radar until today.',
   'This channel doesn\'t show up in any "top creators" list. It will.',
 ];
 const HOOKS_SPEED = [
@@ -492,7 +491,7 @@ export default function XPostsPage() {
     let hook: string;
     if (isAI) hook = pickHook(HOOKS_AI, Date.now());
     else if (isYoung) hook = pickHook(HOOKS_SPEED, Date.now());
-    else hook = pickHook(HOOKS_DISCOVERY, Date.now());
+    else hook = ch.age_days ? `This channel didn't exist ${formatAge(ch.age_days)} ago.` : pickHook(HOOKS_DISCOVERY, Date.now());
 
     const tweets: { text: string; media?: string[] }[] = [];
 
