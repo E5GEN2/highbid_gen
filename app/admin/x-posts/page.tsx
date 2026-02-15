@@ -502,10 +502,8 @@ export default function XPostsPage() {
       ? `\n▸ ${ch.total_video_count} videos (~${videosPerDay}/day)`
       : `\n▸ ${ch.total_video_count ?? '?'} videos`;
 
-    // Only show total views if meaningfully different from top video
     const topVideoViews = Number(topVideo?.view_count) || 0;
-    const totalViewsLine = ch.total_views && ch.total_views > topVideoViews * 1.1
-      ? `\n▸ ${formatNumber(ch.total_views)} total views` : '';
+    const totalViewsLine = ch.total_views ? `\n▸ ${formatNumber(ch.total_views)} total views` : '';
 
     // Composite thumbnail: 3 Shorts side-by-side (endpoint fetches more from YT API if needed)
     const knownVideoIds = [...new Set(ch.videos.map(v => v.video_id))].slice(0, 3);

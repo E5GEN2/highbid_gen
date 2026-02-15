@@ -102,6 +102,33 @@ export async function GET(req: NextRequest) {
       ORDER BY SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST
     `, params);
 
+    // Fetch real total view counts from YouTube Data API (batch, up to 50)
+    const ytViewCounts: Record<string, number> = {};
+    try {
+      const ytKeyResult = await pool.query(
+        `SELECT value FROM admin_config WHERE key = 'youtube_api_key'`
+      );
+      const ytApiKey = ytKeyResult.rows[0]?.value || process.env.YOUTUBE_API_KEY;
+      if (ytApiKey && result.rows.length > 0) {
+        const channelIds = result.rows.map((ch: { channel_id: string }) => ch.channel_id);
+        // YouTube API supports up to 50 IDs per request
+        for (let i = 0; i < channelIds.length; i += 50) {
+          const batch = channelIds.slice(i, i + 50);
+          const ytRes = await fetch(
+            `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${batch.join(',')}&key=${ytApiKey}`
+          );
+          if (ytRes.ok) {
+            const ytData = await ytRes.json();
+            for (const item of ytData.items || []) {
+              ytViewCounts[item.id] = Number(item.statistics?.viewCount) || 0;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch YouTube view counts:', err);
+    }
+
     // Classify niches and compute stats
     const channels = result.rows.map((ch) => {
       const titles = (ch.videos || []).map((v: { title: string }) => v.title || '');
@@ -109,7 +136,8 @@ export async function GET(req: NextRequest) {
       const ageDays = ch.channel_creation_date
         ? Math.max(1, Math.round((Date.now() - new Date(ch.channel_creation_date).getTime()) / 86400000))
         : null;
-      const totalViews = (ch.videos || []).reduce((sum: number, v: { view_count: number }) => sum + (Number(v.view_count) || 0), 0);
+      const dbViews = (ch.videos || []).reduce((sum: number, v: { view_count: number }) => sum + (Number(v.view_count) || 0), 0);
+      const totalViews = ytViewCounts[ch.channel_id] || dbViews;
       return {
         ...ch,
         subscriber_count: ch.subscriber_count ? Number(ch.subscriber_count) : null,
