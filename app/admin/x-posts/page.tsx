@@ -502,10 +502,16 @@ export default function XPostsPage() {
       ? `\n▸ ${ch.total_video_count} videos (~${videosPerDay}/day)`
       : `\n▸ ${ch.total_video_count ?? '?'} videos`;
 
+    const totalViewsLine = ch.total_views ? `\n▸ ${formatNumber(ch.total_views)} total views` : '';
+
+    // Composite thumbnail: top 3 video thumbnails side by side
+    const top3VideoIds = ch.videos.slice(0, 3).map(v => v.video_id);
+    const compositeUrl = `/api/admin/x-posts/composite-thumb?ids=${top3VideoIds.join(',')}`;
+
     // T1: Hook + stats, NO channel name, CTA to read thread
     tweets.push({
-      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers${videosLine}\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
-      media: getThumbnails(ch.videos, 4),
+      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers${videosLine}${totalViewsLine}\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
+      media: [compositeUrl],
     });
 
     // T2: Reveal channel name + tags
