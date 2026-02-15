@@ -71,18 +71,19 @@ export async function GET(req: NextRequest) {
         orderBy = 'c.subscriber_count DESC NULLS LAST';
         break;
       default: // velocity
-        // Blended ranking: velocity + freshness bonus.
+        // Blended ranking: velocity * daily_shuffle + freshness_bonus
         //
-        // Problem: a 90-day channel with 19M views (211K/day velocity) permanently
-        // outranks everything. Users see the same channels every visit = stale feed.
+        // 1. Freshness bonus: channels discovered < 3 days ago get a 10M decaying
+        //    bonus so they always surface near the top.
         //
-        // Fix: add a large freshness bonus that decays from 10M to 0 over 3 days
-        // since first_seen_at. This guarantees any channel discovered in the last
-        // ~24-48h ranks above even the highest-velocity channels, then gradually
-        // settles to its natural velocity position. Within the same freshness tier,
-        // velocity still determines ordering.
+        // 2. Daily shuffle: a deterministic hash of (channel_id + today's date)
+        //    gives each channel a multiplier between 0.5x and 1.0x that changes
+        //    every day. This means even when no new channels are discovered,
+        //    the feed order rotates daily so users always see different channels.
+        //    The hash is deterministic so pagination stays consistent within a day.
         orderBy = `(
-          SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1)
+          (SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
+          * (0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0)
           + GREATEST(1.0 - EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (3 * 86400), 0) * 10000000
         ) DESC NULLS LAST`;
         break;
