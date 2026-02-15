@@ -19,20 +19,22 @@ export async function analyzeChannel(
   videos: VideoInfo[],
   apiKey: string
 ): Promise<AnalysisResult> {
-  const top3 = videos.slice(0, 3);
-  const videoUrls = top3
-    .map((v, i) => `${i + 1}. https://www.youtube.com/shorts/${v.video_id} — "${v.title}" (${(v.view_count || 0).toLocaleString()} views)`)
-    .join('\n');
+  // Pick the video with the most views
+  const topVideo = [...videos].sort((a, b) => (Number(b.view_count) || 0) - (Number(a.view_count) || 0))[0];
+  if (!topVideo) {
+    throw new Error('No videos available for analysis');
+  }
 
-  const prompt = `Analyze this YouTube Shorts channel and its videos.
+  const videoUrl = `https://www.youtube.com/shorts/${topVideo.video_id}`;
+
+  const prompt = `Analyze this YouTube Shorts channel by watching this video from it.
 
 Channel: ${channelName}
 Channel URL: ${channelUrl}
 
-Top videos:
-${videoUrls}
+Watch this video: ${videoUrl}
 
-Please watch/analyze these Shorts and respond with a JSON object (no markdown, no code fences, just raw JSON) with these fields:
+Respond with a JSON object (no markdown, no code fences, just raw JSON) with these fields:
 
 - "niche": The primary niche/category (e.g. Comedy, Fitness, Gaming, Beauty, Music/Dance, Food, Education, Lifestyle, Pets, Sports, Fashion, Motivation, Tech, Finance, True Crime, Horror, Satisfying, ASMR, Travel, DIY, Art, or other appropriate niche)
 - "sub_niche": A more specific sub-niche within the main niche (e.g. "gym motivation clips", "React tutorials", "cat compilations")
