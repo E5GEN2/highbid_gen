@@ -66,6 +66,10 @@ export async function GET(req: NextRequest) {
         c.first_seen_at, c.sighting_count,
         xp.posted_at, xp.post_type,
         CASE WHEN xp.channel_id IS NOT NULL THEN true ELSE false END AS is_posted,
+        ca.niche AS ai_niche, ca.sub_niche AS ai_sub_niche,
+        ca.content_style, ca.is_ai_generated, ca.channel_summary,
+        ca.tags AS ai_tags, ca.status AS analysis_status,
+        ca.error_message AS analysis_error,
         json_agg(
           json_build_object(
             'video_id', v.video_id,
@@ -85,10 +89,13 @@ export async function GET(req: NextRequest) {
         ORDER BY video_id, collected_at DESC
       ) v ON v.channel_id = c.channel_id
       LEFT JOIN x_posted_channels xp ON xp.channel_id = c.channel_id
+      LEFT JOIN channel_analysis ca ON ca.channel_id = c.channel_id
       WHERE ${whereClause}
       GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
                c.subscriber_count, c.total_video_count, c.channel_creation_date,
-               c.first_seen_at, c.sighting_count, xp.channel_id, xp.posted_at, xp.post_type
+               c.first_seen_at, c.sighting_count, xp.channel_id, xp.posted_at, xp.post_type,
+               ca.niche, ca.sub_niche, ca.content_style, ca.is_ai_generated,
+               ca.channel_summary, ca.tags, ca.status, ca.error_message
       ${havingClause}
       ORDER BY SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST
     `, params);
@@ -108,7 +115,15 @@ export async function GET(req: NextRequest) {
         is_posted: ch.is_posted,
         posted_at: ch.posted_at || null,
         post_type: ch.post_type || null,
-        niche,
+        niche: ch.ai_niche || niche,
+        ai_niche: ch.ai_niche || null,
+        ai_sub_niche: ch.ai_sub_niche || null,
+        content_style: ch.content_style || null,
+        is_ai_generated: ch.is_ai_generated ?? null,
+        channel_summary: ch.channel_summary || null,
+        ai_tags: ch.ai_tags || null,
+        analysis_status: ch.analysis_status || null,
+        analysis_error: ch.analysis_error || null,
         age_days: ageDays,
         total_views: totalViews,
         velocity: ageDays ? Math.round(totalViews / ageDays) : 0,

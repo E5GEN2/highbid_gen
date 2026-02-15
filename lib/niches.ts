@@ -46,4 +46,17 @@ export const NICHE_COLORS: Record<string, string> = {
   Fashion: 'bg-fuchsia-600',
   Motivation: 'bg-cyan-600',
   General: 'bg-gray-600',
+  Tech: 'bg-sky-600',
+  Finance: 'bg-emerald-600',
+  'True Crime': 'bg-rose-700',
+  Horror: 'bg-slate-700',
+  Satisfying: 'bg-violet-600',
+  ASMR: 'bg-lime-600',
+  Travel: 'bg-blue-500',
+  DIY: 'bg-orange-700',
+  Art: 'bg-pink-500',
 };
+
+export function getNicheColor(niche: string): string {
+  return NICHE_COLORS[niche] || 'bg-gray-600';
+}

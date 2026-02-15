@@ -172,6 +172,29 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // AI Channel Analysis: stores Gemini-based channel analysis results
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS channel_analysis (
+        channel_id VARCHAR(64) PRIMARY KEY REFERENCES shorts_channels(channel_id) ON DELETE CASCADE,
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        niche VARCHAR(128),
+        sub_niche VARCHAR(128),
+        content_style VARCHAR(64),
+        is_ai_generated BOOLEAN,
+        channel_summary TEXT,
+        tags TEXT[],
+        raw_response JSONB,
+        error_message TEXT,
+        analyzed_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_channel_analysis_status ON channel_analysis(status)
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

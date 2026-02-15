@@ -31,6 +31,14 @@ interface Channel {
   is_posted: boolean;
   posted_at: string | null;
   post_type: string | null;
+  ai_niche: string | null;
+  ai_sub_niche: string | null;
+  content_style: string | null;
+  is_ai_generated: boolean | null;
+  channel_summary: string | null;
+  ai_tags: string[] | null;
+  analysis_status: string | null;
+  analysis_error: string | null;
 }
 
 interface Stats {
@@ -135,6 +143,17 @@ export default function XPostsPage() {
   const [markingSection, setMarkingSection] = useState<string | null>(null);
   const [postedChannels, setPostedChannels] = useState<Channel[]>([]);
   const [postedLoading, setPostedLoading] = useState(false);
+
+  // AI Analysis
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState<{
+    total: number; done: number; failed: number; analyzing: number; pending: number;
+  } | null>(null);
+  const [analysisResults, setAnalysisResults] = useState<Record<string, {
+    status: string; niche?: string; sub_niche?: string; content_style?: string;
+    is_ai_generated?: boolean; channel_summary?: string; tags?: string[];
+    error_message?: string;
+  }>>({});
 
   // Auth check
   useEffect(() => {
@@ -249,6 +268,54 @@ export default function XPostsPage() {
     }
   };
 
+  // --- AI Analysis ---
+  const pollAnalysis = useCallback(async (ids: string[]) => {
+    try {
+      const res = await fetch(`/api/admin/x-posts/analyze?channelIds=${ids.join(',')}`);
+      const data = await res.json();
+      if (data.progress) setAnalysisProgress(data.progress);
+      if (data.analyses) setAnalysisResults(data.analyses);
+      return data.isComplete;
+    } catch (err) {
+      console.error('Poll analysis error:', err);
+      return false;
+    }
+  }, []);
+
+  const startAnalysis = async (rerunFailed = false) => {
+    const ids = channels.map(ch => ch.channel_id);
+    if (ids.length === 0) return;
+    setAnalyzing(true);
+    setAnalysisProgress({ total: ids.length, done: 0, failed: 0, analyzing: 0, pending: ids.length });
+
+    // Fire POST (runs analysis server-side)
+    fetch('/api/admin/x-posts/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelIds: ids, rerunFailed }),
+    }).then(() => {
+      // Final poll after completion
+      pollAnalysis(ids).then(() => {
+        setAnalyzing(false);
+        fetchData();
+      });
+    }).catch(err => {
+      console.error('Analysis error:', err);
+      setAnalyzing(false);
+    });
+
+    // Start polling for progress
+    const interval = setInterval(async () => {
+      const complete = await pollAnalysis(ids);
+      if (complete) {
+        clearInterval(interval);
+      }
+    }, 2000);
+
+    // Safety: clear interval after 10 minutes
+    setTimeout(() => clearInterval(interval), 600000);
+  };
+
   // --- Generate post content ---
 
   // Filter out posted channels for generation
@@ -269,8 +336,10 @@ export default function XPostsPage() {
     // T2-4: individual channels
     top5.slice(0, 3).forEach((ch, i) => {
       const topVideo = getTopVideo(ch.videos);
+      const nicheLabel = ch.ai_sub_niche || ch.ai_niche || ch.niche;
+      const styleNote = ch.content_style ? ` · ${ch.content_style.replace('_', ' ')}` : '';
       tweets.push({
-        text: `${ch.channel_name}\n${ch.niche} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views\n\n${HOOKS[i % HOOKS.length]}`,
+        text: `${ch.channel_name}\n${nicheLabel}${styleNote} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views\n\n${HOOKS[i % HOOKS.length]}`,
         media: getThumbnails(ch.videos, 4),
       });
     });
@@ -289,8 +358,9 @@ export default function XPostsPage() {
     const ch = freshChannels[0];
     const topVideo = getTopVideo(ch.videos);
 
+    const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
     return {
-      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${ch.niche}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views\n\nMost people won't find this channel for months. We found it today.`,
+      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${ch.ai_sub_niche || ch.ai_niche || ch.niche}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}\n\nMost people won't find this channel for months. We found it today.`,
       media: getThumbnails(ch.videos, 4),
     };
   };
@@ -308,8 +378,9 @@ export default function XPostsPage() {
   const generateNicheRoundups = (): { niche: string; text: string; media: string[]; channelIds: string[] }[] => {
     const nicheMap: Record<string, Channel[]> = {};
     for (const ch of freshChannels) {
-      if (!nicheMap[ch.niche]) nicheMap[ch.niche] = [];
-      nicheMap[ch.niche].push(ch);
+      const nicheKey = ch.ai_niche || ch.niche;
+      if (!nicheMap[nicheKey]) nicheMap[nicheKey] = [];
+      nicheMap[nicheKey].push(ch);
     }
 
     return Object.entries(nicheMap)
@@ -531,6 +602,125 @@ export default function XPostsPage() {
                 <div className="text-[10px] text-gray-500 uppercase tracking-wider">{s.label}</div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* AI Channel Analysis */}
+        {!loading && channels.length > 0 && (
+          <div className="mb-6">
+            <CollapsibleSection
+              title="AI Channel Analysis"
+              subtitle={analysisProgress
+                ? `${analysisProgress.done + analysisProgress.failed}/${analysisProgress.total} analyzed`
+                : `${channels.length} channels`}
+              defaultOpen={false}
+              headerRight={
+                <div className="flex items-center gap-2">
+                  {analysisProgress && analysisProgress.failed > 0 && !analyzing && (
+                    <button
+                      onClick={() => startAnalysis(true)}
+                      className="px-3 py-1.5 text-xs bg-orange-900/50 text-orange-400 border border-orange-800 rounded-lg hover:bg-orange-900 transition"
+                    >
+                      Retry {analysisProgress.failed} Failed
+                    </button>
+                  )}
+                  <button
+                    onClick={() => startAnalysis(false)}
+                    disabled={analyzing}
+                    className="px-3 py-1.5 text-xs bg-purple-900/50 text-purple-400 border border-purple-800 rounded-lg hover:bg-purple-900 disabled:opacity-50 transition"
+                  >
+                    {analyzing ? 'Analyzing...' : 'Analyze All Channels'}
+                  </button>
+                </div>
+              }
+            >
+              {/* Progress bar */}
+              {analysisProgress && analysisProgress.total > 0 && (
+                <div className="mb-4">
+                  <div className="flex items-center justify-between text-xs text-gray-400 mb-1.5">
+                    <span>{analysisProgress.done} done, {analysisProgress.failed} failed, {analysisProgress.analyzing} analyzing, {analysisProgress.pending} pending</span>
+                    <span>{Math.round(((analysisProgress.done + analysisProgress.failed) / analysisProgress.total) * 100)}%</span>
+                  </div>
+                  <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+                    <div className="h-full flex">
+                      <div
+                        className="bg-green-500 transition-all duration-500"
+                        style={{ width: `${(analysisProgress.done / analysisProgress.total) * 100}%` }}
+                      />
+                      <div
+                        className="bg-red-500 transition-all duration-500"
+                        style={{ width: `${(analysisProgress.failed / analysisProgress.total) * 100}%` }}
+                      />
+                      <div
+                        className="bg-purple-500 animate-pulse transition-all duration-500"
+                        style={{ width: `${(analysisProgress.analyzing / analysisProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Per-channel status grid */}
+              <div className="space-y-2">
+                {channels.map(ch => {
+                  const result = analysisResults[ch.channel_id];
+                  const status = result?.status || ch.analysis_status || null;
+                  return (
+                    <div
+                      key={ch.channel_id}
+                      className="flex items-start gap-3 px-4 py-3 bg-gray-800/50 border border-gray-700/50 rounded-xl"
+                    >
+                      {ch.avatar_url && (
+                        <img src={ch.avatar_url} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mt-0.5" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-white text-sm font-medium truncate">{ch.channel_name}</span>
+                          {status === 'done' && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400 border border-green-800">Done</span>
+                          )}
+                          {status === 'failed' && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-900/50 text-red-400 border border-red-800">Failed</span>
+                          )}
+                          {status === 'analyzing' && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-900/50 text-purple-400 border border-purple-800 animate-pulse">Analyzing</span>
+                          )}
+                          {status === 'pending' && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-700/50 text-gray-400 border border-gray-600">Pending</span>
+                          )}
+                          {(result?.is_ai_generated || ch.is_ai_generated) && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-900/50 text-blue-400 border border-blue-800">AI Content</span>
+                          )}
+                        </div>
+                        {(status === 'done') && (
+                          <div className="text-xs text-gray-400 space-y-0.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-gray-300">{result?.sub_niche || ch.ai_sub_niche || result?.niche || ch.ai_niche}</span>
+                              {(result?.content_style || ch.content_style) && (
+                                <span className="text-gray-500">· {(result?.content_style || ch.content_style)?.replace('_', ' ')}</span>
+                              )}
+                              {(result?.tags || ch.ai_tags) && (
+                                <span className="text-gray-600">
+                                  {(result?.tags || ch.ai_tags || []).slice(0, 4).map((t: string) => `#${t}`).join(' ')}
+                                </span>
+                              )}
+                            </div>
+                            {(result?.channel_summary || ch.channel_summary) && (
+                              <p className="text-gray-500 line-clamp-1">{result?.channel_summary || ch.channel_summary}</p>
+                            )}
+                          </div>
+                        )}
+                        {status === 'failed' && (
+                          <p className="text-xs text-red-400/70 line-clamp-1">
+                            {result?.error_message || ch.analysis_error}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CollapsibleSection>
           </div>
         )}
 
