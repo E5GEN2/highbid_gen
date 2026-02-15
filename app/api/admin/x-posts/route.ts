@@ -67,7 +67,7 @@ export async function GET(req: NextRequest) {
         xp.posted_at, xp.post_type,
         CASE WHEN xp.channel_id IS NOT NULL THEN true ELSE false END AS is_posted,
         ca.category AS ai_category, ca.niche AS ai_niche, ca.sub_niche AS ai_sub_niche,
-        ca.content_style, ca.channel_summary,
+        ca.content_style, ca.is_ai_generated, ca.channel_summary,
         ca.tags AS ai_tags, ca.language AS ai_language,
         ca.status AS analysis_status,
         ca.error_message AS analysis_error,
@@ -96,7 +96,7 @@ export async function GET(req: NextRequest) {
       GROUP BY c.channel_id, c.channel_name, c.channel_url, c.avatar_url,
                c.subscriber_count, c.total_video_count, c.channel_creation_date,
                c.first_seen_at, c.sighting_count, xp.channel_id, xp.posted_at, xp.post_type,
-               ca.category, ca.niche, ca.sub_niche, ca.content_style,
+               ca.category, ca.niche, ca.sub_niche, ca.content_style, ca.is_ai_generated,
                ca.channel_summary, ca.tags, ca.language, ca.status, ca.error_message
       ${havingClause}
       ORDER BY SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST

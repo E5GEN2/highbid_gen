@@ -36,6 +36,7 @@ interface Channel {
   ai_niche: string | null;
   ai_sub_niche: string | null;
   content_style: string | null;
+  is_ai_generated: boolean | null;
   channel_summary: string | null;
   ai_tags: string[] | null;
   ai_language: string | null;
@@ -486,7 +487,7 @@ export default function XPostsPage() {
     const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 5).map(t => `#${t}`).join(' ')}` : '';
 
     // Pick hook based on channel characteristics
-    const isAI = ch.content_style === 'faceless' || ch.content_style === 'animation';
+    const isAI = ch.is_ai_generated === true;
     const isYoung = (ch.age_days || 999) < 30;
     let hook: string;
     if (isAI) hook = pickHook(HOOKS_AI, Date.now());
