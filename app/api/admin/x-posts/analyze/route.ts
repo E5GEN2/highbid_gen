@@ -188,7 +188,6 @@ export async function POST(req: NextRequest) {
       try {
         const result = await analyzeChannel(
           ch.channel_name,
-          ch.channel_url,
           ch.videos || [],
           apiKey
         );
@@ -196,11 +195,11 @@ export async function POST(req: NextRequest) {
         await pool.query(
           `UPDATE channel_analysis SET
             status = 'done', niche = $2, sub_niche = $3, content_style = $4,
-            is_ai_generated = $5, channel_summary = $6, tags = $7, raw_response = $8,
+            channel_summary = $5, tags = $6, raw_response = $7,
             error_message = NULL, analyzed_at = NOW(), updated_at = NOW()
            WHERE channel_id = $1`,
           [channelId, result.niche, result.sub_niche, result.content_style,
-           result.is_ai_generated, result.channel_summary, result.tags, JSON.stringify(result)]
+           result.channel_summary, result.tags, JSON.stringify(result)]
         );
         return 'done';
       } catch (err) {

@@ -34,7 +34,6 @@ interface Channel {
   ai_niche: string | null;
   ai_sub_niche: string | null;
   content_style: string | null;
-  is_ai_generated: boolean | null;
   channel_summary: string | null;
   ai_tags: string[] | null;
   analysis_status: string | null;
@@ -155,7 +154,7 @@ export default function XPostsPage() {
   } | null>(null);
   const [analysisResults, setAnalysisResults] = useState<Record<string, {
     status: string; niche?: string; sub_niche?: string; content_style?: string;
-    is_ai_generated?: boolean; channel_summary?: string; tags?: string[];
+    channel_summary?: string; tags?: string[];
     error_message?: string;
   }>>({});
 
@@ -755,9 +754,6 @@ export default function XPostsPage() {
                           )}
                           {status === 'pending' && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-700/50 text-gray-400 border border-gray-600">Pending</span>
-                          )}
-                          {(result?.is_ai_generated || ch.is_ai_generated) && (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-900/50 text-blue-400 border border-blue-800">AI Content</span>
                           )}
                         </div>
                         {(status === 'done') && (

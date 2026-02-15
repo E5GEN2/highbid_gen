@@ -2,7 +2,6 @@ export interface AnalysisResult {
   niche: string;
   sub_niche: string;
   content_style: string;
-  is_ai_generated: boolean;
   channel_summary: string;
   tags: string[];
 }
@@ -15,7 +14,6 @@ interface VideoInfo {
 
 export async function analyzeChannel(
   channelName: string,
-  channelUrl: string,
   videos: VideoInfo[],
   apiKey: string
 ): Promise<AnalysisResult> {
@@ -27,19 +25,15 @@ export async function analyzeChannel(
 
   const videoUrl = `https://www.youtube.com/shorts/${topVideo.video_id}`;
 
-  const prompt = `Analyze this YouTube Shorts channel by watching this video from it.
+  const prompt = `Watch this YouTube Short and analyze the channel "${channelName}" based on it.
 
-Channel: ${channelName}
-Channel URL: ${channelUrl}
-
-Watch this video: ${videoUrl}
+${videoUrl}
 
 Respond with a JSON object (no markdown, no code fences, just raw JSON) with these fields:
 
 - "niche": The primary niche/category (e.g. Comedy, Fitness, Gaming, Beauty, Music/Dance, Food, Education, Lifestyle, Pets, Sports, Fashion, Motivation, Tech, Finance, True Crime, Horror, Satisfying, ASMR, Travel, DIY, Art, or other appropriate niche)
 - "sub_niche": A more specific sub-niche within the main niche (e.g. "gym motivation clips", "React tutorials", "cat compilations")
 - "content_style": One of: faceless, talking_head, compilation, slideshow, animation, screen_recording, mixed
-- "is_ai_generated": boolean — whether the content appears to be AI-generated (AI voiceover, AI images, AI video)
 - "channel_summary": A 1-2 sentence summary of what this channel does and what makes it notable
 - "tags": An array of 3-6 descriptive tags (e.g. ["faceless", "motivational", "ai-voiceover", "fast-growth"])
 
@@ -106,7 +100,6 @@ Respond ONLY with the JSON object, no other text.`;
     niche: parsed.niche,
     sub_niche: parsed.sub_niche || '',
     content_style: parsed.content_style,
-    is_ai_generated: Boolean(parsed.is_ai_generated),
     channel_summary: parsed.channel_summary,
     tags: Array.isArray(parsed.tags) ? parsed.tags : [],
   };
