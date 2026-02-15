@@ -27,10 +27,16 @@ export async function GET(
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });
   }
 
+  // While processing, videoUrl stores the log; on completion it's the real URL
+  const isProcessing = job.status === 'processing' || job.status === 'pending';
+  const logs = isProcessing && job.videoUrl && !job.videoUrl.startsWith('/') ? job.videoUrl : null;
+  const videoUrl = !isProcessing ? (job.videoUrl || null) : null;
+
   return NextResponse.json({
     status: job.status,
     progress: job.progress,
-    videoUrl: job.videoUrl || null,
+    videoUrl,
+    logs,
     error: job.error || null,
   });
 }

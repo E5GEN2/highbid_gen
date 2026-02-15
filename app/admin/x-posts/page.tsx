@@ -79,13 +79,35 @@ function getTopVideo(videos: Video[]): Video | null {
   , videos[0]);
 }
 
-const HOOKS = [
-  'We found this channel before most people even heard of it.',
-  'Discovered this one early. It\'s just getting started.',
-  'Caught this channel while it\'s still fresh.',
-  'This is what early discovery looks like.',
-  'Most people won\'t find this channel for months.',
+// Pain-point hooks mapped to the 5 core user questions
+const HOOKS_DISCOVERY = [
+  'You\'ve never heard of this channel. Nobody has — yet.',
+  'This wasn\'t on anyone\'s radar until today.',
+  'This channel doesn\'t show up in any "top creators" list. It will.',
 ];
+const HOOKS_SPEED = [
+  'Can a Shorts channel really blow up this fast?',
+  'Most creators spend years building an audience. This one didn\'t.',
+  'This is how fast a new channel can actually grow on Shorts.',
+];
+const HOOKS_NICHE = [
+  'Wondering what actually works on Shorts right now?',
+  'Everyone\'s guessing which niches are hot. We have the data.',
+  'This is what\'s working on YouTube Shorts right now.',
+];
+const HOOKS_DOABLE = [
+  'Could you start a channel like this tomorrow?',
+  'No fancy setup. No big team. Just Shorts.',
+  'This channel barely exists and it\'s already outgrowing creators with years of content.',
+];
+const HOOKS_AI = [
+  'Is AI-generated content actually working on Shorts? Look at this.',
+  'People keep asking if AI content can grow on Shorts. Here\'s your answer.',
+];
+
+function pickHook(pool: string[], seed: number): string {
+  return pool[seed % pool.length];
+}
 
 function CollapsibleSection({ title, subtitle, children, defaultOpen = true, headerRight }: {
   title: string;
@@ -419,13 +441,14 @@ export default function XPostsPage() {
     const top5 = freshChannels.slice(0, 5);
     const tweets: { text: string; media?: string[] }[] = [];
 
-    // T1
+    // T1 — hook: discovery pain point
     tweets.push({
-      text: `We scan thousands of Shorts daily to find channels most people don't know about yet.\n\nToday we discovered ${stats?.totalChannels || freshChannels.length} fresh channels.\n\nHere are the fastest growing ones`,
-      media: [], // leaderboard card rendered separately
+      text: `${pickHook(HOOKS_DISCOVERY, Date.now())}\n\nWe just found ${stats?.totalChannels || freshChannels.length} Shorts channels that most people won't discover for months.\n\nHere are the fastest growing ones`,
+      media: [],
     });
 
-    // T2-4: individual channels
+    // T2-4: individual channels — rotate through pain-point hooks
+    const channelHookPools = [HOOKS_SPEED, HOOKS_DOABLE, HOOKS_NICHE];
     top5.slice(0, 3).forEach((ch, i) => {
       const topVideo = getTopVideo(ch.videos);
       const nicheLabel = [ch.ai_category, ch.ai_niche].filter(Boolean).join(' · ') || ch.niche;
@@ -434,15 +457,16 @@ export default function XPostsPage() {
       const durationLabel = ch.avg_duration ? ` · ~${ch.avg_duration}s avg` : '';
       const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
       const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 4).map(t => `#${t}`).join(' ')}` : '';
+      const hook = pickHook(channelHookPools[i % channelHookPools.length], i + Date.now());
       tweets.push({
-        text: `${ch.channel_name}\n${nicheLabel}${style ? ` · ${style}` : ''}${langLabel} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers${durationLabel}\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}${tagLine}\n\n${HOOKS[i % HOOKS.length]}`,
+        text: `${hook}\n\n${ch.channel_name}\n${nicheLabel}${style ? ` · ${style}` : ''}${langLabel} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers${durationLabel}\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}${tagLine}`,
         media: getThumbnails(ch.videos, 4),
       });
     });
 
     // T5
     tweets.push({
-      text: `We discover channels like these every single day before they blow up.\n\nFollow @rofe_ai so you never miss one.`,
+      text: `You're seeing these channels before anyone else.\n\nFollow @rofe_ai — we find them every day.`,
     });
 
     return tweets;
@@ -460,8 +484,17 @@ export default function XPostsPage() {
     const duration = ch.avg_duration ? `\n▸ Avg video: ~${ch.avg_duration}s` : '';
     const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
     const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 5).map(t => `#${t}`).join(' ')}` : '';
+
+    // Pick hook based on channel characteristics
+    const isAI = ch.content_style === 'faceless' || ch.content_style === 'animation';
+    const isYoung = (ch.age_days || 999) < 30;
+    let hook: string;
+    if (isAI) hook = pickHook(HOOKS_AI, Date.now());
+    else if (isYoung) hook = pickHook(HOOKS_SPEED, Date.now());
+    else hook = pickHook(HOOKS_DISCOVERY, Date.now());
+
     return {
-      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${nicheLabel}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}${tagLine}\n\nMost people won't find this channel for months. We found it today.`,
+      text: `${hook}\n\n${ch.channel_name} — ${nicheLabel}\n▸ ${formatAge(ch.age_days)} old\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}${tagLine}`,
       media: getThumbnails(ch.videos, 4),
     };
   };
@@ -488,7 +521,7 @@ export default function XPostsPage() {
     const categoryLine = categories.length > 0 ? `\nCategories: ${categories.join(', ')}` : '';
 
     return {
-      text: `Every day we discover YouTube Shorts channels before they blow up.\n\nToday's finds:\n${stats.totalChannels} new channels discovered\nAverage channel age: ${stats.avgAgeDays} days\nCombined views: ${formatNumber(stats.totalViews)}\nContent styles: ${styleBreakdown}${categoryLine}\n\nThe freshest one hit ${formatNumber(topCh.subscriber_count)} subscribers in just ${topCh.age_days ?? '?'} days — and we caught it early.`,
+      text: `${pickHook(HOOKS_NICHE, Date.now())}\n\nToday's data:\n▸ ${stats.totalChannels} new channels discovered\n▸ Average channel age: ${stats.avgAgeDays} days\n▸ Combined views: ${formatNumber(stats.totalViews)}\n▸ Content styles: ${styleBreakdown}${categoryLine}\n\nThe fastest one hit ${formatNumber(topCh.subscriber_count)} subscribers in just ${topCh.age_days ?? '?'} days.`,
     };
   };
 
@@ -514,7 +547,7 @@ export default function XPostsPage() {
 
         return {
           niche,
-          text: `We just discovered ${chs.length} fresh ${niche} Shorts channels today.\n\n${listed}\n\nCombined: ${formatNumber(totalViews)} views\n\nThese channels are brand new and growing fast. We found them before most people will.`,
+          text: `${pickHook(HOOKS_NICHE, chs.length)}\n\n${chs.length} fresh ${niche} channels discovered today:\n\n${listed}\n\nCombined: ${formatNumber(totalViews)} views`,
           media: getThumbnails(chs[0].videos, 4),
           channelIds: chs.map(ch => ch.channel_id),
         };

@@ -15,6 +15,14 @@ function checkAuth(req: NextRequest): boolean {
   }
 }
 
+// We store stage logs in the video_url column while processing (overwritten on complete)
+// Format: newline-separated timestamped log lines
+function appendLog(existing: string | undefined, msg: string): string {
+  const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const line = `[${ts}] ${msg}`;
+  return existing ? `${existing}\n${line}` : line;
+}
+
 export async function POST(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -32,15 +40,22 @@ export async function POST(req: NextRequest) {
 
     // Start background render
     (async () => {
+      let logs = '';
+      const log = async (msg: string, progress?: number) => {
+        logs = appendLog(logs, msg);
+        const updates: Record<string, unknown> = { videoUrl: logs };
+        if (progress !== undefined) updates.progress = progress;
+        await updateJob(jobId, updates as any).catch(() => {});
+      };
+
       try {
-        await updateJob(jobId, { status: 'processing', progress: 5 });
+        await updateJob(jobId, { status: 'processing', progress: 2 });
+        await log('Starting render job...', 2);
 
         // Download clips if channelIds provided
-        let clipPaths: Record<string, string[]> = {};
         if (channelIds && channelIds.length > 0) {
-          await updateJob(jobId, { progress: 10 });
+          await log(`Fetching video IDs for ${channelIds.length} channel(s)...`, 5);
 
-          // Get video IDs for each channel
           const pool = await getPool();
           const channelVideoMap: Record<string, string[]> = {};
 
@@ -52,55 +67,62 @@ export async function POST(req: NextRequest) {
             channelVideoMap[channelId] = result.rows.map((r: { video_id: string }) => r.video_id);
           }
 
+          const totalClips = Object.values(channelVideoMap).flat().length;
+          await log(`Downloading ${totalClips} clip(s)...`, 8);
+
           const clipResults = await downloadClipsForChannels(
             channelVideoMap,
             3,
             3,
             (done, total) => {
-              const clipProgress = 10 + Math.round((done / total) * 20);
-              updateJob(jobId, { progress: clipProgress }).catch(() => {});
+              const clipProgress = 8 + Math.round((done / total) * 20);
+              log(`Downloaded clip ${done}/${total}`, clipProgress).catch(() => {});
             }
           );
 
-          // Convert to path arrays
-          for (const [chId, results] of Object.entries(clipResults)) {
-            clipPaths[chId] = results.map(r => r.filePath);
-          }
-
           // Inject clip paths into input props
           if (inputProps.clipPaths !== undefined) {
-            // For single-channel compositions (ChannelSpotlightVideo)
-            const firstChannelClips = Object.values(clipPaths)[0] || [];
+            const firstChannelClips = Object.values(clipResults)[0]?.map(r => r.filePath) || [];
             inputProps.clipPaths = firstChannelClips;
+            await log(`Clips ready: ${firstChannelClips.length} video(s)`, 28);
+          } else {
+            await log('Clips downloaded', 28);
           }
+        } else {
+          await log('No clips to download, skipping', 28);
         }
 
-        await updateJob(jobId, { progress: 30 });
+        await log('Bundling Remotion compositions (webpack)...', 30);
 
-        // Render the composition
         const outputPath = await renderComposition(
           compositionId,
           inputProps,
           jobId,
-          (progress) => {
-            // Map render progress 0-100 to job progress 30-95
-            const jobProgress = 30 + Math.round(progress * 0.65);
-            updateJob(jobId, { progress: jobProgress }).catch(() => {});
+          (renderProgress) => {
+            const jobProgress = 35 + Math.round(renderProgress * 0.60);
+            const phase = renderProgress < 5 ? 'Launching browser...'
+              : renderProgress < 15 ? 'Capturing frames...'
+              : renderProgress < 90 ? `Rendering frames... ${renderProgress}%`
+              : 'Encoding MP4...';
+            log(phase, jobProgress).catch(() => {});
           }
         );
+
+        await log('Render complete!', 98);
+        await log(`Output: ${outputPath.split('/').pop()}`, 100);
 
         await updateJob(jobId, {
           status: 'completed',
           progress: 100,
           videoUrl: `/api/admin/x-posts/render-download/${jobId}`,
         });
-
-        console.log(`Render complete: ${outputPath}`);
       } catch (err) {
+        const errMsg = err instanceof Error ? err.message : 'Render failed';
         console.error(`Render failed for job ${jobId}:`, err);
+        await log(`ERROR: ${errMsg}`);
         await updateJob(jobId, {
           status: 'failed',
-          error: err instanceof Error ? err.message : 'Render failed',
+          error: `${errMsg}\n\n--- Log ---\n${logs}`,
         });
       }
     })();

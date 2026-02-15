@@ -16,19 +16,27 @@ export async function getBundleLocation(): Promise<string> {
     bundleLocationPromise = (async () => {
       const { bundle } = await import('@remotion/bundler');
       const entryPoint = path.join(process.cwd(), 'remotion', 'Root.tsx');
-      console.log('Bundling Remotion compositions...');
+
+      if (!fs.existsSync(entryPoint)) {
+        throw new Error(`Remotion entry point not found: ${entryPoint}`);
+      }
+
+      console.log(`Bundling Remotion from ${entryPoint}...`);
       const bundled = await bundle({
         entryPoint,
         webpackOverride: (config) => config,
       });
       console.log('Remotion bundle ready:', bundled);
       return bundled;
-    })();
+    })().catch((err) => {
+      // Reset so next attempt can retry
+      bundleLocationPromise = null;
+      throw err;
+    });
   }
   return bundleLocationPromise;
 }
 
-// Invalidate cached bundle (e.g. after code changes)
 export function invalidateBundle() {
   bundleLocationPromise = null;
 }
@@ -43,7 +51,9 @@ export async function renderComposition(
 
   const outputPath = path.join(RENDERS_DIR, `${jobId}.mp4`);
 
+  console.log(`[render ${jobId}] Starting bundle...`);
   const bundleLocation = await getBundleLocation();
+  console.log(`[render ${jobId}] Bundle ready, selecting composition ${compositionId}...`);
 
   const { selectComposition, renderMedia } = await import('@remotion/renderer');
 
@@ -55,6 +65,8 @@ export async function renderComposition(
     inputProps,
   });
 
+  console.log(`[render ${jobId}] Composition selected, rendering ${composition.durationInFrames} frames...`);
+
   await renderMedia({
     composition,
     serveUrl: bundleLocation,
@@ -62,11 +74,16 @@ export async function renderComposition(
     outputLocation: outputPath,
     inputProps,
     browserExecutable,
+    chromiumOptions: {
+      disableWebSecurity: true,
+      gl: 'angle',
+    },
     onProgress: ({ progress }) => {
       onProgress?.(Math.round(progress * 100));
     },
   });
 
+  console.log(`[render ${jobId}] Done: ${outputPath}`);
   return outputPath;
 }
 
