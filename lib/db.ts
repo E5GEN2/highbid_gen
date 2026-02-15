@@ -197,6 +197,10 @@ export async function initSchema(): Promise<void> {
     `);
 
     await client.query(`
+      ALTER TABLE channel_analysis ADD COLUMN IF NOT EXISTS language VARCHAR(16)
+    `);
+
+    await client.query(`
       CREATE INDEX IF NOT EXISTS idx_channel_analysis_status ON channel_analysis(status)
     `);
 

@@ -13,11 +13,33 @@ function checkAuth(req: NextRequest): boolean {
   }
 }
 
-async function getApiKey(pool: import('pg').Pool): Promise<string | null> {
+async function getConfigKey(pool: import('pg').Pool, key: string, envFallback?: string): Promise<string | null> {
   const result = await pool.query(
-    `SELECT value FROM admin_config WHERE key = 'papai_api_key'`
+    `SELECT value FROM admin_config WHERE key = $1`,
+    [key]
   );
-  return result.rows[0]?.value || process.env.PAPAI_API_KEY || null;
+  return result.rows[0]?.value || (envFallback ? process.env[envFallback] : null) || null;
+}
+
+async function getApiKey(pool: import('pg').Pool): Promise<string | null> {
+  return getConfigKey(pool, 'papai_api_key', 'PAPAI_API_KEY');
+}
+
+async function getYouTubeApiKey(pool: import('pg').Pool): Promise<string | null> {
+  return getConfigKey(pool, 'youtube_api_key', 'YOUTUBE_API_KEY');
+}
+
+async function detectLanguage(videoId: string, ytApiKey: string): Promise<string | null> {
+  try {
+    const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${ytApiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const snippet = data.items?.[0]?.snippet;
+    return snippet?.defaultAudioLanguage || snippet?.defaultLanguage || null;
+  } catch {
+    return null;
+  }
 }
 
 // GET: Poll analysis progress, or fetch config when no channelIds
@@ -34,17 +56,20 @@ export async function GET(req: NextRequest) {
     // No channelIds = return config info
     if (channelIds.length === 0) {
       const apiKey = await getApiKey(pool);
+      const ytApiKey = await getYouTubeApiKey(pool);
       return NextResponse.json({
         hasApiKey: !!apiKey,
         apiKeyPreview: apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : null,
+        hasYouTubeApiKey: !!ytApiKey,
+        youtubeApiKeyPreview: ytApiKey ? `${ytApiKey.slice(0, 8)}...${ytApiKey.slice(-4)}` : null,
       });
     }
 
     // Fetch all analysis rows for these channels
     const placeholders = channelIds.map((_, i) => `$${i + 1}`).join(',');
     const result = await pool.query(
-      `SELECT channel_id, status, niche, sub_niche, content_style, is_ai_generated,
-              channel_summary, tags, error_message, analyzed_at
+      `SELECT channel_id, status, niche, sub_niche, content_style,
+              channel_summary, tags, language, error_message, analyzed_at
        FROM channel_analysis
        WHERE channel_id IN (${placeholders})`,
       channelIds
@@ -92,7 +117,7 @@ export async function POST(req: NextRequest) {
     const pool = await getPool();
     const body = await req.json();
 
-    // Save API key if provided
+    // Save API keys if provided
     if (body.apiKey && typeof body.apiKey === 'string') {
       await pool.query(
         `INSERT INTO admin_config (key, value, updated_at)
@@ -100,10 +125,18 @@ export async function POST(req: NextRequest) {
          ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
         [body.apiKey.trim()]
       );
-      // If no channelIds, just saving the key
-      if (!body.channelIds) {
-        return NextResponse.json({ success: true, saved: true });
-      }
+    }
+    if (body.youtubeApiKey && typeof body.youtubeApiKey === 'string') {
+      await pool.query(
+        `INSERT INTO admin_config (key, value, updated_at)
+         VALUES ('youtube_api_key', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+        [body.youtubeApiKey.trim()]
+      );
+    }
+    // If no channelIds, just saving keys
+    if (!body.channelIds && (body.apiKey || body.youtubeApiKey)) {
+      return NextResponse.json({ success: true, saved: true });
     }
 
     const { channelIds, rerunFailed, concurrency: rawConcurrency } = body;
@@ -167,6 +200,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const ytApiKey = await getYouTubeApiKey(pool);
+
     // Process a single channel
     async function processChannel(channelId: string): Promise<'done' | 'failed' | 'skipped'> {
       const ch = channelMap.get(channelId);
@@ -191,14 +226,23 @@ export async function POST(req: NextRequest) {
           apiKey
         );
 
+        // Detect language from top video via YouTube Data API
+        let language: string | null = null;
+        if (ytApiKey) {
+          const topVideo = [...(ch.videos || [])].sort((a: { view_count: number }, b: { view_count: number }) => (Number(b.view_count) || 0) - (Number(a.view_count) || 0))[0];
+          if (topVideo) {
+            language = await detectLanguage(topVideo.video_id, ytApiKey);
+          }
+        }
+
         await pool.query(
           `UPDATE channel_analysis SET
             status = 'done', category = $2, niche = $3, sub_niche = $4, content_style = $5,
-            channel_summary = $6, tags = $7, raw_response = $8,
+            channel_summary = $6, tags = $7, raw_response = $8, language = $9,
             error_message = NULL, analyzed_at = NOW(), updated_at = NOW()
            WHERE channel_id = $1`,
           [channelId, result.category, result.niche, result.sub_niche, result.content_style,
-           result.channel_summary, result.tags, JSON.stringify(result)]
+           result.channel_summary, result.tags, JSON.stringify(result), language]
         );
         return 'done';
       } catch (err) {

@@ -37,6 +37,8 @@ interface Channel {
   content_style: string | null;
   channel_summary: string | null;
   ai_tags: string[] | null;
+  ai_language: string | null;
+  avg_duration: number | null;
   analysis_status: string | null;
   analysis_error: string | null;
 }
@@ -148,6 +150,9 @@ export default function XPostsPage() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyPreview, setApiKeyPreview] = useState<string | null>(null);
   const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [ytApiKeyInput, setYtApiKeyInput] = useState('');
+  const [ytApiKeyPreview, setYtApiKeyPreview] = useState<string | null>(null);
+  const [ytApiKeySaving, setYtApiKeySaving] = useState(false);
   const [concurrency, setConcurrency] = useState('3');
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState<{
@@ -155,7 +160,7 @@ export default function XPostsPage() {
   } | null>(null);
   const [analysisResults, setAnalysisResults] = useState<Record<string, {
     status: string; category?: string; niche?: string; sub_niche?: string; content_style?: string;
-    channel_summary?: string; tags?: string[];
+    channel_summary?: string; tags?: string[]; language?: string;
     error_message?: string;
   }>>({});
 
@@ -174,6 +179,7 @@ export default function XPostsPage() {
       .then(res => res.json())
       .then(data => {
         if (data.apiKeyPreview) setApiKeyPreview(data.apiKeyPreview);
+        if (data.youtubeApiKeyPreview) setYtApiKeyPreview(data.youtubeApiKeyPreview);
       })
       .catch(() => {});
   }, [authenticated]);
@@ -353,6 +359,28 @@ export default function XPostsPage() {
     }
   };
 
+  const saveYtApiKey = async () => {
+    if (!ytApiKeyInput.trim()) return;
+    setYtApiKeySaving(true);
+    try {
+      const res = await fetch('/api/admin/x-posts/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ youtubeApiKey: ytApiKeyInput.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setYtApiKeyPreview(`${ytApiKeyInput.trim().slice(0, 8)}...${ytApiKeyInput.trim().slice(-4)}`);
+        setYtApiKeyInput('');
+        showCopyFeedback('YouTube API key saved');
+      }
+    } catch (err) {
+      console.error('Failed to save YouTube API key:', err);
+    } finally {
+      setYtApiKeySaving(false);
+    }
+  };
+
   // --- Generate post content ---
 
   // Filter out posted channels for generation
@@ -375,10 +403,12 @@ export default function XPostsPage() {
       const topVideo = getTopVideo(ch.videos);
       const nicheLabel = [ch.ai_category, ch.ai_niche].filter(Boolean).join(' · ') || ch.niche;
       const style = ch.content_style ? ch.content_style.replace('_', ' ') : '';
+      const langLabel = ch.ai_language ? ` · ${ch.ai_language.toUpperCase()}` : '';
+      const durationLabel = ch.avg_duration ? ` · ~${ch.avg_duration}s avg` : '';
       const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
       const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 4).map(t => `#${t}`).join(' ')}` : '';
       tweets.push({
-        text: `${ch.channel_name}\n${nicheLabel}${style ? ` · ${style}` : ''} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}${tagLine}\n\n${HOOKS[i % HOOKS.length]}`,
+        text: `${ch.channel_name}\n${nicheLabel}${style ? ` · ${style}` : ''}${langLabel} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers${durationLabel}\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}${tagLine}\n\n${HOOKS[i % HOOKS.length]}`,
         media: getThumbnails(ch.videos, 4),
       });
     });
@@ -399,10 +429,12 @@ export default function XPostsPage() {
 
     const nicheLabel = [ch.ai_category, ch.ai_niche, ch.ai_sub_niche].filter(Boolean).join(' › ') || ch.niche;
     const style = ch.content_style ? `\n▸ Style: ${ch.content_style.replace('_', ' ')}` : '';
+    const lang = ch.ai_language ? `\n▸ Language: ${ch.ai_language.toUpperCase()}` : '';
+    const duration = ch.avg_duration ? `\n▸ Avg video: ~${ch.avg_duration}s` : '';
     const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
     const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 5).map(t => `#${t}`).join(' ')}` : '';
     return {
-      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${nicheLabel}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${summaryLine}${tagLine}\n\nMost people won't find this channel for months. We found it today.`,
+      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${nicheLabel}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}${tagLine}\n\nMost people won't find this channel for months. We found it today.`,
       media: getThumbnails(ch.videos, 4),
     };
   };
@@ -449,7 +481,8 @@ export default function XPostsPage() {
         const listed = chs.slice(0, 4).map(ch => {
           const subNiche = ch.ai_sub_niche || ch.ai_niche || '';
           const style = ch.content_style ? ` · ${ch.content_style.replace('_', ' ')}` : '';
-          return `• ${ch.channel_name} — ${subNiche}${style}\n  ${formatNumber(ch.subscriber_count)} subs · ${formatAge(ch.age_days)} old`;
+          const lang = ch.ai_language ? ` · ${ch.ai_language.toUpperCase()}` : '';
+          return `• ${ch.channel_name} — ${subNiche}${style}${lang}\n  ${formatNumber(ch.subscriber_count)} subs · ${formatAge(ch.age_days)} old`;
         }).join('\n');
 
         return {
@@ -695,34 +728,58 @@ export default function XPostsPage() {
                 </div>
               }
             >
-              {/* API Key + Concurrency */}
-              <div className="flex items-center gap-2 mb-4">
-                <input
-                  type="password"
-                  value={apiKeyInput}
-                  onChange={e => setApiKeyInput(e.target.value)}
-                  placeholder={apiKeyPreview ? `Current: ${apiKeyPreview}` : 'Enter PapaiAPI key...'}
-                  className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  onKeyDown={e => e.key === 'Enter' && saveApiKey()}
-                />
-                <button
-                  onClick={saveApiKey}
-                  disabled={!apiKeyInput.trim() || apiKeySaving}
-                  className="px-3 py-2 text-xs bg-gray-800 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white disabled:opacity-50 transition whitespace-nowrap"
-                >
-                  {apiKeySaving ? 'Saving...' : 'Save Key'}
-                </button>
-                {apiKeyPreview && !apiKeyInput && (
-                  <span className="text-[10px] text-green-500 whitespace-nowrap">Key configured</span>
-                )}
-                <div className="flex items-center gap-1.5 ml-2">
-                  <label className="text-[10px] text-gray-500 whitespace-nowrap">Threads</label>
+              {/* API Keys + Concurrency */}
+              <div className="space-y-2 mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-500 w-16 flex-shrink-0">Gemini</span>
                   <input
-                    type="number" min={1} max={10}
-                    value={concurrency}
-                    onChange={e => setConcurrency(e.target.value)}
-                    className="w-14 px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    type="password"
+                    value={apiKeyInput}
+                    onChange={e => setApiKeyInput(e.target.value)}
+                    placeholder={apiKeyPreview ? `Current: ${apiKeyPreview}` : 'Enter PapaiAPI key...'}
+                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    onKeyDown={e => e.key === 'Enter' && saveApiKey()}
                   />
+                  <button
+                    onClick={saveApiKey}
+                    disabled={!apiKeyInput.trim() || apiKeySaving}
+                    className="px-3 py-2 text-xs bg-gray-800 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white disabled:opacity-50 transition whitespace-nowrap"
+                  >
+                    {apiKeySaving ? 'Saving...' : 'Save'}
+                  </button>
+                  {apiKeyPreview && !apiKeyInput && (
+                    <span className="text-[10px] text-green-500 whitespace-nowrap">OK</span>
+                  )}
+                  <div className="flex items-center gap-1.5 ml-2">
+                    <label className="text-[10px] text-gray-500 whitespace-nowrap">Threads</label>
+                    <input
+                      type="number" min={1} max={10}
+                      value={concurrency}
+                      onChange={e => setConcurrency(e.target.value)}
+                      className="w-14 px-2 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-500 w-16 flex-shrink-0">YouTube</span>
+                  <input
+                    type="password"
+                    value={ytApiKeyInput}
+                    onChange={e => setYtApiKeyInput(e.target.value)}
+                    placeholder={ytApiKeyPreview ? `Current: ${ytApiKeyPreview}` : 'Enter YouTube Data API key (for language detection)...'}
+                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    onKeyDown={e => e.key === 'Enter' && saveYtApiKey()}
+                  />
+                  <button
+                    onClick={saveYtApiKey}
+                    disabled={!ytApiKeyInput.trim() || ytApiKeySaving}
+                    className="px-3 py-2 text-xs bg-gray-800 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white disabled:opacity-50 transition whitespace-nowrap"
+                  >
+                    {ytApiKeySaving ? 'Saving...' : 'Save'}
+                  </button>
+                  {ytApiKeyPreview && !ytApiKeyInput && (
+                    <span className="text-[10px] text-green-500 whitespace-nowrap">OK</span>
+                  )}
                 </div>
               </div>
 
@@ -787,6 +844,12 @@ export default function XPostsPage() {
                               <span className="text-gray-300">{[result?.category || ch.ai_category, result?.niche || ch.ai_niche, result?.sub_niche || ch.ai_sub_niche].filter(Boolean).join(' > ')}</span>
                               {(result?.content_style || ch.content_style) && (
                                 <span className="text-gray-500">· {(result?.content_style || ch.content_style)?.replace('_', ' ')}</span>
+                              )}
+                              {(result?.language || ch.ai_language) && (
+                                <span className="text-blue-400/70">· {(result?.language || ch.ai_language)?.toUpperCase()}</span>
+                              )}
+                              {ch.avg_duration && (
+                                <span className="text-gray-500">· ~{ch.avg_duration}s</span>
                               )}
                               {(result?.tags || ch.ai_tags) && (
                                 <span className="text-gray-600">

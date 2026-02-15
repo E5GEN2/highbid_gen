@@ -68,8 +68,10 @@ export async function GET(req: NextRequest) {
         CASE WHEN xp.channel_id IS NOT NULL THEN true ELSE false END AS is_posted,
         ca.category AS ai_category, ca.niche AS ai_niche, ca.sub_niche AS ai_sub_niche,
         ca.content_style, ca.channel_summary,
-        ca.tags AS ai_tags, ca.status AS analysis_status,
+        ca.tags AS ai_tags, ca.language AS ai_language,
+        ca.status AS analysis_status,
         ca.error_message AS analysis_error,
+        ROUND(AVG(v.duration_seconds)) AS avg_duration,
         json_agg(
           json_build_object(
             'video_id', v.video_id,
@@ -95,7 +97,7 @@ export async function GET(req: NextRequest) {
                c.subscriber_count, c.total_video_count, c.channel_creation_date,
                c.first_seen_at, c.sighting_count, xp.channel_id, xp.posted_at, xp.post_type,
                ca.category, ca.niche, ca.sub_niche, ca.content_style,
-               ca.channel_summary, ca.tags, ca.status, ca.error_message
+               ca.channel_summary, ca.tags, ca.language, ca.status, ca.error_message
       ${havingClause}
       ORDER BY SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) DESC NULLS LAST
     `, params);
@@ -122,6 +124,8 @@ export async function GET(req: NextRequest) {
         content_style: ch.content_style || null,
         channel_summary: ch.channel_summary || null,
         ai_tags: ch.ai_tags || null,
+        ai_language: ch.ai_language || null,
+        avg_duration: ch.avg_duration ? Number(ch.avg_duration) : null,
         analysis_status: ch.analysis_status || null,
         analysis_error: ch.analysis_error || null,
         age_days: ageDays,
