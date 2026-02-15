@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
+import { getPool } from '../../../../../lib/db';
 
 function checkAuth(req: NextRequest): boolean {
   const token = req.cookies.get('admin_token')?.value;
@@ -12,20 +13,57 @@ function checkAuth(req: NextRequest): boolean {
   }
 }
 
+async function getYouTubeApiKey(): Promise<string | null> {
+  const pool = await getPool();
+  const result = await pool.query(
+    `SELECT value FROM admin_config WHERE key = $1`,
+    ['youtube_api_key']
+  );
+  return result.rows[0]?.value || process.env.YOUTUBE_API_KEY || null;
+}
+
+async function fetchChannelVideoIds(channelId: string, apiKey: string, count = 5): Promise<string[]> {
+  try {
+    // Search for recent Shorts from this channel
+    const url = `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}&type=video&order=viewCount&maxResults=${count}&key=${apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.items || []).map((item: { id: { videoId: string } }) => item.id.videoId).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 export async function GET(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const videoIds = req.nextUrl.searchParams.get('ids')?.split(',').filter(Boolean);
-  if (!videoIds || videoIds.length === 0) {
-    return NextResponse.json({ error: 'ids parameter required' }, { status: 400 });
-  }
-
-  const ids = videoIds.slice(0, 3);
+  const providedIds = req.nextUrl.searchParams.get('ids')?.split(',').filter(Boolean) || [];
+  const channelId = req.nextUrl.searchParams.get('channelId');
+  const TARGET = 3;
   const GAP = 8;
 
   try {
+    let ids = [...new Set(providedIds)].slice(0, TARGET);
+
+    // If we don't have enough, fetch more from YouTube API
+    if (ids.length < TARGET && channelId) {
+      const apiKey = await getYouTubeApiKey();
+      if (apiKey) {
+        const extraIds = await fetchChannelVideoIds(channelId, apiKey, TARGET + 2);
+        for (const id of extraIds) {
+          if (!ids.includes(id)) ids.push(id);
+          if (ids.length >= TARGET) break;
+        }
+      }
+    }
+
+    if (ids.length === 0) {
+      return NextResponse.json({ error: 'No video IDs available' }, { status: 400 });
+    }
+
     // Fetch thumbnails in parallel
     const buffers = await Promise.all(
       ids.map(async (id) => {
@@ -59,7 +97,8 @@ export async function GET(req: NextRequest) {
     );
 
     // Composite side by side with gaps
-    const totalWidth = cropW * ids.length + GAP * (ids.length - 1);
+    const count = resizedBuffers.length;
+    const totalWidth = cropW * count + GAP * (count - 1);
     const compositeImage = await sharp({
       create: {
         width: totalWidth,
@@ -88,7 +127,7 @@ export async function GET(req: NextRequest) {
     console.error('Composite thumbnail error:', err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to generate composite' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

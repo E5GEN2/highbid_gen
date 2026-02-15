@@ -507,14 +507,12 @@ export default function XPostsPage() {
     const totalViewsLine = ch.total_views && ch.total_views > topVideoViews * 1.1
       ? `\n▸ ${formatNumber(ch.total_views)} total views` : '';
 
-    // Composite thumbnail: use up to 3 unique video thumbnails
-    const uniqueVideoIds = [...new Set(ch.videos.map(v => v.video_id))].slice(0, 3);
-    const compositeUrl = uniqueVideoIds.length >= 2
-      ? `/api/admin/x-posts/composite-thumb?ids=${uniqueVideoIds.join(',')}`
-      : null;
-    const mediaUrls = compositeUrl
-      ? [compositeUrl]
-      : getThumbnails(ch.videos, 4);
+    // Composite thumbnail: 3 Shorts side-by-side (endpoint fetches more from YT API if needed)
+    const knownVideoIds = [...new Set(ch.videos.map(v => v.video_id))].slice(0, 3);
+    const compositeParams = new URLSearchParams();
+    if (knownVideoIds.length > 0) compositeParams.set('ids', knownVideoIds.join(','));
+    compositeParams.set('channelId', ch.channel_id);
+    const mediaUrls = [`/api/admin/x-posts/composite-thumb?${compositeParams.toString()}`];
 
     // T1: Hook + stats, NO channel name, CTA to read thread
     tweets.push({
