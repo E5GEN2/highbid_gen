@@ -1,7 +1,33 @@
 'use client';
 
-import React, { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useCallback, useEffect, useState, useMemo } from 'react';
+import { useSession, signIn } from 'next-auth/react';
 import AuthButton from './AuthButton';
+
+// CTA cards shown to non-logged-in users at specific display positions
+const CTA_CARDS = [
+  {
+    position: 3,
+    emoji: '🔁',
+    headline: 'Never see the same channel twice',
+    body: 'Sign in and we\u2019ll remember what you\u2019ve seen. Every swipe becomes a fresh discovery \u2014 no repeats, ever.',
+    sub: null,
+  },
+  {
+    position: 8,
+    emoji: '💎',
+    headline: 'New channels drop every day',
+    body: 'We discover hundreds of rising Shorts channels daily. Sign in to get notified when new gems match your interests.',
+    sub: 'Get alerts when we find breakout channels',
+  },
+  {
+    position: 15,
+    emoji: '📡',
+    headline: 'Your personalized Shorts radar',
+    body: 'Save your filters, pick up where you left off, and never miss a breakout channel. Free \u2014 always.',
+    sub: null,
+  },
+];
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare global {
@@ -131,6 +157,9 @@ export default function FeedViewer({
   unseenChannels,
   onChannelSeen,
 }: FeedViewerProps) {
+  const { data: session } = useSession();
+  const isLoggedIn = !!session;
+
   const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
   const playerRef = useRef<any>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
@@ -145,7 +174,69 @@ export default function FeedViewer({
   const fetchedChannelsRef = useRef<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
 
-  const channel = channels[channelIndex];
+  // CTA display index mapping (only active for non-logged-in users)
+  const ctaPositions = useMemo(
+    () => (isLoggedIn ? [] : CTA_CARDS.map((c) => c.position)),
+    [isLoggedIn]
+  );
+
+  // Convert a data index (channels array position) to display index (includes CTA slots)
+  const dataToDisplay = useCallback(
+    (dataIdx: number): number => {
+      let display = dataIdx;
+      for (const pos of ctaPositions) {
+        if (display >= pos) display++;
+      }
+      return display;
+    },
+    [ctaPositions]
+  );
+
+  // Convert a display index to data index (subtracts CTA slots before this position)
+  const displayToData = useCallback(
+    (displayIdx: number): number => {
+      let offset = 0;
+      for (const pos of ctaPositions) {
+        if (displayIdx > pos) offset++;
+        else if (displayIdx === pos) return -1; // This is a CTA slot
+      }
+      return displayIdx - offset;
+    },
+    [ctaPositions]
+  );
+
+  // Check if a display index is a CTA slot
+  const isCtaSlot = useCallback(
+    (displayIdx: number): boolean => ctaPositions.includes(displayIdx),
+    [ctaPositions]
+  );
+
+  // Get the CTA card data for a display index
+  const getCtaCard = useCallback(
+    (displayIdx: number) => CTA_CARDS.find((c) => c.position === displayIdx) || null,
+    []
+  );
+
+  // Internal display index — synced from channelIndex prop
+  const [displayIndex, setDisplayIndex] = useState(() => dataToDisplay(channelIndex));
+
+  // Sync displayIndex when channelIndex prop changes externally
+  useEffect(() => {
+    const expected = dataToDisplay(channelIndex);
+    setDisplayIndex((prev) => {
+      // Only update if the data index doesn't match — avoids fighting our own navigation
+      const currentData = displayToData(prev);
+      if (currentData !== channelIndex) return expected;
+      return prev;
+    });
+  }, [channelIndex, dataToDisplay, displayToData]);
+
+  // Derive the actual channel/video from display index
+  const dataIndex = displayToData(displayIndex);
+  const onCta = isCtaSlot(displayIndex);
+  const currentCta = onCta ? getCtaCard(displayIndex) : null;
+
+  const channel = onCta ? null : channels[dataIndex];
   const video = channel?.videos?.[videoIndex];
 
   // Prevent iOS overscroll/bounce when in feed view
@@ -253,33 +344,47 @@ export default function FeedViewer({
 
   // Mark channel as seen when user views it
   useEffect(() => {
-    const ch = channels[channelIndex];
+    if (onCta) return;
+    const ch = channels[dataIndex];
     if (ch && onChannelSeen) {
       onChannelSeen(ch.channel_id);
     }
-  }, [channelIndex, channels, onChannelSeen]);
+  }, [dataIndex, onCta, channels, onChannelSeen]);
 
-  // Trigger load more when approaching end
+  // Trigger load more when approaching end (based on data index, not display)
   useEffect(() => {
-    if (channels.length > 0 && channelIndex >= channels.length - 5) {
+    if (onCta) return;
+    if (channels.length > 0 && dataIndex >= channels.length - 5) {
       onLoadMore();
     }
-  }, [channelIndex, channels.length, onLoadMore]);
+  }, [dataIndex, onCta, channels.length, onLoadMore]);
 
   // Auto-fetch more videos when landing on a channel with few videos
   useEffect(() => {
-    if (!channel || !onFetchChannelVideos) return;
+    if (onCta || !channel || !onFetchChannelVideos) return;
     if (channel.videos.length > 3) return;
     if (fetchedChannelsRef.current.has(channel.channel_id)) return;
     fetchedChannelsRef.current.add(channel.channel_id);
     setFetchingMore(true);
     onFetchChannelVideos(channel.channel_id).finally(() => setFetchingMore(false));
-  }, [channelIndex, channel, onFetchChannelVideos]);
+  }, [dataIndex, onCta, channel, onFetchChannelVideos]);
+
+  // Pause/resume player when navigating to/from a CTA slide
+  useEffect(() => {
+    if (!playerRef.current) return;
+    if (onCta) {
+      if (typeof playerRef.current.pauseVideo === 'function') {
+        playerRef.current.pauseVideo();
+      }
+    } else if (startedRef.current && typeof playerRef.current.playVideo === 'function') {
+      playerRef.current.playVideo();
+    }
+  }, [onCta]);
 
   // Reset pause state on video change
   useEffect(() => {
     setPaused(false);
-  }, [channelIndex, videoIndex]);
+  }, [displayIndex, videoIndex]);
 
   const togglePause = useCallback(() => {
     if (!playerRef.current) return;
@@ -302,25 +407,45 @@ export default function FeedViewer({
     }
   }, []);
 
+  // Compute the max display index (channels + CTA slots)
+  const maxDisplayIndex = useMemo(() => {
+    if (channels.length === 0) return 0;
+    return dataToDisplay(channels.length - 1);
+  }, [channels.length, dataToDisplay]);
+
   const navigate = useCallback(
     (dir: 'up' | 'down' | 'left' | 'right') => {
-      if (transitioning || !channel) return;
-      setTransitioning(true);
-      setTimeout(() => setTransitioning(false), 150);
+      if (transitioning) return;
 
-      if (dir === 'up' && channelIndex < channels.length - 1) {
-        onChannelChange(channelIndex + 1);
-        onVideoChange(0);
-      } else if (dir === 'down' && channelIndex > 0) {
-        onChannelChange(channelIndex - 1);
-        onVideoChange(0);
-      } else if (dir === 'left' && channel.videos.length > 1) {
-        onVideoChange((videoIndex + 1) % channel.videos.length);
-      } else if (dir === 'right' && channel.videos.length > 1) {
-        onVideoChange((videoIndex - 1 + channel.videos.length) % channel.videos.length);
+      if (dir === 'up' || dir === 'down') {
+        const nextDisplay = dir === 'up' ? displayIndex + 1 : displayIndex - 1;
+        if (nextDisplay < 0 || nextDisplay > maxDisplayIndex) return;
+
+        setTransitioning(true);
+        setTimeout(() => setTransitioning(false), 150);
+        setDisplayIndex(nextDisplay);
+
+        const nextData = displayToData(nextDisplay);
+        if (nextData >= 0) {
+          // Navigating to a real channel
+          onChannelChange(nextData);
+          onVideoChange(0);
+        }
+        // If nextData === -1, we're on a CTA — don't update channelIndex
+      } else if (channel) {
+        // Left/right only works on real channel slides
+        if (dir === 'left' && channel.videos.length > 1) {
+          setTransitioning(true);
+          setTimeout(() => setTransitioning(false), 150);
+          onVideoChange((videoIndex + 1) % channel.videos.length);
+        } else if (dir === 'right' && channel.videos.length > 1) {
+          setTransitioning(true);
+          setTimeout(() => setTransitioning(false), 150);
+          onVideoChange((videoIndex - 1 + channel.videos.length) % channel.videos.length);
+        }
       }
     },
-    [transitioning, channel, channelIndex, channels.length, videoIndex, onChannelChange, onVideoChange]
+    [transitioning, displayIndex, maxDisplayIndex, displayToData, channel, videoIndex, onChannelChange, onVideoChange]
   );
 
   // Keyboard navigation
@@ -366,8 +491,8 @@ export default function FeedViewer({
       const minDist = 50;
       const maxTime = 500;
 
-      // Tap detection
-      if (absDx < 10 && absDy < 10 && dt < 300) {
+      // Tap detection — skip pause/play on CTA slides
+      if (absDx < 10 && absDy < 10 && dt < 300 && !onCta) {
         if (!started) {
           handleStart();
           return;
@@ -388,7 +513,7 @@ export default function FeedViewer({
         navigate(dx < 0 ? 'left' : 'right');
       }
     },
-    [navigate, togglePause, handleStart, started]
+    [navigate, togglePause, handleStart, started, onCta]
   );
 
   // Loading state
@@ -403,8 +528,8 @@ export default function FeedViewer({
     );
   }
 
-  // Empty state
-  if (!channel || !video) {
+  // Empty state (only when not on a CTA)
+  if (!onCta && (!channel || !video)) {
     return (
       <div className="fixed inset-0 bg-black flex items-center justify-center z-40">
         <div className="text-center">
@@ -415,8 +540,8 @@ export default function FeedViewer({
     );
   }
 
-  const age = channelAge(channel.channel_creation_date);
-  const ageColor = ageBadgeColor(channel.channel_creation_date);
+  const age = channel ? channelAge(channel.channel_creation_date) : '';
+  const ageColor = channel ? ageBadgeColor(channel.channel_creation_date) : '';
 
   return (
     <div
@@ -619,197 +744,241 @@ export default function FeedViewer({
         className="relative w-full h-full md:max-w-[calc(100vh*9/16)] mx-auto"
         style={{ transition: 'opacity 150ms ease', opacity: transitioning ? 0 : 1 }}
       >
-        {/* YouTube Player API container */}
-        <div
-          ref={playerContainerRef}
-          className="absolute inset-0 w-full h-full"
-          style={{ pointerEvents: 'none' }}
-        >
-          <div id="yt-feed-player" />
-        </div>
-
-        {/* Loading placeholder */}
-        {!playerReady && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 z-10">
-            {channel.avatar_url && (
-              <img src={channel.avatar_url} alt="" className="w-16 h-16 sm:w-20 sm:h-20 rounded-full mb-4 animate-pulse" />
-            )}
-            <p className="text-gray-400 animate-pulse text-sm sm:text-base">{channel.channel_name}</p>
-            <div className="w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full animate-spin mt-4" />
-          </div>
-        )}
-
-        {/* "Tap to start" overlay — shown until user initiates first play */}
-        {playerReady && !started && (
+        {onCta && currentCta ? (
+          /* CTA Card — full-screen slide for non-logged-in users */
           <div
-            className="absolute inset-0 z-30 flex items-center justify-center cursor-pointer"
-            onClick={handleStart}
-          >
-            <div className="bg-black/60 backdrop-blur-sm rounded-2xl px-6 py-4 text-center">
-              <div className="w-16 h-16 sm:w-20 sm:h-20 bg-pink-600 rounded-full flex items-center justify-center mx-auto mb-3">
-                <svg className="w-8 h-8 sm:w-10 sm:h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </div>
-              <p className="text-white text-sm sm:text-base font-medium">Tap to start</p>
-              <p className="text-gray-400 text-[10px] sm:text-xs mt-1">Swipe to browse channels</p>
-            </div>
-          </div>
-        )}
-
-        {/* Paused overlay */}
-        {started && paused && (
-          <div className="absolute inset-0 z-[15] bg-black/30 flex items-center justify-center pointer-events-none">
-            <div className="w-14 h-14 sm:w-16 sm:h-16 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-7 h-7 sm:w-8 sm:h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            </div>
-          </div>
-        )}
-
-        {/* Touch overlay — captures swipes and taps */}
-        {started && (
-          <div
-            className="absolute inset-0 z-20"
+            className="absolute inset-0 bg-black flex flex-col items-center justify-center px-8 text-center"
             onTouchStart={onTouchStart}
             onTouchEnd={onTouchEnd}
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const relX = e.clientX - rect.left;
-              if (relX < rect.width * 0.8) {
-                togglePause();
-              }
-            }}
-          />
-        )}
-
-        {/* Swipe overlay for navigation before started (no pause on tap) */}
-        {!started && playerReady && (
-          <div
-            className="absolute inset-0 z-20"
-            onTouchStart={onTouchStart}
-            onTouchEnd={onTouchEnd}
-          />
-        )}
-
-        {/* Stats overlay — right side */}
-        <div
-          className="absolute right-2 sm:right-3 z-30 flex flex-col items-center gap-4 sm:gap-5"
-          style={{ bottom: 'max(7rem, calc(5rem + env(safe-area-inset-bottom, 0px)))' }}
-        >
-          <div className="flex flex-col items-center">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-              </svg>
-            </div>
-            <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.view_count)}</span>
-          </div>
-
-          <div className="flex flex-col items-center">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-              </svg>
-            </div>
-            <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.like_count)}</span>
-          </div>
-
-          <div className="flex flex-col items-center">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
-              <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-            </div>
-            <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.comment_count)}</span>
-          </div>
-
-          <a
-            href={channel.channel_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="relative z-30"
-            onClick={(e) => e.stopPropagation()}
           >
-            {channel.avatar_url ? (
-              <img src={channel.avatar_url} alt={channel.channel_name} className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white" />
-            ) : (
-              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white bg-gray-700 flex items-center justify-center text-white font-bold text-xs sm:text-sm">
-                {channel.channel_name?.charAt(0) || '?'}
-              </div>
-            )}
-          </a>
-        </div>
-
-        {/* Bottom info overlay */}
-        <div
-          className="absolute left-2 sm:left-3 right-14 sm:right-16 z-30"
-          style={{ bottom: 'max(1rem, calc(0.5rem + env(safe-area-inset-bottom, 0px)))' }}
-        >
-          <div className="flex items-center gap-1.5 sm:gap-2 mb-1 sm:mb-1.5">
-            <a
-              href={channel.channel_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-white font-bold text-xs sm:text-sm shadow-text hover:underline z-30 truncate max-w-[60%]"
-              onClick={(e) => e.stopPropagation()}
+            <div className="text-5xl sm:text-6xl mb-6">{currentCta.emoji}</div>
+            <h2 className="text-2xl sm:text-3xl font-bold mb-4 bg-gradient-to-r from-pink-400 to-purple-400 bg-clip-text text-transparent leading-tight">
+              {currentCta.headline}
+            </h2>
+            <p className="text-gray-300 text-sm sm:text-base max-w-xs mb-8 leading-relaxed">
+              {currentCta.body}
+            </p>
+            <button
+              onClick={() => signIn('google')}
+              className="flex items-center gap-3 bg-white text-gray-800 font-medium text-sm sm:text-base px-6 py-3 rounded-full shadow-lg hover:bg-gray-100 active:bg-gray-200 transition"
             >
-              @{channel.channel_name}
-            </a>
-            {age && (
-              <span className={`${ageColor} text-white text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-full whitespace-nowrap`}>
-                {age}
-              </span>
+              <svg className="w-5 h-5" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+              </svg>
+              Sign in with Google
+            </button>
+            {currentCta.sub && (
+              <p className="text-gray-500 text-xs mt-3">{currentCta.sub}</p>
             )}
-          </div>
-
-          <p className="text-white text-xs sm:text-sm shadow-text mb-1 line-clamp-2">
-            {video.title || 'Untitled'}
-          </p>
-
-          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-            {channel.subscriber_count && (
-              <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
-                {formatCount(parseInt(channel.subscriber_count))} subs
-              </span>
-            )}
-            {channel.total_video_count && (
-              <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
-                {formatCount(parseInt(channel.total_video_count))} videos
-              </span>
-            )}
-            <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
-              seen {channel.sighting_count}x
-            </span>
-          </div>
-
-          {channel.videos.length > 1 && (
-            <div className="flex items-center justify-center gap-1 sm:gap-1.5 mt-2 sm:mt-3">
-              <span className="text-gray-400 text-[10px] sm:text-xs mr-1 sm:mr-2 shadow-text">
-                {videoIndex + 1}/{channel.videos.length}
-              </span>
-              {channel.videos.slice(0, 10).map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => onVideoChange(i)}
-                  className={`rounded-full transition-all z-30 ${
-                    i === videoIndex
-                      ? 'w-2 h-2 sm:w-2.5 sm:h-2.5 bg-white'
-                      : 'w-1 h-1 sm:w-1.5 sm:h-1.5 bg-white/50 active:bg-white/80'
-                  }`}
-                />
-              ))}
-              {channel.videos.length > 10 && (
-                <span className="text-gray-400 text-[10px] sm:text-xs ml-1">+{channel.videos.length - 10}</span>
-              )}
+            <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center text-gray-600 text-xs">
+              <svg className="w-4 h-4 mb-1 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+              </svg>
+              Swipe to continue browsing
             </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <>
+            {/* YouTube Player API container */}
+            <div
+              ref={playerContainerRef}
+              className="absolute inset-0 w-full h-full"
+              style={{ pointerEvents: 'none' }}
+            >
+              <div id="yt-feed-player" />
+            </div>
 
-        {/* Swipe hints (first load only) */}
-        {!started && <SwipeHints />}
+            {/* Loading placeholder */}
+            {!playerReady && channel && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 z-10">
+                {channel.avatar_url && (
+                  <img src={channel.avatar_url} alt="" className="w-16 h-16 sm:w-20 sm:h-20 rounded-full mb-4 animate-pulse" />
+                )}
+                <p className="text-gray-400 animate-pulse text-sm sm:text-base">{channel.channel_name}</p>
+                <div className="w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full animate-spin mt-4" />
+              </div>
+            )}
+
+            {/* "Tap to start" overlay — shown until user initiates first play */}
+            {playerReady && !started && (
+              <div
+                className="absolute inset-0 z-30 flex items-center justify-center cursor-pointer"
+                onClick={handleStart}
+              >
+                <div className="bg-black/60 backdrop-blur-sm rounded-2xl px-6 py-4 text-center">
+                  <div className="w-16 h-16 sm:w-20 sm:h-20 bg-pink-600 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <svg className="w-8 h-8 sm:w-10 sm:h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </div>
+                  <p className="text-white text-sm sm:text-base font-medium">Tap to start</p>
+                  <p className="text-gray-400 text-[10px] sm:text-xs mt-1">Swipe to browse channels</p>
+                </div>
+              </div>
+            )}
+
+            {/* Paused overlay */}
+            {started && paused && (
+              <div className="absolute inset-0 z-[15] bg-black/30 flex items-center justify-center pointer-events-none">
+                <div className="w-14 h-14 sm:w-16 sm:h-16 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center">
+                  <svg className="w-7 h-7 sm:w-8 sm:h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+              </div>
+            )}
+
+            {/* Touch overlay — captures swipes and taps */}
+            {started && (
+              <div
+                className="absolute inset-0 z-20"
+                onTouchStart={onTouchStart}
+                onTouchEnd={onTouchEnd}
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const relX = e.clientX - rect.left;
+                  if (relX < rect.width * 0.8) {
+                    togglePause();
+                  }
+                }}
+              />
+            )}
+
+            {/* Swipe overlay for navigation before started (no pause on tap) */}
+            {!started && playerReady && (
+              <div
+                className="absolute inset-0 z-20"
+                onTouchStart={onTouchStart}
+                onTouchEnd={onTouchEnd}
+              />
+            )}
+
+            {/* Stats overlay — right side */}
+            {channel && video && (
+              <div
+                className="absolute right-2 sm:right-3 z-30 flex flex-col items-center gap-4 sm:gap-5"
+                style={{ bottom: 'max(7rem, calc(5rem + env(safe-area-inset-bottom, 0px)))' }}
+              >
+                <div className="flex flex-col items-center">
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  </div>
+                  <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.view_count)}</span>
+                </div>
+
+                <div className="flex flex-col items-center">
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                    </svg>
+                  </div>
+                  <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.like_count)}</span>
+                </div>
+
+                <div className="flex flex-col items-center">
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center">
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                  </div>
+                  <span className="text-white text-[10px] sm:text-xs mt-1 shadow-text">{formatCount(video.comment_count)}</span>
+                </div>
+
+                <a
+                  href={channel.channel_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="relative z-30"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {channel.avatar_url ? (
+                    <img src={channel.avatar_url} alt={channel.channel_name} className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white" />
+                  ) : (
+                    <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border-2 border-white bg-gray-700 flex items-center justify-center text-white font-bold text-xs sm:text-sm">
+                      {channel.channel_name?.charAt(0) || '?'}
+                    </div>
+                  )}
+                </a>
+              </div>
+            )}
+
+            {/* Bottom info overlay */}
+            {channel && video && (
+              <div
+                className="absolute left-2 sm:left-3 right-14 sm:right-16 z-30"
+                style={{ bottom: 'max(1rem, calc(0.5rem + env(safe-area-inset-bottom, 0px)))' }}
+              >
+                <div className="flex items-center gap-1.5 sm:gap-2 mb-1 sm:mb-1.5">
+                  <a
+                    href={channel.channel_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-white font-bold text-xs sm:text-sm shadow-text hover:underline z-30 truncate max-w-[60%]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    @{channel.channel_name}
+                  </a>
+                  {age && (
+                    <span className={`${ageColor} text-white text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-full whitespace-nowrap`}>
+                      {age}
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-white text-xs sm:text-sm shadow-text mb-1 line-clamp-2">
+                  {video.title || 'Untitled'}
+                </p>
+
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                  {channel.subscriber_count && (
+                    <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
+                      {formatCount(parseInt(channel.subscriber_count))} subs
+                    </span>
+                  )}
+                  {channel.total_video_count && (
+                    <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
+                      {formatCount(parseInt(channel.total_video_count))} videos
+                    </span>
+                  )}
+                  <span className="bg-black/50 backdrop-blur-sm text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 rounded-full">
+                    seen {channel.sighting_count}x
+                  </span>
+                </div>
+
+                {channel.videos.length > 1 && (
+                  <div className="flex items-center justify-center gap-1 sm:gap-1.5 mt-2 sm:mt-3">
+                    <span className="text-gray-400 text-[10px] sm:text-xs mr-1 sm:mr-2 shadow-text">
+                      {videoIndex + 1}/{channel.videos.length}
+                    </span>
+                    {channel.videos.slice(0, 10).map((_, i) => (
+                      <button
+                        key={i}
+                        onClick={() => onVideoChange(i)}
+                        className={`rounded-full transition-all z-30 ${
+                          i === videoIndex
+                            ? 'w-2 h-2 sm:w-2.5 sm:h-2.5 bg-white'
+                            : 'w-1 h-1 sm:w-1.5 sm:h-1.5 bg-white/50 active:bg-white/80'
+                        }`}
+                      />
+                    ))}
+                    {channel.videos.length > 10 && (
+                      <span className="text-gray-400 text-[10px] sm:text-xs ml-1">+{channel.videos.length - 10}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Swipe hints (first load only) */}
+            {!started && <SwipeHints />}
+          </>
+        )}
       </div>
 
       {fetchingMore && (

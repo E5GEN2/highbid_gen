@@ -332,7 +332,7 @@ export default function XPostsPage() {
     }
   }, []);
 
-  const startAnalysis = async (rerunFailed = false) => {
+  const startAnalysis = async (rerunFailed = false, onlyNew = false) => {
     const ids = channels.map(ch => ch.channel_id);
     if (ids.length === 0) return;
     setAnalyzing(true);
@@ -342,7 +342,7 @@ export default function XPostsPage() {
     fetch('/api/admin/x-posts/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channelIds: ids, rerunFailed, concurrency: parseInt(concurrency) || 3 }),
+      body: JSON.stringify({ channelIds: ids, rerunFailed, onlyNew, concurrency: parseInt(concurrency) || 3 }),
     }).then(() => {
       // Final poll after completion
       pollAnalysis(ids).then(() => {
@@ -805,12 +805,20 @@ export default function XPostsPage() {
                       Retry {analysisProgress.failed} Failed
                     </button>
                   )}
+                  {analysisProgress && analysisProgress.pending > 0 && !analyzing && (
+                    <button
+                      onClick={() => startAnalysis(false, true)}
+                      className="px-3 py-1.5 text-xs bg-green-900/50 text-green-400 border border-green-800 rounded-lg hover:bg-green-900 transition"
+                    >
+                      Analyze {analysisProgress.pending} New
+                    </button>
+                  )}
                   <button
                     onClick={() => startAnalysis(false)}
                     disabled={analyzing}
                     className="px-3 py-1.5 text-xs bg-purple-900/50 text-purple-400 border border-purple-800 rounded-lg hover:bg-purple-900 disabled:opacity-50 transition"
                   >
-                    {analyzing ? 'Analyzing...' : 'Analyze All Channels'}
+                    {analyzing ? 'Analyzing...' : 'Re-analyze All'}
                   </button>
                 </div>
               }

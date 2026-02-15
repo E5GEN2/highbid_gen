@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, saved: true });
     }
 
-    const { channelIds, rerunFailed, concurrency: rawConcurrency } = body;
+    const { channelIds, rerunFailed, onlyNew, concurrency: rawConcurrency } = body;
     const concurrency = Math.max(1, Math.min(10, parseInt(rawConcurrency) || 3));
 
     if (!Array.isArray(channelIds) || channelIds.length === 0) {
@@ -200,6 +200,14 @@ export async function POST(req: NextRequest) {
         await pool.query(
           `UPDATE channel_analysis SET status = 'pending', error_message = NULL, updated_at = NOW()
            WHERE channel_id = $1 AND status = 'failed'`,
+          [channelId]
+        );
+      } else if (onlyNew) {
+        // Only insert rows for channels that have no analysis yet — don't touch existing
+        await pool.query(
+          `INSERT INTO channel_analysis (channel_id, status)
+           VALUES ($1, 'pending')
+           ON CONFLICT (channel_id) DO NOTHING`,
           [channelId]
         );
       } else {
