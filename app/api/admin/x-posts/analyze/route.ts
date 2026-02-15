@@ -194,11 +194,11 @@ export async function POST(req: NextRequest) {
 
         await pool.query(
           `UPDATE channel_analysis SET
-            status = 'done', niche = $2, sub_niche = $3, content_style = $4,
-            channel_summary = $5, tags = $6, raw_response = $7,
+            status = 'done', category = $2, niche = $3, sub_niche = $4, content_style = $5,
+            channel_summary = $6, tags = $7, raw_response = $8,
             error_message = NULL, analyzed_at = NOW(), updated_at = NOW()
            WHERE channel_id = $1`,
-          [channelId, result.niche, result.sub_niche, result.content_style,
+          [channelId, result.category, result.niche, result.sub_niche, result.content_style,
            result.channel_summary, result.tags, JSON.stringify(result)]
         );
         return 'done';

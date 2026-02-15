@@ -31,6 +31,7 @@ interface Channel {
   is_posted: boolean;
   posted_at: string | null;
   post_type: string | null;
+  ai_category: string | null;
   ai_niche: string | null;
   ai_sub_niche: string | null;
   content_style: string | null;
@@ -153,7 +154,7 @@ export default function XPostsPage() {
     total: number; done: number; failed: number; analyzing: number; pending: number;
   } | null>(null);
   const [analysisResults, setAnalysisResults] = useState<Record<string, {
-    status: string; niche?: string; sub_niche?: string; content_style?: string;
+    status: string; category?: string; niche?: string; sub_niche?: string; content_style?: string;
     channel_summary?: string; tags?: string[];
     error_message?: string;
   }>>({});
@@ -759,7 +760,7 @@ export default function XPostsPage() {
                         {(status === 'done') && (
                           <div className="text-xs text-gray-400 space-y-0.5">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-gray-300">{result?.sub_niche || ch.ai_sub_niche || result?.niche || ch.ai_niche}</span>
+                              <span className="text-gray-300">{[result?.category || ch.ai_category, result?.niche || ch.ai_niche, result?.sub_niche || ch.ai_sub_niche].filter(Boolean).join(' > ')}</span>
                               {(result?.content_style || ch.content_style) && (
                                 <span className="text-gray-500">· {(result?.content_style || ch.content_style)?.replace('_', ' ')}</span>
                               )}

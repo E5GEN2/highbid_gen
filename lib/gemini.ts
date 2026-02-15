@@ -1,4 +1,5 @@
 export interface AnalysisResult {
+  category: string;
   niche: string;
   sub_niche: string;
   content_style: string;
@@ -31,8 +32,9 @@ ${videoUrl}
 
 Respond with a JSON object (no markdown, no code fences, just raw JSON) with these fields:
 
-- "niche": The primary niche/category (e.g. Comedy, Fitness, Gaming, Beauty, Music/Dance, Food, Education, Lifestyle, Pets, Sports, Fashion, Motivation, Tech, Finance, True Crime, Horror, Satisfying, ASMR, Travel, DIY, Art, or other appropriate niche)
-- "sub_niche": A more specific sub-niche within the main niche (e.g. "gym motivation clips", "React tutorials", "cat compilations")
+- "category": The broad content category (e.g. Entertainment, Education, Sports, Music, Technology, Lifestyle, News, Science, Business, Health, Comedy, Gaming, Art, Nature)
+- "niche": A more specific niche within the category (e.g. Fitness, K9 Training, React Development, Cat Videos, True Crime, ASMR, Makeup Tutorials)
+- "sub_niche": The most specific sub-niche (e.g. "gym motivation clips", "police K9 action compilations", "React hook tutorials")
 - "content_style": One of: faceless, talking_head, compilation, slideshow, animation, screen_recording, mixed
 - "channel_summary": A 1-2 sentence summary of what this channel does and what makes it notable
 - "tags": An array of 3-6 descriptive tags (e.g. ["faceless", "motivational", "ai-voiceover", "fast-growth"])
@@ -92,11 +94,12 @@ Respond ONLY with the JSON object, no other text.`;
   }
 
   // Validate required fields
-  if (!parsed.niche || !parsed.content_style || !parsed.channel_summary) {
+  if (!parsed.category || !parsed.niche || !parsed.content_style || !parsed.channel_summary) {
     throw new Error(`Missing required fields in analysis: ${JSON.stringify(parsed)}`);
   }
 
   return {
+    category: parsed.category,
     niche: parsed.niche,
     sub_niche: parsed.sub_niche || '',
     content_style: parsed.content_style,

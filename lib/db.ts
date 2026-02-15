@@ -177,6 +177,7 @@ export async function initSchema(): Promise<void> {
       CREATE TABLE IF NOT EXISTS channel_analysis (
         channel_id VARCHAR(64) PRIMARY KEY REFERENCES shorts_channels(channel_id) ON DELETE CASCADE,
         status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        category VARCHAR(128),
         niche VARCHAR(128),
         sub_niche VARCHAR(128),
         content_style VARCHAR(64),
@@ -189,6 +190,10 @@ export async function initSchema(): Promise<void> {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       )
+    `);
+
+    await client.query(`
+      ALTER TABLE channel_analysis ADD COLUMN IF NOT EXISTS category VARCHAR(128)
     `);
 
     await client.query(`
