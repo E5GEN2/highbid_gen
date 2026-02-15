@@ -502,16 +502,24 @@ export default function XPostsPage() {
       ? `\n▸ ${ch.total_video_count} videos (~${videosPerDay}/day)`
       : `\n▸ ${ch.total_video_count ?? '?'} videos`;
 
-    const totalViewsLine = ch.total_views ? `\n▸ ${formatNumber(ch.total_views)} total views` : '';
+    // Only show total views if meaningfully different from top video
+    const topVideoViews = Number(topVideo?.view_count) || 0;
+    const totalViewsLine = ch.total_views && ch.total_views > topVideoViews * 1.1
+      ? `\n▸ ${formatNumber(ch.total_views)} total views` : '';
 
-    // Composite thumbnail: top 3 video thumbnails side by side
-    const top3VideoIds = ch.videos.slice(0, 3).map(v => v.video_id);
-    const compositeUrl = `/api/admin/x-posts/composite-thumb?ids=${top3VideoIds.join(',')}`;
+    // Composite thumbnail: use up to 3 unique video thumbnails
+    const uniqueVideoIds = [...new Set(ch.videos.map(v => v.video_id))].slice(0, 3);
+    const compositeUrl = uniqueVideoIds.length >= 2
+      ? `/api/admin/x-posts/composite-thumb?ids=${uniqueVideoIds.join(',')}`
+      : null;
+    const mediaUrls = compositeUrl
+      ? [compositeUrl]
+      : getThumbnails(ch.videos, 4);
 
     // T1: Hook + stats, NO channel name, CTA to read thread
     tweets.push({
-      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers${videosLine}${totalViewsLine}\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
-      media: [compositeUrl],
+      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers${videosLine}${totalViewsLine}\n▸ Top video: ${formatNumber(topVideoViews)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
+      media: mediaUrls,
     });
 
     // T2: Reveal channel name + tags
