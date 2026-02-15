@@ -53,7 +53,6 @@ export async function renderComposition(
     serveUrl: bundleLocation,
     id: compositionId,
     inputProps,
-    chromiumExecutable,
   });
 
   await renderMedia({
