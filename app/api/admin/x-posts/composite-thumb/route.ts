@@ -78,7 +78,7 @@ export async function GET(req: NextRequest) {
       .jpeg({ quality: 90 })
       .toBuffer();
 
-    return new NextResponse(compositeImage, {
+    return new NextResponse(new Uint8Array(compositeImage), {
       headers: {
         'Content-Type': 'image/jpeg',
         'Cache-Control': 'public, max-age=86400',
