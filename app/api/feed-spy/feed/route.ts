@@ -71,20 +71,21 @@ export async function GET(req: NextRequest) {
         orderBy = 'c.subscriber_count DESC NULLS LAST';
         break;
       default: // velocity
-        // Blended ranking: velocity * daily_shuffle + freshness_bonus
+        // Two-tier ranking: fresh channels ALWAYS rank above old ones.
         //
-        // 1. Freshness bonus: channels discovered < 3 days ago get a 10M decaying
-        //    bonus so they always surface near the top.
-        //
-        // 2. Daily shuffle: a deterministic hash of (channel_id + today's date)
-        //    gives each channel a multiplier between 0.5x and 1.0x that changes
-        //    every day. This means even when no new channels are discovered,
-        //    the feed order rotates daily so users always see different channels.
-        //    The hash is deterministic so pagination stays consistent within a day.
+        // Tier 1 (discovered < 3 days): sorted by velocity among themselves,
+        //   but offset by 1 trillion so they always outrank tier 2.
+        // Tier 2 (discovered 3+ days): sorted by velocity * daily_shuffle.
+        //   The daily shuffle (0.5x-1.0x deterministic hash) rotates the order
+        //   every day so the same channels don't permanently dominate.
         orderBy = `(
-          (SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
-          * (0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0)
-          + GREATEST(1.0 - EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (3 * 86400), 0) * 10000000
+          CASE
+            WHEN c.first_seen_at > NOW() - INTERVAL '3 days' THEN
+              1000000000000 + SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1)
+            ELSE
+              (SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
+              * (0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0)
+          END
         ) DESC NULLS LAST`;
         break;
     }

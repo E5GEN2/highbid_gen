@@ -17,14 +17,15 @@ export async function GET(req: NextRequest) {
         EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / 3600 AS hours_since_discovered,
         SUM(v.view_count) AS total_video_views,
         SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1) AS velocity,
-        GREATEST(1.0 - EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (3 * 86400), 0) AS freshness_factor,
-        GREATEST(1.0 - EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (3 * 86400), 0) * 10000000 AS freshness_bonus,
-        ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0 AS daily_hash,
+        CASE WHEN c.first_seen_at > NOW() - INTERVAL '3 days' THEN 'fresh' ELSE 'settled' END AS tier,
         0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0 AS daily_multiplier,
-        (SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
-          * (0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0)
-          + GREATEST(1.0 - EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (3 * 86400), 0) * 10000000
-          AS final_score
+        CASE
+          WHEN c.first_seen_at > NOW() - INTERVAL '3 days' THEN
+            1000000000000 + SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1)
+          ELSE
+            (SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
+            * (0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0)
+        END AS final_score
       FROM shorts_channels c
       JOIN (
         SELECT DISTINCT ON (video_id) *
@@ -34,9 +35,13 @@ export async function GET(req: NextRequest) {
       GROUP BY c.channel_id, c.channel_name, c.subscriber_count,
                c.first_seen_at, c.channel_creation_date
       ORDER BY (
-        (SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
-        * (0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0)
-        + GREATEST(1.0 - EXTRACT(EPOCH FROM (NOW() - c.first_seen_at)) / (3 * 86400), 0) * 10000000
+        CASE
+          WHEN c.first_seen_at > NOW() - INTERVAL '3 days' THEN
+            1000000000000 + SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1)
+          ELSE
+            (SUM(v.view_count) / GREATEST(EXTRACT(EPOCH FROM (NOW() - c.channel_creation_date)) / 86400, 1))
+            * (0.5 + 0.5 * ABS(hashtext(c.channel_id || CURRENT_DATE::text)) / 2147483647.0)
+        END
       ) DESC NULLS LAST
       LIMIT $1
     `, [limit]);
@@ -51,11 +56,14 @@ export async function GET(req: NextRequest) {
       hours_since_discovered: Math.round(Number(r.hours_since_discovered) * 10) / 10,
       total_video_views: Number(r.total_video_views),
       velocity: Math.round(Number(r.velocity)),
-      freshness_factor: Math.round(Number(r.freshness_factor) * 1000) / 1000,
-      freshness_bonus: Math.round(Number(r.freshness_bonus)),
-      daily_multiplier: Math.round(Number(r.daily_multiplier) * 1000) / 1000,
+      tier: r.tier,
+      daily_multiplier: r.tier === 'settled' ? Math.round(Number(r.daily_multiplier) * 1000) / 1000 : null,
       final_score: Math.round(Number(r.final_score)),
     }));
+
+    // Count fresh vs settled in top results
+    const freshCount = channels.filter(c => c.tier === 'fresh').length;
+    const settledCount = channels.filter(c => c.tier === 'settled').length;
 
     // Also show channels discovered today
     const todayResult = await pool.query(`
@@ -67,6 +75,12 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ranking: channels,
+      summary: {
+        fresh_in_top: freshCount,
+        settled_in_top: settledCount,
+        fresh_score_floor: 1000000000000,
+        note: 'Fresh channels (< 3 days) ALWAYS rank above settled channels via 1T offset',
+      },
       discovered_today: todayResult.rows.map(r => ({
         channel_id: r.channel_id,
         channel_name: r.channel_name,
