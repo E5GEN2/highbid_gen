@@ -47,7 +47,7 @@ export async function renderComposition(
 
   const { selectComposition, renderMedia } = await import('@remotion/renderer');
 
-  const chromiumExecutable = process.env.REMOTION_CHROME_EXECUTABLE || undefined;
+  const browserExecutable = process.env.REMOTION_CHROME_EXECUTABLE || null;
 
   const composition = await selectComposition({
     serveUrl: bundleLocation,
@@ -61,7 +61,7 @@ export async function renderComposition(
     codec: 'h264',
     outputLocation: outputPath,
     inputProps,
-    chromiumExecutable,
+    browserExecutable,
     onProgress: ({ progress }) => {
       onProgress?.(Math.round(progress * 100));
     },
