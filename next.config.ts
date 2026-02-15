@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   experimental: {
+    serverComponentsExternalPackages: ['@remotion/renderer', '@remotion/bundler'],
     serverActions: {
       bodySizeLimit: '50MB'
     }

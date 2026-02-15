@@ -13,21 +13,9 @@ interface VideoInfo {
   view_count: number;
 }
 
-export async function analyzeChannel(
-  videos: VideoInfo[],
-  apiKey: string
-): Promise<AnalysisResult> {
-  // Pick the video with the most views
-  const topVideo = [...videos].sort((a, b) => (Number(b.view_count) || 0) - (Number(a.view_count) || 0))[0];
-  if (!topVideo) {
-    throw new Error('No videos available for analysis');
-  }
+export const DEFAULT_ANALYSIS_PROMPT = `Watch this YouTube Short and analyze the channel based on it.
 
-  const videoUrl = `https://www.youtube.com/shorts/${topVideo.video_id}`;
-
-  const prompt = `Watch this YouTube Short and analyze the channel based on it.
-
-${videoUrl}
+{{VIDEO_URL}}
 
 Respond with a JSON object (no markdown, no code fences, just raw JSON) with these fields:
 
@@ -39,6 +27,22 @@ Respond with a JSON object (no markdown, no code fences, just raw JSON) with the
 - "tags": An array of 3-6 descriptive tags (e.g. ["faceless", "motivational", "ai-voiceover", "fast-growth"])
 
 Respond ONLY with the JSON object, no other text.`;
+
+export async function analyzeChannel(
+  videos: VideoInfo[],
+  apiKey: string,
+  customPrompt?: string,
+): Promise<AnalysisResult> {
+  // Pick the video with the most views
+  const topVideo = [...videos].sort((a, b) => (Number(b.view_count) || 0) - (Number(a.view_count) || 0))[0];
+  if (!topVideo) {
+    throw new Error('No videos available for analysis');
+  }
+
+  const videoUrl = `https://www.youtube.com/shorts/${topVideo.video_id}`;
+
+  const promptTemplate = customPrompt || DEFAULT_ANALYSIS_PROMPT;
+  const prompt = promptTemplate.replace('{{VIDEO_URL}}', videoUrl);
 
   const response = await fetch(
     'https://papaiapi.com/v1beta/models/gemini-flash:generateContent',

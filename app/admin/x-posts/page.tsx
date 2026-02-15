@@ -5,6 +5,7 @@ import XPostPreview from '../../../components/admin/XPostPreview';
 import XThread from '../../../components/admin/XThread';
 import LeaderboardCard from '../../../components/admin/LeaderboardCard';
 import ChannelSpotlightCard from '../../../components/admin/ChannelSpotlightCard';
+import VideoRenderButton from '../../../components/admin/VideoRenderButton';
 
 interface Video {
   video_id: string;
@@ -154,6 +155,10 @@ export default function XPostsPage() {
   const [ytApiKeyPreview, setYtApiKeyPreview] = useState<string | null>(null);
   const [ytApiKeySaving, setYtApiKeySaving] = useState(false);
   const [concurrency, setConcurrency] = useState('3');
+  const [analysisPrompt, setAnalysisPrompt] = useState('');
+  const [defaultPrompt, setDefaultPrompt] = useState('');
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [promptSaving, setPromptSaving] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState<{
     total: number; done: number; failed: number; analyzing: number; pending: number;
@@ -180,6 +185,8 @@ export default function XPostsPage() {
       .then(data => {
         if (data.apiKeyPreview) setApiKeyPreview(data.apiKeyPreview);
         if (data.youtubeApiKeyPreview) setYtApiKeyPreview(data.youtubeApiKeyPreview);
+        if (data.analysisPrompt) setAnalysisPrompt(data.analysisPrompt);
+        if (data.defaultPrompt) setDefaultPrompt(data.defaultPrompt);
       })
       .catch(() => {});
   }, [authenticated]);
@@ -378,6 +385,26 @@ export default function XPostsPage() {
       console.error('Failed to save YouTube API key:', err);
     } finally {
       setYtApiKeySaving(false);
+    }
+  };
+
+  const savePrompt = async () => {
+    if (!analysisPrompt.trim()) return;
+    setPromptSaving(true);
+    try {
+      const res = await fetch('/api/admin/x-posts/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysisPrompt: analysisPrompt.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showCopyFeedback('Prompt saved');
+      }
+    } catch (err) {
+      console.error('Failed to save prompt:', err);
+    } finally {
+      setPromptSaving(false);
     }
   };
 
@@ -783,6 +810,59 @@ export default function XPostsPage() {
                 </div>
               </div>
 
+              {/* Analysis Prompt Editor */}
+              <div className="border border-gray-700/50 rounded-xl overflow-hidden">
+                <button
+                  onClick={() => setPromptExpanded(!promptExpanded)}
+                  className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-gray-800/50 transition"
+                >
+                  <div className="flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+                    </svg>
+                    <span className="text-xs font-medium text-gray-400">Analysis Prompt</span>
+                    {analysisPrompt !== defaultPrompt && (
+                      <span className="text-[10px] text-purple-400 bg-purple-900/30 px-1.5 py-0.5 rounded">customized</span>
+                    )}
+                  </div>
+                  <svg
+                    className={`w-3.5 h-3.5 text-gray-500 transition-transform ${promptExpanded ? 'rotate-180' : ''}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {promptExpanded && (
+                  <div className="px-4 pb-4 pt-1 border-t border-gray-700/50">
+                    <p className="text-[10px] text-gray-500 mb-2">
+                      Use <code className="bg-gray-800 px-1 py-0.5 rounded text-purple-400">{'{{VIDEO_URL}}'}</code> as placeholder for the video URL.
+                    </p>
+                    <textarea
+                      value={analysisPrompt}
+                      onChange={e => setAnalysisPrompt(e.target.value)}
+                      rows={12}
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-xs font-mono placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y leading-relaxed"
+                      placeholder="Enter analysis prompt..."
+                    />
+                    <div className="flex items-center gap-2 mt-2">
+                      <button
+                        onClick={savePrompt}
+                        disabled={promptSaving}
+                        className="px-3 py-1.5 text-xs bg-purple-900/50 text-purple-400 border border-purple-800 rounded-lg hover:bg-purple-900 disabled:opacity-50 transition"
+                      >
+                        {promptSaving ? 'Saving...' : 'Save Prompt'}
+                      </button>
+                      <button
+                        onClick={() => setAnalysisPrompt(defaultPrompt)}
+                        className="px-3 py-1.5 text-xs bg-gray-800 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700 hover:text-white transition"
+                      >
+                        Reset to Default
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Progress bar */}
               {analysisProgress && analysisProgress.total > 0 && (
                 <div className="mb-4">
@@ -946,6 +1026,25 @@ export default function XPostsPage() {
               {/* Leaderboard card for T1 */}
               <LeaderboardCard channels={freshChannels.slice(0, 5)} date={date} />
 
+              <VideoRenderButton
+                compositionId="LeaderboardVideo"
+                inputProps={{
+                  channels: freshChannels.slice(0, 5).map(ch => ({
+                    channel_name: ch.channel_name,
+                    avatar_url: ch.avatar_url,
+                    subscriber_count: ch.subscriber_count,
+                    age_days: ch.age_days,
+                    velocity: ch.velocity,
+                    niche: ch.niche,
+                    total_views: ch.total_views,
+                  })),
+                  date,
+                  postText: threadTweets[0]?.text || '',
+                }}
+                channelIds={getThreadChannelIds()}
+                label="Render Leaderboard Video"
+              />
+
               <div className="mt-4">
                 <XThread tweets={threadTweets} />
               </div>
@@ -995,6 +1094,29 @@ export default function XPostsPage() {
                   thumbnails={getThumbnails(freshChannels[0].videos, 4)}
                 />
 
+                <VideoRenderButton
+                  compositionId="ChannelSpotlightVideo"
+                  inputProps={{
+                    channel: {
+                      channel_name: freshChannels[0].channel_name,
+                      avatar_url: freshChannels[0].avatar_url,
+                      niche: freshChannels[0].niche,
+                      sub_niche: freshChannels[0].ai_sub_niche,
+                      subscriber_count: freshChannels[0].subscriber_count,
+                      age_days: freshChannels[0].age_days,
+                      total_views: freshChannels[0].total_views,
+                      video_count: freshChannels[0].total_video_count,
+                      content_style: freshChannels[0].content_style,
+                      channel_summary: freshChannels[0].channel_summary,
+                      tags: freshChannels[0].ai_tags,
+                    },
+                    clipPaths: [],
+                    postText: singleBanger.text,
+                  }}
+                  channelIds={getBangerChannelIds()}
+                  label="Render Spotlight Video"
+                />
+
                 <div className="mt-4">
                   <XPostPreview
                     text={singleBanger.text}
@@ -1031,6 +1153,34 @@ export default function XPostsPage() {
                     Copy All
                   </button>
                 </div>
+                <VideoRenderButton
+                  compositionId="StatsVideo"
+                  inputProps={{
+                    totalChannels: stats?.totalChannels || 0,
+                    totalViews: stats?.totalViews || 0,
+                    avgAgeDays: stats?.avgAgeDays || 0,
+                    contentStyles: (() => {
+                      const styles: Record<string, number> = {};
+                      for (const ch of freshChannels) {
+                        const s = ch.content_style?.replace('_', ' ') || 'unknown';
+                        styles[s] = (styles[s] || 0) + 1;
+                      }
+                      return styles;
+                    })(),
+                    categories: [...new Set(freshChannels.map(ch => ch.ai_category).filter(Boolean))],
+                    topChannel: {
+                      channel_name: freshChannels[0]?.channel_name || '',
+                      avatar_url: freshChannels[0]?.avatar_url || null,
+                      subscriber_count: freshChannels[0]?.subscriber_count || null,
+                      age_days: freshChannels[0]?.age_days || null,
+                    },
+                    postText: statsPost.text,
+                  }}
+                  label="Render Stats Video"
+                />
+
+                <div className="mt-4" />
+
                 <XPostPreview
                   text={statsPost.text}
                   onCopy={() => showCopyFeedback('Copied!')}
@@ -1064,12 +1214,36 @@ export default function XPostsPage() {
                 </div>
                 <div className="space-y-4">
                   {nicheRoundups.map((roundup, i) => (
-                    <XPostPreview
-                      key={i}
-                      text={roundup.text}
-                      media={roundup.media}
-                      onCopy={() => showCopyFeedback('Copied!')}
-                    />
+                    <div key={i}>
+                      <XPostPreview
+                        text={roundup.text}
+                        media={roundup.media}
+                        onCopy={() => showCopyFeedback('Copied!')}
+                      />
+                      <VideoRenderButton
+                        compositionId="NicheRoundupVideo"
+                        inputProps={{
+                          nicheName: roundup.niche,
+                          channels: freshChannels
+                            .filter(ch => (ch.ai_category || ch.ai_niche || ch.niche) === roundup.niche)
+                            .slice(0, 6)
+                            .map(ch => ({
+                              channel_name: ch.channel_name,
+                              avatar_url: ch.avatar_url,
+                              sub_niche: ch.ai_sub_niche,
+                              subscriber_count: ch.subscriber_count,
+                              age_days: ch.age_days,
+                            })),
+                          combinedViews: freshChannels
+                            .filter(ch => (ch.ai_category || ch.ai_niche || ch.niche) === roundup.niche)
+                            .reduce((sum, ch) => sum + ch.total_views, 0),
+                          clipPaths: [],
+                          postText: roundup.text,
+                        }}
+                        channelIds={roundup.channelIds}
+                        label={`Render ${roundup.niche} Video`}
+                      />
+                    </div>
                   ))}
                 </div>
               </CollapsibleSection>

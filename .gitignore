@@ -42,3 +42,7 @@ next-env.d.ts
 *.txt
 *_token*
 *_key*
+
+# Remotion render artifacts
+tmp/clip-cache/
+tmp/renders/

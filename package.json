@@ -6,9 +6,15 @@
     "dev": "next dev --turbopack",
     "build": "npm install && next build",
     "start": "next start -H 0.0.0.0 -p ${PORT:-10000}",
-    "lint": "eslint"
+    "lint": "eslint",
+    "remotion:preview": "npx remotion preview remotion/Root.tsx",
+    "remotion:render": "npx remotion render remotion/Root.tsx"
   },
   "dependencies": {
+    "@remotion/bundler": "^4.0.422",
+    "@remotion/cli": "^4.0.422",
+    "@remotion/media-utils": "^4.0.422",
+    "@remotion/renderer": "^4.0.422",
     "html2canvas-pro": "^1.6.7",
     "jszip": "^3.10.1",
     "next": "^15.5.9",
@@ -16,7 +22,8 @@
     "pg": "^8.13.0",
     "pngjs": "^7.0.0",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "remotion": "^4.0.422"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

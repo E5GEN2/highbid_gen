@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../../lib/db';
-import { analyzeChannel } from '../../../../../lib/gemini';
+import { analyzeChannel, DEFAULT_ANALYSIS_PROMPT } from '../../../../../lib/gemini';
 
 function checkAuth(req: NextRequest): boolean {
   const token = req.cookies.get('admin_token')?.value;
@@ -57,11 +57,14 @@ export async function GET(req: NextRequest) {
     if (channelIds.length === 0) {
       const apiKey = await getApiKey(pool);
       const ytApiKey = await getYouTubeApiKey(pool);
+      const customPrompt = await getConfigKey(pool, 'analysis_prompt');
       return NextResponse.json({
         hasApiKey: !!apiKey,
         apiKeyPreview: apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : null,
         hasYouTubeApiKey: !!ytApiKey,
         youtubeApiKeyPreview: ytApiKey ? `${ytApiKey.slice(0, 8)}...${ytApiKey.slice(-4)}` : null,
+        analysisPrompt: customPrompt || DEFAULT_ANALYSIS_PROMPT,
+        defaultPrompt: DEFAULT_ANALYSIS_PROMPT,
       });
     }
 
@@ -134,8 +137,17 @@ export async function POST(req: NextRequest) {
         [body.youtubeApiKey.trim()]
       );
     }
-    // If no channelIds, just saving keys
-    if (!body.channelIds && (body.apiKey || body.youtubeApiKey)) {
+    // Save analysis prompt if provided
+    if (body.analysisPrompt && typeof body.analysisPrompt === 'string') {
+      await pool.query(
+        `INSERT INTO admin_config (key, value, updated_at)
+         VALUES ('analysis_prompt', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+        [body.analysisPrompt.trim()]
+      );
+    }
+    // If no channelIds, just saving config
+    if (!body.channelIds && (body.apiKey || body.youtubeApiKey || body.analysisPrompt)) {
       return NextResponse.json({ success: true, saved: true });
     }
 
@@ -201,6 +213,7 @@ export async function POST(req: NextRequest) {
     }
 
     const ytApiKey = await getYouTubeApiKey(pool);
+    const customPrompt = await getConfigKey(pool, 'analysis_prompt');
 
     // Process a single channel
     async function processChannel(channelId: string): Promise<'done' | 'failed' | 'skipped'> {
@@ -223,7 +236,8 @@ export async function POST(req: NextRequest) {
       try {
         const result = await analyzeChannel(
           ch.videos || [],
-          apiKey
+          apiKey,
+          customPrompt || undefined
         );
 
         // Detect language from top video via YouTube Data API
