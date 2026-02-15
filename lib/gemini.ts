@@ -75,17 +75,26 @@ Respond ONLY with the JSON object, no other text.`;
     throw new Error('No text in Gemini response');
   }
 
-  // Strip markdown code fences if present
-  const cleaned = text
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```\s*$/, '')
+  // Extract JSON from response — handle code fences, extra text, smart quotes
+  let jsonStr = text
+    .replace(/```(?:json)?\s*/gi, '')
+    .replace(/```/g, '')
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'")
     .trim();
+
+  // Extract just the JSON object between first { and last }
+  const start = jsonStr.indexOf('{');
+  const end = jsonStr.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    jsonStr = jsonStr.substring(start, end + 1);
+  }
 
   let parsed: AnalysisResult;
   try {
-    parsed = JSON.parse(cleaned);
+    parsed = JSON.parse(jsonStr);
   } catch {
-    throw new Error(`Failed to parse Gemini response as JSON: ${cleaned.substring(0, 200)}`);
+    throw new Error(`Failed to parse Gemini response as JSON: ${jsonStr.substring(0, 300)}`);
   }
 
   // Validate required fields
