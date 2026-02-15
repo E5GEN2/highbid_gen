@@ -373,10 +373,12 @@ export default function XPostsPage() {
     // T2-4: individual channels
     top5.slice(0, 3).forEach((ch, i) => {
       const topVideo = getTopVideo(ch.videos);
-      const nicheLabel = ch.ai_sub_niche || ch.ai_niche || ch.niche;
-      const styleNote = ch.content_style ? ` · ${ch.content_style.replace('_', ' ')}` : '';
+      const nicheLabel = [ch.ai_category, ch.ai_niche].filter(Boolean).join(' · ') || ch.niche;
+      const style = ch.content_style ? ch.content_style.replace('_', ' ') : '';
+      const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
+      const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 4).map(t => `#${t}`).join(' ')}` : '';
       tweets.push({
-        text: `${ch.channel_name}\n${nicheLabel}${styleNote} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views\n\n${HOOKS[i % HOOKS.length]}`,
+        text: `${ch.channel_name}\n${nicheLabel}${style ? ` · ${style}` : ''} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}${tagLine}\n\n${HOOKS[i % HOOKS.length]}`,
         media: getThumbnails(ch.videos, 4),
       });
     });
@@ -395,9 +397,12 @@ export default function XPostsPage() {
     const ch = freshChannels[0];
     const topVideo = getTopVideo(ch.videos);
 
+    const nicheLabel = [ch.ai_category, ch.ai_niche, ch.ai_sub_niche].filter(Boolean).join(' › ') || ch.niche;
+    const style = ch.content_style ? `\n▸ Style: ${ch.content_style.replace('_', ' ')}` : '';
     const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
+    const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 5).map(t => `#${t}`).join(' ')}` : '';
     return {
-      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${ch.ai_sub_niche || ch.ai_niche || ch.niche}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}\n\nMost people won't find this channel for months. We found it today.`,
+      text: `This channel is only ${formatAge(ch.age_days)} old and we just discovered it today.\n\n${ch.channel_name} — ${nicheLabel}\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${summaryLine}${tagLine}\n\nMost people won't find this channel for months. We found it today.`,
       media: getThumbnails(ch.videos, 4),
     };
   };
@@ -406,8 +411,25 @@ export default function XPostsPage() {
   const generateStatsPost = (): { text: string } | null => {
     if (!stats || freshChannels.length === 0) return null;
     const topCh = freshChannels[0];
+
+    // Count content styles
+    const styles: Record<string, number> = {};
+    for (const ch of freshChannels) {
+      const s = ch.content_style?.replace('_', ' ') || 'unknown';
+      styles[s] = (styles[s] || 0) + 1;
+    }
+    const styleBreakdown = Object.entries(styles)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([s, n]) => `${n} ${s}`)
+      .join(', ');
+
+    // Unique categories
+    const categories = [...new Set(freshChannels.map(ch => ch.ai_category).filter(Boolean))];
+    const categoryLine = categories.length > 0 ? `\nCategories: ${categories.join(', ')}` : '';
+
     return {
-      text: `Every day we discover YouTube Shorts channels before they blow up.\n\nToday's finds:\n${stats.totalChannels} new channels discovered\nAverage channel age: ${stats.avgAgeDays} days\nCombined views: ${formatNumber(stats.totalViews)}\nTop niche: ${stats.topNiche}\n\nThe freshest one hit ${formatNumber(topCh.subscriber_count)} subscribers in just ${topCh.age_days ?? '?'} days — and we caught it early.`,
+      text: `Every day we discover YouTube Shorts channels before they blow up.\n\nToday's finds:\n${stats.totalChannels} new channels discovered\nAverage channel age: ${stats.avgAgeDays} days\nCombined views: ${formatNumber(stats.totalViews)}\nContent styles: ${styleBreakdown}${categoryLine}\n\nThe freshest one hit ${formatNumber(topCh.subscriber_count)} subscribers in just ${topCh.age_days ?? '?'} days — and we caught it early.`,
     };
   };
 
@@ -415,7 +437,7 @@ export default function XPostsPage() {
   const generateNicheRoundups = (): { niche: string; text: string; media: string[]; channelIds: string[] }[] => {
     const nicheMap: Record<string, Channel[]> = {};
     for (const ch of freshChannels) {
-      const nicheKey = ch.ai_niche || ch.niche;
+      const nicheKey = ch.ai_category || ch.ai_niche || ch.niche;
       if (!nicheMap[nicheKey]) nicheMap[nicheKey] = [];
       nicheMap[nicheKey].push(ch);
     }
@@ -424,9 +446,11 @@ export default function XPostsPage() {
       .filter(([, chs]) => chs.length >= 2)
       .map(([niche, chs]) => {
         const totalViews = chs.reduce((sum, ch) => sum + ch.total_views, 0);
-        const listed = chs.slice(0, 4).map(ch =>
-          `• ${ch.channel_name} — ${formatNumber(ch.subscriber_count)} subs (${formatAge(ch.age_days)} old)`
-        ).join('\n');
+        const listed = chs.slice(0, 4).map(ch => {
+          const subNiche = ch.ai_sub_niche || ch.ai_niche || '';
+          const style = ch.content_style ? ` · ${ch.content_style.replace('_', ' ')}` : '';
+          return `• ${ch.channel_name} — ${subNiche}${style}\n  ${formatNumber(ch.subscriber_count)} subs · ${formatAge(ch.age_days)} old`;
+        }).join('\n');
 
         return {
           niche,
