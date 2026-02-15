@@ -472,8 +472,8 @@ export default function XPostsPage() {
     return tweets;
   };
 
-  // 2. Single Banger Post
-  const generateSingleBanger = (): { text: string; media: string[] } | null => {
+  // 2. Single Banger Post (thread: T1 teases without channel name, T2 reveals)
+  const generateSingleBanger = (): { text: string; media?: string[] }[] | null => {
     if (freshChannels.length === 0) return null;
     const ch = freshChannels[0];
     const topVideo = getTopVideo(ch.videos);
@@ -493,10 +493,20 @@ export default function XPostsPage() {
     else if (isYoung) hook = pickHook(HOOKS_SPEED, Date.now());
     else hook = pickHook(HOOKS_DISCOVERY, Date.now());
 
-    return {
-      text: `${hook}\n\n${ch.channel_name} — ${nicheLabel}\n▸ ${formatAge(ch.age_days)} old\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}${tagLine}`,
+    const tweets: { text: string; media?: string[] }[] = [];
+
+    // T1: Hook + stats, NO channel name, CTA to read thread
+    tweets.push({
+      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
       media: getThumbnails(ch.videos, 4),
-    };
+    });
+
+    // T2: Reveal channel name + tags
+    tweets.push({
+      text: `The channel: ${ch.channel_name}\n\n${ch.channel_url}${tagLine}\n\nFollow @rofe_ai — we find channels like this every day.`,
+    });
+
+    return tweets;
   };
 
   // 3. Stats-Only Post
@@ -1020,6 +1030,7 @@ export default function XPostsPage() {
             <CollapsibleSection
               title="Daily Leaderboard Thread"
               subtitle={`${threadTweets.length} tweets`}
+              defaultOpen={false}
               headerRight={
                 getThreadChannelIds().length > 0 && (
                   <button
@@ -1083,11 +1094,12 @@ export default function XPostsPage() {
               </div>
             </CollapsibleSection>
 
-            {/* 2. Single Banger Post */}
+            {/* 2. Single Banger Post (Thread) */}
             {singleBanger && (
               <CollapsibleSection
                 title="Single Banger Post"
-                subtitle="Best channel feature"
+                subtitle={`${singleBanger.length} tweets`}
+                defaultOpen={false}
                 headerRight={
                   getBangerChannelIds().length > 0 && (
                     <button
@@ -1102,13 +1114,13 @@ export default function XPostsPage() {
               >
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs text-gray-500">
-                    Single tweet
+                    Thread preview
                     {!hidePosted && freshChannels[0]?.is_posted && (
                       <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400 border border-green-800">Posted</span>
                     )}
                   </span>
                   <button
-                    onClick={() => { navigator.clipboard.writeText(singleBanger.text); showCopyFeedback('Copied!'); }}
+                    onClick={() => copyAllTexts(singleBanger.map(t => t.text))}
                     className="px-3 py-1.5 text-xs bg-gray-800 text-gray-400 rounded-lg hover:bg-gray-700 hover:text-white transition"
                   >
                     Copy All
@@ -1144,18 +1156,14 @@ export default function XPostsPage() {
                       tags: freshChannels[0].ai_tags,
                     },
                     clipPaths: [],
-                    postText: singleBanger.text,
+                    postText: singleBanger[0]?.text || '',
                   }}
                   channelIds={getBangerChannelIds()}
                   label="Render Spotlight Video"
                 />
 
                 <div className="mt-4">
-                  <XPostPreview
-                    text={singleBanger.text}
-                    media={singleBanger.media}
-                    onCopy={() => showCopyFeedback('Copied!')}
-                  />
+                  <XThread tweets={singleBanger} />
                 </div>
               </CollapsibleSection>
             )}
@@ -1165,6 +1173,7 @@ export default function XPostsPage() {
               <CollapsibleSection
                 title="Stats-Only Post"
                 subtitle="Numbers only, no media"
+                defaultOpen={false}
                 headerRight={
                   getStatsChannelIds().length > 0 && (
                     <button
@@ -1226,6 +1235,7 @@ export default function XPostsPage() {
               <CollapsibleSection
                 title="Niche Roundup"
                 subtitle={`${nicheRoundups.length} niche${nicheRoundups.length !== 1 ? 's' : ''} with 2+ channels`}
+                defaultOpen={false}
                 headerRight={
                   <button
                     onClick={() => markAsPosted(nicheRoundups.flatMap(r => r.channelIds), 'niche_roundup')}
