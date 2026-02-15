@@ -495,9 +495,16 @@ export default function XPostsPage() {
 
     const tweets: { text: string; media?: string[] }[] = [];
 
+    const videosPerDay = ch.total_video_count && ch.age_days && ch.age_days > 0
+      ? (ch.total_video_count / ch.age_days).toFixed(1)
+      : null;
+    const videosLine = videosPerDay
+      ? `\n▸ ${ch.total_video_count} videos (~${videosPerDay}/day)`
+      : `\n▸ ${ch.total_video_count ?? '?'} videos`;
+
     // T1: Hook + stats, NO channel name, CTA to read thread
     tweets.push({
-      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers\n▸ ${ch.total_video_count ?? '?'} videos\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
+      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers${videosLine}\n▸ Top video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
       media: getThumbnails(ch.videos, 4),
     });
 
