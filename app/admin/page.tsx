@@ -23,8 +23,10 @@ export default function AdminPage() {
 
   // Sync state
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<{ synced: number; videos: number; confirmed: number; emptyTaskIds?: string[] } | null>(null);
+  const [syncResult, setSyncResult] = useState<{ synced: number; videos: number; confirmed: number; skipped: number; empty: number; totalFetched: number; emptyTaskIds?: string[] } | null>(null);
   const [syncError, setSyncError] = useState('');
+  const [syncLimit, setSyncLimit] = useState('50');
+  const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number } | null>(null);
 
   // DB stats
   const [stats, setStats] = useState<{
@@ -192,21 +194,60 @@ export default function AdminPage() {
     setSyncing(true);
     setSyncResult(null);
     setSyncError('');
+    setSyncProgress(null);
 
     try {
-      const res = await fetch('/api/feed-spy/sync', { method: 'POST' });
-      const data = await res.json();
+      const limit = Math.max(1, parseInt(syncLimit) || 50);
+      const res = await fetch('/api/feed-spy/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit }),
+      });
 
-      if (data.success) {
-        setSyncResult({ synced: data.synced, videos: data.videos, confirmed: data.confirmed, emptyTaskIds: data.emptyTaskIds });
-        fetchStats();
-      } else {
-        setSyncError(data.error || 'Sync failed');
+      if (!res.body) {
+        setSyncError('No response stream');
+        setSyncing(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE events from buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // keep incomplete line in buffer
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7);
+          } else if (line.startsWith('data: ') && eventType) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'progress') {
+                setSyncProgress(data);
+              } else if (eventType === 'done') {
+                setSyncResult(data);
+                fetchStats();
+              } else if (eventType === 'error') {
+                setSyncError(data.error || 'Sync failed');
+              }
+            } catch { /* skip malformed */ }
+            eventType = '';
+          }
+        }
       }
     } catch (err) {
       setSyncError(err instanceof Error ? err.message : 'Sync failed');
     } finally {
       setSyncing(false);
+      setSyncProgress(null);
     }
   };
 
@@ -419,36 +460,101 @@ export default function AdminPage() {
         {/* Feed Spy Sync */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
           <h2 className="text-lg font-bold text-white mb-2">Feed Spy — Sync</h2>
-          <p className="text-gray-400 text-sm mb-6">
+          <p className="text-gray-400 text-sm mb-4">
             Pull completed tasks from xgodo, store video/channel data in PostgreSQL, and mark tasks as confirmed.
           </p>
 
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            className="px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 disabled:opacity-50 transition flex items-center gap-3"
-          >
-            {syncing ? (
-              <>
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                Syncing from xgodo...
-              </>
-            ) : (
-              <>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Sync Now
-              </>
-            )}
-          </button>
+          <div className="flex items-center gap-3 mb-4">
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className="px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 disabled:opacity-50 transition flex items-center gap-3"
+            >
+              {syncing ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Syncing...
+                </>
+              ) : (
+                <>
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Sync Now
+                </>
+              )}
+            </button>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-500 whitespace-nowrap">Tasks limit</label>
+              <input
+                type="number"
+                min={1}
+                max={5000}
+                value={syncLimit}
+                onChange={(e) => setSyncLimit(e.target.value)}
+                disabled={syncing}
+                className="w-20 px-2.5 py-3 bg-gray-800 border border-gray-700 rounded-xl text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50"
+              />
+            </div>
+          </div>
+
+          {/* Live progress */}
+          {syncing && syncProgress && (
+            <div className="mb-4 bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+                <span className="text-sm text-gray-200">{syncProgress.message}</span>
+              </div>
+              {syncProgress.total != null && syncProgress.processed != null && (
+                <>
+                  <div className="w-full bg-gray-700 rounded-full h-2 mb-2">
+                    <div
+                      className="bg-red-500 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.round((syncProgress.processed / syncProgress.total) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex gap-4 text-[11px] text-gray-400">
+                    <span>{syncProgress.processed}/{syncProgress.total} processed</span>
+                    {syncProgress.synced != null && <span className="text-green-400">{syncProgress.synced} synced</span>}
+                    {syncProgress.videos != null && <span className="text-blue-400">{syncProgress.videos} videos</span>}
+                    {(syncProgress.skipped ?? 0) > 0 && <span className="text-gray-500">{syncProgress.skipped} skipped</span>}
+                    {(syncProgress.empty ?? 0) > 0 && <span className="text-yellow-400">{syncProgress.empty} empty</span>}
+                  </div>
+                </>
+              )}
+              {syncProgress.phase === 'fetching' && !syncProgress.total && (
+                <div className="text-xs text-gray-500 mt-1">Pulling task pages from xgodo API...</div>
+              )}
+            </div>
+          )}
 
           {syncResult && (
             <div className="mt-4 bg-green-900/20 border border-green-600/30 rounded-xl p-4">
-              <div className="text-green-400 font-medium mb-1">Sync Complete</div>
-              <div className="text-sm text-green-300/70">
-                {syncResult.synced} tasks synced — {syncResult.videos} videos ingested — {syncResult.confirmed} confirmed on xgodo
+              <div className="text-green-400 font-medium mb-2">Sync Complete</div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+                <div className="bg-green-900/30 rounded-lg px-3 py-2 text-center">
+                  <div className="text-lg font-bold text-green-300">{syncResult.synced}</div>
+                  <div className="text-[10px] text-green-400/70">tasks synced</div>
+                </div>
+                <div className="bg-blue-900/30 rounded-lg px-3 py-2 text-center">
+                  <div className="text-lg font-bold text-blue-300">{syncResult.videos}</div>
+                  <div className="text-[10px] text-blue-400/70">videos ingested</div>
+                </div>
+                <div className="bg-purple-900/30 rounded-lg px-3 py-2 text-center">
+                  <div className="text-lg font-bold text-purple-300">{syncResult.confirmed}</div>
+                  <div className="text-[10px] text-purple-400/70">confirmed</div>
+                </div>
+                <div className="bg-gray-800 rounded-lg px-3 py-2 text-center">
+                  <div className="text-lg font-bold text-gray-300">{syncResult.totalFetched}</div>
+                  <div className="text-[10px] text-gray-400/70">fetched from xgodo</div>
+                </div>
               </div>
+              {(syncResult.skipped > 0 || syncResult.empty > 0) && (
+                <div className="flex gap-3 mt-2 text-xs text-gray-400">
+                  {syncResult.skipped > 0 && <span>{syncResult.skipped} already synced (skipped)</span>}
+                  {syncResult.empty > 0 && <span className="text-yellow-400/70">{syncResult.empty} empty tasks</span>}
+                </div>
+              )}
             </div>
           )}
 
@@ -464,7 +570,7 @@ export default function AdminPage() {
             </div>
           )}
 
-          {syncResult && syncResult.synced === 0 && (!syncResult.emptyTaskIds || syncResult.emptyTaskIds.length === 0) && (
+          {syncResult && syncResult.synced === 0 && syncResult.empty === 0 && syncResult.skipped === 0 && (
             <div className="mt-4 bg-gray-800 border border-gray-700 rounded-xl p-4">
               <div className="text-gray-300 text-sm">No new tasks to sync. All pending data has been collected.</div>
             </div>
