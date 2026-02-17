@@ -26,7 +26,7 @@ export default function AdminPage() {
   const [syncResult, setSyncResult] = useState<{ synced: number; videos: number; confirmed: number; skipped: number; empty: number; totalFetched: number; emptyTaskIds?: string[] } | null>(null);
   const [syncError, setSyncError] = useState('');
   const [syncLimit, setSyncLimit] = useState('50');
-  const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number } | null>(null);
+  const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // DB stats
   const [stats, setStats] = useState<{
@@ -500,30 +500,71 @@ export default function AdminPage() {
 
           {/* Live progress */}
           {syncing && syncProgress && (
-            <div className="mb-4 bg-gray-800/50 border border-gray-700 rounded-xl p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm text-gray-200">{syncProgress.message}</span>
+            <div className="mb-4 bg-gray-800/80 border border-gray-700 rounded-xl p-4 space-y-3">
+              {/* Phase label */}
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-red-400 rounded-full animate-pulse" />
+                <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+                  {syncProgress.phase === 'fetching' ? 'Fetching from xgodo' :
+                   syncProgress.phase === 'processing' ? 'Processing tasks' :
+                   syncProgress.phase === 'avatars' ? 'Fetching YouTube data' :
+                   syncProgress.phase === 'confirming' ? 'Confirming on xgodo' : syncProgress.phase}
+                </span>
               </div>
-              {syncProgress.total != null && syncProgress.processed != null && (
+
+              {/* Progress bar — always visible when we have numbers */}
+              {syncProgress.phase === 'fetching' && (
                 <>
-                  <div className="w-full bg-gray-700 rounded-full h-2 mb-2">
-                    <div
-                      className="bg-red-500 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${Math.round((syncProgress.processed / syncProgress.total) * 100)}%` }}
-                    />
+                  <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                    <div className="bg-red-500/60 h-full rounded-full animate-pulse" style={{ width: '100%' }} />
                   </div>
-                  <div className="flex gap-4 text-[11px] text-gray-400">
-                    <span>{syncProgress.processed}/{syncProgress.total} processed</span>
-                    {syncProgress.synced != null && <span className="text-green-400">{syncProgress.synced} synced</span>}
-                    {syncProgress.videos != null && <span className="text-blue-400">{syncProgress.videos} videos</span>}
-                    {(syncProgress.skipped ?? 0) > 0 && <span className="text-gray-500">{syncProgress.skipped} skipped</span>}
-                    {(syncProgress.empty ?? 0) > 0 && <span className="text-yellow-400">{syncProgress.empty} empty</span>}
+                  <div className="text-center">
+                    <span className="text-2xl font-bold text-white font-mono">{syncProgress.tasksFetched ?? 0}</span>
+                    <span className="text-sm text-gray-400 ml-2">tasks fetched</span>
                   </div>
                 </>
               )}
-              {syncProgress.phase === 'fetching' && !syncProgress.total && (
-                <div className="text-xs text-gray-500 mt-1">Pulling task pages from xgodo API...</div>
+
+              {syncProgress.phase === 'processing' && syncProgress.total != null && syncProgress.processed != null && (
+                <>
+                  <div className="w-full bg-gray-700 rounded-full h-2.5">
+                    <div
+                      className="bg-gradient-to-r from-red-500 to-orange-500 h-full rounded-full transition-all duration-200"
+                      style={{ width: `${Math.round((syncProgress.processed / syncProgress.total) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex items-baseline justify-center gap-1">
+                    <span className="text-3xl font-bold text-white font-mono">{syncProgress.processed}</span>
+                    <span className="text-lg text-gray-500 font-mono">/ {syncProgress.total}</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <div className="bg-green-900/30 border border-green-800/30 rounded-lg px-2 py-1.5 text-center">
+                      <div className="text-base font-bold text-green-400 font-mono">{syncProgress.synced ?? 0}</div>
+                      <div className="text-[9px] text-green-500/70 uppercase">synced</div>
+                    </div>
+                    <div className="bg-blue-900/30 border border-blue-800/30 rounded-lg px-2 py-1.5 text-center">
+                      <div className="text-base font-bold text-blue-400 font-mono">{syncProgress.videos ?? 0}</div>
+                      <div className="text-[9px] text-blue-500/70 uppercase">videos</div>
+                    </div>
+                    <div className="bg-gray-800 border border-gray-700/50 rounded-lg px-2 py-1.5 text-center">
+                      <div className="text-base font-bold text-gray-400 font-mono">{syncProgress.skipped ?? 0}</div>
+                      <div className="text-[9px] text-gray-500 uppercase">skipped</div>
+                    </div>
+                    <div className="bg-yellow-900/30 border border-yellow-800/30 rounded-lg px-2 py-1.5 text-center">
+                      <div className="text-base font-bold text-yellow-400 font-mono">{syncProgress.empty ?? 0}</div>
+                      <div className="text-[9px] text-yellow-500/70 uppercase">empty</div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {(syncProgress.phase === 'avatars' || syncProgress.phase === 'confirming') && (
+                <>
+                  <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                    <div className="bg-purple-500/60 h-full rounded-full animate-pulse" style={{ width: '100%' }} />
+                  </div>
+                  <div className="text-sm text-gray-300 text-center">{syncProgress.message}</div>
+                </>
               )}
             </div>
           )}
