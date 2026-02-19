@@ -44,6 +44,15 @@ async function xgodoFetch(token: string, endpoint: string, body: object, method 
   return res.json();
 }
 
+// Extract a channel identifier from channel_url (e.g. "https://www.youtube.com/@viralatw" → "@viralatw")
+function deriveChannelId(video: Partial<VideoData>): string | null {
+  if (video.channel_id) return video.channel_id;
+  if (!video.channel_url) return null;
+  // Handle formats: /@handle, /channel/UCxxx, /c/Name
+  const match = video.channel_url.match(/youtube\.com\/(@[^/?]+|channel\/[^/?]+|c\/[^/?]+)/);
+  return match ? match[1] : null;
+}
+
 function parseISODate(s: string | null): string | null {
   if (!s) return null;
   // Fix truncated microseconds and ensure valid ISO
@@ -151,7 +160,12 @@ export async function POST(req: NextRequest) {
           let videos: VideoData[] = [];
           try {
             const proof = JSON.parse(task.job_proof || '{}');
-            videos = proof.collection_result?.videos || [];
+            const rawVideos = proof.collection_result?.videos || [];
+            // Backfill channel_id from channel_url when missing
+            videos = rawVideos.map((v: Partial<VideoData>) => ({
+              ...v,
+              channel_id: deriveChannelId(v) || v.channel_id,
+            }));
           } catch {
             console.error('Failed to parse job_proof for task:', taskId);
             skippedCount++;
@@ -184,13 +198,16 @@ export async function POST(req: NextRequest) {
           // Insert channels (upsert)
           for (const video of videos) {
             if (!video.channel_id) continue;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const channelVideoCount = (video as any).channel_video_count != null ? parseInt(String((video as any).channel_video_count)) || null : null;
             await pool.query(`
-              INSERT INTO shorts_channels (channel_id, channel_name, channel_url, channel_creation_date, last_seen_at, sighting_count)
-              VALUES ($1, $2, $3, $4, NOW(), 1)
+              INSERT INTO shorts_channels (channel_id, channel_name, channel_url, channel_creation_date, total_video_count, last_seen_at, sighting_count)
+              VALUES ($1, $2, $3, $4, $5, NOW(), 1)
               ON CONFLICT (channel_id) DO UPDATE SET
                 channel_name = COALESCE(EXCLUDED.channel_name, shorts_channels.channel_name),
                 channel_url = COALESCE(EXCLUDED.channel_url, shorts_channels.channel_url),
                 channel_creation_date = COALESCE(EXCLUDED.channel_creation_date, shorts_channels.channel_creation_date),
+                total_video_count = COALESCE(EXCLUDED.total_video_count, shorts_channels.total_video_count),
                 last_seen_at = NOW(),
                 sighting_count = shorts_channels.sighting_count + 1
             `, [
@@ -198,6 +215,7 @@ export async function POST(req: NextRequest) {
               video.channel_name,
               video.channel_url,
               parseISODate(video.channel_creation_date),
+              channelVideoCount,
             ]);
           }
 
