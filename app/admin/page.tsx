@@ -362,20 +362,36 @@ export default function AdminPage() {
         </div>
 
         {/* Navigation */}
-        <a
-          href="/admin/x-posts"
-          className="block bg-gray-900 border border-gray-800 rounded-2xl p-5 mb-8 hover:border-purple-600/50 hover:bg-gray-900/80 transition group"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-white font-bold text-lg group-hover:text-purple-400 transition">Daily X Posts</h2>
-              <p className="text-gray-500 text-sm mt-0.5">Generate &amp; preview tweet content from today&apos;s discoveries</p>
+        <div className="space-y-3 mb-8">
+          <a
+            href="/admin/x-posts"
+            className="block bg-gray-900 border border-gray-800 rounded-2xl p-5 hover:border-purple-600/50 hover:bg-gray-900/80 transition group"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-white font-bold text-lg group-hover:text-purple-400 transition">Daily X Posts</h2>
+                <p className="text-gray-500 text-sm mt-0.5">Generate &amp; preview tweet content from today&apos;s discoveries</p>
+              </div>
+              <svg className="w-5 h-5 text-gray-600 group-hover:text-purple-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
             </div>
-            <svg className="w-5 h-5 text-gray-600 group-hover:text-purple-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
-          </div>
-        </a>
+          </a>
+          <a
+            href="/admin/sync"
+            className="block bg-gray-900 border border-gray-800 rounded-2xl p-5 hover:border-red-600/50 hover:bg-gray-900/80 transition group"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-white font-bold text-lg group-hover:text-red-400 transition">Sync Monitor</h2>
+                <p className="text-gray-500 text-sm mt-0.5">Run data syncs with full visibility — before/after stats &amp; live progress</p>
+              </div>
+              <svg className="w-5 h-5 text-gray-600 group-hover:text-red-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </a>
+        </div>
 
         {/* Stats */}
         {stats && (

@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../lib/db';
 
+function checkAuth(req: NextRequest): boolean {
+  const token = req.cookies.get('admin_token')?.value;
+  if (!token) return false;
+  try {
+    const decoded = Buffer.from(token, 'base64').toString();
+    return decoded.startsWith('admin:') && decoded.endsWith(':rofe_admin_secret');
+  } catch {
+    return false;
+  }
+}
+
 const XGODO_BASE = 'https://xgodo.com/api/v2';
 
 interface VideoData {
@@ -93,7 +104,35 @@ function parseISODate(s: string | null): string | null {
   }
 }
 
+export async function GET(req: NextRequest) {
+  if (!checkAuth(req)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const pool = await getPool();
+    const [channels, videos, collections] = await Promise.all([
+      pool.query('SELECT COUNT(*) as count FROM shorts_channels'),
+      pool.query('SELECT COUNT(*) as count FROM shorts_videos'),
+      pool.query('SELECT COUNT(*) as count FROM shorts_collections'),
+    ]);
+
+    return NextResponse.json({
+      channels: parseInt(channels.rows[0].count),
+      videos: parseInt(videos.rows[0].count),
+      collections: parseInt(collections.rows[0].count),
+    });
+  } catch (error) {
+    console.error('Stats fetch error:', error);
+    return NextResponse.json({ error: 'Failed to fetch stats' }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
+  if (!checkAuth(req)) {
+    return new NextResponse('Unauthorized', { status: 401 });
+  }
+
   let requestedLimit = 50;
   try {
     const body = await req.json();
