@@ -45,7 +45,8 @@ export default function SyncPage() {
 
   // Fix dates state
   const [fixingDates, setFixingDates] = useState(false);
-  const [fixDatesResult, setFixDatesResult] = useState<{ total: number; updated: number; failed: number } | null>(null);
+  const [fixDatesProgress, setFixDatesProgress] = useState<{ total: number; processed: number; updated: number; failed: number; message: string } | null>(null);
+  const [fixDatesResult, setFixDatesResult] = useState<{ total: number; updated: number; failed: number; resolved: number } | null>(null);
   const [fixDatesError, setFixDatesError] = useState('');
 
   // Sync state
@@ -193,19 +194,58 @@ export default function SyncPage() {
     setFixingDates(true);
     setFixDatesResult(null);
     setFixDatesError('');
+    setFixDatesProgress(null);
+
     try {
       const res = await fetch('/api/admin/fix-channel-dates', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok) {
-        setFixDatesResult(data);
-        // Refresh stats since feed-eligible count may change
-        const s = await fetchStats();
-        if (s) {
-          if (statsAfter) setStatsAfter(s);
-          else setStatsBefore(s);
+
+      if (!res.ok) {
+        setFixDatesError(res.status === 401 ? 'Unauthorized' : `HTTP ${res.status}`);
+        setFixingDates(false);
+        return;
+      }
+
+      if (!res.body) {
+        setFixDatesError('No response stream');
+        setFixingDates(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7);
+          } else if (line.startsWith('data: ') && eventType) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'progress') {
+                setFixDatesProgress(data);
+              } else if (eventType === 'done') {
+                setFixDatesResult(data);
+                const s = await fetchStats();
+                if (s) {
+                  if (statsAfter) setStatsAfter(s);
+                  else setStatsBefore(s);
+                }
+              } else if (eventType === 'error') {
+                setFixDatesError(data.error || 'Failed');
+              }
+            } catch { /* skip */ }
+            eventType = '';
+          }
         }
-      } else {
-        setFixDatesError(data.error || 'Failed');
       }
     } catch (err) {
       setFixDatesError(err instanceof Error ? err.message : 'Failed');
@@ -409,15 +449,38 @@ export default function SyncPage() {
                 </>
               )}
             </button>
-            <span className="text-xs text-gray-500">Re-fetch creation dates from YouTube Data API</span>
+            <span className="text-xs text-gray-500">Fix NULL, future, or pre-2005 dates via YouTube API</span>
           </div>
+          {/* Fix dates progress */}
+          {fixingDates && fixDatesProgress && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-gray-400">
+                <span>{fixDatesProgress.message}</span>
+                <span className="font-mono">{fixDatesProgress.processed}/{fixDatesProgress.total}</span>
+              </div>
+              <div className="w-full bg-gray-700 rounded-full h-2.5">
+                <div
+                  className="bg-gradient-to-r from-purple-500 to-pink-500 h-full rounded-full transition-all duration-300"
+                  style={{ width: fixDatesProgress.total > 0 ? `${Math.round((fixDatesProgress.processed / fixDatesProgress.total) * 100)}%` : '0%' }}
+                />
+              </div>
+              <div className="flex gap-4 text-xs">
+                <span className="text-green-400">{fixDatesProgress.updated} updated</span>
+                {fixDatesProgress.failed > 0 && <span className="text-yellow-400">{fixDatesProgress.failed} failed</span>}
+              </div>
+            </div>
+          )}
           {fixDatesResult && (
             <div className="bg-green-900/20 border border-green-600/30 rounded-xl p-3 text-sm">
               <span className="text-green-400 font-medium">Done</span>
               <span className="text-green-300/70 ml-2">
                 {fixDatesResult.updated} updated out of {fixDatesResult.total} channels
+                {fixDatesResult.resolved > 0 && <span className="text-purple-400 ml-1">({fixDatesResult.resolved} @handles resolved)</span>}
                 {fixDatesResult.failed > 0 && <span className="text-yellow-400 ml-1">({fixDatesResult.failed} failed)</span>}
               </span>
+              {fixDatesResult.total === 0 && (
+                <span className="text-gray-400 ml-2">All dates already valid</span>
+              )}
             </div>
           )}
           {fixDatesError && (
