@@ -48,6 +48,7 @@ export default function AdminPage() {
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
   const [xgodoJobId, setXgodoJobId] = useState('');
+  const [channelCheckApiKey, setChannelCheckApiKey] = useState('');
   const [configSaving, setConfigSaving] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
 
@@ -115,6 +116,7 @@ export default function AdminPage() {
       if (data.config) {
         setXgodoToken(data.config.xgodo_api_token || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
+        setChannelCheckApiKey(data.config.channel_check_api_key || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
         try {
           if (data.config.visible_tabs) setVisibleTabs(JSON.parse(data.config.visible_tabs));
@@ -167,6 +169,7 @@ export default function AdminPage() {
           config: {
             xgodo_api_token: xgodoToken,
             xgodo_shorts_spy_job_id: xgodoJobId,
+            channel_check_api_key: channelCheckApiKey,
             youtube_api_key: schedYoutubeKey,
           },
         }),
@@ -891,6 +894,18 @@ export default function AdminPage() {
                 placeholder="e.g. 698709196049e1a09a72fb4e"
                 className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Channel Check API Key</label>
+              <input
+                type="password"
+                value={channelCheckApiKey}
+                onChange={(e) => setChannelCheckApiKey(e.target.value)}
+                placeholder="API key for /api/feed-spy/check-channel"
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">Used by xgodo workers to check if a channel is already known</p>
             </div>
 
             <div>
