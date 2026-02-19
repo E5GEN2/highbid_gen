@@ -43,6 +43,11 @@ export default function SyncPage() {
   const [statsAfter, setStatsAfter] = useState<DbStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
 
+  // Fix dates state
+  const [fixingDates, setFixingDates] = useState(false);
+  const [fixDatesResult, setFixDatesResult] = useState<{ total: number; updated: number; failed: number } | null>(null);
+  const [fixDatesError, setFixDatesError] = useState('');
+
   // Sync state
   const [syncing, setSyncing] = useState(false);
   const [syncLimit, setSyncLimit] = useState('50');
@@ -181,6 +186,31 @@ export default function SyncPage() {
       setSyncError(err instanceof Error ? err.message : 'Sync failed');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleFixDates = async () => {
+    setFixingDates(true);
+    setFixDatesResult(null);
+    setFixDatesError('');
+    try {
+      const res = await fetch('/api/admin/fix-channel-dates', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setFixDatesResult(data);
+        // Refresh stats since feed-eligible count may change
+        const s = await fetchStats();
+        if (s) {
+          if (statsAfter) setStatsAfter(s);
+          else setStatsBefore(s);
+        }
+      } else {
+        setFixDatesError(data.error || 'Failed');
+      }
+    } catch (err) {
+      setFixDatesError(err instanceof Error ? err.message : 'Failed');
+    } finally {
+      setFixingDates(false);
     }
   };
 
@@ -323,7 +353,7 @@ export default function SyncPage() {
         </div>
 
         {/* Controls */}
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6 space-y-4">
           <div className="flex items-center gap-4">
             <button
               onClick={handleSync}
@@ -357,6 +387,45 @@ export default function SyncPage() {
               />
             </div>
           </div>
+
+          {/* Fix Channel Dates */}
+          <div className="flex items-center gap-3 pt-2 border-t border-gray-800">
+            <button
+              onClick={handleFixDates}
+              disabled={fixingDates || syncing}
+              className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition flex items-center gap-2 text-sm"
+            >
+              {fixingDates ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Fixing dates...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  Fix Channel Dates
+                </>
+              )}
+            </button>
+            <span className="text-xs text-gray-500">Re-fetch creation dates from YouTube Data API</span>
+          </div>
+          {fixDatesResult && (
+            <div className="bg-green-900/20 border border-green-600/30 rounded-xl p-3 text-sm">
+              <span className="text-green-400 font-medium">Done</span>
+              <span className="text-green-300/70 ml-2">
+                {fixDatesResult.updated} updated out of {fixDatesResult.total} channels
+                {fixDatesResult.failed > 0 && <span className="text-yellow-400 ml-1">({fixDatesResult.failed} failed)</span>}
+              </span>
+            </div>
+          )}
+          {fixDatesError && (
+            <div className="bg-red-900/20 border border-red-600/30 rounded-xl p-3 text-sm">
+              <span className="text-red-400 font-medium">Failed:</span>
+              <span className="text-red-300/70 ml-2">{fixDatesError}</span>
+            </div>
+          )}
         </div>
 
         {/* Live Progress */}
