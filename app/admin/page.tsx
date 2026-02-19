@@ -506,6 +506,7 @@ export default function AdminPage() {
                 <div className="w-2 h-2 bg-red-400 rounded-full animate-pulse" />
                 <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">
                   {syncProgress.phase === 'fetching' ? 'Fetching from xgodo' :
+                   syncProgress.phase === 'resolving' ? 'Resolving channel IDs' :
                    syncProgress.phase === 'processing' ? 'Processing tasks' :
                    syncProgress.phase === 'avatars' ? 'Fetching YouTube data' :
                    syncProgress.phase === 'confirming' ? 'Confirming on xgodo' : syncProgress.phase}
@@ -558,7 +559,7 @@ export default function AdminPage() {
                 </>
               )}
 
-              {(syncProgress.phase === 'avatars' || syncProgress.phase === 'confirming') && (
+              {(syncProgress.phase === 'resolving' || syncProgress.phase === 'avatars' || syncProgress.phase === 'confirming') && (
                 <>
                   <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
                     <div className="bg-purple-500/60 h-full rounded-full animate-pulse" style={{ width: '100%' }} />

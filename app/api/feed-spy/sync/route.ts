@@ -44,13 +44,41 @@ async function xgodoFetch(token: string, endpoint: string, body: object, method 
   return res.json();
 }
 
-// Extract a channel identifier from channel_url (e.g. "https://www.youtube.com/@viralatw" → "@viralatw")
+// Extract handle from channel_url (e.g. "https://www.youtube.com/@viralatw" → "viralatw")
+function extractHandle(url: string): string | null {
+  const match = url.match(/youtube\.com\/@([^/?]+)/);
+  return match ? match[1] : null;
+}
+
+// Resolve YouTube @handles to UC... channel IDs via YouTube Data API
+// Returns a map of handle → channelId
+async function resolveHandles(handles: string[], ytApiKey: string): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const handle of handles) {
+    try {
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(handle)}&key=${ytApiKey}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const id = data.items?.[0]?.id;
+        if (id) result.set(handle, id);
+      }
+    } catch {
+      // skip failed lookups
+    }
+  }
+  return result;
+}
+
+// Derive channel_id: use existing, extract from /channel/UCxxx URL, or return null (needs handle resolution)
 function deriveChannelId(video: Partial<VideoData>): string | null {
   if (video.channel_id) return video.channel_id;
   if (!video.channel_url) return null;
-  // Handle formats: /@handle, /channel/UCxxx, /c/Name
-  const match = video.channel_url.match(/youtube\.com\/(@[^/?]+|channel\/[^/?]+|c\/[^/?]+)/);
-  return match ? match[1] : null;
+  // Direct channel ID in URL: /channel/UCxxx
+  const chanMatch = video.channel_url.match(/youtube\.com\/channel\/(UC[^/?]+)/);
+  if (chanMatch) return chanMatch[1];
+  return null;
 }
 
 function parseISODate(s: string | null): string | null {
@@ -129,6 +157,58 @@ export async function POST(req: NextRequest) {
           return;
         }
 
+        const YT_API_KEY = config.youtube_api_key;
+
+        // Pre-resolve: collect all unique @handles from tasks that lack channel_id
+        send('progress', { phase: 'resolving', message: 'Scanning tasks for channel handles...' });
+        const handlesToResolve = new Set<string>();
+        for (const task of tasks) {
+          try {
+            const proof = JSON.parse(task.job_proof || '{}');
+            const vids = proof.collection_result?.videos || [];
+            for (const v of vids) {
+              if (!v.channel_id && v.channel_url) {
+                const handle = extractHandle(v.channel_url);
+                if (handle) handlesToResolve.add(handle);
+              }
+            }
+          } catch { /* skip */ }
+        }
+
+        // Also check DB — some handles may already be stored from previous syncs
+        const handleMap = new Map<string, string>(); // handle → UC... id
+        if (handlesToResolve.size > 0) {
+          // Check if we already have these channels by URL pattern
+          const handleArr = Array.from(handlesToResolve);
+          const urlPatterns = handleArr.map(h => `%/@${h}%`);
+          if (urlPatterns.length > 0) {
+            const placeholders = urlPatterns.map((_, i) => `channel_url LIKE $${i + 1}`).join(' OR ');
+            const dbResult = await pool.query(
+              `SELECT channel_id, channel_url FROM shorts_channels WHERE ${placeholders}`,
+              urlPatterns
+            );
+            for (const row of dbResult.rows) {
+              const h = extractHandle(row.channel_url);
+              if (h) {
+                handleMap.set(h, row.channel_id);
+                handlesToResolve.delete(h);
+              }
+            }
+          }
+        }
+
+        // Resolve remaining handles via YouTube Data API
+        if (handlesToResolve.size > 0 && YT_API_KEY) {
+          send('progress', { phase: 'resolving', message: `Resolving ${handlesToResolve.size} channel handles via YouTube API...` });
+          const resolved = await resolveHandles(Array.from(handlesToResolve), YT_API_KEY);
+          for (const [handle, id] of resolved) {
+            handleMap.set(handle, id);
+          }
+          send('progress', { phase: 'resolving', message: `Resolved ${resolved.size}/${handlesToResolve.size} handles` });
+        } else if (handlesToResolve.size > 0 && !YT_API_KEY) {
+          send('progress', { phase: 'resolving', message: `Warning: ${handlesToResolve.size} handles need YouTube API key to resolve — using @handle as fallback` });
+        }
+
         send('progress', { phase: 'processing', message: `Processing ${tasks.length} tasks...`, total: tasks.length, processed: 0 });
 
         let totalVideosSynced = 0;
@@ -161,11 +241,15 @@ export async function POST(req: NextRequest) {
           try {
             const proof = JSON.parse(task.job_proof || '{}');
             const rawVideos = proof.collection_result?.videos || [];
-            // Backfill channel_id from channel_url when missing
-            videos = rawVideos.map((v: Partial<VideoData>) => ({
-              ...v,
-              channel_id: deriveChannelId(v) || v.channel_id,
-            }));
+            // Backfill channel_id: use existing, extract UC from URL, resolve handle, or fallback to @handle
+            videos = rawVideos.map((v: Partial<VideoData>) => {
+              let channelId = deriveChannelId(v);
+              if (!channelId && v.channel_url) {
+                const handle = extractHandle(v.channel_url);
+                if (handle) channelId = handleMap.get(handle) || `@${handle}`;
+              }
+              return { ...v, channel_id: channelId || v.channel_id } as VideoData;
+            });
           } catch {
             console.error('Failed to parse job_proof for task:', taskId);
             skippedCount++;
@@ -258,7 +342,6 @@ export async function POST(req: NextRequest) {
         }
 
         // Fetch missing channel avatars + subscriber counts
-        const YT_API_KEY = config.youtube_api_key;
         if (YT_API_KEY) {
           try {
             const missingData = await pool.query(
