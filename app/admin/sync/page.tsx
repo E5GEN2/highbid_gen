@@ -6,6 +6,7 @@ interface DbStats {
   channels: number;
   videos: number;
   collections: number;
+  feedEligible: number;
 }
 
 interface SyncProgress {
@@ -254,6 +255,7 @@ export default function SyncPage() {
     channels: statsAfter.channels - statsBefore.channels,
     videos: statsAfter.videos - statsBefore.videos,
     collections: statsAfter.collections - statsBefore.collections,
+    feedEligible: statsAfter.feedEligible - statsBefore.feedEligible,
   } : null;
 
   // Check if delta matches sync result
@@ -296,7 +298,7 @@ export default function SyncPage() {
             )}
           </div>
           {statsBefore ? (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
               <div className="bg-gray-800/50 rounded-xl p-4 text-center">
                 <div className="text-2xl font-bold text-purple-400 font-mono">{statsBefore.channels.toLocaleString()}</div>
                 <div className="text-xs text-gray-500 mt-1">Channels</div>
@@ -308,6 +310,11 @@ export default function SyncPage() {
               <div className="bg-gray-800/50 rounded-xl p-4 text-center">
                 <div className="text-2xl font-bold text-green-400 font-mono">{statsBefore.collections.toLocaleString()}</div>
                 <div className="text-xs text-gray-500 mt-1">Collections</div>
+              </div>
+              <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-orange-800/30">
+                <div className="text-2xl font-bold text-orange-400 font-mono">{statsBefore.feedEligible.toLocaleString()}</div>
+                <div className="text-xs text-gray-500 mt-1">In Feed</div>
+                <div className="text-[9px] text-gray-600 mt-0.5">&lt;90d, 10K+ subs</div>
               </div>
             </div>
           ) : (
@@ -487,7 +494,7 @@ export default function SyncPage() {
             {statsAfter && (
               <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
                 <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">After Sync</h2>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-4 gap-4">
                   <div className="bg-gray-800/50 rounded-xl p-4 text-center">
                     <div className="text-2xl font-bold text-purple-400 font-mono">{statsAfter.channels.toLocaleString()}</div>
                     <div className="text-xs text-gray-500 mt-1">Channels</div>
@@ -499,6 +506,11 @@ export default function SyncPage() {
                   <div className="bg-gray-800/50 rounded-xl p-4 text-center">
                     <div className="text-2xl font-bold text-green-400 font-mono">{statsAfter.collections.toLocaleString()}</div>
                     <div className="text-xs text-gray-500 mt-1">Collections</div>
+                  </div>
+                  <div className="bg-gray-800/50 rounded-xl p-4 text-center border border-orange-800/30">
+                    <div className="text-2xl font-bold text-orange-400 font-mono">{statsAfter.feedEligible.toLocaleString()}</div>
+                    <div className="text-xs text-gray-500 mt-1">In Feed</div>
+                    <div className="text-[9px] text-gray-600 mt-0.5">&lt;90d, 10K+ subs</div>
                   </div>
                 </div>
 
@@ -524,6 +536,10 @@ export default function SyncPage() {
                         <span className="text-gray-600 mx-2">/</span>
                         <span className={delta.collections > 0 ? 'text-green-400' : 'text-gray-500'}>
                           {delta.collections > 0 ? '+' : ''}{delta.collections} collections
+                        </span>
+                        <span className="text-gray-600 mx-2">/</span>
+                        <span className={delta.feedEligible > 0 ? 'text-orange-400' : 'text-gray-500'}>
+                          {delta.feedEligible > 0 ? '+' : ''}{delta.feedEligible} in feed
                         </span>
                       </span>
                     </div>

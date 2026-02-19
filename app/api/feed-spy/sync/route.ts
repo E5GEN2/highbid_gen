@@ -111,16 +111,18 @@ export async function GET(req: NextRequest) {
 
   try {
     const pool = await getPool();
-    const [channels, videos, collections] = await Promise.all([
+    const [channels, videos, collections, feedEligible] = await Promise.all([
       pool.query('SELECT COUNT(*) as count FROM shorts_channels'),
       pool.query('SELECT COUNT(*) as count FROM shorts_videos'),
       pool.query('SELECT COUNT(*) as count FROM shorts_collections'),
+      pool.query(`SELECT COUNT(*) as count FROM shorts_channels WHERE channel_creation_date >= NOW() - INTERVAL '90 days' AND subscriber_count >= 10000`),
     ]);
 
     return NextResponse.json({
       channels: parseInt(channels.rows[0].count),
       videos: parseInt(videos.rows[0].count),
       collections: parseInt(collections.rows[0].count),
+      feedEligible: parseInt(feedEligible.rows[0].count),
     });
   } catch (error) {
     console.error('Stats fetch error:', error);
