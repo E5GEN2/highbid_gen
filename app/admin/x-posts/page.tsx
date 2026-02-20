@@ -482,6 +482,7 @@ export default function XPostsPage() {
     const style = ch.content_style ? `\n▸ Style: ${ch.content_style.replace('_', ' ')}` : '';
     const lang = ch.ai_language ? `\n▸ Language: ${ch.ai_language.toUpperCase()}` : '';
     const duration = ch.avg_duration ? `\n▸ Avg video: ~${ch.avg_duration}s` : '';
+    const aiLabel = ch.is_ai_generated === true ? '\n▸ AI-generated content' : '';
     const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
     const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 5).map(t => `#${t}`).join(' ')}` : '';
 
@@ -514,7 +515,7 @@ export default function XPostsPage() {
 
     // T1: Hook + stats, NO channel name, CTA to read thread
     tweets.push({
-      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers${videosLine}${totalViewsLine}\n▸ Top video: ${formatNumber(topVideoViews)} views${style}${lang}${duration}${summaryLine}\n\nRead the thread to get the channel name.`,
+      text: `${hook}\n\nThis ${nicheLabel} channel is just ${formatAge(ch.age_days)} old.\n▸ ${formatNumber(ch.subscriber_count)} subscribers${videosLine}${totalViewsLine}\n▸ Top video: ${formatNumber(topVideoViews)} views${style}${lang}${duration}${aiLabel}${summaryLine}\n\nRead the thread to get the channel name.`,
       media: mediaUrls,
     });
 
