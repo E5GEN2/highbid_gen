@@ -106,6 +106,7 @@ export default function DeepAnalysisPage() {
   const [expandedStoryboards, setExpandedStoryboards] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
 
   // Filters
   const today = new Date().toISOString().split('T')[0];
@@ -113,6 +114,7 @@ export default function DeepAnalysisPage() {
   const [filterMaxAge, setFilterMaxAge] = useState(90);
   const [filterMinSubs, setFilterMinSubs] = useState(10000);
   const [filterMaxSubs, setFilterMaxSubs] = useState(0);
+  const [filterLanguage, setFilterLanguage] = useState('en');
   const [filterTriageCount, setFilterTriageCount] = useState(30);
   const [filterPickCount, setFilterPickCount] = useState(8);
 
@@ -178,6 +180,79 @@ export default function DeepAnalysisPage() {
     navigator.clipboard.writeText(text);
     setCopied(id);
     setTimeout(() => setCopied(null), 2000);
+  };
+
+  // Cancel a stuck run
+  const handleCancel = async (runId: string) => {
+    try {
+      await fetch('/api/admin/deep-analysis', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId, action: 'cancel' }),
+      });
+      fetchRuns();
+    } catch {}
+  };
+
+  // Retry/resume a stuck or errored run
+  const handleRetry = async (runId: string) => {
+    setRunning(true);
+    setRetryingRunId(runId);
+    setProgress(null);
+    setRunError(null);
+
+    try {
+      const res = await fetch('/api/admin/deep-analysis', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId, action: 'retry' }),
+      });
+
+      if (!res.body) {
+        setRunError('No response stream');
+        setRunning(false);
+        setRetryingRunId(null);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7);
+          } else if (line.startsWith('data: ') && eventType) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'progress') {
+                setProgress(data);
+              } else if (eventType === 'done') {
+                setCurrentRunId(data.runId);
+                fetchRuns();
+              } else if (eventType === 'error') {
+                setRunError(data.error);
+              }
+            } catch {}
+            eventType = '';
+          }
+        }
+      }
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Retry failed');
+    } finally {
+      setRunning(false);
+      setRetryingRunId(null);
+    }
   };
 
   // Start new run
@@ -369,6 +444,13 @@ export default function DeepAnalysisPage() {
             </div>
           )}
 
+          {/* Retry indicator */}
+          {running && retryingRunId && (
+            <div className="bg-cyan-900/20 border border-cyan-600/30 rounded-xl p-3 mb-4">
+              <div className="text-cyan-400 text-sm font-medium">Retrying run {retryingRunId}...</div>
+            </div>
+          )}
+
           {/* Step Indicator */}
           {running && progress && (
             <div className="space-y-4">
@@ -469,6 +551,25 @@ export default function DeepAnalysisPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
+                  {/* Cancel / Retry buttons for stuck or errored runs */}
+                  {!running && run.status !== 'done' && (
+                    <div className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      {run.status !== 'error' && (
+                        <button
+                          onClick={() => handleCancel(run.id)}
+                          className="px-2.5 py-1 bg-red-900/40 text-red-400 border border-red-800/50 rounded-lg text-xs hover:bg-red-900/60 transition"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleRetry(run.id)}
+                        className="px-2.5 py-1 bg-cyan-900/40 text-cyan-400 border border-cyan-800/50 rounded-lg text-xs hover:bg-cyan-900/60 transition"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
                   {/* Channel names preview */}
                   <div className="hidden sm:flex gap-1.5">
                     {run.channels.slice(0, 3).map((ch) => (
