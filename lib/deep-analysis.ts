@@ -98,8 +98,58 @@ async function callGemini(
   }
 }
 
-async function getTopVideos(pool: Pool, channelId: string, count: number) {
-  // Get all unique videos for this channel (latest sighting per video)
+async function fetchYouTubeVideos(
+  channelId: string,
+  ytApiKey: string,
+  maxResults: number = 10
+): Promise<Array<{ video_id: string; title: string; view_count: number; duration_seconds: number | null }>> {
+  // Use uploads playlist (replace UC prefix with UU)
+  const uploadsPlaylistId = channelId.replace(/^UC/, 'UU');
+
+  const plRes = await fetch(
+    `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${uploadsPlaylistId}&maxResults=${maxResults}&key=${ytApiKey}`
+  );
+  if (!plRes.ok) return [];
+  const plData = await plRes.json();
+  const items = plData.items || [];
+  if (items.length === 0) return [];
+
+  const videoIds = items.map((it: { snippet: { resourceId: { videoId: string } } }) => it.snippet.resourceId.videoId);
+
+  // Get stats + duration for these videos
+  const statsRes = await fetch(
+    `https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails,snippet&id=${videoIds.join(',')}&key=${ytApiKey}`
+  );
+  if (!statsRes.ok) return [];
+  const statsData = await statsRes.json();
+
+  return (statsData.items || [])
+    .map((v: { id: string; snippet: { title: string }; statistics: { viewCount: string }; contentDetails: { duration: string } }) => {
+      // Parse ISO 8601 duration (PT1M30S -> 90)
+      const dur = v.contentDetails.duration;
+      const match = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+      const secs = match
+        ? (parseInt(match[1] || '0') * 3600) + (parseInt(match[2] || '0') * 60) + parseInt(match[3] || '0')
+        : null;
+
+      return {
+        video_id: v.id,
+        title: v.snippet.title,
+        view_count: Number(v.statistics.viewCount) || 0,
+        duration_seconds: secs,
+      };
+    })
+    // Only include Shorts (under 61 seconds)
+    .filter((v: { duration_seconds: number | null }) => v.duration_seconds != null && v.duration_seconds <= 61);
+}
+
+async function getTopVideos(
+  pool: Pool,
+  channelId: string,
+  count: number,
+  ytApiKey?: string
+) {
+  // Get all unique videos for this channel from DB
   const { rows: allVids } = await pool.query(
     `SELECT DISTINCT ON (video_id) video_id, title, view_count, duration_seconds, collected_at
      FROM shorts_videos WHERE channel_id = $1
@@ -107,19 +157,40 @@ async function getTopVideos(pool: Pool, channelId: string, count: number) {
     [channelId]
   );
 
+  let videos = allVids;
+
+  // If we don't have enough videos, pull more from YouTube Data API
+  if (videos.length < count && ytApiKey) {
+    try {
+      const ytVids = await fetchYouTubeVideos(channelId, ytApiKey, 15);
+      const existingIds = new Set(videos.map((v) => v.video_id));
+      const newVids = ytVids.filter((v) => !existingIds.has(v.video_id));
+      videos = [...videos, ...newVids];
+    } catch (err) {
+      console.error(`Failed to fetch YouTube videos for ${channelId}:`, err);
+    }
+  }
+
   // Top N by views
-  const byViews = [...allVids].sort((a, b) => Number(b.view_count) - Number(a.view_count));
+  const byViews = [...videos].sort((a, b) => Number(b.view_count) - Number(a.view_count));
   const topN = Math.max(1, count - 2);
   const top = byViews.slice(0, topN);
   const topIds = new Set(top.map((v) => v.video_id));
 
-  // 2 most recent that aren't already in top
-  const byRecent = [...allVids].sort(
+  // 2 most recent that aren't already in top (from DB only, since YT API doesn't have collected_at)
+  const dbVids = allVids.filter((v) => !topIds.has(v.video_id));
+  const byRecent = [...dbVids].sort(
     (a, b) => new Date(b.collected_at).getTime() - new Date(a.collected_at).getTime()
   );
-  const recent = byRecent.filter((v) => !topIds.has(v.video_id)).slice(0, 2);
+  const recent = byRecent.slice(0, 2);
 
-  return [...top, ...recent];
+  // If no recent from DB, fill from YT results instead
+  if (recent.length < 2) {
+    const remaining = byViews.filter((v) => !topIds.has(v.video_id) && !recent.some((r) => r.video_id === v.video_id));
+    recent.push(...remaining.slice(0, 2 - recent.length));
+  }
+
+  return [...top, ...recent].slice(0, count);
 }
 
 // --- Prompt Constants ---
@@ -397,6 +468,13 @@ export async function runDeepAnalysis(
 ): Promise<string> {
   const runId = generateId();
 
+  // Get YouTube API key for supplementing videos
+  let ytApiKey: string | undefined;
+  try {
+    const { rows } = await pool.query(`SELECT value FROM admin_config WHERE key = 'youtube_api_key'`);
+    ytApiKey = rows[0]?.value || process.env.YOUTUBE_API_KEY;
+  } catch {}
+
   // Create run record
   await pool.query(
     `INSERT INTO deep_analysis_runs (id, status) VALUES ($1, 'pending')`,
@@ -527,7 +605,7 @@ export async function runDeepAnalysis(
       await pool.query(`UPDATE deep_analysis_runs SET status = 'storyboarding' WHERE id = $1`, [runId]);
       await pool.query(`UPDATE deep_analysis_channels SET status = 'storyboarding' WHERE id = $1`, [entry.entryId]);
 
-      const videos = await getTopVideos(pool, entry.channelId, 5);
+      const videos = await getTopVideos(pool, entry.channelId, 5, ytApiKey);
 
       onProgress({
         step: 'storyboarding',
