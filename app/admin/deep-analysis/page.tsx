@@ -106,6 +106,15 @@ export default function DeepAnalysisPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
+  // Filters
+  const today = new Date().toISOString().split('T')[0];
+  const [filterDate, setFilterDate] = useState(today);
+  const [filterMaxAge, setFilterMaxAge] = useState(90);
+  const [filterMinSubs, setFilterMinSubs] = useState(10000);
+  const [filterMaxSubs, setFilterMaxSubs] = useState(0);
+  const [filterTriageCount, setFilterTriageCount] = useState(30);
+  const [filterPickCount, setFilterPickCount] = useState(8);
+
   // Auth check
   useEffect(() => {
     fetch('/api/admin/auth')
@@ -178,7 +187,20 @@ export default function DeepAnalysisPage() {
     setCurrentRunId(null);
 
     try {
-      const res = await fetch('/api/admin/deep-analysis', { method: 'POST' });
+      const res = await fetch('/api/admin/deep-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filters: {
+            date: filterDate,
+            maxAgeDays: filterMaxAge,
+            minSubs: filterMinSubs,
+            maxSubs: filterMaxSubs,
+            triageCount: filterTriageCount,
+            pickCount: filterPickCount,
+          },
+        }),
+      });
 
       if (!res.body) {
         setRunError('No response stream');
@@ -259,7 +281,7 @@ export default function DeepAnalysisPage() {
           </a>
         </div>
 
-        {/* Start Button + Live Progress */}
+        {/* Start Button + Filters + Live Progress */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-white">Run Pipeline</h2>
@@ -278,6 +300,73 @@ export default function DeepAnalysisPage() {
               )}
             </button>
           </div>
+
+          {/* Filters */}
+          {!running && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Date (first seen)</label>
+                <input
+                  type="date"
+                  value={filterDate}
+                  onChange={(e) => setFilterDate(e.target.value)}
+                  className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Max age (days)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={filterMaxAge}
+                  onChange={(e) => setFilterMaxAge(parseInt(e.target.value) || 0)}
+                  className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Min subs</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={filterMinSubs}
+                  onChange={(e) => setFilterMinSubs(parseInt(e.target.value) || 0)}
+                  className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Max subs (0=no max)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={filterMaxSubs}
+                  onChange={(e) => setFilterMaxSubs(parseInt(e.target.value) || 0)}
+                  className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Triage pool</label>
+                <input
+                  type="number"
+                  min={5}
+                  max={100}
+                  value={filterTriageCount}
+                  onChange={(e) => setFilterTriageCount(parseInt(e.target.value) || 30)}
+                  className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Pick count</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={filterPickCount}
+                  onChange={(e) => setFilterPickCount(parseInt(e.target.value) || 8)}
+                  className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+            </div>
+          )}
 
           {/* Step Indicator */}
           {running && progress && (

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../lib/db';
-import { runDeepAnalysis } from '../../../../lib/deep-analysis';
+import { runDeepAnalysis, DEFAULT_FILTERS, TriageFilters } from '../../../../lib/deep-analysis';
 
 function checkAuth(req: NextRequest): boolean {
   const token = req.cookies.get('admin_token')?.value;
@@ -56,6 +56,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Parse filters from body
+  let filters: TriageFilters = { ...DEFAULT_FILTERS };
+  try {
+    const body = await req.json();
+    if (body.filters) {
+      filters = {
+        date: body.filters.date || DEFAULT_FILTERS.date,
+        maxAgeDays: body.filters.maxAgeDays ?? DEFAULT_FILTERS.maxAgeDays,
+        minSubs: body.filters.minSubs ?? DEFAULT_FILTERS.minSubs,
+        maxSubs: body.filters.maxSubs ?? DEFAULT_FILTERS.maxSubs,
+        triageCount: body.filters.triageCount ?? DEFAULT_FILTERS.triageCount,
+        pickCount: body.filters.pickCount ?? DEFAULT_FILTERS.pickCount,
+      };
+    }
+  } catch {
+    // No body or invalid JSON — use defaults
+  }
+
   const pool = await getPool();
 
   // Get API key from config or env
@@ -76,7 +94,7 @@ export async function POST(req: NextRequest) {
 
       runDeepAnalysis(pool, apiKey, (progressEvent) => {
         send('progress', progressEvent);
-      })
+      }, filters)
         .then((runId) => {
           send('done', { runId });
           controller.close();

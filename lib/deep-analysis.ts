@@ -124,10 +124,10 @@ async function getTopVideos(pool: Pool, channelId: string, count: number) {
 
 // --- Prompt Constants ---
 
-export const TRIAGE_PROMPT = (channelData: string, channelCount: number) =>
+export const TRIAGE_PROMPT = (channelData: string, channelCount: number, pickCount: number = 8) =>
   `You are a YouTube Shorts analyst. Below are ${channelCount} channels we discovered recently. Each has basic analysis data.
 
-Your job: Pick the TOP 8 channels that would be MOST INTERESTING for a deep-dive video-by-video analysis. We want to understand their content strategy, production methods, and what makes them grow.
+Your job: Pick the TOP ${pickCount} channels that would be MOST INTERESTING for a deep-dive video-by-video analysis. We want to understand their content strategy, production methods, and what makes them grow.
 
 Prioritize channels that are:
 - Unusually fast-growing relative to their age
@@ -367,12 +367,33 @@ export interface ProgressEvent {
   message: string;
 }
 
+// --- Filters ---
+
+export interface TriageFilters {
+  date: string;       // YYYY-MM-DD, channels first_seen_at this date
+  maxAgeDays: number; // channel age filter
+  minSubs: number;    // minimum subscriber count
+  maxSubs: number;    // 0 = no max
+  triageCount: number; // how many to feed to triage (default 30)
+  pickCount: number;  // how many triage picks (default 8)
+}
+
+export const DEFAULT_FILTERS: TriageFilters = {
+  date: new Date().toISOString().split('T')[0],
+  maxAgeDays: 90,
+  minSubs: 10000,
+  maxSubs: 0,
+  triageCount: 30,
+  pickCount: 8,
+};
+
 // --- Main Pipeline ---
 
 export async function runDeepAnalysis(
   pool: Pool,
   apiKey: string,
-  onProgress: (event: ProgressEvent) => void
+  onProgress: (event: ProgressEvent) => void,
+  filters: TriageFilters = DEFAULT_FILTERS
 ): Promise<string> {
   const runId = generateId();
 
@@ -387,6 +408,28 @@ export async function runDeepAnalysis(
     await pool.query(`UPDATE deep_analysis_runs SET status = 'triage' WHERE id = $1`, [runId]);
     onProgress({ step: 'triage', message: 'Fetching channels for triage...', progress: 0, total: 1 });
 
+    // Build dynamic WHERE from filters
+    const conditions: string[] = [
+      `ca.status = 'done'`,
+      `sc.first_seen_at::date = $1::date`,
+    ];
+    const queryParams: (string | number)[] = [filters.date];
+    let paramIdx = 2;
+
+    if (filters.maxAgeDays > 0) {
+      conditions.push(`sc.channel_creation_date > NOW() - INTERVAL '${Math.round(filters.maxAgeDays)} days'`);
+    }
+    if (filters.minSubs > 0) {
+      conditions.push(`sc.subscriber_count >= $${paramIdx}`);
+      queryParams.push(filters.minSubs);
+      paramIdx++;
+    }
+    if (filters.maxSubs > 0) {
+      conditions.push(`sc.subscriber_count <= $${paramIdx}`);
+      queryParams.push(filters.maxSubs);
+      paramIdx++;
+    }
+
     const { rows: channels } = await pool.query(`
       SELECT
         sc.channel_id, sc.channel_name, sc.channel_url,
@@ -397,15 +440,14 @@ export async function runDeepAnalysis(
         (SELECT COALESCE(SUM(sv.view_count), 0) FROM shorts_videos sv WHERE sv.channel_id = sc.channel_id) as total_views,
         (SELECT MAX(sv.view_count) FROM shorts_videos sv WHERE sv.channel_id = sc.channel_id) as top_video_views
       FROM shorts_channels sc
-      INNER JOIN channel_analysis ca ON ca.channel_id = sc.channel_id AND ca.status = 'done'
-      WHERE sc.subscriber_count > 5000
-        AND sc.channel_creation_date > NOW() - INTERVAL '180 days'
+      INNER JOIN channel_analysis ca ON ca.channel_id = sc.channel_id
+      WHERE ${conditions.join(' AND ')}
       ORDER BY sc.subscriber_count DESC
-      LIMIT 30
-    `);
+      LIMIT $${paramIdx}
+    `, [...queryParams, filters.triageCount]);
 
     if (channels.length === 0) {
-      throw new Error('No channels with analysis data found for triage');
+      throw new Error('No channels matching filters found for triage');
     }
 
     const channelSummaries = channels.map((ch, i) => ({
@@ -428,7 +470,7 @@ export async function runDeepAnalysis(
 
     onProgress({ step: 'triage', message: `Triaging ${channels.length} channels...`, progress: 0, total: 1 });
 
-    const triagePrompt = TRIAGE_PROMPT(JSON.stringify(channelSummaries, null, 2), channels.length);
+    const triagePrompt = TRIAGE_PROMPT(JSON.stringify(channelSummaries, null, 2), channels.length, filters.pickCount);
     const { parsed: triageResult } = await callGemini(apiKey, triagePrompt, {
       pool, runId, step: 'triage', temperature: 0.4,
     });
@@ -464,10 +506,8 @@ export async function runDeepAnalysis(
 
     onProgress({ step: 'triage', message: `Triage complete: ${channelEntries.length} channels selected`, progress: 1, total: 1 });
 
-    // ===== STEP 2: STORYBOARDS =====
-    await pool.query(`UPDATE deep_analysis_runs SET status = 'storyboarding' WHERE id = $1`, [runId]);
-
-    // Get channel metadata for storyboard prompts
+    // ===== STEPS 2-4: Process each channel fully (storyboard → synthesis → post) one at a time =====
+    // Get channel metadata for prompts
     const channelMeta: Record<string, { category: string; niche: string; contentStyle: string; summary: string }> = {};
     for (const ch of channels) {
       channelMeta[ch.channel_id] = {
@@ -478,26 +518,28 @@ export async function runDeepAnalysis(
       };
     }
 
-    let totalVideos = 0;
-    let completedVideos = 0;
-
-    // First pass: count total videos
-    const videosPerChannel: Record<string, Array<{ video_id: string; title: string; view_count: number; duration_seconds: number | null }>> = {};
-    for (const entry of channelEntries) {
-      const videos = await getTopVideos(pool, entry.channelId, 5);
-      videosPerChannel[entry.entryId] = videos;
-      totalVideos += videos.length;
-    }
-
-    onProgress({ step: 'storyboarding', message: `Storyboarding ${totalVideos} videos across ${channelEntries.length} channels...`, progress: 0, total: totalVideos });
-
-    for (const entry of channelEntries) {
-      await pool.query(`UPDATE deep_analysis_channels SET status = 'storyboarding' WHERE id = $1`, [entry.entryId]);
-      const videos = videosPerChannel[entry.entryId];
+    for (let chIdx = 0; chIdx < channelEntries.length; chIdx++) {
+      const entry = channelEntries[chIdx];
       const meta = channelMeta[entry.channelId] || { category: 'Unknown', niche: 'Unknown', contentStyle: 'unknown', summary: '' };
+      const dbCh = channels.find((c) => c.channel_id === entry.channelId);
+
+      // --- STORYBOARD this channel ---
+      await pool.query(`UPDATE deep_analysis_runs SET status = 'storyboarding' WHERE id = $1`, [runId]);
+      await pool.query(`UPDATE deep_analysis_channels SET status = 'storyboarding' WHERE id = $1`, [entry.entryId]);
+
+      const videos = await getTopVideos(pool, entry.channelId, 5);
+
+      onProgress({
+        step: 'storyboarding',
+        channel_name: entry.channelName,
+        progress: chIdx,
+        total: channelEntries.length,
+        message: `Storyboarding ${entry.channelName} (${chIdx + 1}/${channelEntries.length}) — ${videos.length} videos...`,
+      });
 
       // Process videos with max 3 concurrent calls
       const concurrency = 3;
+      let completedVids = 0;
       for (let i = 0; i < videos.length; i += concurrency) {
         const batch = videos.slice(i, i + concurrency);
         await Promise.all(
@@ -529,37 +571,32 @@ export async function runDeepAnalysis(
               );
             }
 
-            completedVideos++;
+            completedVids++;
             onProgress({
               step: 'storyboarding',
               channel_name: entry.channelName,
               video_id: video.video_id,
-              progress: completedVideos,
-              total: totalVideos,
-              message: `Storyboarded ${entry.channelName} - ${video.video_id} (${completedVideos}/${totalVideos})`,
+              progress: chIdx,
+              total: channelEntries.length,
+              message: `Storyboarding ${entry.channelName} — video ${completedVids}/${videos.length}`,
             });
           })
         );
       }
-    }
 
-    // ===== STEP 3: SYNTHESIS =====
-    await pool.query(`UPDATE deep_analysis_runs SET status = 'synthesizing' WHERE id = $1`, [runId]);
-
-    for (let i = 0; i < channelEntries.length; i++) {
-      const entry = channelEntries[i];
+      // --- SYNTHESIS for this channel ---
+      await pool.query(`UPDATE deep_analysis_runs SET status = 'synthesizing' WHERE id = $1`, [runId]);
       await pool.query(`UPDATE deep_analysis_channels SET status = 'synthesizing' WHERE id = $1`, [entry.entryId]);
 
       onProgress({
         step: 'synthesis',
         channel_name: entry.channelName,
-        progress: i,
+        progress: chIdx,
         total: channelEntries.length,
-        message: `Synthesizing ${entry.channelName} (${i + 1}/${channelEntries.length})...`,
+        message: `Synthesizing ${entry.channelName} (${chIdx + 1}/${channelEntries.length})...`,
       });
 
       try {
-        // Get storyboards for this channel
         const { rows: storyboards } = await pool.query(
           `SELECT storyboard FROM deep_analysis_storyboards WHERE channel_entry_id = $1 AND status = 'done'`,
           [entry.entryId]
@@ -574,91 +611,65 @@ export async function runDeepAnalysis(
         }
 
         const storyboardData = storyboards.map((s) => s.storyboard);
-        const meta = channelMeta[entry.channelId] || { category: 'Unknown', niche: 'Unknown', contentStyle: 'unknown', summary: '' };
-
-        const dbCh = channels.find((c) => c.channel_id === entry.channelId);
         const subscriberCount = Number(dbCh?.subscriber_count || 0);
         const ageDays = Number(dbCh?.age_days || 0);
 
-        const prompt = SYNTHESIS_PROMPT(
+        const synthPrompt = SYNTHESIS_PROMPT(
           entry.channelName, entry.channelUrl,
           meta.category, meta.niche, meta.contentStyle,
           subscriberCount, ageDays, meta.summary,
           storyboardData.length, JSON.stringify(storyboardData, null, 2)
         );
 
-        const { parsed } = await callGemini(apiKey, prompt, {
+        const { parsed: synthParsed } = await callGemini(apiKey, synthPrompt, {
           pool, runId, channelEntryId: entry.entryId, step: 'synthesis',
           temperature: 0.4, maxOutputTokens: 8192,
         });
 
         await pool.query(
           `UPDATE deep_analysis_channels SET synthesis = $1 WHERE id = $2`,
-          [JSON.stringify(parsed), entry.entryId]
+          [JSON.stringify(synthParsed), entry.entryId]
         );
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        await pool.query(
-          `UPDATE deep_analysis_channels SET status = 'error', error = $1 WHERE id = $2`,
-          [errMsg, entry.entryId]
-        );
-      }
-    }
 
-    onProgress({ step: 'synthesis', progress: channelEntries.length, total: channelEntries.length, message: 'Synthesis complete' });
+        // --- POST GEN for this channel ---
+        await pool.query(`UPDATE deep_analysis_runs SET status = 'post_gen' WHERE id = $1`, [runId]);
 
-    // ===== STEP 4: POST GENERATION =====
-    await pool.query(`UPDATE deep_analysis_runs SET status = 'post_gen' WHERE id = $1`, [runId]);
+        onProgress({
+          step: 'post_gen',
+          channel_name: entry.channelName,
+          progress: chIdx,
+          total: channelEntries.length,
+          message: `Generating post for ${entry.channelName} (${chIdx + 1}/${channelEntries.length})...`,
+        });
 
-    for (let i = 0; i < channelEntries.length; i++) {
-      const entry = channelEntries[i];
-
-      onProgress({
-        step: 'post_gen',
-        channel_name: entry.channelName,
-        progress: i,
-        total: channelEntries.length,
-        message: `Generating post for ${entry.channelName} (${i + 1}/${channelEntries.length})...`,
-      });
-
-      try {
-        // Get synthesis for this channel
-        const { rows } = await pool.query(
-          `SELECT synthesis FROM deep_analysis_channels WHERE id = $1`,
-          [entry.entryId]
-        );
-        const synthesis = rows[0]?.synthesis;
-        if (!synthesis) {
-          await pool.query(
-            `UPDATE deep_analysis_channels SET status = 'error', error = 'No synthesis data' WHERE id = $1`,
-            [entry.entryId]
-          );
-          continue;
-        }
-
-        // Enrich synthesis with channel stats for better post generation
-        const dbCh = channels.find((c) => c.channel_id === entry.channelId);
         const enrichedSynthesis = {
-          ...synthesis,
+          ...(synthParsed as Record<string, unknown>),
           channel_url: entry.channelUrl,
-          subscribers: Number(dbCh?.subscriber_count || 0),
-          age_days: Number(dbCh?.age_days || 0),
+          subscribers: subscriberCount,
+          age_days: ageDays,
           total_videos: Number(dbCh?.total_video_count || 0),
           top_video_views: Number(dbCh?.top_video_views || 0),
         };
 
-        const prompt = POST_GEN_PROMPT(JSON.stringify(enrichedSynthesis, null, 2));
-        const { parsed } = await callGemini(apiKey, prompt, {
+        const postPrompt = POST_GEN_PROMPT(JSON.stringify(enrichedSynthesis, null, 2));
+        const { parsed: postParsed } = await callGemini(apiKey, postPrompt, {
           pool, runId, channelEntryId: entry.entryId, step: 'post_gen',
           temperature: 0.7, maxOutputTokens: 2048,
         });
 
-        const postResult = parsed as { tweet: string; hook_category: string };
-
+        const postResult = postParsed as { tweet: string; hook_category: string };
         await pool.query(
           `UPDATE deep_analysis_channels SET post_tweet = $1, post_hook_category = $2, status = 'done' WHERE id = $3`,
           [postResult.tweet, postResult.hook_category, entry.entryId]
         );
+
+        onProgress({
+          step: 'post_gen',
+          channel_name: entry.channelName,
+          progress: chIdx + 1,
+          total: channelEntries.length,
+          message: `${entry.channelName} complete (${chIdx + 1}/${channelEntries.length})`,
+        });
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         await pool.query(
@@ -667,8 +678,6 @@ export async function runDeepAnalysis(
         );
       }
     }
-
-    onProgress({ step: 'post_gen', progress: channelEntries.length, total: channelEntries.length, message: 'Post generation complete' });
 
     // Mark run as done
     await pool.query(
