@@ -204,6 +204,80 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_channel_analysis_status ON channel_analysis(status)
     `);
 
+    // Deep Analysis pipeline tables
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS deep_analysis_runs (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'pending',
+        channel_count INT DEFAULT 0,
+        started_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        error TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS deep_analysis_channels (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES deep_analysis_runs(id),
+        channel_id TEXT NOT NULL,
+        channel_name TEXT,
+        channel_url TEXT,
+        priority INT,
+        interest_score REAL,
+        triage_reason TEXT,
+        what_to_look_for TEXT,
+        synthesis JSONB,
+        post_tweet TEXT,
+        post_hook_category TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_dac_run ON deep_analysis_channels(run_id)
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS deep_analysis_storyboards (
+        id TEXT PRIMARY KEY,
+        channel_entry_id TEXT NOT NULL REFERENCES deep_analysis_channels(id),
+        video_id TEXT NOT NULL,
+        video_title TEXT,
+        view_count BIGINT,
+        storyboard JSONB,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_das_channel ON deep_analysis_storyboards(channel_entry_id)
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS deep_analysis_logs (
+        id SERIAL PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        channel_entry_id TEXT,
+        step TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        response TEXT,
+        model TEXT DEFAULT 'gemini-flash',
+        duration_ms INT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        tokens_in INT,
+        tokens_out INT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_dal_run ON deep_analysis_logs(run_id)
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
