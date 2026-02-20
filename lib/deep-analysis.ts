@@ -198,6 +198,120 @@ async function getTopVideos(
   return [...top, ...recent].slice(0, count);
 }
 
+// --- Storyboard with retry ---
+
+const MAX_STORYBOARD_RETRIES = 3;
+
+async function storyboardVideos(
+  pool: Pool,
+  apiKey: string,
+  runId: string,
+  channelEntryId: string,
+  channelName: string,
+  meta: { category: string; niche: string; contentStyle: string; summary: string },
+  videos: Array<{ video_id: string; title: string; view_count: number; duration_seconds: number | null }>,
+): Promise<{ doneCount: number; errorCount: number }> {
+  const concurrency = 3;
+
+  // Initial pass: storyboard all videos
+  for (let i = 0; i < videos.length; i += concurrency) {
+    const batch = videos.slice(i, i + concurrency);
+    await Promise.all(
+      batch.map(async (video) => {
+        const sbId = generateId();
+        const videoUrl = `https://www.youtube.com/shorts/${video.video_id}`;
+        try {
+          const prompt = STORYBOARD_PROMPT(
+            videoUrl, video.video_id, video.duration_seconds,
+            channelName, meta.summary, meta.category, meta.niche, meta.contentStyle
+          );
+          const { parsed } = await callGemini(apiKey, prompt, {
+            pool, runId, channelEntryId, step: 'storyboard',
+          });
+          await pool.query(
+            `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, storyboard, status)
+             VALUES ($1, $2, $3, $4, $5, $6, 'done')`,
+            [sbId, channelEntryId, video.video_id, video.title, video.view_count, JSON.stringify(parsed)]
+          );
+        } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          await pool.query(
+            `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, status, error)
+             VALUES ($1, $2, $3, $4, $5, 'error', $6)`,
+            [sbId, channelEntryId, video.video_id, video.title, video.view_count, errMsg]
+          );
+        }
+      })
+    );
+  }
+
+  // Retry loop: keep retrying failed storyboards up to MAX_STORYBOARD_RETRIES total attempts
+  for (let attempt = 2; attempt <= MAX_STORYBOARD_RETRIES; attempt++) {
+    // Find failed storyboards
+    const { rows: failed } = await pool.query(
+      `SELECT DISTINCT ON (video_id) id, video_id, video_title, view_count
+       FROM deep_analysis_storyboards
+       WHERE channel_entry_id = $1 AND status = 'error'
+       AND video_id NOT IN (
+         SELECT video_id FROM deep_analysis_storyboards
+         WHERE channel_entry_id = $1 AND status = 'done'
+       )
+       ORDER BY video_id, created_at DESC`,
+      [channelEntryId]
+    );
+
+    if (failed.length === 0) break; // All done
+
+    // Wait a bit before retrying (back off)
+    await new Promise((r) => setTimeout(r, 3000 * attempt));
+
+    // Retry failed ones
+    for (let i = 0; i < failed.length; i += concurrency) {
+      const batch = failed.slice(i, i + concurrency);
+      await Promise.all(
+        batch.map(async (failedSb) => {
+          const video = videos.find((v) => v.video_id === failedSb.video_id);
+          if (!video) return;
+
+          const sbId = generateId();
+          const videoUrl = `https://www.youtube.com/shorts/${video.video_id}`;
+          try {
+            const prompt = STORYBOARD_PROMPT(
+              videoUrl, video.video_id, video.duration_seconds,
+              channelName, meta.summary, meta.category, meta.niche, meta.contentStyle
+            );
+            const { parsed } = await callGemini(apiKey, prompt, {
+              pool, runId, channelEntryId, step: 'storyboard',
+            });
+            await pool.query(
+              `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, storyboard, status)
+               VALUES ($1, $2, $3, $4, $5, $6, 'done')`,
+              [sbId, channelEntryId, video.video_id, video.title, video.view_count, JSON.stringify(parsed)]
+            );
+          } catch (error) {
+            const errMsg = error instanceof Error ? error.message : String(error);
+            await pool.query(
+              `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, status, error)
+               VALUES ($1, $2, $3, $4, $5, 'error', $6)`,
+              [sbId, channelEntryId, video.video_id, video.title, video.view_count, errMsg]
+            );
+          }
+        })
+      );
+    }
+  }
+
+  // Final count
+  const { rows: [{ done_count }] } = await pool.query(
+    `SELECT COUNT(DISTINCT video_id) as done_count FROM deep_analysis_storyboards
+     WHERE channel_entry_id = $1 AND status = 'done'`,
+    [channelEntryId]
+  );
+  const totalVideos = videos.length;
+
+  return { doneCount: Number(done_count), errorCount: totalVideos - Number(done_count) };
+}
+
 // --- Prompt Constants ---
 
 export const TRIAGE_PROMPT = (channelData: string, channelCount: number, pickCount: number = 8) =>
@@ -647,7 +761,7 @@ async function _executeDeepAnalysis(
       const meta = channelMeta[entry.channelId] || { category: 'Unknown', niche: 'Unknown', contentStyle: 'unknown', summary: '' };
       const dbCh = channels.find((c) => c.channel_id === entry.channelId);
 
-      // --- STORYBOARD this channel ---
+      // --- STORYBOARD this channel (with auto-retry, all must succeed) ---
       await pool.query(`UPDATE deep_analysis_runs SET status = 'storyboarding' WHERE id = $1`, [runId]);
       await pool.query(`UPDATE deep_analysis_channels SET status = 'storyboarding' WHERE id = $1`, [entry.entryId]);
 
@@ -661,51 +775,14 @@ async function _executeDeepAnalysis(
         message: `Storyboarding ${entry.channelName} (${chIdx + 1}/${channelEntries.length}) — ${videos.length} videos...`,
       });
 
-      // Process videos with max 3 concurrent calls
-      const concurrency = 3;
-      let completedVids = 0;
-      for (let i = 0; i < videos.length; i += concurrency) {
-        const batch = videos.slice(i, i + concurrency);
-        await Promise.all(
-          batch.map(async (video) => {
-            const sbId = generateId();
-            const videoUrl = `https://www.youtube.com/shorts/${video.video_id}`;
+      const sbResult = await storyboardVideos(pool, apiKey, runId, entry.entryId, entry.channelName, meta, videos);
 
-            try {
-              const prompt = STORYBOARD_PROMPT(
-                videoUrl, video.video_id, video.duration_seconds,
-                entry.channelName, meta.summary, meta.category, meta.niche, meta.contentStyle
-              );
-
-              const { parsed } = await callGemini(apiKey, prompt, {
-                pool, runId, channelEntryId: entry.entryId, step: 'storyboard',
-              });
-
-              await pool.query(
-                `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, storyboard, status)
-                 VALUES ($1, $2, $3, $4, $5, $6, 'done')`,
-                [sbId, entry.entryId, video.video_id, video.title, video.view_count, JSON.stringify(parsed)]
-              );
-            } catch (error) {
-              const errMsg = error instanceof Error ? error.message : String(error);
-              await pool.query(
-                `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, status, error)
-                 VALUES ($1, $2, $3, $4, $5, 'error', $6)`,
-                [sbId, entry.entryId, video.video_id, video.title, video.view_count, errMsg]
-              );
-            }
-
-            completedVids++;
-            safeProgress({
-              step: 'storyboarding',
-              channel_name: entry.channelName,
-              video_id: video.video_id,
-              progress: chIdx,
-              total: channelEntries.length,
-              message: `Storyboarding ${entry.channelName} — video ${completedVids}/${videos.length}`,
-            });
-          })
+      if (sbResult.errorCount > 0) {
+        await pool.query(
+          `UPDATE deep_analysis_channels SET status = 'error', error = $1 WHERE id = $2`,
+          [`${sbResult.errorCount}/${videos.length} storyboards failed after ${MAX_STORYBOARD_RETRIES} attempts`, entry.entryId]
         );
+        continue; // Skip to next channel
       }
 
       // --- SYNTHESIS for this channel ---
@@ -891,81 +968,37 @@ export async function resumeDeepAnalysis(
         summary: ch.channel_summary || '',
       };
 
-      // --- STORYBOARD (skip if channel already has storyboards done) ---
-      const { rows: existingStoryboards } = await pool.query(
-        `SELECT id FROM deep_analysis_storyboards WHERE channel_entry_id = $1 AND status = 'done'`,
+      // --- STORYBOARD (with retry, all must succeed) ---
+      // Check how many are already done
+      const { rows: existingDone } = await pool.query(
+        `SELECT DISTINCT video_id FROM deep_analysis_storyboards WHERE channel_entry_id = $1 AND status = 'done'`,
         [ch.id]
       );
+      const videos = await getTopVideos(pool, ch.channel_id, 5, ytApiKey);
+      const doneVideoIds = new Set(existingDone.map((r) => r.video_id));
+      const pendingVideos = videos.filter((v) => !doneVideoIds.has(v.video_id));
 
-      if (existingStoryboards.length === 0) {
+      if (pendingVideos.length > 0) {
         await pool.query(`UPDATE deep_analysis_runs SET status = 'storyboarding' WHERE id = $1`, [runId]);
         await pool.query(`UPDATE deep_analysis_channels SET status = 'storyboarding', error = NULL WHERE id = $1`, [ch.id]);
 
-        // Delete any failed storyboard attempts
-        await pool.query(
-          `DELETE FROM deep_analysis_storyboards WHERE channel_entry_id = $1 AND status = 'error'`,
-          [ch.id]
-        );
-
-        const videos = await getTopVideos(pool, ch.channel_id, 5, ytApiKey);
-
         safeProgress({
           step: 'storyboarding',
           channel_name: ch.channel_name,
           progress: chIdx,
           total: channelRows.length,
-          message: `Retrying storyboards for ${ch.channel_name} — ${videos.length} videos...`,
+          message: `Storyboarding ${ch.channel_name} — ${pendingVideos.length} remaining...`,
         });
 
-        const concurrency = 3;
-        let completedVids = 0;
-        for (let i = 0; i < videos.length; i += concurrency) {
-          const batch = videos.slice(i, i + concurrency);
-          await Promise.all(
-            batch.map(async (video) => {
-              const sbId = generateId();
-              const videoUrl = `https://www.youtube.com/shorts/${video.video_id}`;
-              try {
-                const prompt = STORYBOARD_PROMPT(
-                  videoUrl, video.video_id, video.duration_seconds,
-                  ch.channel_name, meta.summary, meta.category, meta.niche, meta.contentStyle
-                );
-                const { parsed } = await callGemini(apiKey, prompt, {
-                  pool, runId, channelEntryId: ch.id, step: 'storyboard',
-                });
-                await pool.query(
-                  `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, storyboard, status)
-                   VALUES ($1, $2, $3, $4, $5, $6, 'done')`,
-                  [sbId, ch.id, video.video_id, video.title, video.view_count, JSON.stringify(parsed)]
-                );
-              } catch (error) {
-                const errMsg = error instanceof Error ? error.message : String(error);
-                await pool.query(
-                  `INSERT INTO deep_analysis_storyboards (id, channel_entry_id, video_id, video_title, view_count, status, error)
-                   VALUES ($1, $2, $3, $4, $5, 'error', $6)`,
-                  [sbId, ch.id, video.video_id, video.title, video.view_count, errMsg]
-                );
-              }
-              completedVids++;
-              safeProgress({
-                step: 'storyboarding',
-                channel_name: ch.channel_name,
-                video_id: video.video_id,
-                progress: chIdx,
-                total: channelRows.length,
-                message: `Storyboarding ${ch.channel_name} — video ${completedVids}/${videos.length}`,
-              });
-            })
+        const sbResult = await storyboardVideos(pool, apiKey, runId, ch.id, ch.channel_name, meta, pendingVideos);
+
+        if (sbResult.errorCount > 0) {
+          await pool.query(
+            `UPDATE deep_analysis_channels SET status = 'error', error = $1 WHERE id = $2`,
+            [`${sbResult.errorCount} storyboards failed after ${MAX_STORYBOARD_RETRIES} attempts`, ch.id]
           );
+          continue;
         }
-      } else {
-        safeProgress({
-          step: 'storyboarding',
-          channel_name: ch.channel_name,
-          progress: chIdx,
-          total: channelRows.length,
-          message: `${ch.channel_name} storyboards already done (${existingStoryboards.length})`,
-        });
       }
 
       // --- SYNTHESIS ---
