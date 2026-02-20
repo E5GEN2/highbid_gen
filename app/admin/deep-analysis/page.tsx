@@ -13,6 +13,7 @@ interface ProgressEvent {
 
 interface ChannelEntry {
   id: string;
+  channel_id: string;
   channel_name: string;
   channel_url: string;
   priority: number;
@@ -644,6 +645,47 @@ export default function DeepAnalysisPage() {
                             <div>
                               <div className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Generated Post</div>
                               <div className="space-y-3">
+                                {/* Composite thumbnail */}
+                                {(() => {
+                                  const videoIds = (ch.storyboards || [])
+                                    .filter((sb) => sb.status === 'done')
+                                    .sort((a, b) => Number(b.view_count) - Number(a.view_count))
+                                    .slice(0, 3)
+                                    .map((sb) => sb.video_id);
+                                  if (videoIds.length === 0) return null;
+                                  const params = new URLSearchParams();
+                                  params.set('ids', videoIds.join(','));
+                                  params.set('channelId', ch.channel_id);
+                                  const imgUrl = `/api/admin/x-posts/composite-thumb?${params.toString()}`;
+                                  return (
+                                    <div className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-medium text-cyan-500">Image</span>
+                                        <button
+                                          onClick={async () => {
+                                            try {
+                                              const res = await fetch(imgUrl);
+                                              const blob = await res.blob();
+                                              const url = URL.createObjectURL(blob);
+                                              const link = document.createElement('a');
+                                              link.href = url;
+                                              link.download = `${ch.channel_name}-composite.jpg`;
+                                              link.click();
+                                              URL.revokeObjectURL(url);
+                                            } catch {}
+                                          }}
+                                          className="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs hover:bg-gray-600 transition"
+                                        >
+                                          Save Image
+                                        </button>
+                                      </div>
+                                      <div className="rounded-lg overflow-hidden border border-gray-700/30">
+                                        <img src={imgUrl} alt="Composite thumbnail" className="w-full h-auto" />
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+
                                 {/* T1 */}
                                 <div className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3">
                                   <div className="flex items-center justify-between mb-2">
