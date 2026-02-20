@@ -467,18 +467,53 @@ export const DEFAULT_FILTERS: TriageFilters = {
 
 // --- Main Pipeline ---
 
+/**
+ * Starts a deep analysis run. Returns { runId, promise }.
+ * - runId is available immediately after the DB record is created.
+ * - promise resolves when the pipeline finishes (or rejects on error).
+ * The caller can return runId to the client and let promise run in the background.
+ */
+export async function startDeepAnalysis(
+  pool: Pool,
+  apiKey: string,
+  filters: TriageFilters = DEFAULT_FILTERS
+): Promise<{ runId: string; promise: Promise<string> }> {
+  const runId = generateId();
+
+  // Create run record immediately so caller can return the ID
+  await pool.query(
+    `INSERT INTO deep_analysis_runs (id, status) VALUES ($1, 'pending')`,
+    [runId]
+  );
+
+  // Launch the pipeline in the background
+  const promise = _executeDeepAnalysis(pool, apiKey, runId, filters);
+
+  // Catch errors to prevent unhandled rejection (errors are stored in DB)
+  promise.catch(() => {});
+
+  return { runId, promise };
+}
+
+/** @deprecated Use startDeepAnalysis instead. Kept for backwards compat. */
 export async function runDeepAnalysis(
   pool: Pool,
   apiKey: string,
   onProgress: (event: ProgressEvent) => void,
   filters: TriageFilters = DEFAULT_FILTERS
 ): Promise<string> {
-  const runId = generateId();
+  const { runId, promise } = await startDeepAnalysis(pool, apiKey, filters);
+  return promise;
+}
 
-  // Wrap onProgress so stream disconnection doesn't crash the pipeline
-  const safeProgress = (event: ProgressEvent) => {
-    try { onProgress(event); } catch { /* stream may be closed */ }
-  };
+async function _executeDeepAnalysis(
+  pool: Pool,
+  apiKey: string,
+  runId: string,
+  filters: TriageFilters
+): Promise<string> {
+  // Progress is a no-op — all state is tracked in DB, clients poll
+  const safeProgress = (_event: ProgressEvent) => {};
 
   // Get YouTube API key for supplementing videos
   let ytApiKey: string | undefined;
@@ -486,12 +521,6 @@ export async function runDeepAnalysis(
     const { rows } = await pool.query(`SELECT value FROM admin_config WHERE key = 'youtube_api_key'`);
     ytApiKey = rows[0]?.value || process.env.YOUTUBE_API_KEY;
   } catch {}
-
-  // Create run record
-  await pool.query(
-    `INSERT INTO deep_analysis_runs (id, status) VALUES ($1, 'pending')`,
-    [runId]
-  );
 
   try {
     // ===== STEP 1: TRIAGE =====

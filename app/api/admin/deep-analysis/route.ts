@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../lib/db';
-import { runDeepAnalysis, resumeDeepAnalysis, DEFAULT_FILTERS, TriageFilters } from '../../../../lib/deep-analysis';
+import { startDeepAnalysis, resumeDeepAnalysis, DEFAULT_FILTERS, TriageFilters } from '../../../../lib/deep-analysis';
 
 function checkAuth(req: NextRequest): boolean {
   const token = req.cookies.get('admin_token')?.value;
@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST — Start a new deep analysis run (returns SSE stream)
+// POST — Start a new deep analysis run (returns runId immediately, pipeline runs in background)
 export async function POST(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -86,37 +86,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'PAPAI_API_KEY not configured' }, { status: 500 });
   }
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    start(controller) {
-      const send = (event: string, data: unknown) => {
-        try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        } catch { /* stream closed */ }
-      };
-
-      runDeepAnalysis(pool, apiKey, (progressEvent) => {
-        send('progress', progressEvent);
-      }, filters)
-        .then((runId) => {
-          send('done', { runId });
-          try { controller.close(); } catch {}
-        })
-        .catch((error) => {
-          const errMsg = error instanceof Error ? error.message : String(error);
-          send('error', { error: errMsg });
-          try { controller.close(); } catch {}
-        });
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    },
-  });
+  try {
+    const { runId } = await startDeepAnalysis(pool, apiKey, filters);
+    return NextResponse.json({ runId, status: 'started' });
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: errMsg }, { status: 500 });
+  }
 }
 
 // PATCH — Cancel a stuck run OR retry/resume a run
@@ -140,7 +116,6 @@ export async function PATCH(req: NextRequest) {
         `UPDATE deep_analysis_runs SET status = 'error', error = 'Cancelled by user', completed_at = NOW() WHERE id = $1`,
         [runId]
       );
-      // Also mark any in-progress channels as error
       await pool.query(
         `UPDATE deep_analysis_channels SET status = 'error', error = 'Run cancelled' WHERE run_id = $1 AND status NOT IN ('done', 'error')`,
         [runId]
@@ -149,7 +124,6 @@ export async function PATCH(req: NextRequest) {
     }
 
     if (action === 'retry') {
-      // Get API key
       const { rows: configRows } = await pool.query(
         `SELECT value FROM admin_config WHERE key = 'papai_api_key'`
       );
@@ -158,37 +132,12 @@ export async function PATCH(req: NextRequest) {
         return NextResponse.json({ error: 'PAPAI_API_KEY not configured' }, { status: 500 });
       }
 
-      const encoder = new TextEncoder();
-      const stream = new ReadableStream({
-        start(controller) {
-          const send = (event: string, data: unknown) => {
-            try {
-              controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-            } catch { /* stream closed */ }
-          };
-
-          resumeDeepAnalysis(pool, apiKey, runId, (progressEvent) => {
-            send('progress', progressEvent);
-          })
-            .then((id) => {
-              send('done', { runId: id });
-              try { controller.close(); } catch {}
-            })
-            .catch((error) => {
-              const errMsg = error instanceof Error ? error.message : String(error);
-              send('error', { error: errMsg });
-              try { controller.close(); } catch {}
-            });
-        },
+      // Fire and forget — resume runs in background
+      resumeDeepAnalysis(pool, apiKey, runId, () => {}).catch((err) => {
+        console.error(`Resume run ${runId} failed:`, err);
       });
 
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        },
-      });
+      return NextResponse.json({ runId, status: 'retrying' });
     }
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });

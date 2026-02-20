@@ -1,15 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-
-interface ProgressEvent {
-  step: string;
-  channel_name?: string;
-  video_id?: string;
-  progress?: number;
-  total?: number;
-  message: string;
-}
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 interface ChannelEntry {
   id: string;
@@ -46,11 +37,11 @@ interface Run {
   channels: Array<{ id: string; channel_name: string; status: string; post_tweet: string | null }>;
 }
 
-const STEPS = ['triage', 'storyboarding', 'synthesis', 'post_gen', 'done'];
+const STEPS = ['triage', 'storyboarding', 'synthesizing', 'post_gen', 'done'];
 const STEP_LABELS: Record<string, string> = {
   triage: 'Triage',
   storyboarding: 'Storyboards',
-  synthesis: 'Synthesis',
+  synthesizing: 'Synthesis',
   post_gen: 'Posts',
   done: 'Done',
 };
@@ -97,16 +88,14 @@ export default function DeepAnalysisPage() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<ProgressEvent | null>(null);
-  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<{ run: Run; channels: ChannelEntry[] } | null>(null);
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set());
   const [expandedStoryboards, setExpandedStoryboards] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Filters
   const today = new Date().toISOString().split('T')[0];
@@ -126,7 +115,7 @@ export default function DeepAnalysisPage() {
       .finally(() => setChecking(false));
   }, []);
 
-  // Fetch runs
+  // Fetch runs list
   const fetchRuns = useCallback(async () => {
     try {
       const res = await fetch('/api/admin/deep-analysis');
@@ -139,7 +128,55 @@ export default function DeepAnalysisPage() {
     if (authenticated) fetchRuns();
   }, [authenticated, fetchRuns]);
 
-  // Fetch run detail
+  // Poll active run status
+  const startPolling = useCallback((runId: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    setActiveRunId(runId);
+    setExpandedRunId(runId);
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/admin/deep-analysis/${runId}`);
+        const data = await res.json();
+        if (data.run) {
+          setRunDetail(data);
+          // Also refresh the runs list
+          fetchRuns();
+          // Stop polling when done or errored
+          if (data.run.status === 'done' || data.run.status === 'error') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setActiveRunId(null);
+            if (data.run.status === 'error' && data.run.error) {
+              setRunError(data.run.error);
+            }
+          }
+        }
+      } catch {}
+    };
+
+    // Poll immediately, then every 3s
+    poll();
+    pollRef.current = setInterval(poll, 3000);
+  }, [fetchRuns]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  // On initial load, auto-poll any active run
+  useEffect(() => {
+    if (!authenticated || runs.length === 0) return;
+    const active = runs.find((r) => !['done', 'error'].includes(r.status));
+    if (active && !activeRunId) {
+      startPolling(active.id);
+    }
+  }, [authenticated, runs, activeRunId, startPolling]);
+
+  // Fetch run detail (for expanding completed runs)
   const fetchRunDetail = async (runId: string) => {
     try {
       const res = await fetch(`/api/admin/deep-analysis/${runId}`);
@@ -182,7 +219,7 @@ export default function DeepAnalysisPage() {
     setTimeout(() => setCopied(null), 2000);
   };
 
-  // Cancel a stuck run
+  // Cancel a run
   const handleCancel = async (runId: string) => {
     try {
       await fetch('/api/admin/deep-analysis', {
@@ -190,78 +227,31 @@ export default function DeepAnalysisPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runId, action: 'cancel' }),
       });
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+      setActiveRunId(null);
       fetchRuns();
     } catch {}
   };
 
-  // Retry/resume a stuck or errored run
+  // Retry/resume a run
   const handleRetry = async (runId: string) => {
-    setRunning(true);
-    setRetryingRunId(runId);
-    setProgress(null);
     setRunError(null);
-
     try {
-      const res = await fetch('/api/admin/deep-analysis', {
+      await fetch('/api/admin/deep-analysis', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runId, action: 'retry' }),
       });
-
-      if (!res.body) {
-        setRunError('No response stream');
-        setRunning(false);
-        setRetryingRunId(null);
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        let eventType = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.slice(7);
-          } else if (line.startsWith('data: ') && eventType) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (eventType === 'progress') {
-                setProgress(data);
-              } else if (eventType === 'done') {
-                setCurrentRunId(data.runId);
-                fetchRuns();
-              } else if (eventType === 'error') {
-                setRunError(data.error);
-              }
-            } catch {}
-            eventType = '';
-          }
-        }
-      }
+      startPolling(runId);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Retry failed');
-    } finally {
-      setRunning(false);
-      setRetryingRunId(null);
     }
   };
 
   // Start new run
   const handleStartRun = async () => {
-    setRunning(true);
-    setProgress(null);
     setRunError(null);
-    setCurrentRunId(null);
-
     try {
       const res = await fetch('/api/admin/deep-analysis', {
         method: 'POST',
@@ -279,48 +269,17 @@ export default function DeepAnalysisPage() {
         }),
       });
 
-      if (!res.body) {
-        setRunError('No response stream');
-        setRunning(false);
+      const data = await res.json();
+      if (data.error) {
+        setRunError(data.error);
         return;
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        let eventType = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.slice(7);
-          } else if (line.startsWith('data: ') && eventType) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (eventType === 'progress') {
-                setProgress(data);
-              } else if (eventType === 'done') {
-                setCurrentRunId(data.runId);
-                fetchRuns();
-              } else if (eventType === 'error') {
-                setRunError(data.error);
-              }
-            } catch {}
-            eventType = '';
-          }
-        }
+      if (data.runId) {
+        startPolling(data.runId);
       }
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Failed to start run');
-    } finally {
-      setRunning(false);
     }
   };
 
@@ -342,7 +301,15 @@ export default function DeepAnalysisPage() {
     );
   }
 
-  const currentStepIndex = progress ? STEPS.indexOf(progress.step) : -1;
+  // Derive step indicator from the active run's DB status
+  const activeRun = runs.find((r) => r.id === activeRunId);
+  const activeStep = activeRun?.status || '';
+  const activeStepIndex = STEPS.indexOf(activeStep);
+
+  // Build a progress summary from run detail channels
+  const activeChannels = runDetail && activeRunId === expandedRunId ? runDetail.channels : [];
+  const doneChannels = activeChannels.filter((c) => c.status === 'done').length;
+  const currentChannel = activeChannels.find((c) => !['done', 'error', 'pending'].includes(c.status));
 
   return (
     <div className="min-h-screen bg-gray-950">
@@ -364,10 +331,10 @@ export default function DeepAnalysisPage() {
             <h2 className="text-lg font-bold text-white">Run Pipeline</h2>
             <button
               onClick={handleStartRun}
-              disabled={running}
+              disabled={!!activeRunId}
               className="px-6 py-3 bg-cyan-600 text-white font-semibold rounded-xl hover:bg-cyan-700 disabled:opacity-50 transition flex items-center gap-3"
             >
-              {running ? (
+              {activeRunId ? (
                 <>
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                   Running...
@@ -379,7 +346,7 @@ export default function DeepAnalysisPage() {
           </div>
 
           {/* Filters */}
-          {!running && (
+          {!activeRunId && (
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-4">
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Date (first seen)</label>
@@ -455,22 +422,15 @@ export default function DeepAnalysisPage() {
             </div>
           )}
 
-          {/* Retry indicator */}
-          {running && retryingRunId && (
-            <div className="bg-cyan-900/20 border border-cyan-600/30 rounded-xl p-3 mb-4">
-              <div className="text-cyan-400 text-sm font-medium">Retrying run {retryingRunId}...</div>
-            </div>
-          )}
-
-          {/* Step Indicator */}
-          {running && progress && (
+          {/* Step Indicator (polling-based) */}
+          {activeRunId && activeStep && (
             <div className="space-y-4">
               {/* Steps bar */}
               <div className="flex items-center gap-1">
                 {STEPS.filter((s) => s !== 'done').map((step, i) => {
                   const stepIdx = STEPS.indexOf(step);
-                  const isActive = stepIdx === currentStepIndex;
-                  const isDone = stepIdx < currentStepIndex || progress.step === 'done';
+                  const isActive = stepIdx === activeStepIndex;
+                  const isDone = stepIdx < activeStepIndex || activeStep === 'done';
                   return (
                     <React.Fragment key={step}>
                       {i > 0 && (
@@ -494,36 +454,30 @@ export default function DeepAnalysisPage() {
                 })}
               </div>
 
-              {/* Current action */}
+              {/* Current action summary */}
               <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-4">
-                <div className="text-sm text-gray-300 mb-2">{progress.message}</div>
-                {progress.total && progress.total > 1 && (
-                  <div className="w-full bg-gray-700 rounded-full h-2">
-                    <div
-                      className="bg-gradient-to-r from-cyan-500 to-teal-500 h-full rounded-full transition-all duration-300"
-                      style={{ width: `${Math.round(((progress.progress || 0) / progress.total) * 100)}%` }}
-                    />
-                  </div>
-                )}
-                {progress.total && progress.total > 1 && (
-                  <div className="text-xs text-gray-500 mt-1.5">
-                    {progress.progress || 0} / {progress.total}
-                  </div>
+                <div className="text-sm text-gray-300 mb-2">
+                  {currentChannel
+                    ? `Processing ${currentChannel.channel_name} (${currentChannel.status})`
+                    : activeStep === 'triage'
+                    ? 'Running triage...'
+                    : `${doneChannels}/${activeChannels.length} channels complete`
+                  }
+                </div>
+                {activeChannels.length > 0 && (
+                  <>
+                    <div className="w-full bg-gray-700 rounded-full h-2">
+                      <div
+                        className="bg-gradient-to-r from-cyan-500 to-teal-500 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${Math.round((doneChannels / activeChannels.length) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1.5">
+                      {doneChannels} / {activeChannels.length}
+                    </div>
+                  </>
                 )}
               </div>
-            </div>
-          )}
-
-          {/* Completed run link */}
-          {!running && currentRunId && (
-            <div className="bg-green-900/20 border border-green-600/30 rounded-xl p-4">
-              <div className="text-green-400 font-medium mb-1">Run completed</div>
-              <button
-                onClick={() => handleExpand(currentRunId)}
-                className="text-sm text-cyan-400 hover:underline"
-              >
-                View results
-              </button>
             </div>
           )}
 
@@ -562,8 +516,8 @@ export default function DeepAnalysisPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {/* Cancel / Retry buttons for stuck or errored runs */}
-                  {!running && run.status !== 'done' && (
+                  {/* Cancel / Retry buttons */}
+                  {run.status !== 'done' && (
                     <div className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
                       {run.status !== 'error' && (
                         <button
@@ -695,14 +649,11 @@ export default function DeepAnalysisPage() {
                             <div>
                               <div className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Synthesis</div>
                               <div className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3 space-y-3">
-                                {/* Executive summary */}
                                 {(ch.synthesis as Record<string, unknown>).executive_summary && (
                                   <div className="text-sm text-gray-300 italic">
                                     {String((ch.synthesis as Record<string, unknown>).executive_summary)}
                                   </div>
                                 )}
-
-                                {/* Key sections */}
                                 {(() => {
                                   const syn = ch.synthesis as Record<string, unknown>;
                                   const strategy = syn.content_strategy as Record<string, unknown> | undefined;
@@ -738,8 +689,6 @@ export default function DeepAnalysisPage() {
                                     </>
                                   );
                                 })()}
-
-                                {/* Full JSON toggle */}
                                 <details className="group">
                                   <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">
                                     View full JSON
@@ -757,7 +706,6 @@ export default function DeepAnalysisPage() {
                             <div>
                               <div className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Generated Post</div>
                               <div className="space-y-3">
-                                {/* Composite thumbnail */}
                                 {(() => {
                                   const videoIds = (ch.storyboards || [])
                                     .filter((sb) => sb.status === 'done')
@@ -797,8 +745,6 @@ export default function DeepAnalysisPage() {
                                     </div>
                                   );
                                 })()}
-
-                                {/* T1 */}
                                 <div className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3">
                                   <div className="flex items-center justify-between mb-2">
                                     <span className="text-xs font-medium text-cyan-500">T1</span>
@@ -822,8 +768,6 @@ export default function DeepAnalysisPage() {
                                     </div>
                                   )}
                                 </div>
-
-                                {/* T2 (hardcoded) */}
                                 <div className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3">
                                   <div className="flex items-center justify-between mb-2">
                                     <span className="text-xs font-medium text-gray-500">T2 (hardcoded)</span>
