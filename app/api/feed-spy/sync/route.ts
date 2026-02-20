@@ -27,6 +27,7 @@ interface VideoData {
   view_count: number | null;
   like_count: number | null;
   comment_count: number | null;
+  is_ai_generated: boolean | null;
   collected_at: string;
   collection_order: number;
 }
@@ -342,6 +343,18 @@ export async function POST(req: NextRequest) {
               parseISODate(video.channel_creation_date),
               channelVideoCount,
             ]);
+          }
+
+          // Upsert is_ai_generated into channel_analysis from xgodo data
+          for (const video of videos) {
+            if (!video.channel_id || video.is_ai_generated == null) continue;
+            await pool.query(`
+              INSERT INTO channel_analysis (channel_id, is_ai_generated, status, updated_at)
+              VALUES ($1, $2, 'pending', NOW())
+              ON CONFLICT (channel_id) DO UPDATE SET
+                is_ai_generated = COALESCE(channel_analysis.is_ai_generated, EXCLUDED.is_ai_generated),
+                updated_at = NOW()
+            `, [video.channel_id, video.is_ai_generated]);
           }
 
           // Insert video sightings

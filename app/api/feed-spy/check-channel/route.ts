@@ -36,13 +36,25 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Missing handle query parameter' }, { status: 400, headers: corsHeaders });
     }
 
-    // Check if channel exists by URL pattern or channel_id
+    // Check if channel exists by URL pattern or channel_id, join for AI flag
     const result = await pool.query(
-      `SELECT 1 FROM shorts_channels WHERE channel_url LIKE $1 OR channel_id = $2 LIMIT 1`,
+      `SELECT sc.channel_id, ca.is_ai_generated
+       FROM shorts_channels sc
+       LEFT JOIN channel_analysis ca ON ca.channel_id = sc.channel_id
+       WHERE sc.channel_url LIKE $1 OR sc.channel_id = $2
+       LIMIT 1`,
       [`%/@${handle}%`, `@${handle}`]
     );
 
-    return NextResponse.json({ known: result.rows.length > 0 }, { headers: corsHeaders });
+    if (result.rows.length === 0) {
+      return NextResponse.json({ known: false }, { headers: corsHeaders });
+    }
+
+    const row = result.rows[0];
+    return NextResponse.json({
+      known: true,
+      is_ai_generated: row.is_ai_generated ?? null,
+    }, { headers: corsHeaders });
   } catch (err) {
     console.error('check-channel error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500, headers: corsHeaders });
