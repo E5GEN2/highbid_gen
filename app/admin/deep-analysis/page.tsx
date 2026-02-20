@@ -272,6 +272,7 @@ export default function DeepAnalysisPage() {
             maxAgeDays: filterMaxAge,
             minSubs: filterMinSubs,
             maxSubs: filterMaxSubs,
+            language: filterLanguage,
             triageCount: filterTriageCount,
             pickCount: filterPickCount,
           },
@@ -379,7 +380,7 @@ export default function DeepAnalysisPage() {
 
           {/* Filters */}
           {!running && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-4">
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Date (first seen)</label>
                 <input
@@ -416,6 +417,16 @@ export default function DeepAnalysisPage() {
                   min={0}
                   value={filterMaxSubs}
                   onChange={(e) => setFilterMaxSubs(parseInt(e.target.value) || 0)}
+                  className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Language (empty=all)</label>
+                <input
+                  type="text"
+                  value={filterLanguage}
+                  onChange={(e) => setFilterLanguage(e.target.value.trim())}
+                  placeholder="en"
                   className="w-full px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
                 />
               </div>
