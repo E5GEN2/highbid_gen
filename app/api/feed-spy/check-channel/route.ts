@@ -30,8 +30,19 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid API key' }, { status: 401, headers: corsHeaders });
     }
 
-    // Validate handle param
-    const handle = req.nextUrl.searchParams.get('handle');
+    // Validate handle param — parse from raw URL to handle non-ASCII (Arabic, etc.)
+    let handle: string | null = null;
+    try {
+      const url = new URL(req.url);
+      handle = url.searchParams.get('handle');
+    } catch {
+      // Fallback: extract handle from raw query string
+      const qs = req.url.split('?')[1] || '';
+      const match = qs.match(/(?:^|&)handle=([^&]*)/);
+      if (match) {
+        try { handle = decodeURIComponent(match[1]); } catch { handle = match[1]; }
+      }
+    }
     if (!handle) {
       return NextResponse.json({ error: 'Missing handle query parameter' }, { status: 400, headers: corsHeaders });
     }
