@@ -451,9 +451,14 @@ export default function XPostsPage() {
     const top5 = sortedFresh.slice(0, 5);
     const tweets: { text: string; media?: string[] }[] = [];
 
-    // T1 — hook (no media)
+    // Build sneak-peek lines for the hook from actual channel data
+    const peeks = top5.map(ch =>
+      `→ ${formatNumber(ch.subscriber_count)} subs in ${formatAge(ch.age_days)} (${[ch.ai_category, ch.ai_niche].filter(Boolean).join(' › ') || ch.niche})`
+    ).join('\n');
+
+    // T1 — hook with sneak peeks (no media)
     tweets.push({
-      text: `5 YouTube Shorts niches blowing up right now — with channels you can study and copy.\n\nEach one grew from zero. Here's what they're doing 👇`,
+      text: `5 YouTube Shorts channels blowing up right now:\n\n${peeks}\n\nEach one grew from zero. Here's what they're doing 👇`,
     });
 
     // T2–T6 — one channel each with composite image
@@ -466,6 +471,9 @@ export default function XPostsPage() {
       const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
       const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 4).map(t => `#${t}`).join(' ')}` : '';
 
+      // Growth headline
+      const growthHook = `${formatNumber(ch.subscriber_count)} subscribers in ${formatAge(ch.age_days)}.`;
+
       // Composite thumbnail: 3 Shorts side-by-side
       const knownVideoIds = [...new Set(ch.videos.map(v => v.video_id))].slice(0, 3);
       const compositeParams = new URLSearchParams();
@@ -474,7 +482,7 @@ export default function XPostsPage() {
       const mediaUrls = [`/api/admin/x-posts/composite-thumb?${compositeParams.toString()}`];
 
       tweets.push({
-        text: `${i + 1}/ ${ch.channel_name}\n\n▸ Niche: ${nicheLabel}\n▸ ${formatNumber(ch.subscriber_count)} subscribers in ${formatAge(ch.age_days)}\n▸ Top video: ${formatNumber(topVideoViews)} views${style}${lang}${summaryLine}${tagLine}`,
+        text: `${i + 1}/ ${growthHook}\n\n${ch.channel_name}\n\n▸ Niche: ${nicheLabel}\n▸ Top video: ${formatNumber(topVideoViews)} views${style}${lang}${summaryLine}${tagLine}`,
         media: mediaUrls,
       });
     });
