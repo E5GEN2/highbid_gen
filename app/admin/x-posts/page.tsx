@@ -269,13 +269,6 @@ export default function XPostsPage() {
     if (authenticated) fetchPostedChannels();
   }, [authenticated, fetchPostedChannels]);
 
-  // Auto-poll analysis status once channels are loaded so Retry/Analyze buttons appear
-  useEffect(() => {
-    if (channels.length > 0 && !analyzing) {
-      pollAnalysis(channels.map(ch => ch.channel_id));
-    }
-  }, [channels, analyzing, pollAnalysis]);
-
   const showCopyFeedback = (msg: string) => {
     setCopyFeedback(msg);
     setTimeout(() => setCopyFeedback(''), 2000);
@@ -338,6 +331,13 @@ export default function XPostsPage() {
       return false;
     }
   }, []);
+
+  // Auto-poll analysis status once channels are loaded so Resume button appears
+  useEffect(() => {
+    if (channels.length > 0 && !analyzing) {
+      pollAnalysis(channels.map(ch => ch.channel_id));
+    }
+  }, [channels, analyzing, pollAnalysis]);
 
   const startAnalysis = async (rerunFailed = false, onlyNew = false) => {
     const ids = channels.map(ch => ch.channel_id);
