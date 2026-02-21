@@ -196,10 +196,22 @@ export async function POST(req: NextRequest) {
       if (!channelMap.has(channelId)) continue;
 
       if (rerunFailed) {
-        // Only reset failed rows
+        // Reset failed + stuck analyzing (>5min) rows, and create rows for channels with no analysis yet
         await pool.query(
-          `UPDATE channel_analysis SET status = 'pending', error_message = NULL, updated_at = NOW()
-           WHERE channel_id = $1 AND status = 'failed'`,
+          `INSERT INTO channel_analysis (channel_id, status)
+           VALUES ($1, 'pending')
+           ON CONFLICT (channel_id) DO UPDATE SET
+             status = CASE
+               WHEN channel_analysis.status IN ('failed') THEN 'pending'
+               WHEN channel_analysis.status = 'analyzing' AND channel_analysis.updated_at < NOW() - INTERVAL '5 minutes' THEN 'pending'
+               ELSE channel_analysis.status
+             END,
+             error_message = CASE
+               WHEN channel_analysis.status IN ('failed') THEN NULL
+               WHEN channel_analysis.status = 'analyzing' AND channel_analysis.updated_at < NOW() - INTERVAL '5 minutes' THEN NULL
+               ELSE channel_analysis.error_message
+             END,
+             updated_at = NOW()`,
           [channelId]
         );
       } else if (onlyNew) {

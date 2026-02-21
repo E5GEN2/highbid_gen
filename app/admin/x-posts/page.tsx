@@ -269,6 +269,13 @@ export default function XPostsPage() {
     if (authenticated) fetchPostedChannels();
   }, [authenticated, fetchPostedChannels]);
 
+  // Auto-poll analysis status once channels are loaded so Retry/Analyze buttons appear
+  useEffect(() => {
+    if (channels.length > 0 && !analyzing) {
+      pollAnalysis(channels.map(ch => ch.channel_id));
+    }
+  }, [channels, analyzing, pollAnalysis]);
+
   const showCopyFeedback = (msg: string) => {
     setCopyFeedback(msg);
     setTimeout(() => setCopyFeedback(''), 2000);
@@ -793,25 +800,17 @@ export default function XPostsPage() {
             <CollapsibleSection
               title="AI Channel Analysis"
               subtitle={analysisProgress
-                ? `${analysisProgress.done + analysisProgress.failed}/${analysisProgress.total} analyzed`
+                ? `${analysisProgress.done}/${analysisProgress.total} done${analysisProgress.failed ? `, ${analysisProgress.failed} failed` : ''}${analysisProgress.pending ? `, ${analysisProgress.pending} pending` : ''}`
                 : `${channels.length} channels`}
               defaultOpen={false}
               headerRight={
                 <div className="flex items-center gap-2">
-                  {analysisProgress && analysisProgress.failed > 0 && !analyzing && (
+                  {analysisProgress && (analysisProgress.pending + analysisProgress.failed + analysisProgress.analyzing) > 0 && !analyzing && (
                     <button
                       onClick={() => startAnalysis(true)}
-                      className="px-3 py-1.5 text-xs bg-orange-900/50 text-orange-400 border border-orange-800 rounded-lg hover:bg-orange-900 transition"
-                    >
-                      Retry {analysisProgress.failed} Failed
-                    </button>
-                  )}
-                  {analysisProgress && analysisProgress.pending > 0 && !analyzing && (
-                    <button
-                      onClick={() => startAnalysis(false, true)}
                       className="px-3 py-1.5 text-xs bg-green-900/50 text-green-400 border border-green-800 rounded-lg hover:bg-green-900 transition"
                     >
-                      Analyze {analysisProgress.pending} New
+                      Resume ({analysisProgress.pending + analysisProgress.failed + analysisProgress.analyzing} remaining)
                     </button>
                   )}
                   <button
