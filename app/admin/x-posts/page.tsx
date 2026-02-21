@@ -439,39 +439,47 @@ export default function XPostsPage() {
 
   // --- Generate post content ---
 
-  // Filter out posted channels for generation
+  // Filter out posted channels for generation, prioritize EN language
   const freshChannels = channels.filter(ch => !ch.is_posted);
+  const enChannels = freshChannels.filter(ch => ch.ai_language?.toUpperCase() === 'EN');
+  const otherChannels = freshChannels.filter(ch => ch.ai_language?.toUpperCase() !== 'EN');
+  const sortedFresh = [...enChannels, ...otherChannels];
 
-  // 1. Daily Leaderboard Thread (5 tweets)
+  // 1. Daily Leaderboard Thread (7 tweets: hook + 5 channels + CTA)
   const generateThread = (): { text: string; media?: string[] }[] => {
-    if (freshChannels.length === 0) return [];
-    const top5 = freshChannels.slice(0, 5);
+    if (sortedFresh.length === 0) return [];
+    const top5 = sortedFresh.slice(0, 5);
     const tweets: { text: string; media?: string[] }[] = [];
 
-    // T1 — hook: discovery pain point
+    // T1 — hook (no media)
     tweets.push({
-      text: `${pickHook(HOOKS_DISCOVERY, Date.now())}\n\nWe just found ${stats?.totalChannels || freshChannels.length} Shorts channels that most people won't discover for months.\n\nHere are the fastest growing ones`,
-      media: [],
+      text: `5 YouTube Shorts niches blowing up right now — with channels you can study and copy.\n\nEach one grew from zero. Here's what they're doing 👇`,
     });
 
-    // T2-4: individual channels — rotate through pain-point hooks
-    const channelHookPools = [HOOKS_SPEED, HOOKS_DOABLE, HOOKS_NICHE];
-    top5.slice(0, 3).forEach((ch, i) => {
+    // T2–T6 — one channel each with composite image
+    top5.forEach((ch, i) => {
       const topVideo = getTopVideo(ch.videos);
-      const nicheLabel = [ch.ai_category, ch.ai_niche].filter(Boolean).join(' · ') || ch.niche;
-      const style = ch.content_style ? ch.content_style.replace('_', ' ') : '';
-      const langLabel = ch.ai_language ? ` · ${ch.ai_language.toUpperCase()}` : '';
-      const durationLabel = ch.avg_duration ? ` · ~${ch.avg_duration}s avg` : '';
+      const topVideoViews = Number(topVideo?.view_count) || 0;
+      const nicheLabel = [ch.ai_category, ch.ai_niche].filter(Boolean).join(' › ') || ch.niche;
+      const style = ch.content_style ? `\n▸ Style: ${ch.content_style.replace('_', ' ')}` : '';
+      const lang = ch.ai_language ? `\n▸ Language: ${ch.ai_language.toUpperCase()}` : '';
       const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
       const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 4).map(t => `#${t}`).join(' ')}` : '';
-      const hook = pickHook(channelHookPools[i % channelHookPools.length], i + Date.now());
+
+      // Composite thumbnail: 3 Shorts side-by-side
+      const knownVideoIds = [...new Set(ch.videos.map(v => v.video_id))].slice(0, 3);
+      const compositeParams = new URLSearchParams();
+      if (knownVideoIds.length > 0) compositeParams.set('ids', knownVideoIds.join(','));
+      compositeParams.set('channelId', ch.channel_id);
+      const mediaUrls = [`/api/admin/x-posts/composite-thumb?${compositeParams.toString()}`];
+
       tweets.push({
-        text: `${hook}\n\n${ch.channel_name}\n${nicheLabel}${style ? ` · ${style}` : ''}${langLabel} · ${formatAge(ch.age_days)} old\n${formatNumber(ch.subscriber_count)} subscribers${durationLabel}\nTop video: ${formatNumber(Number(topVideo?.view_count) || 0)} views${summaryLine}${tagLine}`,
-        media: getThumbnails(ch.videos, 4),
+        text: `${i + 1}/ ${ch.channel_name}\n\n▸ Niche: ${nicheLabel}\n▸ ${formatNumber(ch.subscriber_count)} subscribers in ${formatAge(ch.age_days)}\n▸ Top video: ${formatNumber(topVideoViews)} views${style}${lang}${summaryLine}${tagLine}`,
+        media: mediaUrls,
       });
     });
 
-    // T5
+    // T7 — CTA (no media)
     tweets.push({
       text: `You're seeing these channels before anyone else.\n\nFollow @rofe_ai — we find them every day.`,
     });
@@ -481,8 +489,8 @@ export default function XPostsPage() {
 
   // 2. Single Banger Post (thread: T1 teases without channel name, T2 reveals)
   const generateSingleBanger = (): { text: string; media?: string[] }[] | null => {
-    if (freshChannels.length === 0) return null;
-    const ch = freshChannels[0];
+    if (sortedFresh.length === 0) return null;
+    const ch = sortedFresh[0];
     const topVideo = getTopVideo(ch.videos);
 
     const nicheLabel = [ch.ai_category, ch.ai_niche, ch.ai_sub_niche].filter(Boolean).join(' › ') || ch.niche;
@@ -536,12 +544,12 @@ export default function XPostsPage() {
 
   // 3. Stats-Only Post
   const generateStatsPost = (): { text: string } | null => {
-    if (!stats || freshChannels.length === 0) return null;
-    const topCh = freshChannels[0];
+    if (!stats || sortedFresh.length === 0) return null;
+    const topCh = sortedFresh[0];
 
     // Count content styles
     const styles: Record<string, number> = {};
-    for (const ch of freshChannels) {
+    for (const ch of sortedFresh) {
       const s = ch.content_style?.replace('_', ' ') || 'unknown';
       styles[s] = (styles[s] || 0) + 1;
     }
@@ -552,7 +560,7 @@ export default function XPostsPage() {
       .join(', ');
 
     // Unique categories
-    const categories = [...new Set(freshChannels.map(ch => ch.ai_category).filter(Boolean))];
+    const categories = [...new Set(sortedFresh.map(ch => ch.ai_category).filter(Boolean))];
     const categoryLine = categories.length > 0 ? `\nCategories: ${categories.join(', ')}` : '';
 
     return {
@@ -563,7 +571,7 @@ export default function XPostsPage() {
   // 4. Niche Roundup
   const generateNicheRoundups = (): { niche: string; text: string; media: string[]; channelIds: string[] }[] => {
     const nicheMap: Record<string, Channel[]> = {};
-    for (const ch of freshChannels) {
+    for (const ch of sortedFresh) {
       const nicheKey = ch.ai_category || ch.ai_niche || ch.niche;
       if (!nicheMap[nicheKey]) nicheMap[nicheKey] = [];
       nicheMap[nicheKey].push(ch);
@@ -590,9 +598,9 @@ export default function XPostsPage() {
   };
 
   // Get channel IDs used in each section
-  const getThreadChannelIds = () => freshChannels.slice(0, 5).map(ch => ch.channel_id);
-  const getBangerChannelIds = () => freshChannels.length > 0 ? [freshChannels[0].channel_id] : [];
-  const getStatsChannelIds = () => freshChannels.length > 0 ? [freshChannels[0].channel_id] : [];
+  const getThreadChannelIds = () => sortedFresh.slice(0, 5).map(ch => ch.channel_id);
+  const getBangerChannelIds = () => sortedFresh.length > 0 ? [sortedFresh[0].channel_id] : [];
+  const getStatsChannelIds = () => sortedFresh.length > 0 ? [sortedFresh[0].channel_id] : [];
 
   // --- Render ---
 
@@ -1081,7 +1089,7 @@ export default function XPostsPage() {
               {/* Channel badges */}
               {!hidePosted && (
                 <div className="flex flex-wrap gap-1.5 mb-3">
-                  {freshChannels.slice(0, 5).map(ch => (
+                  {sortedFresh.slice(0, 5).map(ch => (
                     <span key={ch.channel_id} className="text-xs text-gray-400">
                       {ch.channel_name}
                       {ch.is_posted && (
@@ -1093,12 +1101,12 @@ export default function XPostsPage() {
               )}
 
               {/* Leaderboard card for T1 */}
-              <LeaderboardCard channels={freshChannels.slice(0, 5)} date={date} />
+              <LeaderboardCard channels={sortedFresh.slice(0, 5)} date={date} />
 
               <VideoRenderButton
                 compositionId="LeaderboardVideo"
                 inputProps={{
-                  channels: freshChannels.slice(0, 5).map(ch => ({
+                  channels: sortedFresh.slice(0, 5).map(ch => ({
                     channel_name: ch.channel_name,
                     avatar_url: ch.avatar_url,
                     subscriber_count: ch.subscriber_count,
@@ -1140,7 +1148,7 @@ export default function XPostsPage() {
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs text-gray-500">
                     Thread preview
-                    {!hidePosted && freshChannels[0]?.is_posted && (
+                    {!hidePosted && sortedFresh[0]?.is_posted && (
                       <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400 border border-green-800">Posted</span>
                     )}
                   </span>
@@ -1154,31 +1162,31 @@ export default function XPostsPage() {
 
                 {/* Spotlight card */}
                 <ChannelSpotlightCard
-                  channelName={freshChannels[0].channel_name}
-                  avatarUrl={freshChannels[0].avatar_url}
-                  niche={freshChannels[0].niche}
-                  subscriberCount={freshChannels[0].subscriber_count}
-                  ageDays={freshChannels[0].age_days}
-                  totalViews={freshChannels[0].total_views}
-                  videoCount={freshChannels[0].total_video_count}
-                  thumbnails={getThumbnails(freshChannels[0].videos, 4)}
+                  channelName={sortedFresh[0].channel_name}
+                  avatarUrl={sortedFresh[0].avatar_url}
+                  niche={sortedFresh[0].niche}
+                  subscriberCount={sortedFresh[0].subscriber_count}
+                  ageDays={sortedFresh[0].age_days}
+                  totalViews={sortedFresh[0].total_views}
+                  videoCount={sortedFresh[0].total_video_count}
+                  thumbnails={getThumbnails(sortedFresh[0].videos, 4)}
                 />
 
                 <VideoRenderButton
                   compositionId="ChannelSpotlightVideo"
                   inputProps={{
                     channel: {
-                      channel_name: freshChannels[0].channel_name,
-                      avatar_url: freshChannels[0].avatar_url,
-                      niche: freshChannels[0].niche,
-                      sub_niche: freshChannels[0].ai_sub_niche,
-                      subscriber_count: freshChannels[0].subscriber_count,
-                      age_days: freshChannels[0].age_days,
-                      total_views: freshChannels[0].total_views,
-                      video_count: freshChannels[0].total_video_count,
-                      content_style: freshChannels[0].content_style,
-                      channel_summary: freshChannels[0].channel_summary,
-                      tags: freshChannels[0].ai_tags,
+                      channel_name: sortedFresh[0].channel_name,
+                      avatar_url: sortedFresh[0].avatar_url,
+                      niche: sortedFresh[0].niche,
+                      sub_niche: sortedFresh[0].ai_sub_niche,
+                      subscriber_count: sortedFresh[0].subscriber_count,
+                      age_days: sortedFresh[0].age_days,
+                      total_views: sortedFresh[0].total_views,
+                      video_count: sortedFresh[0].total_video_count,
+                      content_style: sortedFresh[0].content_style,
+                      channel_summary: sortedFresh[0].channel_summary,
+                      tags: sortedFresh[0].ai_tags,
                     },
                     clipPaths: [],
                     postText: singleBanger[0]?.text || '',
@@ -1228,18 +1236,18 @@ export default function XPostsPage() {
                     avgAgeDays: stats?.avgAgeDays || 0,
                     contentStyles: (() => {
                       const styles: Record<string, number> = {};
-                      for (const ch of freshChannels) {
+                      for (const ch of sortedFresh) {
                         const s = ch.content_style?.replace('_', ' ') || 'unknown';
                         styles[s] = (styles[s] || 0) + 1;
                       }
                       return styles;
                     })(),
-                    categories: [...new Set(freshChannels.map(ch => ch.ai_category).filter(Boolean))],
+                    categories: [...new Set(sortedFresh.map(ch => ch.ai_category).filter(Boolean))],
                     topChannel: {
-                      channel_name: freshChannels[0]?.channel_name || '',
-                      avatar_url: freshChannels[0]?.avatar_url || null,
-                      subscriber_count: freshChannels[0]?.subscriber_count || null,
-                      age_days: freshChannels[0]?.age_days || null,
+                      channel_name: sortedFresh[0]?.channel_name || '',
+                      avatar_url: sortedFresh[0]?.avatar_url || null,
+                      subscriber_count: sortedFresh[0]?.subscriber_count || null,
+                      age_days: sortedFresh[0]?.age_days || null,
                     },
                     postText: statsPost.text,
                   }}
@@ -1292,7 +1300,7 @@ export default function XPostsPage() {
                         compositionId="NicheRoundupVideo"
                         inputProps={{
                           nicheName: roundup.niche,
-                          channels: freshChannels
+                          channels: sortedFresh
                             .filter(ch => (ch.ai_category || ch.ai_niche || ch.niche) === roundup.niche)
                             .slice(0, 6)
                             .map(ch => ({
@@ -1302,7 +1310,7 @@ export default function XPostsPage() {
                               subscriber_count: ch.subscriber_count,
                               age_days: ch.age_days,
                             })),
-                          combinedViews: freshChannels
+                          combinedViews: sortedFresh
                             .filter(ch => (ch.ai_category || ch.ai_niche || ch.niche) === roundup.niche)
                             .reduce((sum, ch) => sum + ch.total_views, 0),
                           clipPaths: [],
