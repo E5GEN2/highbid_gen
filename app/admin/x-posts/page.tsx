@@ -453,7 +453,7 @@ export default function XPostsPage() {
 
     // Build sneak-peek lines for the hook from actual channel data
     const peeks = top5.map(ch => {
-      const ai = ch.is_ai_generated === true ? ' 🤖' : '';
+      const ai = ch.is_ai_generated === true ? ' · AI generated' : '';
       return `→ ${formatNumber(ch.subscriber_count)} subs in ${formatAge(ch.age_days)} (${[ch.ai_category, ch.ai_niche].filter(Boolean).join(' › ') || ch.niche})${ai}`;
     }).join('\n');
 
@@ -469,7 +469,7 @@ export default function XPostsPage() {
       const nicheLabel = [ch.ai_category, ch.ai_niche].filter(Boolean).join(' › ') || ch.niche;
       const style = ch.content_style ? `\n▸ Style: ${ch.content_style.replace('_', ' ')}` : '';
       const lang = ch.ai_language ? `\n▸ Language: ${ch.ai_language.toUpperCase()}` : '';
-      const aiLabel = ch.is_ai_generated === true ? '\n▸ AI-generated content 🤖' : '';
+      const aiLabel = ch.is_ai_generated === true ? '\n▸ AI generated' : '';
       const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
       const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 4).map(t => `#${t}`).join(' ')}` : '';
 
