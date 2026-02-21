@@ -59,6 +59,16 @@ function formatNumber(n: number | null | undefined): string {
   return n.toString();
 }
 
+// Visual/loud format: "15,100 SUBS" or "2.3 MILLION views"
+function formatLoud(n: number | null | undefined, unit: string): string {
+  if (n === null || n === undefined) return `? ${unit}`;
+  if (n >= 1000000) {
+    const val = n / 1000000;
+    return `${val % 1 === 0 ? val.toFixed(0) : val.toFixed(1)} MILLION ${unit}`;
+  }
+  return `${n.toLocaleString('en-US')} ${unit}`;
+}
+
 function formatAge(days: number | null): string {
   if (days === null) return '?';
   if (days < 30) return `${days} days`;
@@ -453,8 +463,10 @@ export default function XPostsPage() {
 
     // Build sneak-peek lines for the hook from actual channel data
     const peeks = top5.map(ch => {
+      const topVid = getTopVideo(ch.videos);
+      const views = Number(topVid?.view_count) || 0;
       const ai = ch.is_ai_generated === true ? ' · AI generated' : '';
-      return `→ ${formatNumber(ch.subscriber_count)} subs in ${formatAge(ch.age_days)} (${[ch.ai_category, ch.ai_niche].filter(Boolean).join(' › ') || ch.niche})${ai}`;
+      return `→ ${formatLoud(ch.subscriber_count, 'subs')} · ${formatLoud(views, 'views')} in ${formatAge(ch.age_days)}${ai}`;
     }).join('\n');
 
     // T1 — hook with sneak peeks (no media)
@@ -473,8 +485,8 @@ export default function XPostsPage() {
       const summaryLine = ch.channel_summary ? `\n\n${ch.channel_summary}` : '';
       const tagLine = ch.ai_tags?.length ? `\n\n${ch.ai_tags.slice(0, 4).map(t => `#${t}`).join(' ')}` : '';
 
-      // Growth headline
-      const growthHook = `${formatNumber(ch.subscriber_count)} subscribers in ${formatAge(ch.age_days)}.`;
+      // Growth headline — loud format
+      const growthHook = `${formatLoud(ch.subscriber_count, 'SUBS')} · ${formatLoud(topVideoViews, 'views')} in ${formatAge(ch.age_days)}.`;
 
       // Composite thumbnail: 3 Shorts side-by-side
       const knownVideoIds = [...new Set(ch.videos.map(v => v.video_id))].slice(0, 3);
