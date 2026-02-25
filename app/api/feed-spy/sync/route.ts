@@ -263,16 +263,19 @@ export async function POST(req: NextRequest) {
           const task = tasks[i];
           const taskId = task._id || task.job_task_id;
 
-          // Skip if already collected
+          // Skip if already collected — but still confirm on xgodo so it stops re-fetching
           const existing = await pool.query(
-            'SELECT id FROM shorts_collections WHERE xgodo_task_id = $1',
+            'SELECT id, confirmed_at FROM shorts_collections WHERE xgodo_task_id = $1',
             [taskId]
           );
           if (existing.rows.length > 0) {
             skippedCount++;
+            if (!existing.rows[0].confirmed_at) {
+              confirmedTaskIds.push(taskId);
+            }
             send('progress', {
               phase: 'processing',
-              message: `Task ${i + 1}/${tasks.length} — skipped (already synced)`,
+              message: `Task ${i + 1}/${tasks.length} — skipped (already synced${!existing.rows[0].confirmed_at ? ', will confirm' : ''})`,
               total: tasks.length, processed: i + 1, synced: tasksSynced, skipped: skippedCount, videos: totalVideosSynced, empty: emptyTaskIds.length,
             });
             continue;
