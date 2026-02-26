@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import XPostPreview from '../../../components/admin/XPostPreview';
-import XThread from '../../../components/admin/XThread';
 import LeaderboardCard from '../../../components/admin/LeaderboardCard';
 import ChannelSpotlightCard from '../../../components/admin/ChannelSpotlightCard';
 import VideoRenderButton from '../../../components/admin/VideoRenderButton';
@@ -1144,9 +1143,6 @@ export default function XPostsPage() {
                 label="Render Leaderboard Video"
               />
 
-              <div className="mt-4">
-                <XThread tweets={threadTweets} />
-              </div>
             </CollapsibleSection>
 
             {/* 2. Single Banger Post (Thread) */}
@@ -1217,9 +1213,6 @@ export default function XPostsPage() {
                   label="Render Spotlight Video"
                 />
 
-                <div className="mt-4">
-                  <XThread tweets={singleBanger} />
-                </div>
               </CollapsibleSection>
             )}
 
