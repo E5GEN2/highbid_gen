@@ -633,7 +633,7 @@ export default function SyncPage() {
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
               <label className="text-sm text-gray-400">Interval</label>
-              <div className="flex gap-1">
+              <div className="flex gap-1 items-center">
                 {[
                   { label: '15m', value: '15' },
                   { label: '30m', value: '30' },
@@ -656,6 +656,28 @@ export default function SyncPage() {
                     {opt.label}
                   </button>
                 ))}
+                <div className="flex items-center gap-1 ml-1">
+                  <input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    value={!['15','30','60','120','360'].includes(autoSyncInterval) ? autoSyncInterval : ''}
+                    placeholder="min"
+                    onChange={(e) => setAutoSyncInterval(e.target.value)}
+                    onBlur={async () => {
+                      const val = String(Math.max(1, Math.min(1440, parseInt(autoSyncInterval) || 30)));
+                      setAutoSyncInterval(val);
+                      await saveAutoSyncConfig({ auto_sync_interval_minutes: val });
+                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                    className={`w-16 px-2 py-1.5 text-xs font-mono rounded-lg border focus:outline-none focus:ring-2 focus:ring-purple-500 ${
+                      !['15','30','60','120','360'].includes(autoSyncInterval)
+                        ? 'bg-purple-600 border-purple-500 text-white'
+                        : 'bg-gray-800 border-gray-700 text-gray-400'
+                    }`}
+                  />
+                  <span className="text-xs text-gray-500">min</span>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
