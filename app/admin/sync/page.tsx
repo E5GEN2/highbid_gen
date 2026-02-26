@@ -175,7 +175,8 @@ export default function SyncPage() {
   const prevCountdown = useRef(0);
   useEffect(() => {
     if (autoSyncEnabled && prevCountdown.current > 1 && autoSyncCountdown <= 1 && !syncing && autoSyncConfigLoaded) {
-      handleSyncRef.current();
+      const limit = Math.max(1, parseInt(autoSyncLimit) || 200);
+      handleSyncRef.current(limit);
     }
     prevCountdown.current = autoSyncCountdown;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -206,7 +207,7 @@ export default function SyncPage() {
     }
   };
 
-  const handleSync = async () => {
+  const handleSync = async (overrideLimit?: number) => {
     setSyncing(true);
     setSyncResult(null);
     setSyncError('');
@@ -219,7 +220,7 @@ export default function SyncPage() {
     if (before) setStatsBefore(before);
 
     try {
-      const limit = Math.max(1, parseInt(syncLimit) || 50);
+      const limit = overrideLimit || Math.max(1, parseInt(syncLimit) || 50);
       const res = await fetch('/api/feed-spy/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -503,7 +504,7 @@ export default function SyncPage() {
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6 space-y-4">
           <div className="flex items-center gap-4">
             <button
-              onClick={handleSync}
+              onClick={() => handleSync()}
               disabled={syncing}
               className="px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 disabled:opacity-50 transition flex items-center gap-3"
             >
