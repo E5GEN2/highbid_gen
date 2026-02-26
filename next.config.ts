@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  instrumentationHook: true,
   serverExternalPackages: ['@remotion/renderer', '@remotion/bundler'],
   experimental: {
     serverActions: {
