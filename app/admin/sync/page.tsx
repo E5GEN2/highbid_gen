@@ -7,6 +7,12 @@ interface DbStats {
   videos: number;
   collections: number;
   feedEligible: number;
+  last24h?: {
+    channels: number;
+    videos: number;
+    collections: number;
+    syncs: number;
+  };
 }
 
 interface SyncProgress {
@@ -497,6 +503,29 @@ export default function SyncPage() {
             </div>
           ) : (
             <div className="text-gray-500 text-sm">{statsLoading ? 'Loading stats...' : 'Failed to load stats'}</div>
+          )}
+          {statsBefore?.last24h && (
+            <div className="mt-4 pt-3 border-t border-gray-800">
+              <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Last 24 hours</div>
+              <div className="grid grid-cols-4 gap-3">
+                <div className="flex items-center gap-2 px-3 py-2 bg-gray-800/30 rounded-lg">
+                  <span className="text-lg font-bold text-purple-400 font-mono">{statsBefore.last24h.channels.toLocaleString()}</span>
+                  <span className="text-[10px] text-gray-500">channels</span>
+                </div>
+                <div className="flex items-center gap-2 px-3 py-2 bg-gray-800/30 rounded-lg">
+                  <span className="text-lg font-bold text-blue-400 font-mono">{statsBefore.last24h.videos.toLocaleString()}</span>
+                  <span className="text-[10px] text-gray-500">videos</span>
+                </div>
+                <div className="flex items-center gap-2 px-3 py-2 bg-gray-800/30 rounded-lg">
+                  <span className="text-lg font-bold text-green-400 font-mono">{statsBefore.last24h.collections.toLocaleString()}</span>
+                  <span className="text-[10px] text-gray-500">collections</span>
+                </div>
+                <div className="flex items-center gap-2 px-3 py-2 bg-gray-800/30 rounded-lg">
+                  <span className="text-lg font-bold text-cyan-400 font-mono">{statsBefore.last24h.syncs.toLocaleString()}</span>
+                  <span className="text-[10px] text-gray-500">syncs</span>
+                </div>
+              </div>
+            </div>
           )}
         </div>
 
