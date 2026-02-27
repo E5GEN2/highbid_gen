@@ -5,12 +5,45 @@ export async function register() {
 
     let timer: ReturnType<typeof setInterval> | null = null;
 
+    async function getConfig(pool: import('pg').Pool): Promise<Record<string, string>> {
+      const result = await pool.query('SELECT key, value FROM admin_config');
+      const config: Record<string, string> = {};
+      for (const row of result.rows) config[row.key] = row.value;
+      return config;
+    }
+
+    async function runAutoSchedule() {
+      try {
+        const pool = await getPool();
+        const config = await getConfig(pool);
+
+        if (config.auto_schedule_enabled !== 'true') return;
+        if (!config.cron_secret) return;
+
+        const intervalMin = parseInt(config.auto_schedule_interval_minutes) || 60;
+
+        if (config.last_auto_schedule_at) {
+          const elapsed = Date.now() - new Date(config.last_auto_schedule_at).getTime();
+          if (elapsed < intervalMin * 60 * 1000) return;
+        }
+
+        const port = process.env.PORT || '3000';
+        const baseUrl = `http://localhost:${port}`;
+        const res = await fetch(`${baseUrl}/api/cron/schedule`, {
+          headers: { 'Authorization': `Bearer ${config.cron_secret}` },
+        });
+
+        const data = await res.json();
+        console.log('[auto-schedule]', data.success ? `scheduled ${data.scheduled} tasks (${data.numVideos} vids each)` : data.error || data.reason || 'unknown');
+      } catch (err) {
+        console.error('[auto-schedule] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAutoSync() {
       try {
         const pool = await getPool();
-        const result = await pool.query('SELECT key, value FROM admin_config');
-        const config: Record<string, string> = {};
-        for (const row of result.rows) config[row.key] = row.value;
+        const config = await getConfig(pool);
 
         if (config.auto_sync_enabled !== 'true') return;
         if (!config.cron_secret) return;
@@ -37,11 +70,16 @@ export async function register() {
       }
     }
 
-    // Check every 60 seconds whether a sync is due
-    timer = setInterval(runAutoSync, 60 * 1000);
+    async function runAll() {
+      await runAutoSync();
+      await runAutoSchedule();
+    }
+
+    // Check every 60 seconds whether a sync/schedule is due
+    timer = setInterval(runAll, 60 * 1000);
 
     // Initial check after 30s startup delay
-    setTimeout(runAutoSync, 30 * 1000);
+    setTimeout(runAll, 30 * 1000);
 
     // Cleanup on process exit
     process.on('beforeExit', () => {

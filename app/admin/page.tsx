@@ -62,6 +62,15 @@ export default function AdminPage() {
   const [scheduleResult, setScheduleResult] = useState<{ scheduled: number } | null>(null);
   const [scheduleError, setScheduleError] = useState('');
 
+  // Auto-schedule state
+  const [autoSchedEnabled, setAutoSchedEnabled] = useState(false);
+  const [autoSchedInterval, setAutoSchedInterval] = useState('60');
+  const [autoSchedTaskCount, setAutoSchedTaskCount] = useState('10');
+  const [autoSchedNumVideos, setAutoSchedNumVideos] = useState('20');
+  const [autoSchedFetchAge, setAutoSchedFetchAge] = useState(true);
+  const [autoSchedFetchVideoCount, setAutoSchedFetchVideoCount] = useState(false);
+  const [lastAutoSchedule, setLastAutoSchedule] = useState<{ at: string; result: { scheduled: number; error?: string } } | null>(null);
+
   // Users state
   interface UserRow {
     id: string;
@@ -118,6 +127,21 @@ export default function AdminPage() {
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
         setChannelCheckApiKey(data.config.channel_check_api_key || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
+        // Auto-schedule config
+        setAutoSchedEnabled(data.config.auto_schedule_enabled === 'true');
+        setAutoSchedInterval(data.config.auto_schedule_interval_minutes || '60');
+        setAutoSchedTaskCount(data.config.auto_schedule_task_count || '10');
+        setAutoSchedNumVideos(data.config.auto_schedule_num_videos || '20');
+        setAutoSchedFetchAge(data.config.auto_schedule_fetch_age !== 'false');
+        setAutoSchedFetchVideoCount(data.config.auto_schedule_fetch_video_count === 'true');
+        if (data.config.last_auto_schedule_at) {
+          try {
+            setLastAutoSchedule({
+              at: data.config.last_auto_schedule_at,
+              result: JSON.parse(data.config.last_auto_schedule_result || '{}'),
+            });
+          } catch { /* skip */ }
+        }
         try {
           if (data.config.visible_tabs) setVisibleTabs(JSON.parse(data.config.visible_tabs));
         } catch {}
@@ -156,6 +180,24 @@ export default function AdminPage() {
     } finally {
       setScheduling(false);
     }
+  };
+
+  const saveAutoSchedConfig = async (overrides: Record<string, string>) => {
+    await fetch('/api/admin/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: overrides }),
+    });
+  };
+
+  const formatTimeAgo = (iso: string) => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
   };
 
   const saveConfig = async () => {
@@ -824,6 +866,158 @@ export default function AdminPage() {
               <div className="bg-red-900/20 border border-red-600/30 rounded-xl p-4">
                 <div className="text-red-400 font-medium mb-1">Schedule Failed</div>
                 <div className="text-sm text-red-300/70">{scheduleError}</div>
+              </div>
+            )}
+          </div>
+
+          {/* Auto-Schedule Autopilot */}
+          <div className="border-t border-gray-800 pt-5 mt-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-300">Autopilot</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Automatically schedule tasks on a timer, even with browser closed</p>
+              </div>
+              <button
+                onClick={async () => {
+                  const next = !autoSchedEnabled;
+                  setAutoSchedEnabled(next);
+                  await saveAutoSchedConfig({ auto_schedule_enabled: next ? 'true' : 'false' });
+                }}
+                className={`relative w-12 h-6 rounded-full transition-colors ${autoSchedEnabled ? 'bg-green-600' : 'bg-gray-700'}`}
+              >
+                <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${autoSchedEnabled ? 'translate-x-6' : ''}`} />
+              </button>
+            </div>
+
+            {autoSchedEnabled && (
+              <div className="space-y-3 bg-gray-800/30 rounded-xl p-4">
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Every</label>
+                    <div className="flex gap-1 items-center">
+                      {[
+                        { label: '30m', value: '30' },
+                        { label: '1h', value: '60' },
+                        { label: '2h', value: '120' },
+                        { label: '6h', value: '360' },
+                        { label: '12h', value: '720' },
+                      ].map(opt => (
+                        <button
+                          key={opt.value}
+                          onClick={async () => {
+                            setAutoSchedInterval(opt.value);
+                            await saveAutoSchedConfig({ auto_schedule_interval_minutes: opt.value });
+                          }}
+                          className={`px-2.5 py-1 text-xs font-medium rounded-lg transition ${
+                            autoSchedInterval === opt.value
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                      <input
+                        type="number"
+                        min={1}
+                        max={1440}
+                        value={!['30','60','120','360','720'].includes(autoSchedInterval) ? autoSchedInterval : ''}
+                        placeholder="min"
+                        onChange={(e) => setAutoSchedInterval(e.target.value)}
+                        onBlur={async () => {
+                          const val = String(Math.max(1, Math.min(1440, parseInt(autoSchedInterval) || 60)));
+                          setAutoSchedInterval(val);
+                          await saveAutoSchedConfig({ auto_schedule_interval_minutes: val });
+                        }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        className={`w-14 px-2 py-1 text-xs font-mono rounded-lg border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                          !['30','60','120','360','720'].includes(autoSchedInterval)
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-gray-800 border-gray-700 text-gray-400'
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Tasks</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={autoSchedTaskCount}
+                      onChange={(e) => setAutoSchedTaskCount(e.target.value)}
+                      onBlur={async () => {
+                        const val = String(Math.max(1, Math.min(100, parseInt(autoSchedTaskCount) || 10)));
+                        setAutoSchedTaskCount(val);
+                        await saveAutoSchedConfig({ auto_schedule_task_count: val });
+                      }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                      className="w-16 px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg text-white text-xs text-center font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Videos</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={autoSchedNumVideos}
+                      onChange={(e) => setAutoSchedNumVideos(e.target.value)}
+                      onBlur={async () => {
+                        const val = String(Math.max(1, Math.min(50, parseInt(autoSchedNumVideos) || 20)));
+                        setAutoSchedNumVideos(val);
+                        await saveAutoSchedConfig({ auto_schedule_num_videos: val });
+                      }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                      className="w-16 px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg text-white text-xs text-center font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoSchedFetchAge}
+                      onChange={async (e) => {
+                        setAutoSchedFetchAge(e.target.checked);
+                        await saveAutoSchedConfig({ auto_schedule_fetch_age: e.target.checked ? 'true' : 'false' });
+                      }}
+                      className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                    />
+                    <span className="text-xs text-gray-400">Channel age</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoSchedFetchVideoCount}
+                      onChange={async (e) => {
+                        setAutoSchedFetchVideoCount(e.target.checked);
+                        await saveAutoSchedConfig({ auto_schedule_fetch_video_count: e.target.checked ? 'true' : 'false' });
+                      }}
+                      className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                    />
+                    <span className="text-xs text-gray-400">Video count</span>
+                  </label>
+                </div>
+
+                {lastAutoSchedule && (
+                  <div className="flex items-center gap-3 text-xs pt-2 border-t border-gray-700/50">
+                    <span className="text-gray-500">Last run:</span>
+                    <span className="text-gray-300">{formatTimeAgo(lastAutoSchedule.at)}</span>
+                    {lastAutoSchedule.result && !lastAutoSchedule.result.error && (
+                      <>
+                        <span className="text-gray-600">·</span>
+                        <span className="text-blue-400">{lastAutoSchedule.result.scheduled} tasks scheduled</span>
+                      </>
+                    )}
+                    {lastAutoSchedule.result?.error && (
+                      <span className="text-red-400">{lastAutoSchedule.result.error}</span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
