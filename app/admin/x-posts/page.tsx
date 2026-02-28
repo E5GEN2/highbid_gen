@@ -2,8 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import XPostPreview from '../../../components/admin/XPostPreview';
-import LeaderboardCard from '../../../components/admin/LeaderboardCard';
-import ChannelSpotlightCard from '../../../components/admin/ChannelSpotlightCard';
+import XThread from '../../../components/admin/XThread';
 import VideoRenderButton from '../../../components/admin/VideoRenderButton';
 
 interface Video {
@@ -1121,9 +1120,6 @@ export default function XPostsPage() {
                 </div>
               )}
 
-              {/* Leaderboard card for T1 */}
-              <LeaderboardCard channels={sortedFresh.slice(0, 5)} date={date} />
-
               <VideoRenderButton
                 compositionId="LeaderboardVideo"
                 inputProps={{
@@ -1143,6 +1139,9 @@ export default function XPostsPage() {
                 label="Render Leaderboard Video"
               />
 
+              <div className="mt-4">
+                <XThread tweets={threadTweets} />
+              </div>
             </CollapsibleSection>
 
             {/* 2. Single Banger Post (Thread) */}
@@ -1178,18 +1177,6 @@ export default function XPostsPage() {
                   </button>
                 </div>
 
-                {/* Spotlight card */}
-                <ChannelSpotlightCard
-                  channelName={sortedFresh[0].channel_name}
-                  avatarUrl={sortedFresh[0].avatar_url}
-                  niche={sortedFresh[0].niche}
-                  subscriberCount={sortedFresh[0].subscriber_count}
-                  ageDays={sortedFresh[0].age_days}
-                  totalViews={sortedFresh[0].total_views}
-                  videoCount={sortedFresh[0].total_video_count}
-                  thumbnails={getThumbnails(sortedFresh[0].videos, 4)}
-                />
-
                 <VideoRenderButton
                   compositionId="ChannelSpotlightVideo"
                   inputProps={{
@@ -1213,6 +1200,9 @@ export default function XPostsPage() {
                   label="Render Spotlight Video"
                 />
 
+                <div className="mt-4">
+                  <XThread tweets={singleBanger} />
+                </div>
               </CollapsibleSection>
             )}
 
