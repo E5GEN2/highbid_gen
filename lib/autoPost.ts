@@ -55,6 +55,17 @@ export async function executeAutoPost(pool: Pool): Promise<AutoPostResult> {
     }
     log(logs, 'credentials', 'ok', 'All 4 Twitter API keys found');
 
+    // Verify credentials by fetching the authenticated user
+    const client = createTwitterClient(creds);
+    try {
+      const me = await client.v2.me();
+      log(logs, 'credentials', 'ok', `Authenticated as @${me.data.username} (${me.data.name})`);
+    } catch (verifyErr: unknown) {
+      const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
+      log(logs, 'credentials', 'error', `Credential verification failed: ${msg}`);
+      return { success: false, logs, error: `Invalid Twitter credentials: ${msg}` };
+    }
+
     // Step 2: Fetch unposted channels
     log(logs, 'fetch_channels', 'ok', 'Fetching unposted channels...');
     const channels = await fetchUnpostedChannels(pool);
@@ -78,7 +89,6 @@ export async function executeAutoPost(pool: Pool): Promise<AutoPostResult> {
 
     // Step 4: Post to Twitter
     log(logs, 'post', 'ok', 'Posting thread to X...');
-    const client = createTwitterClient(creds);
     const result = await postThread(client, tweets);
 
     if (result.tweetIds.length === 0) {
