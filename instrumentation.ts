@@ -70,9 +70,43 @@ export async function register() {
       }
     }
 
+    async function runAutoPost() {
+      try {
+        const pool = await getPool();
+        const config = await getConfig(pool);
+
+        if (config.auto_post_enabled !== 'true') return;
+        if (!config.cron_secret) return;
+
+        // The endpoint handles interval + duplicate guards itself,
+        // but do a quick check here to avoid unnecessary HTTP calls
+        const intervalHours = parseInt(config.auto_post_interval_hours) || 24;
+        if (config.last_auto_post_at) {
+          const elapsed = Date.now() - new Date(config.last_auto_post_at).getTime();
+          if (elapsed < intervalHours * 60 * 60 * 1000) return;
+        }
+
+        const port = process.env.PORT || '3000';
+        const baseUrl = `http://localhost:${port}`;
+        const res = await fetch(`${baseUrl}/api/cron/x-post`, {
+          headers: { 'Authorization': `Bearer ${config.cron_secret}` },
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          console.log('[auto-post]', `posted ${data.posted}/${data.total} tweets, thread: ${data.threadUrl}`);
+        } else {
+          console.log('[auto-post]', data.error || data.reason || 'skipped');
+        }
+      } catch (err) {
+        console.error('[auto-post] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAll() {
       await runAutoSync();
       await runAutoSchedule();
+      await runAutoPost();
     }
 
     // Check every 60 seconds whether a sync/schedule is due

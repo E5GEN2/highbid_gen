@@ -199,6 +199,25 @@ export default function XPostsPage() {
     error_message?: string;
   }>>({});
 
+  // Auto-Post
+  const [autoPostEnabled, setAutoPostEnabled] = useState(false);
+  const [autoPostInterval, setAutoPostInterval] = useState(24);
+  const [autoPostHasCron, setAutoPostHasCron] = useState(false);
+  const [autoPostCreds, setAutoPostCreds] = useState<{
+    apiKey: string | null; apiSecret: string | null;
+    accessToken: string | null; accessTokenSecret: string | null;
+  }>({ apiKey: null, apiSecret: null, accessToken: null, accessTokenSecret: null });
+  const [autoPostCredsInput, setAutoPostCredsInput] = useState({
+    apiKey: '', apiSecret: '', accessToken: '', accessTokenSecret: '',
+  });
+  const [autoPostCredsSaving, setAutoPostCredsSaving] = useState(false);
+  const [autoPostLastAt, setAutoPostLastAt] = useState<string | null>(null);
+  const [autoPostLastResult, setAutoPostLastResult] = useState<{
+    posted: number; total: number; threadUrl: string | null;
+    channelNames?: string[]; error?: string | null;
+  } | null>(null);
+  const [autoPostPosting, setAutoPostPosting] = useState(false);
+
   // Auth check
   useEffect(() => {
     fetch('/api/admin/auth')
@@ -206,6 +225,24 @@ export default function XPostsPage() {
       .then(data => { if (data.authenticated) setAuthenticated(true); })
       .finally(() => setChecking(false));
   }, []);
+
+  // Fetch auto-post config
+  const fetchAutoPostConfig = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/x-posts/auto-post');
+      const data = await res.json();
+      setAutoPostEnabled(data.enabled || false);
+      setAutoPostInterval(data.intervalHours || 24);
+      setAutoPostHasCron(data.hasCronSecret || false);
+      setAutoPostCreds(data.credentials || { apiKey: null, apiSecret: null, accessToken: null, accessTokenSecret: null });
+      setAutoPostLastAt(data.lastPostAt || null);
+      setAutoPostLastResult(data.lastPostResult || null);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (authenticated) fetchAutoPostConfig();
+  }, [authenticated, fetchAutoPostConfig]);
 
   // Fetch API key config
   useEffect(() => {
@@ -442,6 +479,71 @@ export default function XPostsPage() {
       console.error('Failed to save prompt:', err);
     } finally {
       setPromptSaving(false);
+    }
+  };
+
+  // --- Auto-Post handlers ---
+  const toggleAutoPost = async (enabled: boolean) => {
+    setAutoPostEnabled(enabled);
+    await fetch('/api/admin/x-posts/auto-post', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+  };
+
+  const saveAutoPostInterval = async (hours: number) => {
+    setAutoPostInterval(hours);
+    await fetch('/api/admin/x-posts/auto-post', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intervalHours: hours }),
+    });
+    showCopyFeedback(`Interval set to ${hours}h`);
+  };
+
+  const saveAutoPostCreds = async () => {
+    const creds = autoPostCredsInput;
+    if (!creds.apiKey && !creds.apiSecret && !creds.accessToken && !creds.accessTokenSecret) return;
+    setAutoPostCredsSaving(true);
+    try {
+      await fetch('/api/admin/x-posts/auto-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentials: creds }),
+      });
+      setAutoPostCredsInput({ apiKey: '', apiSecret: '', accessToken: '', accessTokenSecret: '' });
+      fetchAutoPostConfig();
+      showCopyFeedback('Twitter credentials saved');
+    } catch (err) {
+      console.error('Failed to save Twitter creds:', err);
+    } finally {
+      setAutoPostCredsSaving(false);
+    }
+  };
+
+  const triggerPostNow = async () => {
+    setAutoPostPosting(true);
+    try {
+      const res = await fetch('/api/admin/x-posts/auto-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ postNow: true }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showCopyFeedback(`Posted ${data.posted}/${data.total} tweets!`);
+        fetchAutoPostConfig();
+        fetchData();
+        fetchPostedChannels();
+      } else {
+        showCopyFeedback(data.error || data.reason || 'Post failed');
+      }
+    } catch (err) {
+      console.error('Post now error:', err);
+      showCopyFeedback('Post failed');
+    } finally {
+      setAutoPostPosting(false);
     }
   };
 
@@ -1051,6 +1153,166 @@ export default function XPostsPage() {
             </CollapsibleSection>
           </div>
         )}
+
+        {/* Auto-Post to X */}
+        <div className="mb-6">
+          <CollapsibleSection
+            title="Auto-Post to X"
+            subtitle={autoPostEnabled ? `Every ${autoPostInterval}h` : 'Disabled'}
+            defaultOpen={false}
+            headerRight={
+              <div className="flex items-center gap-2">
+                {autoPostEnabled && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400 border border-green-800">Active</span>
+                )}
+                <button
+                  onClick={triggerPostNow}
+                  disabled={autoPostPosting}
+                  className="px-3 py-1.5 text-xs bg-blue-900/50 text-blue-400 border border-blue-800 rounded-lg hover:bg-blue-900 disabled:opacity-50 transition"
+                >
+                  {autoPostPosting ? 'Posting...' : 'Post Now'}
+                </button>
+              </div>
+            }
+          >
+            {/* Toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm text-white font-medium">Auto-post leaderboard threads</span>
+                <p className="text-xs text-gray-500 mt-0.5">Automatically post a 7-tweet thread every {autoPostInterval} hours</p>
+              </div>
+              <label className="relative cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoPostEnabled}
+                  onChange={e => toggleAutoPost(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-gray-700 rounded-full peer-checked:bg-green-600 transition-colors" />
+                <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
+              </label>
+            </div>
+
+            {!autoPostHasCron && (
+              <div className="px-3 py-2 bg-yellow-900/30 border border-yellow-800/50 rounded-lg text-xs text-yellow-400">
+                Set a <code className="bg-gray-800 px-1 py-0.5 rounded">cron_secret</code> in admin config for auto-posting to work.
+              </div>
+            )}
+
+            {/* Interval picker */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">Post every (hours)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" min={1} max={168}
+                  value={autoPostInterval}
+                  onChange={e => setAutoPostInterval(parseInt(e.target.value) || 24)}
+                  className="w-20 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+                <div className="flex gap-1">
+                  {[6, 12, 24, 48].map(h => (
+                    <button
+                      key={h}
+                      onClick={() => saveAutoPostInterval(h)}
+                      className={`px-2.5 py-1.5 text-xs rounded-lg border transition ${
+                        autoPostInterval === h
+                          ? 'bg-purple-900/50 text-purple-400 border-purple-800'
+                          : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-white'
+                      }`}
+                    >
+                      {h}h
+                    </button>
+                  ))}
+                </div>
+                {autoPostInterval !== 6 && autoPostInterval !== 12 && autoPostInterval !== 24 && autoPostInterval !== 48 && (
+                  <button
+                    onClick={() => saveAutoPostInterval(autoPostInterval)}
+                    className="px-3 py-1.5 text-xs bg-purple-900/50 text-purple-400 border border-purple-800 rounded-lg hover:bg-purple-900 transition"
+                  >
+                    Save
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Twitter API credentials */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">Twitter API Credentials</label>
+              <div className="space-y-2">
+                {(['apiKey', 'apiSecret', 'accessToken', 'accessTokenSecret'] as const).map(field => {
+                  const labels: Record<string, string> = {
+                    apiKey: 'Consumer Key',
+                    apiSecret: 'Consumer Secret',
+                    accessToken: 'Access Token',
+                    accessTokenSecret: 'Access Token Secret',
+                  };
+                  return (
+                    <div key={field} className="flex items-center gap-2">
+                      <span className="text-[10px] text-gray-500 w-28 flex-shrink-0">{labels[field]}</span>
+                      <input
+                        type="password"
+                        value={autoPostCredsInput[field]}
+                        onChange={e => setAutoPostCredsInput(prev => ({ ...prev, [field]: e.target.value }))}
+                        placeholder={autoPostCreds[field] ? `Current: ${autoPostCreds[field]}` : `Enter ${labels[field]}...`}
+                        className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      {autoPostCreds[field] && !autoPostCredsInput[field] && (
+                        <span className="text-[10px] text-green-500 whitespace-nowrap">OK</span>
+                      )}
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={saveAutoPostCreds}
+                  disabled={autoPostCredsSaving || (!autoPostCredsInput.apiKey && !autoPostCredsInput.apiSecret && !autoPostCredsInput.accessToken && !autoPostCredsInput.accessTokenSecret)}
+                  className="px-3 py-1.5 text-xs bg-purple-900/50 text-purple-400 border border-purple-800 rounded-lg hover:bg-purple-900 disabled:opacity-50 transition"
+                >
+                  {autoPostCredsSaving ? 'Saving...' : 'Save Credentials'}
+                </button>
+              </div>
+            </div>
+
+            {/* Last post result */}
+            {autoPostLastResult && (
+              <div className="px-4 py-3 bg-gray-800/50 border border-gray-700/50 rounded-xl">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-medium text-gray-400">Last Post</span>
+                  {autoPostLastAt && (
+                    <span className="text-[10px] text-gray-500">
+                      {(() => {
+                        const mins = Math.round((Date.now() - new Date(autoPostLastAt).getTime()) / 60000);
+                        if (mins < 60) return `${mins}m ago`;
+                        if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+                        return `${Math.round(mins / 1440)}d ago`;
+                      })()}
+                    </span>
+                  )}
+                </div>
+                <div className="text-sm text-white">
+                  {autoPostLastResult.posted}/{autoPostLastResult.total} tweets posted
+                  {autoPostLastResult.error && (
+                    <span className="text-red-400 text-xs ml-2">({autoPostLastResult.error})</span>
+                  )}
+                </div>
+                {autoPostLastResult.channelNames && (
+                  <div className="text-xs text-gray-500 mt-1">
+                    Channels: {autoPostLastResult.channelNames.join(', ')}
+                  </div>
+                )}
+                {autoPostLastResult.threadUrl && (
+                  <a
+                    href={autoPostLastResult.threadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-400 hover:text-blue-300 mt-1 inline-block"
+                  >
+                    View thread on X
+                  </a>
+                )}
+              </div>
+            )}
+          </CollapsibleSection>
+        </div>
 
         {/* Loading */}
         {loading && (
