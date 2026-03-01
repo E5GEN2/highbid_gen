@@ -63,12 +63,29 @@ export async function handleOAuth2Callback(
     throw new Error('Invalid OAuth state');
   }
 
-  const client = new TwitterApi({ clientId: cfg.x_client_id, clientSecret: cfg.x_client_secret });
-  const { accessToken, refreshToken } = await client.loginWithOAuth2({
-    code,
-    codeVerifier: cfg.x_oauth2_code_verifier,
-    redirectUri: cfg.x_oauth2_callback_url,
+  // Direct fetch for token exchange — twitter-api-v2 library triggers 503 on Free tier
+  const tokenRes = await fetch('https://api.twitter.com/2/oauth2/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${Buffer.from(`${cfg.x_client_id}:${cfg.x_client_secret}`).toString('base64')}`,
+    },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: cfg.x_oauth2_callback_url,
+      code_verifier: cfg.x_oauth2_code_verifier,
+    }).toString(),
   });
+
+  if (!tokenRes.ok) {
+    const text = await tokenRes.text();
+    throw new Error(`Request failed with code ${tokenRes.status}: ${text}`);
+  }
+
+  const tokenData = await tokenRes.json();
+  const accessToken: string = tokenData.access_token;
+  const refreshToken: string | undefined = tokenData.refresh_token;
 
   if (!refreshToken) throw new Error('No refresh token received — offline.access scope required');
 
@@ -101,10 +118,27 @@ export async function getAuthedClient(pool: Pool): Promise<{ client: TwitterApi;
 
   if (!cfg.x_client_id || !cfg.x_oauth2_refresh_token) return null;
 
-  const client = new TwitterApi({ clientId: cfg.x_client_id, clientSecret: cfg.x_client_secret });
-  const { accessToken, refreshToken: newRefreshToken } = await client.refreshOAuth2Token(
-    cfg.x_oauth2_refresh_token
-  );
+  // Direct fetch for token refresh — twitter-api-v2 library triggers 503 on Free tier
+  const tokenRes = await fetch('https://api.twitter.com/2/oauth2/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${Buffer.from(`${cfg.x_client_id}:${cfg.x_client_secret}`).toString('base64')}`,
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: cfg.x_oauth2_refresh_token,
+    }).toString(),
+  });
+
+  if (!tokenRes.ok) {
+    const text = await tokenRes.text();
+    throw new Error(`Token refresh failed with code ${tokenRes.status}: ${text}`);
+  }
+
+  const tokenData = await tokenRes.json();
+  const accessToken: string = tokenData.access_token;
+  const newRefreshToken: string | undefined = tokenData.refresh_token;
 
   // Store the new tokens (refresh tokens are single-use)
   const updates: Record<string, string> = { x_oauth2_access_token: accessToken };

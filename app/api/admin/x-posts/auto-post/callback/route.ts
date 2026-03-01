@@ -13,21 +13,33 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  try {
-    const pool = await getPool();
-    const { username } = await handleOAuth2Callback(pool, code, state);
+  const pool = await getPool();
 
-    return new NextResponse(
-      html('Connected!', `Successfully connected as <strong>@${username}</strong>. You can close this tab.`),
-      { headers: { 'Content-Type': 'text/html' } }
-    );
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    return new NextResponse(html('Error', `OAuth callback failed: ${msg}`), {
-      status: 500,
-      headers: { 'Content-Type': 'text/html' },
-    });
+  // Retry token exchange — Twitter often returns transient 503s
+  const MAX_RETRIES = 5;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const { username } = await handleOAuth2Callback(pool, code, state);
+      return new NextResponse(
+        html('Connected!', `Successfully connected as <strong>@${username}</strong>. You can close this tab.`),
+        { headers: { 'Content-Type': 'text/html' } }
+      );
+    } catch (error) {
+      lastError = error;
+      const msg = error instanceof Error ? error.message : String(error);
+      const is503 = msg.includes('503') || msg.includes('Service Unavailable');
+      if (!is503 || attempt === MAX_RETRIES) break;
+      // Wait before retrying: 1s, 2s, 4s, 8s
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+    }
   }
+
+  const msg = lastError instanceof Error ? lastError.message : 'Unknown error';
+  return new NextResponse(html('Error', `OAuth callback failed: ${msg}`), {
+    status: 500,
+    headers: { 'Content-Type': 'text/html' },
+  });
 }
 
 function html(title: string, body: string): string {
