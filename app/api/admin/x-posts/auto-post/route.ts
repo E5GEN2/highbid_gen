@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../../lib/db';
+import { executeAutoPost } from '../../../../../lib/autoPost';
 
 function checkAuth(req: NextRequest): boolean {
   const token = req.cookies.get('admin_token')?.value;
@@ -22,7 +23,7 @@ async function saveConfig(pool: import('pg').Pool, entries: Record<string, strin
   }
 }
 
-// GET: fetch auto-post config
+// GET: fetch auto-post config + logs
 export async function GET(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -43,6 +44,13 @@ export async function GET(req: NextRequest) {
   const preview = (val: string | undefined) =>
     val ? `${val.slice(0, 6)}...${val.slice(-4)}` : null;
 
+  let lastPostResult = null;
+  try {
+    if (config.last_auto_post_result) {
+      lastPostResult = JSON.parse(config.last_auto_post_result);
+    }
+  } catch {}
+
   return NextResponse.json({
     enabled: config.auto_post_enabled === 'true',
     intervalHours: parseInt(config.auto_post_interval_hours) || 24,
@@ -54,7 +62,7 @@ export async function GET(req: NextRequest) {
       accessTokenSecret: preview(config.x_access_token_secret),
     },
     lastPostAt: config.last_auto_post_at || null,
-    lastPostResult: config.last_auto_post_result ? JSON.parse(config.last_auto_post_result) : null,
+    lastPostResult,
   });
 }
 
@@ -90,29 +98,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true });
   }
 
-  // Post now: call the cron endpoint internally
+  // Post now: execute directly (no cron route, no guards)
   if (body.postNow) {
-    const configResult = await pool.query(`SELECT value FROM admin_config WHERE key = 'cron_secret'`);
-    const cronSecret = configResult.rows[0]?.value;
-    if (!cronSecret) {
-      return NextResponse.json({ error: 'cron_secret not configured' }, { status: 400 });
-    }
-
-    // Temporarily bypass interval guard by clearing last_auto_post_at
-    // (We restore it if the post fails, but successful posts set a new timestamp anyway)
-    const port = process.env.PORT || '3000';
-    const baseUrl = `http://localhost:${port}`;
-
-    // Clear the last post timestamp so the endpoint doesn't skip
-    await pool.query(
-      `DELETE FROM admin_config WHERE key = 'last_auto_post_at'`
-    );
-
-    const res = await fetch(`${baseUrl}/api/cron/x-post`, {
-      headers: { 'Authorization': `Bearer ${cronSecret}` },
-    });
-    const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    const result = await executeAutoPost(pool);
+    return NextResponse.json(result);
   }
 
   return NextResponse.json({ error: 'Invalid request' }, { status: 400 });

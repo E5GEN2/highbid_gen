@@ -215,8 +215,10 @@ export default function XPostsPage() {
   const [autoPostLastResult, setAutoPostLastResult] = useState<{
     posted: number; total: number; threadUrl: string | null;
     channelNames?: string[]; error?: string | null;
+    logs?: { step: string; status: string; detail: string; ts: string }[];
   } | null>(null);
   const [autoPostPosting, setAutoPostPosting] = useState(false);
+  const [autoPostLiveLogs, setAutoPostLiveLogs] = useState<{ step: string; status: string; detail: string; ts: string }[]>([]);
 
   // Auth check
   useEffect(() => {
@@ -524,6 +526,7 @@ export default function XPostsPage() {
 
   const triggerPostNow = async () => {
     setAutoPostPosting(true);
+    setAutoPostLiveLogs([{ step: 'start', status: 'ok', detail: 'Starting manual post...', ts: new Date().toISOString() }]);
     try {
       const res = await fetch('/api/admin/x-posts/auto-post', {
         method: 'POST',
@@ -531,17 +534,19 @@ export default function XPostsPage() {
         body: JSON.stringify({ postNow: true }),
       });
       const data = await res.json();
+      if (data.logs) setAutoPostLiveLogs(data.logs);
       if (data.success) {
         showCopyFeedback(`Posted ${data.posted}/${data.total} tweets!`);
         fetchAutoPostConfig();
         fetchData();
         fetchPostedChannels();
       } else {
-        showCopyFeedback(data.error || data.reason || 'Post failed');
+        showCopyFeedback(data.error || 'Post failed');
       }
     } catch (err) {
-      console.error('Post now error:', err);
-      showCopyFeedback('Post failed');
+      const msg = err instanceof Error ? err.message : 'Post failed';
+      setAutoPostLiveLogs(prev => [...prev, { step: 'error', status: 'error', detail: msg, ts: new Date().toISOString() }]);
+      showCopyFeedback(msg);
     } finally {
       setAutoPostPosting(false);
     }
@@ -1272,45 +1277,83 @@ export default function XPostsPage() {
               </div>
             </div>
 
-            {/* Last post result */}
-            {autoPostLastResult && (
-              <div className="px-4 py-3 bg-gray-800/50 border border-gray-700/50 rounded-xl">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-medium text-gray-400">Last Post</span>
-                  {autoPostLastAt && (
-                    <span className="text-[10px] text-gray-500">
-                      {(() => {
-                        const mins = Math.round((Date.now() - new Date(autoPostLastAt).getTime()) / 60000);
-                        if (mins < 60) return `${mins}m ago`;
-                        if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
-                        return `${Math.round(mins / 1440)}d ago`;
-                      })()}
+            {/* Logs — live during posting, or from last result */}
+            {(() => {
+              const logs = autoPostPosting ? autoPostLiveLogs : (autoPostLastResult?.logs || []);
+              if (logs.length === 0 && !autoPostLastResult) return null;
+              return (
+                <div className="px-4 py-3 bg-gray-800/50 border border-gray-700/50 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-gray-400">
+                      {autoPostPosting ? 'Posting...' : 'Last Post'}
                     </span>
-                  )}
-                </div>
-                <div className="text-sm text-white">
-                  {autoPostLastResult.posted}/{autoPostLastResult.total} tweets posted
-                  {autoPostLastResult.error && (
-                    <span className="text-red-400 text-xs ml-2">({autoPostLastResult.error})</span>
-                  )}
-                </div>
-                {autoPostLastResult.channelNames && (
-                  <div className="text-xs text-gray-500 mt-1">
-                    Channels: {autoPostLastResult.channelNames.join(', ')}
+                    {!autoPostPosting && autoPostLastAt && (
+                      <span className="text-[10px] text-gray-500">
+                        {(() => {
+                          const mins = Math.round((Date.now() - new Date(autoPostLastAt).getTime()) / 60000);
+                          if (mins < 60) return `${mins}m ago`;
+                          if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+                          return `${Math.round(mins / 1440)}d ago`;
+                        })()}
+                      </span>
+                    )}
                   </div>
-                )}
-                {autoPostLastResult.threadUrl && (
-                  <a
-                    href={autoPostLastResult.threadUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-blue-400 hover:text-blue-300 mt-1 inline-block"
-                  >
-                    View thread on X
-                  </a>
-                )}
-              </div>
-            )}
+
+                  {/* Summary line */}
+                  {!autoPostPosting && autoPostLastResult && (
+                    <div>
+                      <div className="text-sm text-white">
+                        {autoPostLastResult.posted}/{autoPostLastResult.total} tweets posted
+                        {autoPostLastResult.error && (
+                          <span className="text-red-400 text-xs ml-2">({autoPostLastResult.error})</span>
+                        )}
+                      </div>
+                      {autoPostLastResult.channelNames && (
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          Channels: {autoPostLastResult.channelNames.join(', ')}
+                        </div>
+                      )}
+                      {autoPostLastResult.threadUrl && (
+                        <a
+                          href={autoPostLastResult.threadUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-400 hover:text-blue-300 mt-0.5 inline-block"
+                        >
+                          View thread on X
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Step-by-step logs */}
+                  {logs.length > 0 && (
+                    <div className="space-y-1 pt-1 border-t border-gray-700/50">
+                      {logs.map((entry, i) => (
+                        <div key={i} className="flex items-start gap-2 text-xs">
+                          <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            entry.status === 'ok' ? 'bg-green-500' :
+                            entry.status === 'skip' ? 'bg-yellow-500' : 'bg-red-500'
+                          }`} />
+                          <span className={
+                            entry.status === 'error' ? 'text-red-400' :
+                            entry.status === 'skip' ? 'text-yellow-400' : 'text-gray-400'
+                          }>
+                            {entry.detail}
+                          </span>
+                        </div>
+                      ))}
+                      {autoPostPosting && (
+                        <div className="flex items-center gap-2 text-xs text-purple-400">
+                          <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                          Working...
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </CollapsibleSection>
         </div>
 
