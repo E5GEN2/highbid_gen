@@ -1,49 +1,120 @@
 import { TwitterApi } from 'twitter-api-v2';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 import type { Pool } from 'pg';
 
-export interface TwitterCredentials {
-  appKey: string;
-  appSecret: string;
-  accessToken: string;
-  accessSecret: string;
-  proxyUrl?: string;
-}
+const SCOPES = ['tweet.read', 'tweet.write', 'users.read', 'offline.access'];
 
-export async function getTwitterCredentials(pool: Pool): Promise<TwitterCredentials | null> {
+async function getConfig(pool: Pool, keys: string[]): Promise<Record<string, string>> {
   const result = await pool.query(
-    `SELECT key, value FROM admin_config WHERE key IN ('x_api_key', 'x_api_secret', 'x_access_token', 'x_access_token_secret', 'x_proxy_url')`
+    `SELECT key, value FROM admin_config WHERE key = ANY($1)`,
+    [keys]
   );
   const cfg: Record<string, string> = {};
   for (const row of result.rows) cfg[row.key] = row.value;
-
-  if (!cfg.x_api_key || !cfg.x_api_secret || !cfg.x_access_token || !cfg.x_access_token_secret) {
-    return null;
-  }
-
-  return {
-    appKey: cfg.x_api_key,
-    appSecret: cfg.x_api_secret,
-    accessToken: cfg.x_access_token,
-    accessSecret: cfg.x_access_token_secret,
-    proxyUrl: cfg.x_proxy_url || undefined,
-  };
+  return cfg;
 }
 
-export function createTwitterClient(creds: TwitterCredentials): TwitterApi {
-  const oauth = {
-    appKey: creds.appKey,
-    appSecret: creds.appSecret,
-    accessToken: creds.accessToken,
-    accessSecret: creds.accessSecret,
-  };
+async function saveConfig(pool: Pool, entries: Record<string, string>) {
+  for (const [key, value] of Object.entries(entries)) {
+    await pool.query(
+      `INSERT INTO admin_config (key, value, updated_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+      [key, value]
+    );
+  }
+}
 
-  if (creds.proxyUrl) {
-    const agent = new HttpsProxyAgent(creds.proxyUrl);
-    return new TwitterApi(oauth, { httpAgent: agent });
+/**
+ * Generate OAuth 2.0 PKCE authorization link.
+ * Returns { url, codeVerifier, state } — store codeVerifier+state in admin_config.
+ */
+export async function generateAuthLink(pool: Pool, callbackUrl: string): Promise<string> {
+  const cfg = await getConfig(pool, ['x_client_id', 'x_client_secret']);
+  if (!cfg.x_client_id) throw new Error('x_client_id not configured');
+
+  const client = new TwitterApi({ clientId: cfg.x_client_id, clientSecret: cfg.x_client_secret });
+  const { url, codeVerifier, state } = client.generateOAuth2AuthLink(callbackUrl, {
+    scope: SCOPES,
+  });
+
+  // Store codeVerifier and state for the callback
+  await saveConfig(pool, {
+    x_oauth2_code_verifier: codeVerifier,
+    x_oauth2_state: state,
+    x_oauth2_callback_url: callbackUrl,
+  });
+
+  return url;
+}
+
+/**
+ * Handle OAuth 2.0 callback — exchange code for tokens.
+ */
+export async function handleOAuth2Callback(
+  pool: Pool,
+  code: string,
+  state: string
+): Promise<{ username: string }> {
+  const cfg = await getConfig(pool, [
+    'x_client_id', 'x_client_secret',
+    'x_oauth2_code_verifier', 'x_oauth2_state', 'x_oauth2_callback_url',
+  ]);
+
+  if (!cfg.x_oauth2_state || state !== cfg.x_oauth2_state) {
+    throw new Error('Invalid OAuth state');
   }
 
-  return new TwitterApi(oauth);
+  const client = new TwitterApi({ clientId: cfg.x_client_id, clientSecret: cfg.x_client_secret });
+  const { accessToken, refreshToken } = await client.loginWithOAuth2({
+    code,
+    codeVerifier: cfg.x_oauth2_code_verifier,
+    redirectUri: cfg.x_oauth2_callback_url,
+  });
+
+  if (!refreshToken) throw new Error('No refresh token received — offline.access scope required');
+
+  // Get username
+  const loggedClient = new TwitterApi(accessToken);
+  const me = await loggedClient.v2.me();
+
+  // Store tokens
+  await saveConfig(pool, {
+    x_oauth2_access_token: accessToken,
+    x_oauth2_refresh_token: refreshToken,
+    x_oauth2_username: me.data.username,
+  });
+
+  // Clean up temporary OAuth state
+  await pool.query(`DELETE FROM admin_config WHERE key IN ('x_oauth2_code_verifier', 'x_oauth2_state')`);
+
+  return { username: me.data.username };
+}
+
+/**
+ * Get an authenticated Twitter client using stored OAuth 2.0 refresh token.
+ * Auto-refreshes the access token each time.
+ */
+export async function getAuthedClient(pool: Pool): Promise<{ client: TwitterApi; username: string } | null> {
+  const cfg = await getConfig(pool, [
+    'x_client_id', 'x_client_secret',
+    'x_oauth2_refresh_token', 'x_oauth2_username',
+  ]);
+
+  if (!cfg.x_client_id || !cfg.x_oauth2_refresh_token) return null;
+
+  const client = new TwitterApi({ clientId: cfg.x_client_id, clientSecret: cfg.x_client_secret });
+  const { accessToken, refreshToken: newRefreshToken } = await client.refreshOAuth2Token(
+    cfg.x_oauth2_refresh_token
+  );
+
+  // Store the new tokens (refresh tokens are single-use)
+  const updates: Record<string, string> = { x_oauth2_access_token: accessToken };
+  if (newRefreshToken) updates.x_oauth2_refresh_token = newRefreshToken;
+  await saveConfig(pool, updates);
+
+  return {
+    client: new TwitterApi(accessToken),
+    username: cfg.x_oauth2_username || 'unknown',
+  };
 }
 
 export interface PostThreadResult {
@@ -60,11 +131,9 @@ export async function postThread(
   let error: string | undefined;
 
   try {
-    // Post first tweet
     const first = await client.v2.tweet(tweets[0].text);
     tweetIds.push(first.data.id);
 
-    // Post replies chained to previous tweet
     for (let i = 1; i < tweets.length; i++) {
       const reply = await client.v2.reply(tweets[i].text, tweetIds[i - 1]);
       tweetIds.push(reply.data.id);

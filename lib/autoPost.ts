@@ -4,7 +4,7 @@
  */
 import type { Pool } from 'pg';
 import { classifyNiche } from './niches';
-import { getTwitterCredentials, createTwitterClient, postThread } from './twitter';
+import { getAuthedClient, postThread } from './twitter';
 import { generateLeaderboardThread, type ThreadChannel } from './generateThread';
 
 export interface AutoPostLog {
@@ -46,15 +46,15 @@ export async function executeAutoPost(pool: Pool): Promise<AutoPostResult> {
   const logs: AutoPostLog[] = [];
 
   try {
-    // Step 1: Check Twitter credentials
-    log(logs, 'credentials', 'ok', 'Checking Twitter API credentials...');
-    const creds = await getTwitterCredentials(pool);
-    if (!creds) {
-      log(logs, 'credentials', 'error', 'Twitter API credentials not configured. Set all 4 keys in the admin panel.');
-      return { success: false, logs, error: 'Twitter credentials not configured' };
+    // Step 1: Get authenticated Twitter client (OAuth 2.0)
+    log(logs, 'credentials', 'ok', 'Authenticating with X (OAuth 2.0)...');
+    const authed = await getAuthedClient(pool);
+    if (!authed) {
+      log(logs, 'credentials', 'error', 'X account not connected. Click "Connect X Account" in the admin panel.');
+      return { success: false, logs, error: 'X account not connected' };
     }
-    log(logs, 'credentials', 'ok', `All 4 Twitter API keys found${creds.proxyUrl ? ` (proxy: ${creds.proxyUrl.replace(/\/\/.*@/, '//***@')})` : ' (no proxy)'}`);
-    const client = createTwitterClient(creds);
+    const { client, username } = authed;
+    log(logs, 'credentials', 'ok', `Authenticated as @${username}`);
 
     // Step 2: Fetch unposted channels
     log(logs, 'fetch_channels', 'ok', 'Fetching unposted channels...');

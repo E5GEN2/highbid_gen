@@ -203,14 +203,12 @@ export default function XPostsPage() {
   const [autoPostEnabled, setAutoPostEnabled] = useState(false);
   const [autoPostInterval, setAutoPostInterval] = useState(24);
   const [autoPostHasCron, setAutoPostHasCron] = useState(false);
-  const [autoPostCreds, setAutoPostCreds] = useState<{
-    apiKey: string | null; apiSecret: string | null;
-    accessToken: string | null; accessTokenSecret: string | null;
-  }>({ apiKey: null, apiSecret: null, accessToken: null, accessTokenSecret: null });
-  const [autoPostCredsInput, setAutoPostCredsInput] = useState({
-    apiKey: '', apiSecret: '', accessToken: '', accessTokenSecret: '',
-  });
-  const [autoPostCredsSaving, setAutoPostCredsSaving] = useState(false);
+  const [autoPostConnected, setAutoPostConnected] = useState(false);
+  const [autoPostUsername, setAutoPostUsername] = useState<string | null>(null);
+  const [autoPostHasClientId, setAutoPostHasClientId] = useState(false);
+  const [autoPostClientInput, setAutoPostClientInput] = useState({ clientId: '', clientSecret: '' });
+  const [autoPostClientSaving, setAutoPostClientSaving] = useState(false);
+  const [autoPostConnecting, setAutoPostConnecting] = useState(false);
   const [autoPostLastAt, setAutoPostLastAt] = useState<string | null>(null);
   const [autoPostLastResult, setAutoPostLastResult] = useState<{
     posted: number; total: number; threadUrl: string | null;
@@ -236,7 +234,9 @@ export default function XPostsPage() {
       setAutoPostEnabled(data.enabled || false);
       setAutoPostInterval(data.intervalHours || 24);
       setAutoPostHasCron(data.hasCronSecret || false);
-      setAutoPostCreds(data.credentials || { apiKey: null, apiSecret: null, accessToken: null, accessTokenSecret: null });
+      setAutoPostConnected(data.isConnected || false);
+      setAutoPostUsername(data.connectedUsername || null);
+      setAutoPostHasClientId(data.hasClientId || false);
       setAutoPostLastAt(data.lastPostAt || null);
       setAutoPostLastResult(data.lastPostResult || null);
     } catch {}
@@ -504,24 +504,68 @@ export default function XPostsPage() {
     showCopyFeedback(`Interval set to ${hours}h`);
   };
 
-  const saveAutoPostCreds = async () => {
-    const creds = autoPostCredsInput;
-    if (!creds.apiKey && !creds.apiSecret && !creds.accessToken && !creds.accessTokenSecret) return;
-    setAutoPostCredsSaving(true);
+  const saveAutoPostClient = async () => {
+    if (!autoPostClientInput.clientId && !autoPostClientInput.clientSecret) return;
+    setAutoPostClientSaving(true);
     try {
       await fetch('/api/admin/x-posts/auto-post', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credentials: creds }),
+        body: JSON.stringify({ clientCredentials: autoPostClientInput }),
       });
-      setAutoPostCredsInput({ apiKey: '', apiSecret: '', accessToken: '', accessTokenSecret: '' });
+      setAutoPostClientInput({ clientId: '', clientSecret: '' });
       fetchAutoPostConfig();
-      showCopyFeedback('Twitter credentials saved');
+      showCopyFeedback('Client credentials saved');
     } catch (err) {
-      console.error('Failed to save Twitter creds:', err);
+      console.error('Failed to save client creds:', err);
     } finally {
-      setAutoPostCredsSaving(false);
+      setAutoPostClientSaving(false);
     }
+  };
+
+  const connectXAccount = async () => {
+    setAutoPostConnecting(true);
+    try {
+      const res = await fetch('/api/admin/x-posts/auto-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connect: true }),
+      });
+      const data = await res.json();
+      if (data.authUrl) {
+        window.open(data.authUrl, '_blank');
+        // Poll for connection status
+        const poll = setInterval(async () => {
+          const r = await fetch('/api/admin/x-posts/auto-post');
+          const d = await r.json();
+          if (d.isConnected) {
+            clearInterval(poll);
+            setAutoPostConnected(true);
+            setAutoPostUsername(d.connectedUsername);
+            setAutoPostConnecting(false);
+            showCopyFeedback(`Connected as @${d.connectedUsername}`);
+          }
+        }, 2000);
+        setTimeout(() => { clearInterval(poll); setAutoPostConnecting(false); }, 120000);
+      } else {
+        showCopyFeedback(data.error || 'Failed to generate auth link');
+        setAutoPostConnecting(false);
+      }
+    } catch (err) {
+      console.error('Connect error:', err);
+      setAutoPostConnecting(false);
+    }
+  };
+
+  const disconnectXAccount = async () => {
+    await fetch('/api/admin/x-posts/auto-post', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disconnect: true }),
+    });
+    setAutoPostConnected(false);
+    setAutoPostUsername(null);
+    showCopyFeedback('Disconnected');
   };
 
   const triggerPostNow = async () => {
@@ -1240,41 +1284,67 @@ export default function XPostsPage() {
               </div>
             </div>
 
-            {/* Twitter API credentials */}
+            {/* X Account Connection (OAuth 2.0) */}
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">Twitter API Credentials</label>
-              <div className="space-y-2">
-                {(['apiKey', 'apiSecret', 'accessToken', 'accessTokenSecret'] as const).map(field => {
-                  const labels: Record<string, string> = {
-                    apiKey: 'Consumer Key',
-                    apiSecret: 'Consumer Secret',
-                    accessToken: 'Access Token',
-                    accessTokenSecret: 'Access Token Secret',
-                  };
-                  return (
-                    <div key={field} className="flex items-center gap-2">
-                      <span className="text-[10px] text-gray-500 w-28 flex-shrink-0">{labels[field]}</span>
-                      <input
-                        type="password"
-                        value={autoPostCredsInput[field]}
-                        onChange={e => setAutoPostCredsInput(prev => ({ ...prev, [field]: e.target.value }))}
-                        placeholder={autoPostCreds[field] ? `Current: ${autoPostCreds[field]}` : `Enter ${labels[field]}...`}
-                        className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                      />
-                      {autoPostCreds[field] && !autoPostCredsInput[field] && (
-                        <span className="text-[10px] text-green-500 whitespace-nowrap">OK</span>
-                      )}
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">X Account</label>
+              {autoPostConnected ? (
+                <div className="flex items-center justify-between px-4 py-3 bg-gray-800/50 border border-green-800/50 rounded-xl">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-green-500" />
+                    <span className="text-sm text-white">Connected as <strong>@{autoPostUsername}</strong></span>
+                  </div>
+                  <button
+                    onClick={disconnectXAccount}
+                    className="px-3 py-1.5 text-xs bg-red-900/30 text-red-400 border border-red-900/50 rounded-lg hover:bg-red-900/50 transition"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {!autoPostHasClientId && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-500">Enter your OAuth 2.0 Client ID and Secret from the X Developer Portal.</p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-gray-500 w-20 flex-shrink-0">Client ID</span>
+                        <input
+                          type="text"
+                          value={autoPostClientInput.clientId}
+                          onChange={e => setAutoPostClientInput(prev => ({ ...prev, clientId: e.target.value }))}
+                          placeholder="Enter Client ID..."
+                          className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-gray-500 w-20 flex-shrink-0">Client Secret</span>
+                        <input
+                          type="password"
+                          value={autoPostClientInput.clientSecret}
+                          onChange={e => setAutoPostClientInput(prev => ({ ...prev, clientSecret: e.target.value }))}
+                          placeholder="Enter Client Secret..."
+                          className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        />
+                      </div>
+                      <button
+                        onClick={saveAutoPostClient}
+                        disabled={autoPostClientSaving || (!autoPostClientInput.clientId && !autoPostClientInput.clientSecret)}
+                        className="px-3 py-1.5 text-xs bg-purple-900/50 text-purple-400 border border-purple-800 rounded-lg hover:bg-purple-900 disabled:opacity-50 transition"
+                      >
+                        {autoPostClientSaving ? 'Saving...' : 'Save'}
+                      </button>
                     </div>
-                  );
-                })}
-                <button
-                  onClick={saveAutoPostCreds}
-                  disabled={autoPostCredsSaving || (!autoPostCredsInput.apiKey && !autoPostCredsInput.apiSecret && !autoPostCredsInput.accessToken && !autoPostCredsInput.accessTokenSecret)}
-                  className="px-3 py-1.5 text-xs bg-purple-900/50 text-purple-400 border border-purple-800 rounded-lg hover:bg-purple-900 disabled:opacity-50 transition"
-                >
-                  {autoPostCredsSaving ? 'Saving...' : 'Save Credentials'}
-                </button>
-              </div>
+                  )}
+                  {autoPostHasClientId && (
+                    <button
+                      onClick={connectXAccount}
+                      disabled={autoPostConnecting}
+                      className="px-4 py-2.5 text-sm bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition"
+                    >
+                      {autoPostConnecting ? 'Waiting for authorization...' : 'Connect X Account'}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Logs — live during posting, or from last result */}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../../lib/db';
 import { executeAutoPost } from '../../../../../lib/autoPost';
+import { generateAuthLink } from '../../../../../lib/twitter';
 
 function checkAuth(req: NextRequest): boolean {
   const token = req.cookies.get('admin_token')?.value;
@@ -23,7 +24,7 @@ async function saveConfig(pool: import('pg').Pool, entries: Record<string, strin
   }
 }
 
-// GET: fetch auto-post config + logs
+// GET: fetch auto-post config
 export async function GET(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -33,40 +34,33 @@ export async function GET(req: NextRequest) {
   const result = await pool.query(
     `SELECT key, value FROM admin_config WHERE key IN (
       'auto_post_enabled', 'auto_post_interval_hours',
-      'x_api_key', 'x_api_secret', 'x_access_token', 'x_access_token_secret',
+      'x_client_id', 'x_client_secret',
+      'x_oauth2_username', 'x_oauth2_refresh_token',
       'last_auto_post_at', 'last_auto_post_result', 'cron_secret'
     )`
   );
   const config: Record<string, string> = {};
   for (const row of result.rows) config[row.key] = row.value;
 
-  // Return previews for secrets, not full values
-  const preview = (val: string | undefined) =>
-    val ? `${val.slice(0, 6)}...${val.slice(-4)}` : null;
-
   let lastPostResult = null;
   try {
-    if (config.last_auto_post_result) {
-      lastPostResult = JSON.parse(config.last_auto_post_result);
-    }
+    if (config.last_auto_post_result) lastPostResult = JSON.parse(config.last_auto_post_result);
   } catch {}
 
   return NextResponse.json({
     enabled: config.auto_post_enabled === 'true',
     intervalHours: parseInt(config.auto_post_interval_hours) || 24,
     hasCronSecret: !!config.cron_secret,
-    credentials: {
-      apiKey: preview(config.x_api_key),
-      apiSecret: preview(config.x_api_secret),
-      accessToken: preview(config.x_access_token),
-      accessTokenSecret: preview(config.x_access_token_secret),
-    },
+    hasClientId: !!config.x_client_id,
+    hasClientSecret: !!config.x_client_secret,
+    connectedUsername: config.x_oauth2_username || null,
+    isConnected: !!config.x_oauth2_refresh_token,
     lastPostAt: config.last_auto_post_at || null,
     lastPostResult,
   });
 }
 
-// POST: save config or trigger manual post
+// POST: save config, connect, or trigger post
 export async function POST(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -75,14 +69,31 @@ export async function POST(req: NextRequest) {
   const pool = await getPool();
   const body = await req.json();
 
-  // Save credentials
-  if (body.credentials) {
+  // Save client credentials
+  if (body.clientCredentials) {
     const entries: Record<string, string> = {};
-    if (body.credentials.apiKey) entries.x_api_key = body.credentials.apiKey;
-    if (body.credentials.apiSecret) entries.x_api_secret = body.credentials.apiSecret;
-    if (body.credentials.accessToken) entries.x_access_token = body.credentials.accessToken;
-    if (body.credentials.accessTokenSecret) entries.x_access_token_secret = body.credentials.accessTokenSecret;
+    if (body.clientCredentials.clientId) entries.x_client_id = body.clientCredentials.clientId;
+    if (body.clientCredentials.clientSecret) entries.x_client_secret = body.clientCredentials.clientSecret;
     await saveConfig(pool, entries);
+    return NextResponse.json({ success: true });
+  }
+
+  // Generate OAuth 2.0 auth link
+  if (body.connect) {
+    try {
+      const host = req.headers.get('host') || 'rofe.ai';
+      const protocol = host.includes('localhost') ? 'http' : 'https';
+      const callbackUrl = `${protocol}://${host}/api/admin/x-posts/auto-post/callback`;
+      const authUrl = await generateAuthLink(pool, callbackUrl);
+      return NextResponse.json({ success: true, authUrl });
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : 'Failed to generate auth link' }, { status: 400 });
+    }
+  }
+
+  // Disconnect
+  if (body.disconnect) {
+    await pool.query(`DELETE FROM admin_config WHERE key IN ('x_oauth2_access_token', 'x_oauth2_refresh_token', 'x_oauth2_username')`);
     return NextResponse.json({ success: true });
   }
 
@@ -98,7 +109,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true });
   }
 
-  // Post now: execute directly (no cron route, no guards)
+  // Post now
   if (body.postNow) {
     const result = await executeAutoPost(pool);
     return NextResponse.json(result);
