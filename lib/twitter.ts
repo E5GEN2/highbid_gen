@@ -3,6 +3,16 @@ import type { Pool } from 'pg';
 
 const SCOPES = ['tweet.read', 'tweet.write', 'users.read', 'offline.access'];
 
+/** Fetch with retry on 503 — Twitter Free tier returns transient 503s */
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 4): Promise<Response> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, init);
+    if (res.status !== 503 || attempt === maxRetries) return res;
+    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+  }
+  throw new Error('unreachable');
+}
+
 async function getConfig(pool: Pool, keys: string[]): Promise<Record<string, string>> {
   const result = await pool.query(
     `SELECT key, value FROM admin_config WHERE key = ANY($1)`,
@@ -64,7 +74,7 @@ export async function handleOAuth2Callback(
   }
 
   // Direct fetch for token exchange — twitter-api-v2 library triggers 503 on Free tier
-  const tokenRes = await fetch('https://api.twitter.com/2/oauth2/token', {
+  const tokenRes = await fetchWithRetry('https://api.twitter.com/2/oauth2/token', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -119,7 +129,7 @@ export async function getAuthedClient(pool: Pool): Promise<{ client: TwitterApi;
   if (!cfg.x_client_id || !cfg.x_oauth2_refresh_token) return null;
 
   // Direct fetch for token refresh — twitter-api-v2 library triggers 503 on Free tier
-  const tokenRes = await fetch('https://api.twitter.com/2/oauth2/token', {
+  const tokenRes = await fetchWithRetry('https://api.twitter.com/2/oauth2/token', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
