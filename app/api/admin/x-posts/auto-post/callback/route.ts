@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '../../../../../../lib/db';
-import { handleOAuth2Callback, getOAuthConfig } from '../../../../../../lib/twitter';
+import { getOAuthConfig } from '../../../../../../lib/twitter';
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code');
@@ -15,30 +15,14 @@ export async function GET(req: NextRequest) {
 
   const pool = await getPool();
 
-  // Try server-side token exchange first
-  try {
-    const { username } = await handleOAuth2Callback(pool, code, state);
-    return new NextResponse(
-      html('Connected!', `<p>Successfully connected as <strong>@${username}</strong>. You can close this tab.</p>`),
-      { headers: { 'Content-Type': 'text/html' } }
-    );
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    const is503 = msg.includes('503');
-
-    if (!is503) {
-      return new NextResponse(html('Error', `<p>OAuth callback failed: ${msg}</p>`), {
-        status: 500,
-        headers: { 'Content-Type': 'text/html' },
-      });
-    }
-
-    // 503 — show fallback: curl command for local token exchange
-    const cfg = await getOAuthConfig(pool);
-    const curlCmd = `curl -s -X POST "https://api.x.com/2/oauth2/token" \\
+  // Skip server-side token exchange — Railway IP gets 503 from Twitter.
+  // Go straight to curl fallback so the code isn't consumed by failed retries.
+  const cfg = await getOAuthConfig(pool);
+  const curlCmd = `curl -s -X POST "https://api.x.com/2/oauth2/token" \\
   -H "Content-Type: application/x-www-form-urlencoded" \\
   -d "grant_type=authorization_code&client_id=${encodeURIComponent(cfg.clientId)}&code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(cfg.callbackUrl)}&code_verifier=${encodeURIComponent(cfg.codeVerifier)}"`;
 
+  {
     const host = req.headers.get('host') || 'rofe.ai';
     const protocol = host.includes('localhost') ? 'http' : 'https';
     const saveUrl = `${protocol}://${host}/api/admin/x-posts/auto-post/save-tokens`;
