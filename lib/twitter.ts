@@ -59,8 +59,14 @@ export async function postThread(
       const reply = await client.v2.reply(tweets[i].text, tweetIds[i - 1]);
       tweetIds.push(reply.data.id);
     }
-  } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
+  } catch (err: unknown) {
+    // twitter-api-v2 throws ApiResponseError with .data containing Twitter's error details
+    if (err && typeof err === 'object' && 'data' in err) {
+      const apiErr = err as { data?: unknown; code?: number; message?: string };
+      error = `${apiErr.message || 'Twitter API error'} | code: ${apiErr.code} | details: ${JSON.stringify(apiErr.data)}`;
+    } else {
+      error = err instanceof Error ? err.message : String(err);
+    }
   }
 
   const threadUrl = tweetIds.length > 0
