@@ -142,18 +142,25 @@ export async function saveTokensManually(
   accessToken: string,
   refreshToken: string
 ): Promise<{ username: string }> {
-  const loggedClient = new TwitterApi(accessToken);
-  const me = await loggedClient.v2.me();
+  // Try to get username, but don't fail if Twitter blocks Railway IP
+  let username = 'connected';
+  try {
+    const loggedClient = new TwitterApi(accessToken);
+    const me = await loggedClient.v2.me();
+    username = me.data.username;
+  } catch {
+    // Railway IP blocked — save tokens anyway
+  }
 
   await saveConfig(pool, {
     x_oauth2_access_token: accessToken,
     x_oauth2_refresh_token: refreshToken,
-    x_oauth2_username: me.data.username,
+    x_oauth2_username: username,
   });
 
   await pool.query(`DELETE FROM admin_config WHERE key IN ('x_oauth2_code_verifier', 'x_oauth2_state')`);
 
-  return { username: me.data.username };
+  return { username };
 }
 
 /**
