@@ -36,6 +36,20 @@ async function saveConfig(pool: Pool, entries: Record<string, string>) {
   }
 }
 
+/** Expose OAuth config for fallback manual token exchange */
+export async function getOAuthConfig(pool: Pool) {
+  const cfg = await getConfig(pool, [
+    'x_client_id', 'x_client_secret',
+    'x_oauth2_code_verifier', 'x_oauth2_callback_url',
+  ]);
+  return {
+    clientId: cfg.x_client_id || '',
+    clientSecret: cfg.x_client_secret || '',
+    codeVerifier: cfg.x_oauth2_code_verifier || '',
+    callbackUrl: cfg.x_oauth2_callback_url || '',
+  };
+}
+
 /**
  * Generate OAuth 2.0 PKCE authorization link.
  * Returns { url, codeVerifier, state } — store codeVerifier+state in admin_config.
@@ -76,16 +90,16 @@ export async function handleOAuth2Callback(
     throw new Error('Invalid OAuth state');
   }
 
-  // Direct fetch for token exchange via api.x.com — api.twitter.com returns persistent 503
+  // Public client PKCE token exchange — no client_secret, just client_id in body
   const tokenRes = await fetchWithRetry(TOKEN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       'User-Agent': 'HighbidGen/1.0',
-      Authorization: `Basic ${Buffer.from(`${cfg.x_client_id}:${cfg.x_client_secret}`).toString('base64')}`,
     },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
+      client_id: cfg.x_client_id,
       code,
       redirect_uri: cfg.x_oauth2_callback_url,
       code_verifier: cfg.x_oauth2_code_verifier,
@@ -121,6 +135,28 @@ export async function handleOAuth2Callback(
 }
 
 /**
+ * Save manually-obtained tokens (from curl fallback).
+ */
+export async function saveTokensManually(
+  pool: Pool,
+  accessToken: string,
+  refreshToken: string
+): Promise<{ username: string }> {
+  const loggedClient = new TwitterApi(accessToken);
+  const me = await loggedClient.v2.me();
+
+  await saveConfig(pool, {
+    x_oauth2_access_token: accessToken,
+    x_oauth2_refresh_token: refreshToken,
+    x_oauth2_username: me.data.username,
+  });
+
+  await pool.query(`DELETE FROM admin_config WHERE key IN ('x_oauth2_code_verifier', 'x_oauth2_state')`);
+
+  return { username: me.data.username };
+}
+
+/**
  * Get an authenticated Twitter client using stored OAuth 2.0 refresh token.
  * Auto-refreshes the access token each time.
  */
@@ -132,16 +168,16 @@ export async function getAuthedClient(pool: Pool): Promise<{ client: TwitterApi;
 
   if (!cfg.x_client_id || !cfg.x_oauth2_refresh_token) return null;
 
-  // Direct fetch for token refresh via api.x.com
+  // Public client token refresh — no client_secret
   const tokenRes = await fetchWithRetry(TOKEN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       'User-Agent': 'HighbidGen/1.0',
-      Authorization: `Basic ${Buffer.from(`${cfg.x_client_id}:${cfg.x_client_secret}`).toString('base64')}`,
     },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
+      client_id: cfg.x_client_id,
       refresh_token: cfg.x_oauth2_refresh_token,
     }).toString(),
   });
