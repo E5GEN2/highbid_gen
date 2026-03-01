@@ -1,4 +1,5 @@
 import { TwitterApi } from 'twitter-api-v2';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import type { Pool } from 'pg';
 
 export interface TwitterCredentials {
@@ -6,11 +7,12 @@ export interface TwitterCredentials {
   appSecret: string;
   accessToken: string;
   accessSecret: string;
+  proxyUrl?: string;
 }
 
 export async function getTwitterCredentials(pool: Pool): Promise<TwitterCredentials | null> {
   const result = await pool.query(
-    `SELECT key, value FROM admin_config WHERE key IN ('x_api_key', 'x_api_secret', 'x_access_token', 'x_access_token_secret')`
+    `SELECT key, value FROM admin_config WHERE key IN ('x_api_key', 'x_api_secret', 'x_access_token', 'x_access_token_secret', 'x_proxy_url')`
   );
   const cfg: Record<string, string> = {};
   for (const row of result.rows) cfg[row.key] = row.value;
@@ -24,16 +26,24 @@ export async function getTwitterCredentials(pool: Pool): Promise<TwitterCredenti
     appSecret: cfg.x_api_secret,
     accessToken: cfg.x_access_token,
     accessSecret: cfg.x_access_token_secret,
+    proxyUrl: cfg.x_proxy_url || undefined,
   };
 }
 
 export function createTwitterClient(creds: TwitterCredentials): TwitterApi {
-  return new TwitterApi({
+  const oauth = {
     appKey: creds.appKey,
     appSecret: creds.appSecret,
     accessToken: creds.accessToken,
     accessSecret: creds.accessSecret,
-  });
+  };
+
+  if (creds.proxyUrl) {
+    const agent = new HttpsProxyAgent(creds.proxyUrl);
+    return new TwitterApi(oauth, { httpAgent: agent });
+  }
+
+  return new TwitterApi(oauth);
 }
 
 export interface PostThreadResult {
@@ -60,27 +70,13 @@ export async function postThread(
       tweetIds.push(reply.data.id);
     }
   } catch (err: unknown) {
-    // Dump all available error info for debugging
     const parts: string[] = [];
     if (err instanceof Error) {
       parts.push(err.message);
       if ('code' in err) parts.push(`code: ${(err as Record<string, unknown>).code}`);
       if ('data' in err) parts.push(`data: ${JSON.stringify((err as Record<string, unknown>).data)}`);
-      if ('errors' in err) parts.push(`errors: ${JSON.stringify((err as Record<string, unknown>).errors)}`);
-      if ('rateLimit' in err) parts.push(`rateLimit: ${JSON.stringify((err as Record<string, unknown>).rateLimit)}`);
-      // Check for response body
-      if ('body' in err) parts.push(`body: ${JSON.stringify((err as Record<string, unknown>).body)}`);
     } else {
       parts.push(String(err));
-    }
-    // Also try to get all enumerable keys
-    if (err && typeof err === 'object') {
-      const keys = Object.keys(err).filter(k => !['message', 'stack'].includes(k));
-      if (keys.length > 0) {
-        const extra: Record<string, unknown> = {};
-        for (const k of keys) extra[k] = (err as Record<string, unknown>)[k];
-        parts.push(`raw: ${JSON.stringify(extra)}`);
-      }
     }
     error = parts.join(' | ');
   }
