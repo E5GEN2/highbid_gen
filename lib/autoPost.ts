@@ -53,7 +53,7 @@ export async function executeAutoPost(pool: Pool): Promise<AutoPostResult> {
       log(logs, 'credentials', 'error', 'Twitter API credentials not configured. Set all 4 keys in the admin panel.');
       return { success: false, logs, error: 'Twitter credentials not configured' };
     }
-    log(logs, 'credentials', 'ok', 'All 4 Twitter API keys found');
+    log(logs, 'credentials', 'ok', `All 4 Twitter API keys found${creds.proxyUrl ? ` (proxy: ${creds.proxyUrl.replace(/\/\/.*@/, '//***@')})` : ' (no proxy)'}`);
     const client = createTwitterClient(creds);
 
     // Step 2: Fetch unposted channels
