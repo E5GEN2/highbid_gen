@@ -501,7 +501,7 @@ export default function XPostsPage() {
 
     // T7 — CTA (no media)
     tweets.push({
-      text: `You're seeing these channels before anyone else.\n\nFollow @rofe_ai — we find them every day.`,
+      text: `You're seeing these channels before anyone else.\n\nFollow @evgeniirofe — we find them every day.`,
     });
 
     return tweets;
@@ -556,7 +556,7 @@ export default function XPostsPage() {
 
     // T2: Reveal channel name + tags
     tweets.push({
-      text: `The channel: ${ch.channel_name}\n\n${ch.channel_url}${tagLine}\n\nFollow @rofe_ai — we find channels like this every day.`,
+      text: `The channel: ${ch.channel_name}\n\n${ch.channel_url}${tagLine}\n\nFollow @evgeniirofe — we find channels like this every day.`,
     });
 
     return tweets;
