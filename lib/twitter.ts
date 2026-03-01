@@ -60,13 +60,29 @@ export async function postThread(
       tweetIds.push(reply.data.id);
     }
   } catch (err: unknown) {
-    // twitter-api-v2 throws ApiResponseError with .data containing Twitter's error details
-    if (err && typeof err === 'object' && 'data' in err) {
-      const apiErr = err as { data?: unknown; code?: number; message?: string };
-      error = `${apiErr.message || 'Twitter API error'} | code: ${apiErr.code} | details: ${JSON.stringify(apiErr.data)}`;
+    // Dump all available error info for debugging
+    const parts: string[] = [];
+    if (err instanceof Error) {
+      parts.push(err.message);
+      if ('code' in err) parts.push(`code: ${(err as Record<string, unknown>).code}`);
+      if ('data' in err) parts.push(`data: ${JSON.stringify((err as Record<string, unknown>).data)}`);
+      if ('errors' in err) parts.push(`errors: ${JSON.stringify((err as Record<string, unknown>).errors)}`);
+      if ('rateLimit' in err) parts.push(`rateLimit: ${JSON.stringify((err as Record<string, unknown>).rateLimit)}`);
+      // Check for response body
+      if ('body' in err) parts.push(`body: ${JSON.stringify((err as Record<string, unknown>).body)}`);
     } else {
-      error = err instanceof Error ? err.message : String(err);
+      parts.push(String(err));
     }
+    // Also try to get all enumerable keys
+    if (err && typeof err === 'object') {
+      const keys = Object.keys(err).filter(k => !['message', 'stack'].includes(k));
+      if (keys.length > 0) {
+        const extra: Record<string, unknown> = {};
+        for (const k of keys) extra[k] = (err as Record<string, unknown>)[k];
+        parts.push(`raw: ${JSON.stringify(extra)}`);
+      }
+    }
+    error = parts.join(' | ');
   }
 
   const threadUrl = tweetIds.length > 0
