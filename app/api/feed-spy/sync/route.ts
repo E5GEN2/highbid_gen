@@ -321,7 +321,8 @@ export async function POST(req: NextRequest) {
           if (videos.length === 0) {
             await pool.query(
               `INSERT INTO shorts_collections (id, xgodo_task_id, video_count, collected_at)
-               VALUES ($1, $2, 0, NOW())`,
+               VALUES ($1, $2, 0, NOW())
+               ON CONFLICT (xgodo_task_id) DO NOTHING`,
               [collectionId, taskId]
             );
             emptyTaskIds.push(taskId);
@@ -395,6 +396,7 @@ export async function POST(req: NextRequest) {
           await pool.query(`
             INSERT INTO shorts_collections (id, xgodo_task_id, video_count, collected_at)
             VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (xgodo_task_id) DO NOTHING
           `, [collectionId, taskId, videos.length]);
 
           confirmedTaskIds.push(taskId);
