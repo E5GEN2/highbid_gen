@@ -362,7 +362,7 @@ export default function FeedViewer({
   // Auto-fetch more videos when landing on a channel with few videos
   useEffect(() => {
     if (onCta || !channel || !onFetchChannelVideos) return;
-    if (channel.videos.length > 3) return;
+    if (channel.videos.length > 5) return;
     if (fetchedChannelsRef.current.has(channel.channel_id)) return;
     fetchedChannelsRef.current.add(channel.channel_id);
     setFetchingMore(true);

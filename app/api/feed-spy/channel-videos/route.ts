@@ -53,10 +53,36 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'YouTube API key not configured' }, { status: 500 });
     }
 
+    // Resolve @handle to UC... channel ID if needed
+    let resolvedChannelId = channelId;
+    if (channelId.startsWith('@')) {
+      const handle = channelId.slice(1);
+      const handleRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(handle)}&key=${apiKey}`
+      );
+      if (handleRes.ok) {
+        const handleData = await handleRes.json();
+        const ucId = handleData.items?.[0]?.id;
+        if (ucId) {
+          resolvedChannelId = ucId;
+          // Update the channel_id in the database so future lookups work
+          await pool.query(
+            `UPDATE shorts_channels SET channel_id = $1 WHERE channel_id = $2`,
+            [ucId, channelId]
+          );
+          await pool.query(
+            `UPDATE shorts_videos SET channel_id = $1 WHERE channel_id = $2`,
+            [ucId, channelId]
+          );
+        }
+      }
+    }
+
     // Convert UC... channel ID to UU... uploads playlist
-    const uploadsPlaylistId = channelId.startsWith('UC')
-      ? 'UU' + channelId.slice(2)
-      : channelId;
+    if (!resolvedChannelId.startsWith('UC')) {
+      return NextResponse.json({ success: true, videos: [], message: 'Cannot resolve channel ID' });
+    }
+    const uploadsPlaylistId = 'UU' + resolvedChannelId.slice(2);
 
     // Fetch all playlist items (paginate)
     const allVideoIds: string[] = [];
@@ -165,7 +191,7 @@ export async function GET(req: NextRequest) {
             v.title,
             v.duration_seconds,
             v.upload_date,
-            channelId,
+            resolvedChannelId,
             v.view_count,
             v.like_count,
             v.comment_count,
@@ -179,7 +205,7 @@ export async function GET(req: NextRequest) {
       `SELECT DISTINCT ON (video_id) video_id, title, duration_seconds, view_count, like_count, comment_count, upload_date
        FROM shorts_videos WHERE channel_id = $1
        ORDER BY video_id, collected_at DESC`,
-      [channelId]
+      [resolvedChannelId]
     );
 
     return NextResponse.json({ success: true, videos: allVideos.rows, cached: false, fetched: shorts.length });
