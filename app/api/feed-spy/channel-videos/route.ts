@@ -120,7 +120,15 @@ export async function GET(req: NextRequest) {
     } while (nextPageToken);
 
     if (allVideoIds.length === 0) {
-      return NextResponse.json({ success: true, videos: [], message: 'No videos found' });
+      // Debug: try the playlist call once more and return the raw error
+      const debugUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${uploadsPlaylistId}&maxResults=1&key=${apiKey}`;
+      const debugRes = await fetch(debugUrl);
+      const debugText = await debugRes.text();
+      return NextResponse.json({
+        success: true, videos: [],
+        message: 'No videos found',
+        debug: { playlistId: uploadsPlaylistId, channelId: resolvedChannelId, status: debugRes.status, response: debugText.slice(0, 500) },
+      });
     }
 
     // Fetch video details in batches of 50 (duration, stats)
