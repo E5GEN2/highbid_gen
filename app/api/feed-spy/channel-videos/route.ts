@@ -46,15 +46,20 @@ export async function GET(req: NextRequest) {
         if (ucId) {
           resolvedChannelId = ucId;
           // Migrate @handle → UC: ensure UC parent exists, reassign children, clean up
-          await pool.query(
-            `INSERT INTO shorts_channels (channel_id, channel_url)
-             VALUES ($1, $2) ON CONFLICT (channel_id) DO NOTHING`,
-            [ucId, `https://www.youtube.com/channel/${ucId}`]
-          );
-          await pool.query(`UPDATE shorts_videos SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
-          await pool.query(`DELETE FROM x_posted_channels WHERE channel_id = $1`, [channelId]);
-          await pool.query(`DELETE FROM channel_analysis WHERE channel_id = $1`, [channelId]);
-          await pool.query(`DELETE FROM shorts_channels WHERE channel_id = $1`, [channelId]);
+          try {
+            await pool.query(
+              `INSERT INTO shorts_channels (channel_id, channel_url)
+               VALUES ($1, $2) ON CONFLICT (channel_id) DO NOTHING`,
+              [ucId, `https://www.youtube.com/channel/${ucId}`]
+            );
+            await pool.query(`UPDATE shorts_videos SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
+            await pool.query(`DELETE FROM x_posted_channels WHERE channel_id = $1`, [channelId]);
+            await pool.query(`DELETE FROM channel_analysis WHERE channel_id = $1`, [channelId]);
+            await pool.query(`DELETE FROM shorts_channels WHERE channel_id = $1`, [channelId]);
+          } catch (migrationErr) {
+            console.error('Handle migration error:', migrationErr);
+            // Continue with resolved ID — the UC channel should exist from INSERT above
+          }
         }
       }
     }
