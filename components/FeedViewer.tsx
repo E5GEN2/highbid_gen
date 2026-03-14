@@ -369,6 +369,20 @@ export default function FeedViewer({
     onFetchChannelVideos(channel.channel_id).finally(() => setFetchingMore(false));
   }, [dataIndex, onCta, channel, onFetchChannelVideos]);
 
+  // Prefetch videos for next 3 channels so they're ready when user swipes
+  useEffect(() => {
+    if (!onFetchChannelVideos) return;
+    for (let offset = 1; offset <= 3; offset++) {
+      const nextIdx = dataIndex + offset;
+      if (nextIdx >= channels.length) break;
+      const nextCh = channels[nextIdx];
+      if (!nextCh || nextCh.videos.length > 5) continue;
+      if (fetchedChannelsRef.current.has(nextCh.channel_id)) continue;
+      fetchedChannelsRef.current.add(nextCh.channel_id);
+      onFetchChannelVideos(nextCh.channel_id);
+    }
+  }, [dataIndex, channels, onFetchChannelVideos]);
+
   // Pause/resume player when navigating to/from a CTA slide
   useEffect(() => {
     if (!playerRef.current) return;
