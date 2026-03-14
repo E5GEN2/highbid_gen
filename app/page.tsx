@@ -2018,6 +2018,7 @@ function HomeContent() {
       const response = await fetch(`/api/feed-spy/channel-videos?channelId=${encodeURIComponent(channelId)}`);
       const data = await response.json();
       if (data.success && data.videos) {
+        const resolved = data.resolvedChannelId || channelId;
         setFeedChannels((prev) =>
           prev.map((ch) => {
             if (ch.channel_id !== channelId) return ch;
@@ -2025,7 +2026,8 @@ function HomeContent() {
             const existingIds = new Set(ch.videos.map((v) => v.video_id));
             const newVideos = data.videos.filter((v: { video_id: string }) => !existingIds.has(v.video_id));
             if (newVideos.length === 0) return ch;
-            return { ...ch, videos: [...ch.videos, ...newVideos] };
+            // Update channel_id if it was resolved from @handle to UC...
+            return { ...ch, channel_id: resolved, videos: [...ch.videos, ...newVideos] };
           })
         );
       }

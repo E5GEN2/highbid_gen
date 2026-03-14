@@ -45,15 +45,11 @@ export async function GET(req: NextRequest) {
         const ucId = handleData.items?.[0]?.id;
         if (ucId) {
           resolvedChannelId = ucId;
-          // Update the channel_id in the database so future lookups work
-          await pool.query(
-            `UPDATE shorts_channels SET channel_id = $1 WHERE channel_id = $2`,
-            [ucId, channelId]
-          );
-          await pool.query(
-            `UPDATE shorts_videos SET channel_id = $1 WHERE channel_id = $2`,
-            [ucId, channelId]
-          );
+          // Update channel_id: children first (FK), then parent
+          await pool.query(`UPDATE shorts_videos SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
+          await pool.query(`UPDATE x_posted_channels SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
+          await pool.query(`UPDATE channel_analysis SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
+          await pool.query(`UPDATE shorts_channels SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
         }
       }
     }
@@ -74,7 +70,7 @@ export async function GET(req: NextRequest) {
          ORDER BY video_id, collected_at DESC`,
         [resolvedChannelId]
       );
-      return NextResponse.json({ success: true, videos: cachedVideos.rows, cached: true });
+      return NextResponse.json({ success: true, videos: cachedVideos.rows, cached: true, resolvedChannelId });
     }
 
     // Convert UC... channel ID to UU... uploads playlist
@@ -211,7 +207,7 @@ export async function GET(req: NextRequest) {
       [resolvedChannelId]
     );
 
-    return NextResponse.json({ success: true, videos: allVideos.rows, cached: false, fetched: shorts.length });
+    return NextResponse.json({ success: true, videos: allVideos.rows, cached: false, fetched: shorts.length, resolvedChannelId });
   } catch (error) {
     console.error('Channel videos fetch error:', error);
     return NextResponse.json(
