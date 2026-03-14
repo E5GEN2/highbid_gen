@@ -83,28 +83,18 @@ export async function GET(req: NextRequest) {
     }
     const uploadsPlaylistId = 'UU' + resolvedChannelId.slice(2);
 
-    // Fetch playlist items (limit to 3 pages = 150 most recent videos to avoid timeouts)
+    // Fetch only 20 most recent uploads (1 API call) to save quota
     const allVideoIds: string[] = [];
     const videoSnippets: Record<string, { title: string; uploadDate: string }> = {};
-    let nextPageToken: string | undefined;
-    const MAX_PAGES = 3;
-    let pageCount = 0;
 
-    do {
-      const plUrl = new URL('https://www.googleapis.com/youtube/v3/playlistItems');
-      plUrl.searchParams.set('part', 'snippet');
-      plUrl.searchParams.set('playlistId', uploadsPlaylistId);
-      plUrl.searchParams.set('maxResults', '50');
-      plUrl.searchParams.set('key', apiKey);
-      if (nextPageToken) plUrl.searchParams.set('pageToken', nextPageToken);
+    const plUrl = new URL('https://www.googleapis.com/youtube/v3/playlistItems');
+    plUrl.searchParams.set('part', 'snippet');
+    plUrl.searchParams.set('playlistId', uploadsPlaylistId);
+    plUrl.searchParams.set('maxResults', '20');
+    plUrl.searchParams.set('key', apiKey);
 
-      const plRes = await fetch(plUrl.toString());
-      if (!plRes.ok) {
-        const text = await plRes.text();
-        console.error('YouTube playlistItems error:', plRes.status, text);
-        break;
-      }
-
+    const plRes = await fetch(plUrl.toString());
+    if (plRes.ok) {
       const plData = await plRes.json();
       for (const item of plData.items || []) {
         const vid = item.snippet?.resourceId?.videoId;
@@ -116,10 +106,9 @@ export async function GET(req: NextRequest) {
           };
         }
       }
-
-      nextPageToken = plData.nextPageToken;
-      pageCount++;
-    } while (nextPageToken && pageCount < MAX_PAGES);
+    } else {
+      console.error('YouTube playlistItems error:', plRes.status, await plRes.text());
+    }
 
     if (allVideoIds.length === 0) {
       // Debug: try the playlist call once more and return the raw error
@@ -133,7 +122,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Fetch video details in batches of 50 (duration, stats)
+    // Fetch video details (single call — max 20 IDs)
     interface VideoDetail {
       video_id: string;
       title: string;
@@ -145,34 +134,32 @@ export async function GET(req: NextRequest) {
     }
     const shorts: VideoDetail[] = [];
 
-    for (let i = 0; i < allVideoIds.length; i += 50) {
-      const batch = allVideoIds.slice(i, i + 50);
+    if (allVideoIds.length > 0) {
       const vUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
       vUrl.searchParams.set('part', 'contentDetails,statistics');
-      vUrl.searchParams.set('id', batch.join(','));
+      vUrl.searchParams.set('id', allVideoIds.join(','));
       vUrl.searchParams.set('key', apiKey);
 
       const vRes = await fetch(vUrl.toString());
-      if (!vRes.ok) {
+      if (vRes.ok) {
+        const vData = await vRes.json();
+        for (const item of vData.items || []) {
+          const durationSec = parseDuration(item.contentDetails?.duration || '');
+          if (durationSec > 60) continue; // Skip non-shorts
+
+          const snippet = videoSnippets[item.id] || { title: '', uploadDate: '' };
+          shorts.push({
+            video_id: item.id,
+            title: snippet.title || '',
+            duration_seconds: durationSec,
+            upload_date: snippet.uploadDate || '',
+            view_count: item.statistics?.viewCount ? parseInt(item.statistics.viewCount) : null,
+            like_count: item.statistics?.likeCount ? parseInt(item.statistics.likeCount) : null,
+            comment_count: item.statistics?.commentCount ? parseInt(item.statistics.commentCount) : null,
+          });
+        }
+      } else {
         console.error('YouTube videos error:', vRes.status, await vRes.text());
-        continue;
-      }
-
-      const vData = await vRes.json();
-      for (const item of vData.items || []) {
-        const durationSec = parseDuration(item.contentDetails?.duration || '');
-        if (durationSec > 60) continue; // Skip non-shorts
-
-        const snippet = videoSnippets[item.id] || { title: '', uploadDate: '' };
-        shorts.push({
-          video_id: item.id,
-          title: snippet.title || '',
-          duration_seconds: durationSec,
-          upload_date: snippet.uploadDate || '',
-          view_count: item.statistics?.viewCount ? parseInt(item.statistics.viewCount) : null,
-          like_count: item.statistics?.likeCount ? parseInt(item.statistics.likeCount) : null,
-          comment_count: item.statistics?.commentCount ? parseInt(item.statistics.commentCount) : null,
-        });
       }
     }
 
