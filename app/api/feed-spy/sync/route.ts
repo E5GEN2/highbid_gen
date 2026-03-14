@@ -411,10 +411,13 @@ export async function POST(req: NextRequest) {
         }
 
         // Fetch missing channel avatars + subscriber counts
+        // Only for channels seen in the last 24h to avoid burning quota on old channels
         if (YT_API_KEY) {
           try {
             const missingData = await pool.query(
-              `SELECT channel_id FROM shorts_channels WHERE avatar_url IS NULL OR subscriber_count IS NULL OR total_video_count IS NULL`
+              `SELECT channel_id FROM shorts_channels
+               WHERE (avatar_url IS NULL OR subscriber_count IS NULL OR total_video_count IS NULL)
+               AND first_seen_at > NOW() - INTERVAL '24 hours'`
             );
             const channelIds = missingData.rows.map((r: { channel_id: string }) => r.channel_id);
 
