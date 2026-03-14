@@ -45,11 +45,16 @@ export async function GET(req: NextRequest) {
         const ucId = handleData.items?.[0]?.id;
         if (ucId) {
           resolvedChannelId = ucId;
-          // Update channel_id: children first (FK), then parent
+          // Migrate @handle → UC: ensure UC parent exists, reassign children, clean up
+          await pool.query(
+            `INSERT INTO shorts_channels (channel_id, channel_url)
+             VALUES ($1, $2) ON CONFLICT (channel_id) DO NOTHING`,
+            [ucId, `https://www.youtube.com/channel/${ucId}`]
+          );
           await pool.query(`UPDATE shorts_videos SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
-          await pool.query(`UPDATE x_posted_channels SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
-          await pool.query(`UPDATE channel_analysis SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
-          await pool.query(`UPDATE shorts_channels SET channel_id = $1 WHERE channel_id = $2`, [ucId, channelId]);
+          await pool.query(`DELETE FROM x_posted_channels WHERE channel_id = $1`, [channelId]);
+          await pool.query(`DELETE FROM channel_analysis WHERE channel_id = $1`, [channelId]);
+          await pool.query(`DELETE FROM shorts_channels WHERE channel_id = $1`, [channelId]);
         }
       }
     }
