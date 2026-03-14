@@ -26,27 +26,7 @@ export async function GET(req: NextRequest) {
 
     const pool = await getPool();
 
-    // Check cache: if we have 10+ videos for this channel fetched within last 24h, return cached
-    const cached = await pool.query(
-      `SELECT COUNT(*) as cnt FROM shorts_videos
-       WHERE channel_id = $1 AND collection_id = 'yt-api-fetch'
-       AND collected_at > NOW() - INTERVAL '24 hours'`,
-      [channelId]
-    );
-    const cachedCount = parseInt(cached.rows[0].cnt);
-
-    if (cachedCount >= 10) {
-      // Return cached videos
-      const cachedVideos = await pool.query(
-        `SELECT DISTINCT ON (video_id) video_id, title, duration_seconds, view_count, like_count, comment_count, upload_date
-         FROM shorts_videos WHERE channel_id = $1
-         ORDER BY video_id, collected_at DESC`,
-        [channelId]
-      );
-      return NextResponse.json({ success: true, videos: cachedVideos.rows, cached: true });
-    }
-
-    // Get YouTube API key
+    // Get YouTube API key early (needed for @handle resolution)
     const config = await getConfig(pool);
     const apiKey = config.youtube_api_key;
     if (!apiKey) {
@@ -78,16 +58,37 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Check cache using resolved ID: if we have 10+ videos fetched within last 24h, return cached
+    const cached = await pool.query(
+      `SELECT COUNT(*) as cnt FROM shorts_videos
+       WHERE channel_id = $1 AND collection_id = 'yt-api-fetch'
+       AND collected_at > NOW() - INTERVAL '24 hours'`,
+      [resolvedChannelId]
+    );
+    const cachedCount = parseInt(cached.rows[0].cnt);
+
+    if (cachedCount >= 10) {
+      const cachedVideos = await pool.query(
+        `SELECT DISTINCT ON (video_id) video_id, title, duration_seconds, view_count, like_count, comment_count, upload_date
+         FROM shorts_videos WHERE channel_id = $1
+         ORDER BY video_id, collected_at DESC`,
+        [resolvedChannelId]
+      );
+      return NextResponse.json({ success: true, videos: cachedVideos.rows, cached: true });
+    }
+
     // Convert UC... channel ID to UU... uploads playlist
     if (!resolvedChannelId.startsWith('UC')) {
       return NextResponse.json({ success: true, videos: [], message: 'Cannot resolve channel ID' });
     }
     const uploadsPlaylistId = 'UU' + resolvedChannelId.slice(2);
 
-    // Fetch all playlist items (paginate)
+    // Fetch playlist items (limit to 3 pages = 150 most recent videos to avoid timeouts)
     const allVideoIds: string[] = [];
     const videoSnippets: Record<string, { title: string; uploadDate: string }> = {};
     let nextPageToken: string | undefined;
+    const MAX_PAGES = 3;
+    let pageCount = 0;
 
     do {
       const plUrl = new URL('https://www.googleapis.com/youtube/v3/playlistItems');
@@ -117,7 +118,8 @@ export async function GET(req: NextRequest) {
       }
 
       nextPageToken = plData.nextPageToken;
-    } while (nextPageToken);
+      pageCount++;
+    } while (nextPageToken && pageCount < MAX_PAGES);
 
     if (allVideoIds.length === 0) {
       // Debug: try the playlist call once more and return the raw error
