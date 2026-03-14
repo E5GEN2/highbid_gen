@@ -176,16 +176,22 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Upsert into shorts_videos
+    // Ensure channel exists in shorts_channels (FK constraint)
+    await pool.query(
+      `INSERT INTO shorts_channels (channel_id, channel_url)
+       VALUES ($1, $2)
+       ON CONFLICT (channel_id) DO NOTHING`,
+      [resolvedChannelId, `https://www.youtube.com/channel/${resolvedChannelId}`]
+    );
+
+    // Upsert shorts into shorts_videos
     for (const v of shorts) {
-      // Check if this video already exists for this channel
       const existing = await pool.query(
         `SELECT id FROM shorts_videos WHERE video_id = $1 AND collection_id = 'yt-api-fetch'`,
         [v.video_id]
       );
 
       if (existing.rows.length > 0) {
-        // Update stats
         await pool.query(
           `UPDATE shorts_videos SET view_count = $1, like_count = $2, comment_count = $3, collected_at = NOW()
            WHERE video_id = $4 AND collection_id = 'yt-api-fetch'`,
