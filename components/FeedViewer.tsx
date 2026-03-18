@@ -173,6 +173,7 @@ export default function FeedViewer({
   const [fetchingMore, setFetchingMore] = useState(false);
   const fetchedChannelsRef = useRef<Set<string>>(new Set());
   const [showSettings, setShowSettings] = useState(false);
+  const [reactionMode, setReactionMode] = useState(false);
 
   // CTA display index mapping (only active for non-logged-in users)
   const ctaPositions = useMemo(
@@ -238,6 +239,15 @@ export default function FeedViewer({
 
   const channel = onCta ? null : channels[dataIndex];
   const video = channel?.videos?.[videoIndex];
+
+  // Reaction mode stats
+  const totalChannelViews = useMemo(() => {
+    if (!channel) return 0;
+    return channel.videos.reduce((sum, v) => sum + (v.view_count ?? 0), 0);
+  }, [channel]);
+  const channelAgeDays = channel?.channel_creation_date
+    ? Math.floor((Date.now() - new Date(channel.channel_creation_date).getTime()) / 86400000)
+    : null;
 
   // Prevent iOS overscroll/bounce when in feed view
   useEffect(() => {
@@ -740,6 +750,26 @@ export default function FeedViewer({
               </div>
             </div>
 
+            {/* Reaction Mode toggle */}
+            <div className="mt-3 pt-3 border-t border-gray-700/50 flex items-center justify-between">
+              <div>
+                <span className="text-white text-xs font-medium">Reaction Mode</span>
+                <span className="text-gray-400 text-[10px] block">Show big stats when paused</span>
+              </div>
+              <button
+                onClick={() => setReactionMode((r) => !r)}
+                className={`w-10 h-6 rounded-full transition-colors ${
+                  reactionMode ? 'bg-pink-500' : 'bg-gray-600'
+                } relative`}
+              >
+                <span
+                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                    reactionMode ? 'translate-x-[18px]' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+
             {/* Active filters summary */}
             {(filters.maxAge !== '0' || filters.minSubs !== '0' || filters.maxSubs !== '0' || filters.minViews !== '0' || filters.sort !== 'velocity') && (
               <button
@@ -835,12 +865,48 @@ export default function FeedViewer({
             )}
 
             {/* Paused overlay */}
-            {started && paused && (
+            {started && paused && !reactionMode && (
               <div className="absolute inset-0 z-[15] bg-black/30 flex items-center justify-center pointer-events-none">
                 <div className="w-14 h-14 sm:w-16 sm:h-16 bg-black/50 backdrop-blur-sm rounded-full flex items-center justify-center">
                   <svg className="w-7 h-7 sm:w-8 sm:h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M8 5v14l11-7z" />
                   </svg>
+                </div>
+              </div>
+            )}
+
+            {/* Reaction mode stats overlay */}
+            {reactionMode && started && paused && channel && (
+              <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-start pt-[18%] pointer-events-none">
+                <div className="flex flex-col items-center gap-5">
+                  {channelAgeDays !== null && (
+                    <div className="text-center">
+                      <div className="text-6xl sm:text-7xl font-black text-white drop-shadow-[0_4px_8px_rgba(0,0,0,0.8)]">
+                        {channelAgeDays}
+                      </div>
+                      <div className="text-lg sm:text-xl font-bold text-gray-300 uppercase tracking-widest">
+                        days old
+                      </div>
+                    </div>
+                  )}
+                  <div className="text-center">
+                    <div className="text-5xl sm:text-6xl font-black text-white drop-shadow-[0_4px_8px_rgba(0,0,0,0.8)]">
+                      {formatCount(totalChannelViews)}
+                    </div>
+                    <div className="text-lg sm:text-xl font-bold text-gray-300 uppercase tracking-widest">
+                      total views
+                    </div>
+                  </div>
+                  {channel.subscriber_count && (
+                    <div className="text-center">
+                      <div className="text-5xl sm:text-6xl font-black text-white drop-shadow-[0_4px_8px_rgba(0,0,0,0.8)]">
+                        {formatCount(parseInt(channel.subscriber_count))}
+                      </div>
+                      <div className="text-lg sm:text-xl font-bold text-gray-300 uppercase tracking-widest">
+                        subscribers
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
