@@ -876,18 +876,18 @@ export default function FeedViewer({
             )}
 
             {/* Reaction mode stats overlay */}
-            {reactionMode && (!started || paused) && channel && (
-              <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-start pt-[18%] pointer-events-none">
-                <div className="flex flex-col items-center gap-5">
+            {reactionMode && (!started || paused || !playerReady) && channel && (
+              <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-center pointer-events-none">
+                <div className="flex flex-col items-center gap-8">
                   {channelAgeDays !== null && (
                     <div className="text-center">
                       <div
-                        className="text-7xl sm:text-8xl font-black text-white"
+                        className="text-8xl sm:text-9xl font-black text-white leading-none"
                         style={{ textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                       >
                         {channelAgeDays}
                       </div>
-                      <div className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] text-gray-300"
+                      <div className="text-xl sm:text-2xl font-bold uppercase tracking-[0.3em] text-gray-300 mt-1"
                         style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                       >
                         days old
@@ -896,12 +896,12 @@ export default function FeedViewer({
                   )}
                   <div className="text-center">
                     <div
-                      className="text-6xl sm:text-7xl font-black text-white"
+                      className="text-7xl sm:text-8xl font-black text-white leading-none"
                       style={{ textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                     >
                       {formatCount(totalChannelViews)}
                     </div>
-                    <div className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] text-gray-300"
+                    <div className="text-xl sm:text-2xl font-bold uppercase tracking-[0.3em] text-gray-300 mt-1"
                       style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                     >
                       total views
@@ -910,12 +910,12 @@ export default function FeedViewer({
                   {channel.subscriber_count && (
                     <div className="text-center">
                       <div
-                        className="text-6xl sm:text-7xl font-black text-white"
+                        className="text-7xl sm:text-8xl font-black text-white leading-none"
                         style={{ textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                       >
                         {formatCount(parseInt(channel.subscriber_count))}
                       </div>
-                      <div className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] text-gray-300"
+                      <div className="text-xl sm:text-2xl font-bold uppercase tracking-[0.3em] text-gray-300 mt-1"
                         style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                       >
                         subscribers
