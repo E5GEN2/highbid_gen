@@ -876,7 +876,7 @@ export default function FeedViewer({
             )}
 
             {/* Reaction mode stats overlay */}
-            {reactionMode && started && paused && channel && (
+            {reactionMode && (!started || paused) && channel && (
               <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-start pt-[18%] pointer-events-none">
                 <div className="flex flex-col items-center gap-5">
                   {channelAgeDays !== null && (
