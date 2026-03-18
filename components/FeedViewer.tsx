@@ -882,13 +882,13 @@ export default function FeedViewer({
                   {channelAgeDays !== null && (
                     <div className="text-center">
                       <div
-                        className="text-7xl sm:text-8xl font-black bg-gradient-to-b from-white via-white to-white/60 bg-clip-text text-transparent"
-                        style={{ textShadow: '0 0 40px rgba(255,255,255,0.5), 0 0 80px rgba(255,255,255,0.2), 0 4px 12px rgba(0,0,0,0.8)', WebkitTextStroke: '1px rgba(255,255,255,0.15)' }}
+                        className="text-7xl sm:text-8xl font-black text-white"
+                        style={{ textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                       >
                         {channelAgeDays}
                       </div>
-                      <div
-                        className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] bg-gradient-to-r from-gray-400 via-gray-200 to-gray-400 bg-clip-text text-transparent"
+                      <div className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] text-gray-300"
+                        style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                       >
                         days old
                       </div>
@@ -896,13 +896,13 @@ export default function FeedViewer({
                   )}
                   <div className="text-center">
                     <div
-                      className="text-6xl sm:text-7xl font-black bg-gradient-to-b from-white via-white to-white/60 bg-clip-text text-transparent"
-                      style={{ textShadow: '0 0 40px rgba(255,255,255,0.5), 0 0 80px rgba(255,255,255,0.2), 0 4px 12px rgba(0,0,0,0.8)', WebkitTextStroke: '1px rgba(255,255,255,0.15)' }}
+                      className="text-6xl sm:text-7xl font-black text-white"
+                      style={{ textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                     >
                       {formatCount(totalChannelViews)}
                     </div>
-                    <div
-                      className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] bg-gradient-to-r from-gray-400 via-gray-200 to-gray-400 bg-clip-text text-transparent"
+                    <div className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] text-gray-300"
+                      style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                     >
                       total views
                     </div>
@@ -910,13 +910,13 @@ export default function FeedViewer({
                   {channel.subscriber_count && (
                     <div className="text-center">
                       <div
-                        className="text-6xl sm:text-7xl font-black bg-gradient-to-b from-white via-white to-white/60 bg-clip-text text-transparent"
-                        style={{ textShadow: '0 0 40px rgba(255,255,255,0.5), 0 0 80px rgba(255,255,255,0.2), 0 4px 12px rgba(0,0,0,0.8)', WebkitTextStroke: '1px rgba(255,255,255,0.15)' }}
+                        className="text-6xl sm:text-7xl font-black text-white"
+                        style={{ textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                       >
                         {formatCount(parseInt(channel.subscriber_count))}
                       </div>
-                      <div
-                        className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] bg-gradient-to-r from-gray-400 via-gray-200 to-gray-400 bg-clip-text text-transparent"
+                      <div className="text-sm sm:text-base font-bold uppercase tracking-[0.3em] text-gray-300"
+                        style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                       >
                         subscribers
                       </div>
