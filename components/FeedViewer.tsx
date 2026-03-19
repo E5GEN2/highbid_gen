@@ -161,6 +161,7 @@ export default function FeedViewer({
   const isLoggedIn = !!session;
 
   const touchRef = useRef<{ startX: number; startY: number; startTime: number } | null>(null);
+  const touchHandledRef = useRef(false);
   const playerRef = useRef<any>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const [transitioning, setTransitioning] = useState(false);
@@ -517,6 +518,8 @@ export default function FeedViewer({
 
       // Tap detection — skip pause/play on CTA slides
       if (absDx < 20 && absDy < 20 && dt < 400 && !onCta) {
+        touchHandledRef.current = true;
+        setTimeout(() => { touchHandledRef.current = false; }, 400);
         if (!started) {
           handleStart();
           return;
@@ -929,7 +932,7 @@ export default function FeedViewer({
                 style={{ background: 'transparent', touchAction: 'none' }}
                 onTouchStart={onTouchStart}
                 onTouchEnd={(e) => { onTouchEnd(e); e.preventDefault(); }}
-                onClick={() => togglePause()}
+                onClick={() => { if (!touchHandledRef.current) togglePause(); }}
               />
             )}
 
