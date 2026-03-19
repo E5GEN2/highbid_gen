@@ -521,11 +521,7 @@ export default function FeedViewer({
           handleStart();
           return;
         }
-        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        const relX = startX - rect.left;
-        if (relX < rect.width * 0.8) {
-          togglePause();
-        }
+        togglePause();
         return;
       }
 
@@ -930,15 +926,10 @@ export default function FeedViewer({
             {started && (
               <div
                 className="absolute inset-0 z-20"
+                style={{ background: 'transparent', touchAction: 'none' }}
                 onTouchStart={onTouchStart}
                 onTouchEnd={onTouchEnd}
-                onClick={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const relX = e.clientX - rect.left;
-                  if (relX < rect.width * 0.8) {
-                    togglePause();
-                  }
-                }}
+                onClick={() => togglePause()}
               />
             )}
 
@@ -946,6 +937,7 @@ export default function FeedViewer({
             {!started && playerReady && (
               <div
                 className="absolute inset-0 z-20"
+                style={{ background: 'transparent', touchAction: 'none' }}
                 onTouchStart={onTouchStart}
                 onTouchEnd={onTouchEnd}
               />
