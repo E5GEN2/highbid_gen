@@ -928,7 +928,7 @@ export default function FeedViewer({
                 className="absolute inset-0 z-20"
                 style={{ background: 'transparent', touchAction: 'none' }}
                 onTouchStart={onTouchStart}
-                onTouchEnd={onTouchEnd}
+                onTouchEnd={(e) => { onTouchEnd(e); e.preventDefault(); }}
                 onClick={() => togglePause()}
               />
             )}
