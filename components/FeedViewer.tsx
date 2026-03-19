@@ -877,12 +877,12 @@ export default function FeedViewer({
 
             {/* Reaction mode stats overlay */}
             {reactionMode && (!started || paused || !playerReady) && channel && (
-              <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-start pt-[5%] pointer-events-none">
-                <div className="flex flex-col items-center gap-4">
+              <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-start pt-[3%] pointer-events-none overflow-hidden">
+                <div className="flex flex-col items-center gap-2 w-full max-h-full px-4" style={{ maxWidth: '90%' }}>
                   {channelAgeDays !== null && (
                     <div className="text-center">
                       <div
-                        className="font-black text-white leading-none"
+                        className="font-black text-white leading-none w-full text-center"
                         style={{ fontSize: 'clamp(6rem, 18vw, 10rem)', textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                       >
                         {channelAgeDays}
