@@ -516,7 +516,7 @@ export default function FeedViewer({
       const maxTime = 500;
 
       // Tap detection — skip pause/play on CTA slides
-      if (absDx < 10 && absDy < 10 && dt < 300 && !onCta) {
+      if (absDx < 20 && absDy < 20 && dt < 400 && !onCta) {
         if (!started) {
           handleStart();
           return;
@@ -877,17 +877,17 @@ export default function FeedViewer({
 
             {/* Reaction mode stats overlay */}
             {reactionMode && (!started || paused || !playerReady) && channel && (
-              <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-start pt-[3%] pointer-events-none overflow-hidden">
-                <div className="flex flex-col items-center gap-2 w-full max-h-full px-4" style={{ maxWidth: '90%' }}>
+              <div className="absolute inset-0 z-[16] bg-black/50 flex flex-col items-center justify-center pointer-events-none overflow-hidden">
+                <div className="flex flex-col items-center gap-1 w-full px-2">
                   {channelAgeDays !== null && (
                     <div className="text-center">
                       <div
-                        className="font-black text-white leading-none w-full text-center"
-                        style={{ fontSize: 'clamp(6rem, 18vw, 10rem)', textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
+                        className="font-black text-white leading-[0.9]"
+                        style={{ fontSize: 'clamp(5rem, 25vw, 10rem)', textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                       >
                         {channelAgeDays}
                       </div>
-                      <div className="text-2xl sm:text-3xl font-bold uppercase tracking-[0.3em] text-gray-300"
+                      <div className="text-lg sm:text-2xl font-bold uppercase tracking-[0.3em] text-gray-300"
                         style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                       >
                         days old
@@ -896,12 +896,12 @@ export default function FeedViewer({
                   )}
                   <div className="text-center">
                     <div
-                      className="font-black text-white leading-none"
-                      style={{ fontSize: 'clamp(5rem, 16vw, 9rem)', textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
+                      className="font-black text-white leading-[0.9]"
+                      style={{ fontSize: 'clamp(4.5rem, 22vw, 9rem)', textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                     >
                       {formatCount(totalChannelViews)}
                     </div>
-                    <div className="text-2xl sm:text-3xl font-bold uppercase tracking-[0.3em] text-gray-300"
+                    <div className="text-lg sm:text-2xl font-bold uppercase tracking-[0.3em] text-gray-300"
                       style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                     >
                       total views
@@ -910,12 +910,12 @@ export default function FeedViewer({
                   {channel.subscriber_count && (
                     <div className="text-center">
                       <div
-                        className="font-black text-white leading-none"
-                        style={{ fontSize: 'clamp(5rem, 16vw, 9rem)', textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
+                        className="font-black text-white leading-[0.9]"
+                        style={{ fontSize: 'clamp(4.5rem, 22vw, 9rem)', textShadow: '0 0 30px rgba(255,255,255,0.6), 0 0 60px rgba(255,255,255,0.3), 0 2px 8px rgba(0,0,0,0.9)' }}
                       >
                         {formatCount(parseInt(channel.subscriber_count))}
                       </div>
-                      <div className="text-2xl sm:text-3xl font-bold uppercase tracking-[0.3em] text-gray-300"
+                      <div className="text-lg sm:text-2xl font-bold uppercase tracking-[0.3em] text-gray-300"
                         style={{ textShadow: '0 0 20px rgba(255,255,255,0.2)' }}
                       >
                         subscribers
