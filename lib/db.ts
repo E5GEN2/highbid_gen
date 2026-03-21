@@ -278,6 +278,23 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_dal_run ON deep_analysis_logs(run_id)
     `);
 
+    // Clipping: projects for AI-powered video clipping
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS clipping_projects (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL DEFAULT 'Untitled',
+        status TEXT NOT NULL DEFAULT 'draft',
+        thumbnail_url TEXT,
+        video_duration REAL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_clipping_projects_user ON clipping_projects(user_id)
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

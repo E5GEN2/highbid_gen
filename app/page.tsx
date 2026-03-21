@@ -242,7 +242,7 @@ function HomeContent() {
   }, []);
 
   // Sidebar Navigation State
-  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed'>('feed');
+  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed' | 'clipping'>('feed');
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -254,6 +254,20 @@ function HomeContent() {
   }[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Clipping State
+  const [clippingProjects, setClippingProjects] = useState<{
+    id: string;
+    title: string;
+    status: string;
+    thumbnail_url: string | null;
+    video_duration: number | null;
+    created_at: string;
+    updated_at: string;
+  }[]>([]);
+  const [clippingLoading, setClippingLoading] = useState(false);
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [newProjectTitle, setNewProjectTitle] = useState('');
 
   // Feed Spy State
   const [spyData, setSpyData] = useState<{
@@ -1930,6 +1944,49 @@ function HomeContent() {
     }
   };
 
+  // Clipping: fetch projects
+  const fetchClippingProjects = async () => {
+    setClippingLoading(true);
+    try {
+      const response = await fetch('/api/clipping/projects');
+      const data = await response.json();
+      if (data.projects) {
+        setClippingProjects(data.projects);
+      }
+    } catch (err) {
+      console.error('Error fetching clipping projects:', err);
+    } finally {
+      setClippingLoading(false);
+    }
+  };
+
+  const createClippingProject = async () => {
+    try {
+      const response = await fetch('/api/clipping/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newProjectTitle || 'Untitled' }),
+      });
+      const data = await response.json();
+      if (data.project) {
+        setClippingProjects(prev => [data.project, ...prev]);
+        setShowNewProjectModal(false);
+        setNewProjectTitle('');
+      }
+    } catch (err) {
+      console.error('Error creating clipping project:', err);
+    }
+  };
+
+  const deleteClippingProject = async (id: string) => {
+    try {
+      await fetch(`/api/clipping/projects/${id}`, { method: 'DELETE' });
+      setClippingProjects(prev => prev.filter(p => p.id !== id));
+    } catch (err) {
+      console.error('Error deleting clipping project:', err);
+    }
+  };
+
   // Feed Spy: fetch data from our DB
   const fetchSpyData = useCallback(async () => {
     setSpyLoading(true);
@@ -2087,6 +2144,8 @@ function HomeContent() {
       fetchSpyData();
     } else if (currentView === 'feed' && feedChannels.length === 0) {
       fetchFeedData();
+    } else if (currentView === 'clipping') {
+      fetchClippingProjects();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentView, fetchSpyData]);
@@ -2178,6 +2237,21 @@ function HomeContent() {
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+            )}
+            {visibleTabs.includes('clipping') && (
+              <button
+                onClick={() => setCurrentView('clipping')}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                  currentView === 'clipping'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                }`}
+                title="Clipping"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z" />
                 </svg>
               </button>
             )}
@@ -2533,6 +2607,172 @@ function HomeContent() {
                         })}
                       </tbody>
                     </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : currentView === 'clipping' ? (
+            /* Clipping View */
+            <div className="container mx-auto px-4 py-8 max-w-7xl">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h1 className="text-4xl font-bold text-white mb-2 bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                    Clipping
+                  </h1>
+                  <p className="text-gray-400">
+                    Upload videos and let AI create clips for you
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    className="px-4 py-2.5 bg-gray-800 text-gray-300 rounded-xl border border-gray-700 hover:bg-gray-700 hover:text-white transition-all flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                    New folder
+                  </button>
+                  <button
+                    onClick={() => setShowNewProjectModal(true)}
+                    className="px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-all flex items-center gap-2 font-medium"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    New project
+                  </button>
+                </div>
+              </div>
+
+              {/* Folders Section */}
+              <div className="mb-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-white">Folders</h2>
+                  <span className="text-sm text-gray-500">0 folders</span>
+                </div>
+                <div className="text-gray-600 text-sm py-4 border border-dashed border-gray-700 rounded-xl text-center">
+                  No folders yet
+                </div>
+              </div>
+
+              {/* Projects Section */}
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-white">Projects</h2>
+                  <span className="text-sm text-gray-500">{clippingProjects.length} project{clippingProjects.length !== 1 ? 's' : ''}</span>
+                </div>
+
+                {clippingLoading ? (
+                  <div className="flex items-center justify-center py-20">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500" />
+                  </div>
+                ) : clippingProjects.length === 0 ? (
+                  <div className="text-center py-20">
+                    <div className="text-6xl mb-4">✂️</div>
+                    <h3 className="text-xl font-semibold text-white mb-2">No projects yet</h3>
+                    <p className="text-gray-400 mb-6">Create your first clipping project to get started</p>
+                    <button
+                      onClick={() => setShowNewProjectModal(true)}
+                      className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium"
+                    >
+                      New project
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                    {clippingProjects.map((project) => (
+                      <div
+                        key={project.id}
+                        className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden hover:border-blue-500 transition-all group"
+                      >
+                        {/* Thumbnail */}
+                        <div className="aspect-video bg-gray-900 flex items-center justify-center relative cursor-pointer">
+                          {project.thumbnail_url ? (
+                            <img
+                              src={project.thumbnail_url}
+                              alt={project.title}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="text-4xl text-gray-700">🎬</div>
+                          )}
+                          {/* Duration badge */}
+                          {project.video_duration && (
+                            <span className="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded font-medium">
+                              {Math.floor(project.video_duration / 60)}:{String(Math.floor(project.video_duration % 60)).padStart(2, '0')}
+                            </span>
+                          )}
+                          {/* Status badge */}
+                          <span className={`absolute top-2 right-2 text-xs px-2 py-0.5 rounded font-medium ${
+                            project.status === 'done' ? 'bg-green-600/80 text-white' :
+                            project.status === 'processing' ? 'bg-yellow-600/80 text-white' :
+                            'bg-gray-700/80 text-gray-300'
+                          }`}>
+                            {project.status === 'done' ? 'Done' : project.status === 'processing' ? 'Processing' : 'Draft'}
+                          </span>
+                        </div>
+
+                        {/* Info */}
+                        <div className="p-4">
+                          <p className="text-sm text-gray-400">
+                            {new Date(project.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} {new Date(project.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                          <h3 className="font-semibold text-white mt-1 truncate">
+                            {project.title}
+                          </h3>
+
+                          {/* Actions */}
+                          <div className="flex gap-2 mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              className="flex-1 px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
+                            >
+                              Open
+                            </button>
+                            <button
+                              onClick={() => deleteClippingProject(project.id)}
+                              className="px-3 py-2 bg-red-600/20 text-red-400 text-sm rounded-lg hover:bg-red-600/40 transition"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* New Project Modal */}
+              {showNewProjectModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center" onClick={() => setShowNewProjectModal(false)}>
+                  <div className="bg-gray-800 rounded-2xl border border-gray-700 p-6 w-full max-w-md mx-4" onClick={e => e.stopPropagation()}>
+                    <h2 className="text-xl font-bold text-white mb-4">New Project</h2>
+                    <input
+                      type="text"
+                      value={newProjectTitle}
+                      onChange={e => setNewProjectTitle(e.target.value)}
+                      placeholder="Project name..."
+                      className="w-full px-4 py-3 bg-gray-900 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 mb-4"
+                      autoFocus
+                      onKeyDown={e => { if (e.key === 'Enter') createClippingProject(); }}
+                    />
+                    <div className="flex gap-3 justify-end">
+                      <button
+                        onClick={() => setShowNewProjectModal(false)}
+                        className="px-4 py-2 text-gray-400 hover:text-white transition"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={createClippingProject}
+                        className="px-6 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium"
+                      >
+                        Create
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

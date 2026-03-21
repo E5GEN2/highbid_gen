@@ -40,6 +40,7 @@ export default function AdminPage() {
     { id: 'library', label: 'Library' },
     { id: 'spy', label: 'Feed Spy' },
     { id: 'feed', label: 'Shorts Feed' },
+    { id: 'clipping', label: 'Clipping' },
   ];
   const [visibleTabs, setVisibleTabs] = useState<string[]>(['feed']);
   const [tabsSaving, setTabsSaving] = useState(false);
