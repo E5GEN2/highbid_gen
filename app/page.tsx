@@ -3079,17 +3079,35 @@ function HomeContent() {
                           let videoUrl: string;
                           if (clippingFile?.rawFile) {
                             setClippingProcessSteps(prev =>
-                              prev.map(s => s.label === 'Upload' ? { ...s, status: 'active', detail: 'Uploading to server...' } : s)
+                              prev.map(s => s.label === 'Upload' ? { ...s, status: 'active', progress: 0 } : s)
                             );
                             const formData = new FormData();
                             formData.append('file', clippingFile.rawFile);
                             formData.append('projectId', projectId);
-                            const uploadRes = await fetch('/api/clipping/upload', {
-                              method: 'POST',
-                              body: formData,
+
+                            // Use XHR for upload progress
+                            const uploadData = await new Promise<{ url: string }>((resolve, reject) => {
+                              const xhr = new XMLHttpRequest();
+                              xhr.open('POST', '/api/clipping/upload');
+                              xhr.upload.onprogress = (e) => {
+                                if (e.lengthComputable) {
+                                  const pct = Math.round((e.loaded / e.total) * 100);
+                                  setClippingProcessSteps(prev =>
+                                    prev.map(s => s.label === 'Upload' ? { ...s, progress: pct } : s)
+                                  );
+                                }
+                              };
+                              xhr.onload = () => {
+                                if (xhr.status >= 200 && xhr.status < 300) {
+                                  resolve(JSON.parse(xhr.responseText));
+                                } else {
+                                  reject(new Error(`Upload failed: ${xhr.status}`));
+                                }
+                              };
+                              xhr.onerror = () => reject(new Error('Upload network error'));
+                              xhr.send(formData);
                             });
-                            const uploadData = await uploadRes.json();
-                            if (!uploadRes.ok) throw new Error(uploadData.error || 'Upload failed');
+
                             videoUrl = uploadData.url;
                           } else {
                             // Link input
