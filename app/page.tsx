@@ -275,7 +275,7 @@ function HomeContent() {
     progress?: number;
     detail?: string;
   }[]>([]);
-  const [clippingFile, setClippingFile] = useState<{ name: string; size: number; type: string } | null>(null);
+  const [clippingFile, setClippingFile] = useState<{ name: string; size: number; type: string; rawFile?: File } | null>(null);
   const [clippingVideoDuration, setClippingVideoDuration] = useState<number | undefined>(undefined);
   const [clippingUploadProgress, setClippingUploadProgress] = useState(0);
   const [clippingRatio, setClippingRatio] = useState('9:16');
@@ -2846,7 +2846,7 @@ function HomeContent() {
                         if (file && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) {
                           const name = file.name.replace(/\.[^.]+$/, '');
                           setNewProjectTitle(name);
-                          setClippingFile({ name: file.name, size: file.size, type: file.type });
+                          setClippingFile({ name: file.name, size: file.size, type: file.type, rawFile: file });
                           // Get video duration
                           const el = document.createElement('video');
                           el.preload = 'metadata';
@@ -2868,7 +2868,7 @@ function HomeContent() {
                           if (file) {
                             const name = file.name.replace(/\.[^.]+$/, '');
                             setNewProjectTitle(name);
-                            setClippingFile({ name: file.name, size: file.size, type: file.type });
+                            setClippingFile({ name: file.name, size: file.size, type: file.type, rawFile: file });
                             // Get video duration
                             const el = document.createElement('video');
                             el.preload = 'metadata';
@@ -3048,13 +3048,9 @@ function HomeContent() {
                     {/* Generate button */}
                     <button
                       onClick={async () => {
-                        const videoUrl = clippingFile?.type === 'link'
-                          ? newProjectTitle
-                          : newProjectTitle; // For file uploads, URL will come from upload flow later
-
                         setClippingProcessSteps([
-                          { label: 'Upload', status: 'done' },
-                          { label: 'Create project', status: 'active' },
+                          { label: 'Upload', status: 'active' },
+                          { label: 'Create project', status: 'pending' },
                           { label: 'Process video', status: 'pending' },
                           { label: 'Finding best parts', status: 'pending' },
                           { label: 'Edit clips', status: 'pending' },
@@ -3062,25 +3058,52 @@ function HomeContent() {
                         ]);
                         setClippingStep('processing');
 
-                        // Create project first
                         try {
+                          // Create project first
                           const res = await fetch('/api/clipping/projects', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ title: newProjectTitle || 'Untitled' }),
                           });
                           const data = await res.json();
-                          if (data.project) {
-                            setClippingProjects(prev => [data.project, ...prev]);
-                            setClippingCurrentProjectId(data.project.id);
+                          if (!data.project) throw new Error('Failed to create project');
+
+                          const projectId = data.project.id;
+                          setClippingProjects(prev => [data.project, ...prev]);
+                          setClippingCurrentProjectId(projectId);
+                          setClippingProcessSteps(prev =>
+                            prev.map(s => s.label === 'Create project' ? { ...s, status: 'done' } : s)
+                          );
+
+                          // Upload file if it's a local file
+                          let videoUrl: string;
+                          if (clippingFile?.rawFile) {
                             setClippingProcessSteps(prev =>
-                              prev.map(s => s.label === 'Create project' ? { ...s, status: 'done' } : s)
+                              prev.map(s => s.label === 'Upload' ? { ...s, status: 'active', detail: 'Uploading to server...' } : s)
                             );
-                            // Start analysis via SSE (pass duration for chunk planning)
-                            startClippingAnalysis(data.project.id, videoUrl, clippingVideoDuration);
+                            const formData = new FormData();
+                            formData.append('file', clippingFile.rawFile);
+                            formData.append('projectId', projectId);
+                            const uploadRes = await fetch('/api/clipping/upload', {
+                              method: 'POST',
+                              body: formData,
+                            });
+                            const uploadData = await uploadRes.json();
+                            if (!uploadRes.ok) throw new Error(uploadData.error || 'Upload failed');
+                            videoUrl = uploadData.url;
+                          } else {
+                            // Link input
+                            videoUrl = newProjectTitle;
                           }
+
+                          setClippingProcessSteps(prev =>
+                            prev.map(s => s.label === 'Upload' ? { ...s, status: 'done' } : s)
+                          );
+
+                          // Start analysis via SSE
+                          startClippingAnalysis(projectId, videoUrl, clippingVideoDuration);
                         } catch (err) {
-                          console.error('Error creating project:', err);
+                          console.error('Error in clipping pipeline:', err);
                         }
                       }}
                       className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl hover:from-blue-700 hover:to-blue-600 transition font-semibold text-base"

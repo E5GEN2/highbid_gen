@@ -91,17 +91,52 @@ export async function analyzeVideoByUrl(
 
 /**
  * Analyze a specific time range of a video via the Gemini Files API.
+ * For local files (file://), extracts the chunk with ffmpeg first.
  */
 export async function analyzeVideoChunk(
   fileUrl: string,
   apiKey: string,
   chunk: AnalysisChunk,
 ): Promise<GeminiFilesResponse> {
-  // For "Full video" chunk, use the standard prompt
+  const isLocal = fileUrl.startsWith('file://');
+
+  // For "Full video" chunk (short videos), send the whole file
   if (chunk.label === 'Full video') {
     return callGeminiFiles(fileUrl, apiKey, VIDEO_ANALYSIS_PROMPT);
   }
+
   const prompt = makeChunkPrompt(chunk.startSec, chunk.endSec);
+
+  // For local files with multiple chunks, extract chunk with ffmpeg
+  if (isLocal) {
+    const localPath = fileUrl.replace('file://', '');
+    const fs = await import('fs');
+    const path = await import('path');
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+
+    const chunkDir = path.join(path.dirname(localPath), 'chunks');
+    fs.mkdirSync(chunkDir, { recursive: true });
+    const chunkFile = path.join(chunkDir, `chunk_${chunk.index}.mp4`);
+
+    // Extract chunk (compressed for faster upload)
+    if (!fs.existsSync(chunkFile)) {
+      await execFileAsync('ffmpeg', [
+        '-ss', String(chunk.startSec),
+        '-i', localPath,
+        '-t', String(chunk.endSec - chunk.startSec),
+        '-vf', 'scale=-2:480',
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '28', '-b:v', '500k',
+        '-c:a', 'aac', '-b:a', '64k',
+        '-y', chunkFile,
+      ], { timeout: 120000 });
+    }
+
+    return callGeminiFiles(`file://${chunkFile}`, apiKey, prompt);
+  }
+
+  // For remote URLs, send the full video with chunk prompt
   return callGeminiFiles(fileUrl, apiKey, prompt);
 }
 
@@ -204,6 +239,8 @@ async function callGeminiFilesInner(
   prompt: string,
 ): Promise<GeminiFilesResponse> {
   let lastError: Error | null = null;
+  const isLocalFile = fileUrl.startsWith('file://');
+  const localPath = isLocalFile ? fileUrl.replace('file://', '') : '';
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (attempt > 0) {
@@ -214,18 +251,46 @@ async function callGeminiFilesInner(
 
     try {
       const startTime = Date.now();
+      let response: Response;
 
-      const response = await fetch('https://papaiapi.com/v1/files/chat', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          file_url: fileUrl,
-        }),
-      });
+      if (isLocalFile) {
+        // Multipart upload for local files
+        const fs = await import('fs');
+        const path = await import('path');
+        const fileBuffer = fs.readFileSync(localPath);
+        const fileName = path.basename(localPath);
+        const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
+
+        const parts: (string | Buffer)[] = [];
+        parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: video/mp4\r\n\r\n`);
+        parts.push(fileBuffer);
+        parts.push(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n${prompt}\r\n`);
+        parts.push(`--${boundary}--\r\n`);
+
+        const body = Buffer.concat(parts.map(p => typeof p === 'string' ? Buffer.from(p) : p));
+
+        response = await fetch('https://papaiapi.com/v1/files/chat', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          },
+          body,
+        });
+      } else {
+        // URL-based request for remote files
+        response = await fetch('https://papaiapi.com/v1/files/chat', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prompt,
+            file_url: fileUrl,
+          }),
+        });
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
