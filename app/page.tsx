@@ -2635,8 +2635,8 @@ function HomeContent() {
                 <div className="fixed top-4 left-20 z-10">
                   <button
                     onClick={() => {
-                      if (clippingStep === 'configure') {
-                        setClippingStep('upload');
+                      if (clippingStep === 'configure' || clippingStep === 'processing') {
+                        setClippingStep(clippingStep === 'processing' ? 'configure' : 'upload');
                       } else {
                         setShowNewProjectModal(false);
                         setClippingStep('upload');
@@ -2649,7 +2649,7 @@ function HomeContent() {
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                     </svg>
-                    <span className="text-sm font-medium">{clippingStep === 'configure' ? 'Back' : 'Back to projects'}</span>
+                    <span className="text-sm font-medium">{clippingStep === 'upload' ? 'Back to projects' : 'Back'}</span>
                   </button>
                 </div>
 
@@ -2763,7 +2763,7 @@ function HomeContent() {
                       </div>
                     )}
                   </div>
-                ) : (
+                ) : clippingStep === 'configure' ? (
                   /* Step 2: Configure */
                   <div className="w-full max-w-3xl mt-16 space-y-6">
                     {/* Upload status bar */}
@@ -2909,7 +2909,7 @@ function HomeContent() {
                       Generate Clips
                     </button>
                   </div>
-                ) : (
+                ) : clippingStep === 'processing' ? (
                   /* Step 3: Processing */
                   <div className="w-full max-w-4xl mt-16 flex gap-8">
                     {/* Left: Progress */}
@@ -2992,7 +2992,7 @@ function HomeContent() {
                       </div>
                     </div>
                   </div>
-                )}
+                ) : null}
               </div>
             ) : (
               /* Projects List */
