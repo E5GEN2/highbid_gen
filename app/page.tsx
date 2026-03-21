@@ -268,6 +268,16 @@ function HomeContent() {
   const [clippingLoading, setClippingLoading] = useState(false);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState('');
+  const [clippingStep, setClippingStep] = useState<'upload' | 'configure'>('upload');
+  const [clippingFile, setClippingFile] = useState<{ name: string; size: number; type: string } | null>(null);
+  const [clippingUploadProgress, setClippingUploadProgress] = useState(0);
+  const [clippingRatio, setClippingRatio] = useState('9:16');
+  const [clippingClipLength, setClippingClipLength] = useState('60s-90s');
+  const [clippingAddEmoji, setClippingAddEmoji] = useState(true);
+  const [clippingHighlightKeywords, setClippingHighlightKeywords] = useState(true);
+  const [clippingRemoveSilences, setClippingRemoveSilences] = useState(false);
+  const [clippingAddBrolls, setClippingAddBrolls] = useState(false);
+  const [clippingFindMoment, setClippingFindMoment] = useState('');
 
   // Feed Spy State
   const [spyData, setSpyData] = useState<{
@@ -2614,88 +2624,276 @@ function HomeContent() {
           ) : currentView === 'clipping' ? (
             /* Clipping View */
             showNewProjectModal ? (
-              /* New Project Screen */
-              <div className="flex flex-col items-center justify-center min-h-screen px-4">
+              /* New Project Flow */
+              <div className="flex flex-col items-center min-h-screen px-4">
                 {/* Back button */}
                 <div className="fixed top-4 left-20 z-10">
                   <button
-                    onClick={() => setShowNewProjectModal(false)}
+                    onClick={() => {
+                      if (clippingStep === 'configure') {
+                        setClippingStep('upload');
+                      } else {
+                        setShowNewProjectModal(false);
+                        setClippingStep('upload');
+                        setClippingFile(null);
+                        setClippingUploadProgress(0);
+                      }
+                    }}
                     className="flex items-center gap-2 text-gray-400 hover:text-white transition"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                     </svg>
-                    <span className="text-sm font-medium">Back to projects</span>
+                    <span className="text-sm font-medium">{clippingStep === 'configure' ? 'Back' : 'Back to projects'}</span>
                   </button>
                 </div>
 
-                <div className="w-full max-w-2xl space-y-6">
-                  {/* Video link input */}
-                  <div className="flex items-center bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3 gap-3 focus-within:border-blue-500 transition">
-                    <svg className="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                    </svg>
-                    <input
-                      type="text"
-                      value={newProjectTitle}
-                      onChange={e => setNewProjectTitle(e.target.value)}
-                      placeholder="Drop a video link"
-                      className="flex-1 bg-transparent text-white placeholder-gray-500 focus:outline-none text-sm"
-                      onKeyDown={e => { if (e.key === 'Enter' && newProjectTitle) createClippingProject(); }}
-                    />
-                    <button
-                      onClick={() => { if (newProjectTitle) createClippingProject(); }}
-                      className="px-5 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition font-medium flex-shrink-0"
-                    >
-                      Continue
-                    </button>
-                  </div>
+                {clippingStep === 'upload' ? (
+                  /* Step 1: Upload */
+                  <div className="w-full max-w-2xl space-y-6 mt-32">
+                    {/* Video link input */}
+                    <div className="flex items-center bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3 gap-3 focus-within:border-blue-500 transition">
+                      <svg className="w-5 h-5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                      <input
+                        type="text"
+                        value={newProjectTitle}
+                        onChange={e => setNewProjectTitle(e.target.value)}
+                        placeholder="Drop a video link"
+                        className="flex-1 bg-transparent text-white placeholder-gray-500 focus:outline-none text-sm"
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && newProjectTitle) {
+                            setClippingFile({ name: newProjectTitle, size: 0, type: 'link' });
+                            setClippingUploadProgress(100);
+                            setClippingStep('configure');
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (newProjectTitle) {
+                            setClippingFile({ name: newProjectTitle, size: 0, type: 'link' });
+                            setClippingUploadProgress(100);
+                            setClippingStep('configure');
+                          }
+                        }}
+                        className="px-5 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition font-medium flex-shrink-0"
+                      >
+                        Continue
+                      </button>
+                    </div>
 
-                  {/* Upload area */}
-                  <label
-                    className="block border-2 border-dashed border-gray-700 rounded-2xl py-20 cursor-pointer hover:border-blue-500/50 transition-colors group"
-                    onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-blue-500', 'bg-blue-500/5'); }}
-                    onDragLeave={e => { e.currentTarget.classList.remove('border-blue-500', 'bg-blue-500/5'); }}
-                    onDrop={e => {
-                      e.preventDefault();
-                      e.currentTarget.classList.remove('border-blue-500', 'bg-blue-500/5');
-                      const file = e.dataTransfer.files?.[0];
-                      if (file && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) {
-                        setNewProjectTitle(file.name.replace(/\.[^.]+$/, ''));
-                        createClippingProject();
-                      }
-                    }}
-                  >
-                    <input
-                      type="file"
-                      accept="video/*,audio/*"
-                      className="hidden"
-                      onChange={e => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setNewProjectTitle(file.name.replace(/\.[^.]+$/, ''));
-                          createClippingProject();
+                    {/* Upload area */}
+                    <label
+                      className="block border-2 border-dashed border-gray-700 rounded-2xl py-20 cursor-pointer hover:border-blue-500/50 transition-colors group"
+                      onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-blue-500', 'bg-blue-500/5'); }}
+                      onDragLeave={e => { e.currentTarget.classList.remove('border-blue-500', 'bg-blue-500/5'); }}
+                      onDrop={e => {
+                        e.preventDefault();
+                        e.currentTarget.classList.remove('border-blue-500', 'bg-blue-500/5');
+                        const file = e.dataTransfer.files?.[0];
+                        if (file && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) {
+                          const name = file.name.replace(/\.[^.]+$/, '');
+                          setNewProjectTitle(name);
+                          setClippingFile({ name: file.name, size: file.size, type: file.type });
+                          // Simulate upload progress
+                          setClippingUploadProgress(0);
+                          let p = 0;
+                          const iv = setInterval(() => { p += Math.random() * 30 + 10; if (p >= 100) { p = 100; clearInterval(iv); setTimeout(() => setClippingStep('configure'), 300); } setClippingUploadProgress(Math.min(p, 100)); }, 200);
                         }
                       }}
-                    />
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="w-16 h-14 bg-blue-600/20 rounded-xl flex items-center justify-center">
-                        <svg className="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                        </svg>
+                    >
+                      <input
+                        type="file"
+                        accept="video/*,audio/*"
+                        className="hidden"
+                        onChange={e => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const name = file.name.replace(/\.[^.]+$/, '');
+                            setNewProjectTitle(name);
+                            setClippingFile({ name: file.name, size: file.size, type: file.type });
+                            setClippingUploadProgress(0);
+                            let p = 0;
+                            const iv = setInterval(() => { p += Math.random() * 30 + 10; if (p >= 100) { p = 100; clearInterval(iv); setTimeout(() => setClippingStep('configure'), 300); } setClippingUploadProgress(Math.min(p, 100)); }, 200);
+                          }
+                        }}
+                      />
+                      <div className="flex flex-col items-center gap-4">
+                        <div className="w-16 h-14 bg-blue-600/20 rounded-xl flex items-center justify-center">
+                          <svg className="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                          </svg>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-gray-300">
+                            <span className="text-blue-400 font-medium group-hover:text-blue-300 transition">Click to browse</span>
+                            {' '}or drag & drop
+                          </p>
+                          <p className="text-gray-500 text-sm mt-1">
+                            Supported file type: video, audio
+                          </p>
+                        </div>
                       </div>
-                      <div className="text-center">
-                        <p className="text-gray-300">
-                          <span className="text-blue-400 font-medium group-hover:text-blue-300 transition">Click to browse</span>
-                          {' '}or drag & drop
-                        </p>
-                        <p className="text-gray-500 text-sm mt-1">
-                          Supported file type: video, audio
-                        </p>
+                    </label>
+
+                    {/* Upload progress (shown when uploading) */}
+                    {clippingFile && clippingUploadProgress > 0 && clippingUploadProgress < 100 && (
+                      <div className="bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-gray-700 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-white truncate">{clippingFile.name}</p>
+                            <div className="w-full bg-gray-700 rounded-full h-1.5 mt-1.5">
+                              <div className="bg-blue-500 h-1.5 rounded-full transition-all" style={{ width: `${clippingUploadProgress}%` }} />
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">Uploading...{Math.round(clippingUploadProgress)}%</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* Step 2: Configure */
+                  <div className="w-full max-w-3xl mt-16 space-y-6">
+                    {/* Upload status bar */}
+                    {clippingFile && (
+                      <div className="flex items-center justify-center">
+                        <div className="bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3 flex items-center gap-3 max-w-lg w-full">
+                          <div className="w-12 h-9 bg-gray-700 rounded-lg flex items-center justify-center flex-shrink-0 overflow-hidden">
+                            <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm text-white truncate">{clippingFile.name}</p>
+                              {clippingFile.type !== 'link' && (
+                                <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded flex-shrink-0">1080p</span>
+                              )}
+                            </div>
+                            <div className="w-full bg-gray-700 rounded-full h-1 mt-1.5">
+                              <div className="bg-green-500 h-1 rounded-full" style={{ width: '100%' }} />
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => { setClippingStep('upload'); setClippingFile(null); setClippingUploadProgress(0); }}
+                            className="text-gray-500 hover:text-gray-300 transition flex-shrink-0"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Ratio & Clip Length */}
+                    <div className="flex gap-4">
+                      <div className="flex-1 bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3 flex items-center justify-between">
+                        <span className="text-sm text-gray-400">Ratio</span>
+                        <select
+                          value={clippingRatio}
+                          onChange={e => setClippingRatio(e.target.value)}
+                          className="bg-transparent text-white text-sm font-medium focus:outline-none cursor-pointer"
+                        >
+                          <option value="9:16" className="bg-gray-800">9:16</option>
+                          <option value="16:9" className="bg-gray-800">16:9</option>
+                          <option value="1:1" className="bg-gray-800">1:1</option>
+                        </select>
+                      </div>
+                      <div className="flex-1 bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3 flex items-center justify-between">
+                        <span className="text-sm text-gray-400">Clip length</span>
+                        <select
+                          value={clippingClipLength}
+                          onChange={e => setClippingClipLength(e.target.value)}
+                          className="bg-transparent text-white text-sm font-medium focus:outline-none cursor-pointer"
+                        >
+                          <option value="15s-30s" className="bg-gray-800">15s-30s</option>
+                          <option value="30s-60s" className="bg-gray-800">30s-60s</option>
+                          <option value="60s-90s" className="bg-gray-800">60s-90s</option>
+                          <option value="90s-180s" className="bg-gray-800">90s-3min</option>
+                        </select>
                       </div>
                     </div>
-                  </label>
-                </div>
+
+                    {/* Template Section */}
+                    <div className="bg-gray-800/40 border border-gray-700 rounded-2xl p-6">
+                      <div className="flex items-center gap-6 mb-5 border-b border-gray-700 pb-3">
+                        <span className="text-sm font-medium text-blue-400 border-b-2 border-blue-400 pb-3 -mb-3.5">9:16 template</span>
+                      </div>
+
+                      {/* Template cards */}
+                      <div className="flex gap-4 overflow-x-auto pb-2">
+                        <div className="flex flex-col items-center gap-2 flex-shrink-0">
+                          <div className="w-32 h-56 bg-gradient-to-br from-gray-700 to-gray-800 rounded-xl border-2 border-blue-500 flex items-center justify-center relative overflow-hidden">
+                            <div className="absolute top-2 right-2 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+                              <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                            <div className="text-center px-3">
+                              <div className="text-[10px] text-gray-300 bg-gray-900/60 rounded px-2 py-1 mb-8">Your video title is here</div>
+                              <div className="text-[10px] text-blue-300 bg-blue-900/40 rounded px-2 py-1">Here is my subtitle</div>
+                            </div>
+                          </div>
+                          <span className="text-sm text-blue-400 font-medium">Default</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Options checkboxes */}
+                    <div className="bg-gray-800/40 border border-gray-700 rounded-2xl px-6 py-4">
+                      <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
+                        <label className="flex items-center gap-2 cursor-pointer group">
+                          <input type="checkbox" checked={clippingAddEmoji} onChange={e => setClippingAddEmoji(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer" />
+                          <span className="text-sm text-gray-300 group-hover:text-white transition">Add emoji</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer group">
+                          <input type="checkbox" checked={clippingHighlightKeywords} onChange={e => setClippingHighlightKeywords(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer" />
+                          <span className="text-sm text-gray-300 group-hover:text-white transition">Highlight keywords</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer group">
+                          <input type="checkbox" checked={clippingRemoveSilences} onChange={e => setClippingRemoveSilences(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer" />
+                          <span className="text-sm text-gray-300 group-hover:text-white transition">Remove silences</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer group">
+                          <input type="checkbox" checked={clippingAddBrolls} onChange={e => setClippingAddBrolls(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer" />
+                          <span className="text-sm text-gray-300 group-hover:text-white transition">Add B-rolls</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Find clip moment */}
+                    <div className="bg-gray-800/40 border border-gray-700 rounded-2xl px-6 py-4">
+                      <p className="text-sm text-gray-400 mb-2">Find clip moment (optional)</p>
+                      <input
+                        type="text"
+                        value={clippingFindMoment}
+                        onChange={e => setClippingFindMoment(e.target.value)}
+                        placeholder="Only want specific parts? Type for example: when Sam talks about GPT-5."
+                        className="w-full bg-transparent text-white placeholder-gray-600 text-sm focus:outline-none"
+                      />
+                    </div>
+
+                    {/* Generate button */}
+                    <button
+                      onClick={() => createClippingProject()}
+                      className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl hover:from-blue-700 hover:to-blue-600 transition font-semibold text-base"
+                    >
+                      Generate Clips
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               /* Projects List */
