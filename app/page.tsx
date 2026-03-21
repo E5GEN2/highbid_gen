@@ -268,7 +268,12 @@ function HomeContent() {
   const [clippingLoading, setClippingLoading] = useState(false);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState('');
-  const [clippingStep, setClippingStep] = useState<'upload' | 'configure'>('upload');
+  const [clippingStep, setClippingStep] = useState<'upload' | 'configure' | 'processing'>('upload');
+  const [clippingProcessSteps, setClippingProcessSteps] = useState<{
+    label: string;
+    status: 'pending' | 'active' | 'done';
+    progress?: number;
+  }[]>([]);
   const [clippingFile, setClippingFile] = useState<{ name: string; size: number; type: string } | null>(null);
   const [clippingUploadProgress, setClippingUploadProgress] = useState(0);
   const [clippingRatio, setClippingRatio] = useState('9:16');
@@ -2887,11 +2892,105 @@ function HomeContent() {
 
                     {/* Generate button */}
                     <button
-                      onClick={() => createClippingProject()}
+                      onClick={() => {
+                        setClippingProcessSteps([
+                          { label: 'Upload', status: 'done' },
+                          { label: 'Create project', status: 'done' },
+                          { label: 'Process video', status: 'active' },
+                          { label: 'Finding best parts', status: 'pending' },
+                          { label: 'Edit clips', status: 'pending' },
+                          { label: 'Finalize', status: 'pending' },
+                        ]);
+                        setClippingStep('processing');
+                        createClippingProject();
+                      }}
                       className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl hover:from-blue-700 hover:to-blue-600 transition font-semibold text-base"
                     >
                       Generate Clips
                     </button>
+                  </div>
+                ) : (
+                  /* Step 3: Processing */
+                  <div className="w-full max-w-4xl mt-16 flex gap-8">
+                    {/* Left: Progress */}
+                    <div className="flex-1 space-y-8">
+                      {/* Upload status bar */}
+                      {clippingFile && (
+                        <div className="bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3 flex items-center gap-3 max-w-lg">
+                          <div className="w-12 h-9 bg-gray-700 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm text-white truncate">{clippingFile.name}</p>
+                              {clippingFile.type !== 'link' && (
+                                <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded flex-shrink-0">1080p</span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1 flex items-center gap-1.5">
+                              Upload successful
+                              <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                              </svg>
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Analysis status */}
+                      <div>
+                        <div className="text-2xl mb-1">✨</div>
+                        <h2 className="text-xl font-bold text-white mb-1">Analyzing content and finding clips</h2>
+                        <p className="text-sm text-gray-400">
+                          You can safely leave this page. We&apos;ll notify you when clips are ready.
+                        </p>
+                      </div>
+
+                      {/* Progress steps */}
+                      <div className="space-y-3">
+                        {clippingProcessSteps.map((step, i) => (
+                          <div key={i} className="flex items-center gap-3">
+                            {step.status === 'done' ? (
+                              <svg className="w-5 h-5 text-green-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                              </svg>
+                            ) : step.status === 'active' ? (
+                              <div className="w-5 h-5 flex-shrink-0 flex items-center justify-center">
+                                <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                              </div>
+                            ) : (
+                              <div className="w-5 h-5 rounded-full border-2 border-gray-600 flex-shrink-0" />
+                            )}
+                            <span className={`text-sm ${
+                              step.status === 'done' ? 'text-white' :
+                              step.status === 'active' ? 'text-white font-medium' :
+                              'text-gray-600'
+                            }`}>
+                              {step.label}{step.status === 'active' && step.progress != null ? `...${step.progress}%` : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Right: Info panel */}
+                    <div className="hidden lg:block w-80 flex-shrink-0">
+                      <div className="bg-gray-800/40 border border-gray-700 rounded-2xl p-6">
+                        <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">How it works</p>
+                        <h3 className="text-lg font-bold text-white mb-4">Turn long videos into shorts in a click</h3>
+                        <div className="bg-gray-900/60 rounded-xl h-48 flex items-center justify-center mb-4">
+                          <svg className="w-12 h-12 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </div>
+                        <p className="text-sm text-gray-400">
+                          Our AI will transcribe and analyze your video to find the best parts and create professional-looking clips, ready to share.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
