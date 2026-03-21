@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { pool } from '@/lib/db';
-import { analyzeVideoByUrl, VIDEO_ANALYSIS_PROMPT } from '@/lib/gemini-files';
+import {
+  analyzeVideoChunk,
+  planChunks,
+  mergeChunkResults,
+  VIDEO_ANALYSIS_PROMPT,
+  type GeminiFilesResponse,
+} from '@/lib/gemini-files';
 
 // Helper to log a step to clipping_logs
 async function log(
@@ -22,7 +28,10 @@ async function log(
 /**
  * POST /api/clipping/analyze
  * Start video analysis for a clipping project.
- * Body: { projectId, videoUrl }
+ * Body: { projectId, videoUrl, videoDuration? }
+ *
+ * If videoDuration is provided and > 5min, the video is analyzed in 5-min chunks.
+ * Each chunk is a separate Gemini API call, and results are merged at the end.
  *
  * Returns SSE stream with progress updates, then final result.
  */
@@ -32,7 +41,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { projectId, videoUrl } = await req.json();
+  const { projectId, videoUrl, videoDuration } = await req.json();
   if (!projectId || !videoUrl) {
     return NextResponse.json({ error: 'projectId and videoUrl required' }, { status: 400 });
   }
@@ -66,6 +75,11 @@ export async function POST(req: NextRequest) {
     [projectId]
   );
 
+  // Plan chunks based on video duration
+  const durationSec = videoDuration || 300; // Default to 5min if unknown
+  const chunks = planChunks(durationSec);
+  const totalChunks = chunks.length;
+
   // SSE stream for progress
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -81,29 +95,68 @@ export async function POST(req: NextRequest) {
 
         // Step 2: Create project done
         send('progress', { step: 'Create project', status: 'done' });
-        await log(projectId, analysisId, 'create_project', 'done', 'Analysis record created', { analysisId });
-
-        // Step 3: Process video
-        send('progress', { step: 'Process video', status: 'active' });
-        await log(projectId, analysisId, 'process_video', 'active', 'Starting Gemini Files API call');
-
-        const result = await analyzeVideoByUrl(videoUrl, apiKey);
-
-        await log(projectId, analysisId, 'process_video', 'done', 'Gemini analysis complete', {
-          duration_ms: result.duration_ms,
-          tokens_in: result.tokens_in,
-          tokens_out: result.tokens_out,
-          total_segments: result.analysis.total_segments,
-          video_duration: result.analysis.video_duration_seconds,
+        await log(projectId, analysisId, 'create_project', 'done', 'Analysis record created', {
+          analysisId, totalChunks, durationSec,
+          chunks: chunks.map(c => c.label),
         });
 
+        // Step 3: Process video — iterate through chunks
+        send('progress', { step: 'Process video', status: 'active', totalChunks, currentChunk: 0 });
+        await log(projectId, analysisId, 'process_video', 'active',
+          `Starting analysis: ${totalChunks} chunk(s) for ${Math.round(durationSec)}s video`);
+
+        const chunkResults: GeminiFilesResponse[] = [];
+
+        for (const chunk of chunks) {
+          send('progress', {
+            step: 'Process video',
+            status: 'active',
+            totalChunks,
+            currentChunk: chunk.index + 1,
+            chunkLabel: chunk.label,
+            progress: Math.round((chunk.index / totalChunks) * 100),
+          });
+
+          await log(projectId, analysisId, 'process_chunk', 'active',
+            `Processing chunk ${chunk.index + 1}/${totalChunks}: ${chunk.label}`, {
+              chunkIndex: chunk.index,
+              startSec: chunk.startSec,
+              endSec: chunk.endSec,
+            });
+
+          const result = await analyzeVideoChunk(videoUrl, apiKey, chunk);
+          chunkResults.push(result);
+
+          await log(projectId, analysisId, 'process_chunk', 'done',
+            `Chunk ${chunk.index + 1}/${totalChunks} complete: ${result.analysis.total_segments} segments in ${result.duration_ms}ms`, {
+              chunkIndex: chunk.index,
+              segments: result.analysis.total_segments,
+              duration_ms: result.duration_ms,
+              tokens_in: result.tokens_in,
+              tokens_out: result.tokens_out,
+            });
+        }
+
         send('progress', { step: 'Process video', status: 'done' });
+        await log(projectId, analysisId, 'process_video', 'done',
+          `All ${totalChunks} chunks analyzed`);
 
-        // Step 4: Finding best parts
+        // Step 4: Finding best parts — merge chunks
         send('progress', { step: 'Finding best parts', status: 'active', progress: 0 });
-        await log(projectId, analysisId, 'finding_parts', 'active', `Parsed ${result.analysis.total_segments} segments`);
+        await log(projectId, analysisId, 'finding_parts', 'active', 'Merging chunk results');
 
-        // Store analysis in DB
+        const merged = mergeChunkResults(chunkResults);
+
+        await log(projectId, analysisId, 'finding_parts', 'done',
+          `Merged: ${merged.analysis.total_segments} total segments, ${merged.analysis.video_duration_seconds}s`, {
+            total_segments: merged.analysis.total_segments,
+            video_duration: merged.analysis.video_duration_seconds,
+            total_tokens_in: merged.tokens_in,
+            total_tokens_out: merged.tokens_out,
+            total_duration_ms: merged.duration_ms,
+          });
+
+        // Store merged analysis in DB
         await pool.query(
           `UPDATE clipping_analyses SET
             status = 'done',
@@ -117,19 +170,18 @@ export async function POST(req: NextRequest) {
             completed_at = NOW()
           WHERE id = $8`,
           [
-            result.analysis.video_duration_seconds,
-            result.analysis.total_segments,
-            JSON.stringify(result.analysis.segments),
-            result.raw_response,
-            result.tokens_in,
-            result.tokens_out,
-            result.duration_ms,
+            merged.analysis.video_duration_seconds,
+            merged.analysis.total_segments,
+            JSON.stringify(merged.analysis.segments),
+            merged.raw_response,
+            merged.tokens_in,
+            merged.tokens_out,
+            merged.duration_ms,
             analysisId,
           ]
         );
 
         send('progress', { step: 'Finding best parts', status: 'done' });
-        await log(projectId, analysisId, 'finding_parts', 'done', 'Analysis stored in DB');
 
         // Step 5: Edit clips (placeholder for now)
         send('progress', { step: 'Edit clips', status: 'done' });
@@ -146,9 +198,10 @@ export async function POST(req: NextRequest) {
         send('complete', {
           analysisId,
           videoUrl,
-          videoDuration: result.analysis.video_duration_seconds,
-          totalSegments: result.analysis.total_segments,
-          durationMs: result.duration_ms,
+          videoDuration: merged.analysis.video_duration_seconds,
+          totalSegments: merged.analysis.total_segments,
+          totalChunks,
+          durationMs: merged.duration_ms,
         });
 
       } catch (error) {

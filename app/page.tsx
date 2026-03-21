@@ -273,8 +273,10 @@ function HomeContent() {
     label: string;
     status: 'pending' | 'active' | 'done';
     progress?: number;
+    detail?: string;
   }[]>([]);
   const [clippingFile, setClippingFile] = useState<{ name: string; size: number; type: string } | null>(null);
+  const [clippingVideoDuration, setClippingVideoDuration] = useState<number | undefined>(undefined);
   const [clippingUploadProgress, setClippingUploadProgress] = useState(0);
   const [clippingRatio, setClippingRatio] = useState('9:16');
   const [clippingClipLength, setClippingClipLength] = useState('60s-90s');
@@ -1991,12 +1993,12 @@ function HomeContent() {
     }
   };
 
-  const startClippingAnalysis = async (projectId: string, videoUrl: string) => {
+  const startClippingAnalysis = async (projectId: string, videoUrl: string, videoDuration?: number) => {
     try {
       const response = await fetch('/api/clipping/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, videoUrl }),
+        body: JSON.stringify({ projectId, videoUrl, videoDuration }),
       });
 
       if (!response.ok || !response.body) {
@@ -2026,7 +2028,10 @@ function HomeContent() {
                 setClippingProcessSteps(prev =>
                   prev.map(s => {
                     if (s.label === data.step) {
-                      return { ...s, status: data.status, progress: data.progress };
+                      const detail = data.chunkLabel && data.totalChunks > 1
+                        ? `Chunk ${data.currentChunk}/${data.totalChunks} (${data.chunkLabel})`
+                        : undefined;
+                      return { ...s, status: data.status, progress: data.progress, detail };
                     }
                     return s;
                   })
@@ -2755,6 +2760,11 @@ function HomeContent() {
                           const name = file.name.replace(/\.[^.]+$/, '');
                           setNewProjectTitle(name);
                           setClippingFile({ name: file.name, size: file.size, type: file.type });
+                          // Get video duration
+                          const el = document.createElement('video');
+                          el.preload = 'metadata';
+                          el.onloadedmetadata = () => { setClippingVideoDuration(el.duration); URL.revokeObjectURL(el.src); };
+                          el.src = URL.createObjectURL(file);
                           // Simulate upload progress
                           setClippingUploadProgress(0);
                           let p = 0;
@@ -2772,6 +2782,11 @@ function HomeContent() {
                             const name = file.name.replace(/\.[^.]+$/, '');
                             setNewProjectTitle(name);
                             setClippingFile({ name: file.name, size: file.size, type: file.type });
+                            // Get video duration
+                            const el = document.createElement('video');
+                            el.preload = 'metadata';
+                            el.onloadedmetadata = () => { setClippingVideoDuration(el.duration); URL.revokeObjectURL(el.src); };
+                            el.src = URL.createObjectURL(file);
                             setClippingUploadProgress(0);
                             let p = 0;
                             const iv = setInterval(() => { p += Math.random() * 30 + 10; if (p >= 100) { p = 100; clearInterval(iv); setTimeout(() => setClippingStep('configure'), 300); } setClippingUploadProgress(Math.min(p, 100)); }, 200);
@@ -2973,8 +2988,8 @@ function HomeContent() {
                             setClippingProcessSteps(prev =>
                               prev.map(s => s.label === 'Create project' ? { ...s, status: 'done' } : s)
                             );
-                            // Start analysis via SSE
-                            startClippingAnalysis(data.project.id, videoUrl);
+                            // Start analysis via SSE (pass duration for chunk planning)
+                            startClippingAnalysis(data.project.id, videoUrl, clippingVideoDuration);
                           }
                         } catch (err) {
                           console.error('Error creating project:', err);
@@ -3039,13 +3054,18 @@ function HomeContent() {
                             ) : (
                               <div className="w-5 h-5 rounded-full border-2 border-gray-600 flex-shrink-0" />
                             )}
-                            <span className={`text-sm ${
-                              step.status === 'done' ? 'text-white' :
-                              step.status === 'active' ? 'text-white font-medium' :
-                              'text-gray-600'
-                            }`}>
-                              {step.label}{step.status === 'active' && step.progress != null ? `...${step.progress}%` : ''}
-                            </span>
+                            <div className="flex flex-col">
+                              <span className={`text-sm ${
+                                step.status === 'done' ? 'text-white' :
+                                step.status === 'active' ? 'text-white font-medium' :
+                                'text-gray-600'
+                              }`}>
+                                {step.label}{step.status === 'active' && step.progress != null ? `...${step.progress}%` : ''}
+                              </span>
+                              {step.detail && step.status === 'active' && (
+                                <span className="text-xs text-gray-500 mt-0.5">{step.detail}</span>
+                              )}
+                            </div>
                           </div>
                         ))}
                       </div>
