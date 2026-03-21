@@ -146,6 +146,36 @@ export function mergeChunkResults(results: GeminiFilesResponse[]): GeminiFilesRe
   };
 }
 
+/** Global concurrency limiter — max 10 parallel API calls across all users */
+const MAX_CONCURRENT = 10;
+let activeCount = 0;
+const waitQueue: (() => void)[] = [];
+
+async function acquireSlot(): Promise<void> {
+  if (activeCount < MAX_CONCURRENT) {
+    activeCount++;
+    return;
+  }
+  // Wait for a slot to open
+  return new Promise<void>((resolve) => {
+    waitQueue.push(() => {
+      activeCount++;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot(): void {
+  activeCount--;
+  const next = waitQueue.shift();
+  if (next) next();
+}
+
+/** Get current concurrency stats (for debug endpoints) */
+export function getConcurrencyStats() {
+  return { active: activeCount, queued: waitQueue.length, max: MAX_CONCURRENT };
+}
+
 /** Default retry config */
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [5000, 10000, 20000]; // Escalating delays
@@ -156,6 +186,19 @@ const RETRY_DELAYS = [5000, 10000, 20000]; // Escalating delays
  * test script directly.
  */
 async function callGeminiFiles(
+  fileUrl: string,
+  apiKey: string,
+  prompt: string,
+): Promise<GeminiFilesResponse> {
+  await acquireSlot();
+  try {
+    return await callGeminiFilesInner(fileUrl, apiKey, prompt);
+  } finally {
+    releaseSlot();
+  }
+}
+
+async function callGeminiFilesInner(
   fileUrl: string,
   apiKey: string,
   prompt: string,

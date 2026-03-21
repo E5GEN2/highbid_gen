@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
+import { getConcurrencyStats } from '@/lib/gemini-files';
 
 /**
  * GET /api/clipping/debug?projectId=xxx
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
       ORDER BY p.updated_at DESC
       LIMIT 50
     `);
-    return NextResponse.json({ projects: result.rows });
+    return NextResponse.json({ projects: result.rows, concurrency: getConcurrencyStats() });
   }
 
   // Full detail for a specific project

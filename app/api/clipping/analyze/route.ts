@@ -100,32 +100,35 @@ export async function POST(req: NextRequest) {
           chunks: chunks.map(c => c.label),
         });
 
-        // Step 3: Process video — iterate through chunks
-        send('progress', { step: 'Process video', status: 'active', totalChunks, currentChunk: 0 });
+        // Step 3: Process video — fire all chunks in parallel (semaphore limits to 10 global)
+        send('progress', { step: 'Process video', status: 'active', totalChunks, completedChunks: 0 });
         await log(projectId, analysisId, 'process_video', 'active',
-          `Starting analysis: ${totalChunks} chunk(s) for ${Math.round(durationSec)}s video`);
+          `Starting parallel analysis: ${totalChunks} chunk(s) for ${Math.round(durationSec)}s video`);
 
-        const chunkResults: GeminiFilesResponse[] = [];
+        let completedChunks = 0;
+        const chunkResults: (GeminiFilesResponse | null)[] = new Array(totalChunks).fill(null);
 
-        for (const chunk of chunks) {
-          send('progress', {
-            step: 'Process video',
-            status: 'active',
-            totalChunks,
-            currentChunk: chunk.index + 1,
-            chunkLabel: chunk.label,
-            progress: Math.round((chunk.index / totalChunks) * 100),
-          });
-
-          await log(projectId, analysisId, 'process_chunk', 'active',
-            `Processing chunk ${chunk.index + 1}/${totalChunks}: ${chunk.label}`, {
+        // Launch all chunks in parallel — global semaphore handles concurrency
+        const chunkPromises = chunks.map(async (chunk) => {
+          await log(projectId, analysisId, 'process_chunk', 'queued',
+            `Chunk ${chunk.index + 1}/${totalChunks} queued: ${chunk.label}`, {
               chunkIndex: chunk.index,
               startSec: chunk.startSec,
               endSec: chunk.endSec,
             });
 
           const result = await analyzeVideoChunk(videoUrl, apiKey, chunk);
-          chunkResults.push(result);
+          chunkResults[chunk.index] = result;
+          completedChunks++;
+
+          send('progress', {
+            step: 'Process video',
+            status: 'active',
+            totalChunks,
+            completedChunks,
+            chunkLabel: chunk.label,
+            progress: Math.round((completedChunks / totalChunks) * 100),
+          });
 
           await log(projectId, analysisId, 'process_chunk', 'done',
             `Chunk ${chunk.index + 1}/${totalChunks} complete: ${result.analysis.total_segments} segments in ${result.duration_ms}ms`, {
@@ -135,17 +138,20 @@ export async function POST(req: NextRequest) {
               tokens_in: result.tokens_in,
               tokens_out: result.tokens_out,
             });
-        }
+        });
+
+        await Promise.all(chunkPromises);
 
         send('progress', { step: 'Process video', status: 'done' });
         await log(projectId, analysisId, 'process_video', 'done',
-          `All ${totalChunks} chunks analyzed`);
+          `All ${totalChunks} chunks analyzed in parallel`);
 
         // Step 4: Finding best parts — merge chunks
         send('progress', { step: 'Finding best parts', status: 'active', progress: 0 });
         await log(projectId, analysisId, 'finding_parts', 'active', 'Merging chunk results');
 
-        const merged = mergeChunkResults(chunkResults);
+        const validResults = chunkResults.filter((r): r is GeminiFilesResponse => r !== null);
+        const merged = mergeChunkResults(validResults);
 
         await log(projectId, analysisId, 'finding_parts', 'done',
           `Merged: ${merged.analysis.total_segments} total segments, ${merged.analysis.video_duration_seconds}s`, {
