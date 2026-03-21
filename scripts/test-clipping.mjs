@@ -27,7 +27,7 @@ const API_KEY = process.env.PAPAI_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 const API_URL = 'https://papaiapi.com/v1/files/chat';
 
-const CHUNK_DURATION = 5 * 60; // 5 minutes
+const CHUNK_DURATION = 60; // 1 minute — API times out on longer chunks
 
 // --- Analysis prompt ---
 const ANALYSIS_PROMPT = `Analyze this video. Break it into 2-4 second segments covering every second. For each segment provide start/end in seconds, visual description, exact speech transcription (word-for-word, "" if none), and audio notes ("" if nothing notable). Timestamps must be continuous with no gaps. Respond with ONLY this JSON, no other text: {"video_duration_seconds":<total>,"segments":[{"start":0.0,"end":3.0,"visual":"...","speech":"...","audio":"..."}]}`;
@@ -217,10 +217,11 @@ async function main() {
     if (chunks.length > 1) {
       chunkFile = `/tmp/clip_chunk_${chunk.index}.mp4`;
       if (!fs.existsSync(chunkFile)) {
-        console.log(`  Extracting chunk ${chunk.startSec}s-${chunk.endSec}s...`);
+        console.log(`  Extracting chunk ${chunk.startSec}s-${chunk.endSec}s (compressed)...`);
         const { execSync } = await import('child_process');
+        // Compress to 480p, low bitrate — API chokes on large files
         execSync(
-          `ffmpeg -i "${videoPath}" -ss ${chunk.startSec} -t ${chunk.endSec - chunk.startSec} -c:v libx264 -c:a aac -y "${chunkFile}"`,
+          `ffmpeg -i "${videoPath}" -ss ${chunk.startSec} -t ${chunk.endSec - chunk.startSec} -vf "scale=-2:480" -c:v libx264 -preset fast -crf 28 -b:v 500k -c:a aac -b:a 64k -y "${chunkFile}"`,
           { stdio: 'pipe' }
         );
         const chunkSize = fs.statSync(chunkFile).size / 1e6;

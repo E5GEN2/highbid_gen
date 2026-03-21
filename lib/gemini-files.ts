@@ -8,7 +8,7 @@
  */
 
 /** Max chunk duration in seconds — each API call covers this much video */
-const CHUNK_DURATION_SECONDS = 5 * 60; // 5 minutes
+const CHUNK_DURATION_SECONDS = 60; // 1 minute — API times out on longer chunks
 
 const VIDEO_ANALYSIS_PROMPT = `Analyze this video. Break it into 2-4 second segments covering every second. For each segment provide start/end in seconds, visual description, exact speech transcription (word-for-word, "" if none), and audio notes ("" if nothing notable). Timestamps must be continuous with no gaps. Respond with ONLY this JSON, no other text: {"video_duration_seconds":<total>,"segments":[{"start":0.0,"end":3.0,"visual":"...","speech":"...","audio":"..."}]}`;
 
