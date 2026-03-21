@@ -1985,11 +1985,64 @@ function HomeContent() {
       const data = await response.json();
       if (data.project) {
         setClippingProjects(prev => [data.project, ...prev]);
-        setShowNewProjectModal(false);
-        setNewProjectTitle('');
       }
     } catch (err) {
       console.error('Error creating clipping project:', err);
+    }
+  };
+
+  const startClippingAnalysis = async (projectId: string, videoUrl: string) => {
+    try {
+      const response = await fetch('/api/clipping/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, videoUrl }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error('Failed to start analysis');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7);
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'progress') {
+                setClippingProcessSteps(prev =>
+                  prev.map(s => {
+                    if (s.label === data.step) {
+                      return { ...s, status: data.status, progress: data.progress };
+                    }
+                    return s;
+                  })
+                );
+              } else if (eventType === 'error') {
+                console.error('Analysis error:', data.error);
+                setClippingProcessSteps(prev =>
+                  prev.map(s => s.status === 'active' ? { ...s, status: 'pending' } : s)
+                );
+              }
+            } catch { /* skip malformed */ }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error in clipping analysis:', err);
     }
   };
 
@@ -2892,17 +2945,40 @@ function HomeContent() {
 
                     {/* Generate button */}
                     <button
-                      onClick={() => {
+                      onClick={async () => {
+                        const videoUrl = clippingFile?.type === 'link'
+                          ? newProjectTitle
+                          : newProjectTitle; // For file uploads, URL will come from upload flow later
+
                         setClippingProcessSteps([
                           { label: 'Upload', status: 'done' },
-                          { label: 'Create project', status: 'done' },
-                          { label: 'Process video', status: 'active' },
+                          { label: 'Create project', status: 'active' },
+                          { label: 'Process video', status: 'pending' },
                           { label: 'Finding best parts', status: 'pending' },
                           { label: 'Edit clips', status: 'pending' },
                           { label: 'Finalize', status: 'pending' },
                         ]);
                         setClippingStep('processing');
-                        createClippingProject();
+
+                        // Create project first
+                        try {
+                          const res = await fetch('/api/clipping/projects', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ title: newProjectTitle || 'Untitled' }),
+                          });
+                          const data = await res.json();
+                          if (data.project) {
+                            setClippingProjects(prev => [data.project, ...prev]);
+                            setClippingProcessSteps(prev =>
+                              prev.map(s => s.label === 'Create project' ? { ...s, status: 'done' } : s)
+                            );
+                            // Start analysis via SSE
+                            startClippingAnalysis(data.project.id, videoUrl);
+                          }
+                        } catch (err) {
+                          console.error('Error creating project:', err);
+                        }
                       }}
                       className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl hover:from-blue-700 hover:to-blue-600 transition font-semibold text-base"
                     >

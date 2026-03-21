@@ -295,6 +295,47 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_clipping_projects_user ON clipping_projects(user_id)
     `);
 
+    // Clipping: video analysis results (timestamped segments from Gemini)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS clipping_analyses (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id UUID NOT NULL REFERENCES clipping_projects(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        video_url TEXT,
+        video_duration_seconds REAL,
+        total_segments INT,
+        segments JSONB,
+        raw_response TEXT,
+        error TEXT,
+        prompt TEXT,
+        tokens_in INT,
+        tokens_out INT,
+        duration_ms INT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_clipping_analyses_project ON clipping_analyses(project_id)
+    `);
+
+    // Clipping: processing logs for debugging
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS clipping_logs (
+        id SERIAL PRIMARY KEY,
+        project_id UUID REFERENCES clipping_projects(id) ON DELETE CASCADE,
+        analysis_id UUID REFERENCES clipping_analyses(id) ON DELETE CASCADE,
+        step TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'info',
+        message TEXT NOT NULL,
+        data JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_clipping_logs_project ON clipping_logs(project_id)
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
