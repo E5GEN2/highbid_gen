@@ -10,78 +10,18 @@
 /** Max chunk duration in seconds — each API call covers this much video */
 const CHUNK_DURATION_SECONDS = 5 * 60; // 5 minutes
 
-const VIDEO_ANALYSIS_PROMPT = `You are a professional video analyst. Analyze this video and produce a detailed timestamped breakdown in JSON format.
-
-Instructions:
-1. Watch the entire video carefully — both visuals and audio.
-2. Segment the video into logical scenes/moments. A new segment starts when:
-   * The visual scene changes (cut, transition, new location, new subject)
-   * The speaker changes topic
-   * There's a significant pause or shift in action
-   * On-screen text or graphics appear/disappear
-   * Segments must be 1-4 seconds. Never exceed 4 seconds per segment.
-3. For each segment, provide:
-   * start: timestamp in seconds (float)
-   * end: timestamp in seconds (float)
-   * visual_description: Describe what is visually happening — people, objects, actions, locations, camera movement, text on screen, graphics, transitions. Be specific and factual. Include details like clothing, colors, expressions, on-screen text verbatim.
-   * speech_transcription: Transcribe ALL spoken words exactly as said. If no speech, use empty string "". Include the speaker identity if distinguishable (e.g. "Narrator:", "Man:", "Woman:").
-   * audio_description: Describe non-speech audio — background music (genre/mood), sound effects, ambient noise, silence. If nothing notable, use empty string "".
-4. Important rules:
-   * Timestamps must be continuous with no gaps — every second of the video must be covered
-   * Be precise with start/end times, aligned to actual scene boundaries
-   * Transcribe speech word-for-word, not paraphrased
-   * Note any on-screen text, watermarks, logos, subtitles verbatim
-   * If someone is speaking over different visuals (voiceover), still capture both independently
-   * For music, describe mood/genre rather than trying to identify the song
-5. Output format — respond with ONLY this JSON, no other text:
-{"video_duration_seconds": <total duration>, "total_segments": <count>, "segments": [{"start": 0.0, "end": 3.5, "visual_description": "...", "speech_transcription": "...", "audio_description": "..."}, {"start": 3.5, "end": 7.0, "visual_description": "...", "speech_transcription": "...", "audio_description": "..."}]}
-
-Analyze the entire video now. Do not skip any part. Output the complete JSON.`;
+const VIDEO_ANALYSIS_PROMPT = `Analyze this video. Break it into 2-4 second segments covering every second. For each segment provide start/end in seconds, visual description, exact speech transcription (word-for-word, "" if none), and audio notes ("" if nothing notable). Timestamps must be continuous with no gaps. Respond with ONLY this JSON, no other text: {"video_duration_seconds":<total>,"segments":[{"start":0.0,"end":3.0,"visual":"...","speech":"...","audio":"..."}]}`;
 
 function makeChunkPrompt(startSec: number, endSec: number): string {
-  const startMin = Math.floor(startSec / 60);
-  const startS = Math.floor(startSec % 60);
-  const endMin = Math.floor(endSec / 60);
-  const endS = Math.floor(endSec % 60);
-  const startTs = `${startMin}:${startS.toString().padStart(2, '0')}`;
-  const endTs = `${endMin}:${endS.toString().padStart(2, '0')}`;
-
-  return `You are a professional video analyst. Analyze ONLY the portion of this video from ${startTs} to ${endTs} and produce a detailed timestamped breakdown in JSON format.
-
-IMPORTANT: Only analyze the section from ${startTs} (${startSec} seconds) to ${endTs} (${endSec} seconds). Ignore all content outside this range. Use ABSOLUTE timestamps (from the start of the full video, not relative to this chunk).
-
-Instructions:
-1. Watch the specified portion carefully — both visuals and audio.
-2. Segment it into logical scenes/moments. A new segment starts when:
-   * The visual scene changes (cut, transition, new location, new subject)
-   * The speaker changes topic
-   * There's a significant pause or shift in action
-   * On-screen text or graphics appear/disappear
-   * Segments must be 1-4 seconds. Never exceed 4 seconds per segment.
-3. For each segment, provide:
-   * start: ABSOLUTE timestamp in seconds (float) from the beginning of the full video
-   * end: ABSOLUTE timestamp in seconds (float) from the beginning of the full video
-   * visual_description: Describe what is visually happening — people, objects, actions, locations, camera movement, text on screen, graphics, transitions. Be specific and factual.
-   * speech_transcription: Transcribe ALL spoken words exactly as said. If no speech, use empty string "". Include speaker identity if distinguishable.
-   * audio_description: Describe non-speech audio — background music, sound effects, ambient noise. If nothing notable, use empty string "".
-4. Important rules:
-   * All timestamps must use ABSOLUTE times (e.g. if chunk starts at ${startTs}, the first segment starts at ${startSec}, NOT at 0)
-   * Timestamps must be continuous with no gaps within this chunk
-   * First segment must start at or near ${startSec} seconds
-   * Last segment must end at or near ${endSec} seconds
-   * Transcribe speech word-for-word, not paraphrased
-5. Output format — respond with ONLY this JSON, no other text:
-{"video_duration_seconds": ${endSec - startSec}, "total_segments": <count>, "segments": [{"start": ${startSec}.0, "end": ..., "visual_description": "...", "speech_transcription": "...", "audio_description": "..."}, ...]}
-
-Analyze ONLY the ${startTs} to ${endTs} portion now. Do not skip any part of this range. Output the complete JSON.`;
+  return `Analyze ONLY the portion from ${startSec}s to ${endSec}s of this video. Break it into 2-4 second segments. Use ABSOLUTE timestamps (from video start, not relative). First segment starts at ${startSec}s, last ends at ${endSec}s. For each: start/end seconds, visual description, exact speech ("" if none), audio notes ("" if nothing). Respond with ONLY JSON: {"video_duration_seconds":${endSec - startSec},"segments":[{"start":${startSec}.0,"end":...,"visual":"...","speech":"...","audio":"..."}]}`;
 }
 
 export interface VideoSegment {
   start: number;
   end: number;
-  visual_description: string;
-  speech_transcription: string;
-  audio_description: string;
+  visual: string;
+  speech: string;
+  audio: string;
 }
 
 export interface VideoAnalysisResult {
@@ -206,50 +146,82 @@ export function mergeChunkResults(results: GeminiFilesResponse[]): GeminiFilesRe
   };
 }
 
+/** Default retry config */
+const MAX_RETRIES = 3;
+const RETRY_DELAYS = [5000, 10000, 20000]; // Escalating delays
+
 /**
- * Low-level call to PapaiAPI Gemini Files endpoint.
+ * Low-level call to PapaiAPI Gemini Files endpoint with retry logic.
+ * Supports file_url (string URL) — for multipart file upload use the
+ * test script directly.
  */
 async function callGeminiFiles(
   fileUrl: string,
   apiKey: string,
   prompt: string,
 ): Promise<GeminiFilesResponse> {
-  const startTime = Date.now();
+  let lastError: Error | null = null;
 
-  const response = await fetch('https://papaiapi.com/v1/files/chat', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      prompt,
-      file_url: fileUrl,
-    }),
-  });
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const delay = RETRY_DELAYS[attempt - 1] || 20000;
+      console.log(`[gemini-files] Retry ${attempt + 1}/${MAX_RETRIES} after ${delay / 1000}s...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini Files API error ${response.status}: ${errorText}`);
+    try {
+      const startTime = Date.now();
+
+      const response = await fetch('https://papaiapi.com/v1/files/chat', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt,
+          file_url: fileUrl,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        const error = new Error(`Gemini Files API error ${response.status}: ${errorText}`);
+        // Retry on 504 timeout or 5xx server errors
+        if (response.status >= 500) {
+          lastError = error;
+          continue;
+        }
+        throw error; // Don't retry 4xx client errors
+      }
+
+      const data = await response.json();
+      const durationMs = Date.now() - startTime;
+
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error('No content in Gemini Files response');
+      }
+
+      const analysis = parseAnalysisJson(content);
+
+      return {
+        analysis,
+        raw_response: content,
+        tokens_in: data.usage?.prompt_tokens || 0,
+        tokens_out: data.usage?.completion_tokens || 0,
+        duration_ms: durationMs,
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // Only retry on network/timeout errors, not parse errors
+      if (lastError.message.includes('parse') || lastError.message.includes('Missing segments')) {
+        throw lastError;
+      }
+    }
   }
 
-  const data = await response.json();
-  const durationMs = Date.now() - startTime;
-
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error('No content in Gemini Files response');
-  }
-
-  const analysis = parseAnalysisJson(content);
-
-  return {
-    analysis,
-    raw_response: content,
-    tokens_in: data.usage?.prompt_tokens || 0,
-    tokens_out: data.usage?.completion_tokens || 0,
-    duration_ms: durationMs,
-  };
+  throw lastError || new Error('All retries exhausted');
 }
 
 /**
