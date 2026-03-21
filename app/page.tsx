@@ -268,7 +268,7 @@ function HomeContent() {
   const [clippingLoading, setClippingLoading] = useState(false);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState('');
-  const [clippingStep, setClippingStep] = useState<'upload' | 'configure' | 'processing'>('upload');
+  const [clippingStep, setClippingStep] = useState<'upload' | 'configure' | 'processing' | 'clips'>('upload');
   const [clippingProcessSteps, setClippingProcessSteps] = useState<{
     label: string;
     status: 'pending' | 'active' | 'done';
@@ -285,6 +285,20 @@ function HomeContent() {
   const [clippingRemoveSilences, setClippingRemoveSilences] = useState(false);
   const [clippingAddBrolls, setClippingAddBrolls] = useState(false);
   const [clippingFindMoment, setClippingFindMoment] = useState('');
+  const [clippingCurrentProjectId, setClippingCurrentProjectId] = useState<string | null>(null);
+  const [clippingGeneratedClips, setClippingGeneratedClips] = useState<{
+    id: string;
+    title: string;
+    description: string;
+    score: number;
+    start_sec: number;
+    end_sec: number;
+    duration_sec: number;
+    transcript: string;
+    status: string;
+    file_size_bytes: number | null;
+  }[]>([]);
+  const [clippingSelectedClipIdx, setClippingSelectedClipIdx] = useState(0);
 
   // Feed Spy State
   const [spyData, setSpyData] = useState<{
@@ -2036,6 +2050,9 @@ function HomeContent() {
                     return s;
                   })
                 );
+              } else if (eventType === 'complete') {
+                // Analysis done — now generate clips
+                startClipGeneration(projectId);
               } else if (eventType === 'error') {
                 console.error('Analysis error:', data.error);
                 setClippingProcessSteps(prev =>
@@ -2048,6 +2065,76 @@ function HomeContent() {
       }
     } catch (err) {
       console.error('Error in clipping analysis:', err);
+    }
+  };
+
+  const startClipGeneration = async (projectId: string) => {
+    setClippingProcessSteps(prev => [
+      ...prev.map(s => ({ ...s, status: 'done' as const })),
+      { label: 'Selecting clips', status: 'active' as const },
+      { label: 'Cutting clips', status: 'pending' as const },
+    ]);
+
+    try {
+      const response = await fetch('/api/clipping/generate-clips', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error('Failed to start clip generation');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7);
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'progress') {
+                setClippingProcessSteps(prev =>
+                  prev.map(s => {
+                    if (s.label === data.step) {
+                      const detail = data.total
+                        ? `${data.completed || 0}/${data.total} clips`
+                        : undefined;
+                      return { ...s, status: data.status, progress: data.progress, detail };
+                    }
+                    return s;
+                  })
+                );
+              } else if (eventType === 'complete') {
+                // Fetch generated clips and show clips view
+                const clipsRes = await fetch(`/api/clipping/clips?projectId=${projectId}`);
+                const clipsData = await clipsRes.json();
+                if (clipsData.clips) {
+                  setClippingGeneratedClips(clipsData.clips);
+                  setClippingSelectedClipIdx(0);
+                  setClippingStep('clips');
+                }
+              } else if (eventType === 'error') {
+                console.error('Clip generation error:', data.error);
+              }
+            } catch { /* skip malformed */ }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error in clip generation:', err);
     }
   };
 
@@ -2985,6 +3072,7 @@ function HomeContent() {
                           const data = await res.json();
                           if (data.project) {
                             setClippingProjects(prev => [data.project, ...prev]);
+                            setClippingCurrentProjectId(data.project.id);
                             setClippingProcessSteps(prev =>
                               prev.map(s => s.label === 'Create project' ? { ...s, status: 'done' } : s)
                             );
@@ -3087,6 +3175,140 @@ function HomeContent() {
                         </p>
                       </div>
                     </div>
+                  </div>
+                ) : clippingStep === 'clips' ? (
+                  /* Step 4: Clips Results */
+                  <div className="w-full max-w-6xl mt-8 flex gap-0 h-[calc(100vh-8rem)]">
+                    {/* Left sidebar: clip list */}
+                    <div className="w-56 flex-shrink-0 border-r border-gray-800 overflow-y-auto pr-2 space-y-1">
+                      <div className="flex items-center justify-between px-2 mb-3">
+                        <button
+                          onClick={() => { setShowNewProjectModal(false); setClippingStep('upload'); setClippingFile(null); }}
+                          className="text-sm text-gray-400 hover:text-white flex items-center gap-1"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                          </svg>
+                          Back
+                        </button>
+                        <span className="text-xs text-gray-500">{clippingGeneratedClips.length} clips</span>
+                      </div>
+                      {clippingGeneratedClips.map((clip, i) => (
+                        <button
+                          key={clip.id}
+                          onClick={() => setClippingSelectedClipIdx(i)}
+                          className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left transition-all ${
+                            i === clippingSelectedClipIdx
+                              ? 'bg-blue-600/20 border border-blue-500/40'
+                              : 'hover:bg-gray-800/60 border border-transparent'
+                          }`}
+                        >
+                          <div className="relative w-14 h-10 bg-gray-800 rounded-md overflow-hidden flex-shrink-0">
+                            <img
+                              src={`/api/clipping/clips/${clip.id}/thumbnail`}
+                              alt=""
+                              className="w-full h-full object-cover"
+                              onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                            />
+                            <span className="absolute bottom-0 right-0 text-[9px] bg-black/70 text-gray-300 px-1 rounded-tl">
+                              {Math.floor(clip.duration_sec / 60)}:{String(Math.floor(clip.duration_sec % 60)).padStart(2, '0')}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-xs truncate ${i === clippingSelectedClipIdx ? 'text-white' : 'text-gray-300'}`}>
+                              {clip.title}
+                            </p>
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <span className="text-[10px] text-yellow-400 font-medium">{clip.score}/10</span>
+                            </div>
+                          </div>
+                          <span className="text-xs text-gray-600 font-mono flex-shrink-0">#{i + 1}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Main: selected clip detail */}
+                    {clippingGeneratedClips[clippingSelectedClipIdx] && (() => {
+                      const clip = clippingGeneratedClips[clippingSelectedClipIdx];
+                      return (
+                        <div className="flex-1 overflow-y-auto pl-6">
+                          {/* Header */}
+                          <div className="flex items-start justify-between mb-4">
+                            <div>
+                              <h2 className="text-xl font-bold text-white">{clip.title}</h2>
+                              <div className="flex items-center gap-3 mt-1">
+                                <span className="text-sm text-gray-400">
+                                  #{clippingSelectedClipIdx + 1}
+                                </span>
+                                <span className="text-sm text-gray-500">&bull;</span>
+                                <span className="text-sm text-gray-400">
+                                  {Math.floor(clip.start_sec / 60)}:{String(Math.floor(clip.start_sec % 60)).padStart(2, '0')} &ndash; {Math.floor(clip.end_sec / 60)}:{String(Math.floor(clip.end_sec % 60)).padStart(2, '0')}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-3xl font-black text-white">{clip.score.toFixed(1)}</div>
+                              <div className="text-xs text-gray-500">/10</div>
+                            </div>
+                          </div>
+
+                          {/* Video preview */}
+                          <div className="relative bg-black rounded-xl overflow-hidden mb-4" style={{ aspectRatio: '16/9', maxHeight: '360px' }}>
+                            {clip.status === 'done' ? (
+                              <video
+                                key={clip.id}
+                                controls
+                                className="w-full h-full object-contain"
+                                src={`/api/clipping/clips/${clip.id}/download`}
+                                poster={`/api/clipping/clips/${clip.id}/thumbnail`}
+                              />
+                            ) : (
+                              <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                                {clip.status === 'cutting' ? 'Cutting...' : clip.status === 'error' ? 'Error' : 'Pending'}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Action buttons */}
+                          <div className="flex items-center gap-3 mb-6">
+                            {clip.status === 'done' && (
+                              <a
+                                href={`/api/clipping/clips/${clip.id}/download`}
+                                download
+                                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                </svg>
+                                Download
+                              </a>
+                            )}
+                            {clip.file_size_bytes && (
+                              <span className="text-xs text-gray-500">
+                                {(clip.file_size_bytes / 1e6).toFixed(1)} MB
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Description */}
+                          {clip.description && (
+                            <div className="bg-gray-800/40 border border-gray-700 rounded-xl px-5 py-4 mb-4">
+                              <p className="text-sm text-gray-300">{clip.description}</p>
+                            </div>
+                          )}
+
+                          {/* Transcript */}
+                          {clip.transcript && (
+                            <div className="mb-6">
+                              <h3 className="text-sm font-medium text-gray-400 mb-2">Transcript</h3>
+                              <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
+                                {clip.transcript}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 ) : null}
               </div>
