@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['@remotion/renderer', '@remotion/bundler'],
   experimental: {
     serverActions: {
-      bodySizeLimit: '50MB'
+      bodySizeLimit: '500MB'
     }
   },
   eslint: {

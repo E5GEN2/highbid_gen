@@ -3122,6 +3122,10 @@ function HomeContent() {
                           startClippingAnalysis(projectId, videoUrl, clippingVideoDuration);
                         } catch (err) {
                           console.error('Error in clipping pipeline:', err);
+                          const msg = err instanceof Error ? err.message : 'Unknown error';
+                          setClippingProcessSteps(prev =>
+                            prev.map(s => s.status === 'active' ? { ...s, status: 'pending', detail: `Error: ${msg}` } : s)
+                          );
                         }
                       }}
                       className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-xl hover:from-blue-700 hover:to-blue-600 transition font-semibold text-base"
