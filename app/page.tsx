@@ -2066,6 +2066,10 @@ function HomeContent() {
       }
     } catch (err) {
       console.error('Error in clipping analysis:', err);
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setClippingProcessSteps(prev =>
+        prev.map(s => s.status === 'active' ? { ...s, detail: `Error: ${msg}` } : s)
+      );
     }
   };
 
@@ -3124,7 +3128,10 @@ function HomeContent() {
                           );
 
                           // Step 3: Start analysis via SSE
-                          console.log('[clipping] Starting analysis:', { projectId, videoUrl: videoUrl?.substring(0, 60), duration: clippingVideoDuration });
+                          console.log('[clipping] Starting analysis:', { projectId, videoUrl: videoUrl?.substring(0, 80), duration: clippingVideoDuration });
+                          setClippingProcessSteps(prev =>
+                            prev.map(s => s.label === 'Process video' ? { ...s, detail: `Analyzing ${Math.round(clippingVideoDuration || 0)}s video...` } : s)
+                          );
                           await startClippingAnalysis(projectId, videoUrl, clippingVideoDuration);
 
                         } catch (err) {
