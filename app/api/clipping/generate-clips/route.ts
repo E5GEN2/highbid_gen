@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { projectId } = await req.json();
+  const { projectId, clipLength } = await req.json();
   if (!projectId) {
     return NextResponse.json({ error: 'projectId required' }, { status: 400 });
   }
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
         send('progress', { step: 'Selecting clips', status: 'active' });
         await logStep('select_clips', 'active', `Selecting clips from ${segments.length} segments`);
 
-        const selection = await selectClips(segments, apiKey);
+        const selection = await selectClips(segments, apiKey, { clipLength });
         const clips = selection.clips;
 
         await logStep('select_clips', 'done', `Selected ${clips.length} clips`, {

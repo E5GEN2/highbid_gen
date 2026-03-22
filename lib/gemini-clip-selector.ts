@@ -7,12 +7,21 @@
 
 import type { VideoSegment } from './gemini-files';
 
-const CLIP_SELECTION_PROMPT = `Given video segments below, pick 5-15 best clips for YouTube Shorts (30-90s each). Strong hooks, self-contained, clear speech preferred. Score 1-10 for viral potential.
+const CLIP_SELECTION_PROMPT = `You are selecting clips from a video for YouTube Shorts.
 
+RULES:
+- Each clip MUST be between {{MIN_DURATION}} and {{MAX_DURATION}} seconds long. NO SHORTER.
+- Pick 5-15 clips with the strongest hooks and self-contained narratives.
+- Prefer segments with clear speech, strong visual hooks, and natural start/end points.
+- Score each clip 1-10 for viral potential (be honest, not all clips are 10/10).
+
+VIDEO SEGMENTS:
 {{SEGMENTS}}
 
-OUTPUT ONLY A VALID JSON ARRAY. No text before or after. No markdown. No numbering. Start your response with [{ and end with }].
-[{"title":"catchy title","start":0,"end":30,"score":8,"description":"why this clip is good","transcript":"exact words spoken"}]`;
+Return a JSON array with EXACTLY these field names:
+[{"title":"catchy title","start":0,"end":60,"score":8,"description":"why this clip is good","transcript":"key words spoken in this clip"}]
+
+CRITICAL: Every clip's (end - start) must be >= {{MIN_DURATION}} and <= {{MAX_DURATION}}. Clips shorter than {{MIN_DURATION}}s will be rejected.`;
 
 export interface SelectedClip {
   title: string;
@@ -38,17 +47,26 @@ export interface ClipSelectionResult {
 export async function selectClips(
   segments: VideoSegment[],
   apiKey: string,
-  customPrompt?: string,
+  options?: { clipLength?: string; customPrompt?: string },
 ): Promise<ClipSelectionResult> {
   const startTime = Date.now();
+
+  // Parse clip length range (e.g. "60s-90s" → min=60, max=90)
+  const clipLength = options?.clipLength || '60s-90s';
+  const match = clipLength.match(/(\d+)s?-(\d+)/);
+  const minDuration = match ? parseInt(match[1]) : 60;
+  const maxDuration = match ? parseInt(match[2]) : 90;
 
   // Full segment data — no trimming, PapaiAPI limit is now 1MB
   const segmentText = segments.map(s =>
     `[${s.start.toFixed(1)}-${s.end.toFixed(1)}s] visual: ${s.visual} | speech: ${s.speech || '(none)'} | audio: ${s.audio || '(none)'}`
   ).join('\n');
 
-  const promptTemplate = customPrompt || CLIP_SELECTION_PROMPT;
-  const prompt = promptTemplate.replace('{{SEGMENTS}}', segmentText);
+  const promptTemplate = options?.customPrompt || CLIP_SELECTION_PROMPT;
+  const prompt = promptTemplate
+    .replace('{{SEGMENTS}}', segmentText)
+    .replace(/\{\{MIN_DURATION\}\}/g, String(minDuration))
+    .replace(/\{\{MAX_DURATION\}\}/g, String(maxDuration));
 
   // Use generateContent with responseMimeType for reliable JSON output
   const MAX_ATTEMPTS = 3;
@@ -140,9 +158,9 @@ export async function selectClips(
       title: String(c.title || 'Untitled Clip'),
       start: Number(c.start),
       end: Number(c.end),
-      score: Math.min(10, Math.max(1, Number(c.score || c.content_score || c.viral_score) || 5)),
-      description: String(c.description || ''),
-      transcript: String(c.transcript || ''),
+      score: Math.min(10, Math.max(1, Number(c.score || c.content_score || c.viral_score || c.viral_potential) || 5)),
+      description: String(c.description || c.reason || ''),
+      transcript: String(c.transcript || c.hook || c.speech || ''),
     }))
     .sort((a, b) => b.score - a.score);
 

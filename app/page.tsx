@@ -2084,7 +2084,7 @@ function HomeContent() {
       const response = await fetch('/api/clipping/generate-clips', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({ projectId, clipLength: clippingClipLength }),
       });
 
       if (!response.ok || !response.body) {
