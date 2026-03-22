@@ -39,6 +39,7 @@ export interface SelectedClip {
 
 export interface ClipSelectionResult {
   clips: SelectedClip[];
+  raw_response: string;
   tokens_in: number;
   tokens_out: number;
   duration_ms: number;
@@ -143,7 +144,7 @@ export async function selectClips(
     }))
     .sort((a, b) => b.score - a.score); // Highest score first
 
-  return { clips, tokens_in: tokensIn, tokens_out: tokensOut, duration_ms: durationMs };
+  return { clips, raw_response: text, tokens_in: tokensIn, tokens_out: tokensOut, duration_ms: durationMs };
 }
 
 export { CLIP_SELECTION_PROMPT };

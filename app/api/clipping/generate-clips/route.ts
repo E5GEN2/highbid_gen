@@ -54,6 +54,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'PAPAI_API_KEY not configured. Set it in Admin > Settings.' }, { status: 500 });
   }
 
+  // Helper to log to clipping_logs
+  const logStep = async (step: string, status: string, message: string, data?: Record<string, unknown>) => {
+    await pool.query(
+      `INSERT INTO clipping_logs (project_id, analysis_id, step, status, message, data)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [projectId, analysisId, step, status, message, data ? JSON.stringify(data) : null]
+    ).catch(e => console.error('[generate-clips] Log write failed:', e));
+  };
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -64,9 +73,19 @@ export async function POST(req: NextRequest) {
       try {
         // Step 1: AI clip selection
         send('progress', { step: 'Selecting clips', status: 'active' });
+        await logStep('select_clips', 'active', `Selecting clips from ${segments.length} segments`);
 
         const selection = await selectClips(segments, apiKey);
         const clips = selection.clips;
+
+        await logStep('select_clips', 'done', `Selected ${clips.length} clips`, {
+          clipCount: clips.length,
+          tokens_in: selection.tokens_in,
+          tokens_out: selection.tokens_out,
+          duration_ms: selection.duration_ms,
+          clips: clips.map(c => ({ title: c.title, start: c.start, end: c.end, score: c.score })),
+          raw_response: selection.raw_response?.substring(0, 2000),
+        });
 
         send('progress', {
           step: 'Selecting clips',
@@ -78,6 +97,7 @@ export async function POST(req: NextRequest) {
         });
 
         if (clips.length === 0) {
+          await logStep('select_clips', 'error', 'AI found no clip-worthy moments');
           send('error', { error: 'AI found no clip-worthy moments' });
           controller.close();
           return;
@@ -85,6 +105,7 @@ export async function POST(req: NextRequest) {
 
         // Step 2: Insert clip records into DB
         send('progress', { step: 'Preparing clips', status: 'active' });
+        await logStep('prepare_clips', 'active', `Inserting ${clips.length} clip records`);
 
         const clipIds: string[] = [];
         for (const clip of clips) {
@@ -100,14 +121,18 @@ export async function POST(req: NextRequest) {
         }
 
         send('progress', { step: 'Preparing clips', status: 'done', clipCount: clipIds.length });
+        await logStep('prepare_clips', 'done', `Inserted ${clipIds.length} clip records`);
 
         // Step 3: Download source video
         send('progress', { step: 'Downloading source', status: 'active' });
+        await logStep('download_source', 'active', `Downloading ${videoUrl.substring(0, 80)}`);
         const localVideoPath = await downloadVideo(videoUrl, projectId);
         send('progress', { step: 'Downloading source', status: 'done' });
+        await logStep('download_source', 'done', `Source at ${localVideoPath}`);
 
         // Step 4: Cut clips with ffmpeg (sequential to avoid EAGAIN)
         send('progress', { step: 'Cutting clips', status: 'active', total: clips.length, completed: 0, progress: 0 });
+        await logStep('cut_clips', 'active', `Cutting ${clips.length} clips from source`);
 
         let completedCuts = 0;
 
@@ -136,6 +161,9 @@ export async function POST(req: NextRequest) {
             );
 
             completedCuts++;
+            await logStep('cut_clip', 'done', `Cut clip ${completedCuts}/${clips.length}: ${clip.title}`, {
+              clipId, start: clip.start, end: clip.end, filePath: result.filePath, size: result.fileSizeBytes,
+            });
             send('progress', {
               step: 'Cutting clips',
               status: 'active',
@@ -148,17 +176,20 @@ export async function POST(req: NextRequest) {
             await pool.query(
               `UPDATE clipping_clips SET status = 'error' WHERE id = $1`, [clipId]
             );
-            console.error(`[generate-clips] Cut failed for ${clipId}: ${msg}`);
+            await logStep('cut_clip', 'error', `Cut failed for clip ${i + 1}: ${msg}`, { clipId, title: clip.title });
           }
         }
 
         send('progress', { step: 'Cutting clips', status: 'done', completed: completedCuts, total: clips.length });
+        await logStep('cut_clips', 'done', `Cut ${completedCuts}/${clips.length} clips`);
 
         // Update project status
         await pool.query(
           `UPDATE clipping_projects SET status = 'done', updated_at = NOW() WHERE id = $1`,
           [projectId]
         );
+
+        await logStep('complete', 'done', `Pipeline complete: ${completedCuts} clips generated`);
 
         // Send final result
         send('complete', {
@@ -177,6 +208,9 @@ export async function POST(req: NextRequest) {
 
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        await logStep('pipeline_error', 'error', errorMsg, {
+          raw: error instanceof Error ? error.stack : String(error),
+        });
         send('error', { error: errorMsg });
         console.error(`[generate-clips] Pipeline error: ${errorMsg}`);
       } finally {
