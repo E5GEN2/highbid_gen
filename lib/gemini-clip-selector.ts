@@ -50,23 +50,20 @@ export async function selectClips(
   const promptTemplate = customPrompt || CLIP_SELECTION_PROMPT;
   const prompt = promptTemplate.replace('{{SEGMENTS}}', segmentText);
 
-  const response = await fetch(
-    'https://papaiapi.com/v1beta/models/gemini-flash:generateContent',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 8192,
-        },
-      }),
-    }
-  );
+  // Use chat/completions endpoint — better at following JSON instructions
+  const response = await fetch('https://papaiapi.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'gemini-flash',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      max_tokens: 8192,
+    }),
+  });
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -76,15 +73,15 @@ export async function selectClips(
   const data = await response.json();
   const durationMs = Date.now() - startTime;
 
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  const text = data.choices?.[0]?.message?.content;
   if (!text) {
     throw new Error('No text in Gemini clip selection response');
   }
 
-  const tokensIn = data.usageMetadata?.promptTokenCount || 0;
-  const tokensOut = data.usageMetadata?.candidatesTokenCount || 0;
+  const tokensIn = data.usage?.prompt_tokens || 0;
+  const tokensOut = data.usage?.completion_tokens || 0;
 
-  // Parse JSON response
+  // Parse JSON — clean up and extract array
   let jsonStr = text
     .replace(/```(?:json)?\s*/gi, '')
     .replace(/```/g, '')
@@ -92,43 +89,47 @@ export async function selectClips(
     .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'")
     .trim();
 
-  // Extract JSON array — find the actual [{"title":... pattern, not any random [
-  let clips: SelectedClip[];
+  // Try direct parse first (response might be clean JSON)
+  let parsed: unknown;
   try {
-    // Try finding [{ which indicates start of JSON array of objects
-    const jsonArrayStart = jsonStr.indexOf('[{');
-    const jsonArrayEnd = jsonStr.lastIndexOf('}]');
-    if (jsonArrayStart !== -1 && jsonArrayEnd > jsonArrayStart) {
-      jsonStr = jsonStr.substring(jsonArrayStart, jsonArrayEnd + 2);
-    } else {
-      // Fallback: try first [ to last ]
-      const arrStart = jsonStr.indexOf('[');
-      const arrEnd = jsonStr.lastIndexOf(']');
-      if (arrStart !== -1 && arrEnd > arrStart) {
-        jsonStr = jsonStr.substring(arrStart, arrEnd + 1);
-      }
-    }
-    clips = JSON.parse(jsonStr);
+    parsed = JSON.parse(jsonStr);
   } catch {
-    throw new Error(`Failed to parse clip selection JSON: ${jsonStr.substring(0, 500)}`);
+    // Extract from first [ to last ]
+    const arrStart = jsonStr.indexOf('[');
+    const arrEnd = jsonStr.lastIndexOf(']');
+    if (arrStart !== -1 && arrEnd > arrStart) {
+      try {
+        parsed = JSON.parse(jsonStr.substring(arrStart, arrEnd + 1));
+      } catch {
+        throw new Error(`Failed to parse clip selection JSON: ${jsonStr.substring(0, 500)}`);
+      }
+    } else {
+      throw new Error(`No JSON array found in response: ${jsonStr.substring(0, 500)}`);
+    }
   }
 
-  if (!Array.isArray(clips)) {
-    throw new Error('Clip selection response is not an array');
+  // Handle both array and {clips:[...]} wrapper
+  let rawClips: Record<string, unknown>[];
+  if (Array.isArray(parsed)) {
+    rawClips = parsed;
+  } else if (parsed && typeof parsed === 'object' && 'clips' in (parsed as Record<string, unknown>)) {
+    rawClips = (parsed as Record<string, unknown>).clips as Record<string, unknown>[];
+  } else {
+    throw new Error('Clip selection response is not an array or {clips:[]}');
   }
 
-  // Validate and clean clips
-  clips = clips
-    .filter(c => c.start != null && c.end != null && c.end > c.start)
-    .map(c => ({
-      title: c.title || 'Untitled Clip',
+  // Validate and clean — accept score OR content_score
+  const clips: SelectedClip[] = rawClips
+    .filter((c: Record<string, unknown>) => c.start != null && c.end != null && Number(c.end) > Number(c.start))
+    .map((c: Record<string, unknown>) => ({
+      title: String(c.title || 'Untitled Clip'),
       start: Number(c.start),
       end: Number(c.end),
-      score: Math.min(10, Math.max(1, Number(c.score) || 5)),
-      description: c.description || '',
-      transcript: c.transcript || '',
+      score: Math.min(10, Math.max(1, Number(c.score || c.content_score || c.viral_score) || 5)),
+      description: String(c.description || ''),
+      transcript: String(c.transcript || ''),
     }))
-    .sort((a, b) => b.score - a.score); // Highest score first
+    .sort((a, b) => b.score - a.score);
 
   return { clips, raw_response: text, tokens_in: tokensIn, tokens_out: tokensOut, duration_ms: durationMs };
 }
