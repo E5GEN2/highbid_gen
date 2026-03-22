@@ -50,36 +50,57 @@ export async function selectClips(
   const promptTemplate = customPrompt || CLIP_SELECTION_PROMPT;
   const prompt = promptTemplate.replace('{{SEGMENTS}}', segmentText);
 
-  // Use chat/completions endpoint — better at following JSON instructions
-  const response = await fetch('https://papaiapi.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'gemini-flash',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      max_tokens: 8192,
-    }),
-  });
+  // Retry up to 3 times — Gemini sometimes returns text instead of JSON
+  const MAX_ATTEMPTS = 3;
+  let text = '';
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let durationMs = 0;
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini API error ${response.status}: ${errorText}`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const attemptStart = Date.now();
+    const response = await fetch('https://papaiapi.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gemini-flash',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: attempt === 1 ? 0.3 : 0.1, // Lower temp on retry
+        max_tokens: 8192,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (attempt < MAX_ATTEMPTS) { console.log(`[clip-selector] Attempt ${attempt} failed: ${response.status}`); continue; }
+      throw new Error(`Gemini API error ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    durationMs += Date.now() - attemptStart;
+    tokensIn += data.usage?.prompt_tokens || 0;
+    tokensOut += data.usage?.completion_tokens || 0;
+
+    text = data.choices?.[0]?.message?.content || '';
+
+    // Check if response contains JSON
+    const trimmed = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      break; // Looks like JSON
+    }
+
+    console.log(`[clip-selector] Attempt ${attempt}/${MAX_ATTEMPTS}: response not JSON, starts with "${trimmed.substring(0, 40)}..."`);
+    if (attempt === MAX_ATTEMPTS) break; // Use whatever we got
   }
 
-  const data = await response.json();
-  const durationMs = Date.now() - startTime;
-
-  const text = data.choices?.[0]?.message?.content;
   if (!text) {
-    throw new Error('No text in Gemini clip selection response');
+    throw new Error('No text in Gemini clip selection response after retries');
   }
 
-  const tokensIn = data.usage?.prompt_tokens || 0;
-  const tokensOut = data.usage?.completion_tokens || 0;
+  const tokensInFinal = tokensIn;
 
   // Parse JSON — clean up and extract array
   let jsonStr = text
