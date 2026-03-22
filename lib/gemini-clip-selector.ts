@@ -7,26 +7,12 @@
 
 import type { VideoSegment } from './gemini-files';
 
-const CLIP_SELECTION_PROMPT = `You are a professional video editor. Given the timestamped segments of a video, identify the best standalone clips that would work as short-form content (YouTube Shorts, TikTok, Reels).
-
-Rules:
-- Each clip should be 30-90 seconds long
-- Pick 5-15 of the best moments
-- Each clip must have a strong hook in the first 5 seconds
-- Clips should be self-contained — they make sense without context
-- Prefer segments with clear speech, strong visuals, or emotional peaks
-- Avoid dead air, silence-only sections, or repetitive content
-- Score each clip 1-10 based on viral potential
-- Generate a catchy title for each clip (like a YouTube Shorts title)
-- Include the full transcript (concatenate speech from all segments in the clip)
-- Include a 1-2 sentence description of why this clip is good
-
-Here are the video segments:
+const CLIP_SELECTION_PROMPT = `Given video segments below, pick 5-15 best clips for YouTube Shorts (30-90s each). Strong hooks, self-contained, clear speech preferred. Score 1-10 for viral potential.
 
 {{SEGMENTS}}
 
-Respond with ONLY this JSON array, no other text:
-[{"title":"...","start":<seconds>,"end":<seconds>,"score":<1-10>,"description":"...","transcript":"..."}]`;
+OUTPUT ONLY A VALID JSON ARRAY. No text before or after. No markdown. No numbering. Start your response with [{ and end with }].
+[{"title":"catchy title","start":0,"end":30,"score":8,"description":"why this clip is good","transcript":"exact words spoken"}]`;
 
 export interface SelectedClip {
   title: string;
