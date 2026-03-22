@@ -239,7 +239,7 @@ export function getConcurrencyStats() {
 }
 
 /** Default retry config */
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 5;
 const RETRY_DELAYS = [0, 0, 0]; // Retry immediately
 
 /**
@@ -349,10 +349,8 @@ async function callGeminiFilesInner(
       };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      // Only retry on network/timeout errors, not parse errors
-      if (lastError.message.includes('parse') || lastError.message.includes('Missing segments')) {
-        throw lastError;
-      }
+      console.log(`[gemini-files] Attempt ${attempt + 1}/${MAX_RETRIES} failed: ${lastError.message.substring(0, 100)}`);
+      // Always retry — refusals, parse errors, network errors, everything
     }
   }
 
