@@ -105,15 +105,22 @@ export async function selectClips(
     .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'")
     .trim();
 
-  // Extract JSON array
-  const arrStart = jsonStr.indexOf('[');
-  const arrEnd = jsonStr.lastIndexOf(']');
-  if (arrStart !== -1 && arrEnd > arrStart) {
-    jsonStr = jsonStr.substring(arrStart, arrEnd + 1);
-  }
-
+  // Extract JSON array — find the actual [{"title":... pattern, not any random [
   let clips: SelectedClip[];
   try {
+    // Try finding [{ which indicates start of JSON array of objects
+    const jsonArrayStart = jsonStr.indexOf('[{');
+    const jsonArrayEnd = jsonStr.lastIndexOf('}]');
+    if (jsonArrayStart !== -1 && jsonArrayEnd > jsonArrayStart) {
+      jsonStr = jsonStr.substring(jsonArrayStart, jsonArrayEnd + 2);
+    } else {
+      // Fallback: try first [ to last ]
+      const arrStart = jsonStr.indexOf('[');
+      const arrEnd = jsonStr.lastIndexOf(']');
+      if (arrStart !== -1 && arrEnd > arrStart) {
+        jsonStr = jsonStr.substring(arrStart, arrEnd + 1);
+      }
+    }
     clips = JSON.parse(jsonStr);
   } catch {
     throw new Error(`Failed to parse clip selection JSON: ${jsonStr.substring(0, 500)}`);
