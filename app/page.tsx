@@ -2046,8 +2046,8 @@ function HomeContent() {
                   prev.map(s => {
                     if (s.label === data.step) {
                       const detail = data.chunkLabel && data.totalChunks > 1
-                        ? `Chunk ${data.currentChunk}/${data.totalChunks} (${data.chunkLabel})`
-                        : undefined;
+                        ? `Chunk ${data.completedChunks}/${data.totalChunks} (${data.chunkLabel})`
+                        : data.detail;
                       return { ...s, status: data.status, progress: data.progress, detail };
                     }
                     return s;
@@ -3052,8 +3052,8 @@ function HomeContent() {
                     <button
                       onClick={async () => {
                         setClippingProcessSteps([
-                          { label: 'Upload', status: 'active' },
-                          { label: 'Create project', status: 'pending' },
+                          { label: 'Upload', status: clippingFile?.rawFile ? 'active' : 'done' },
+                          { label: 'Create project', status: clippingFile?.rawFile ? 'pending' : 'active' },
                           { label: 'Process video', status: 'pending' },
                           { label: 'Finding best parts', status: 'pending' },
                           { label: 'Edit clips', status: 'pending' },
@@ -3062,7 +3062,50 @@ function HomeContent() {
                         setClippingStep('processing');
 
                         try {
-                          // Create project first
+                          // Step 1: Upload file first (if local file)
+                          let videoUrl: string;
+                          const tempId = crypto.randomUUID();
+
+                          if (clippingFile?.rawFile) {
+                            const formData = new FormData();
+                            formData.append('file', clippingFile.rawFile);
+                            formData.append('projectId', tempId);
+
+                            const uploadData = await new Promise<{ url: string }>((resolve, reject) => {
+                              const xhr = new XMLHttpRequest();
+                              xhr.open('POST', '/api/clipping/upload');
+                              xhr.upload.onprogress = (e) => {
+                                if (e.lengthComputable) {
+                                  const pct = Math.round((e.loaded / e.total) * 100);
+                                  setClippingProcessSteps(prev =>
+                                    prev.map(s => s.label === 'Upload' ? { ...s, detail: `${pct}%`, progress: pct } : s)
+                                  );
+                                }
+                              };
+                              xhr.onload = () => {
+                                if (xhr.status >= 200 && xhr.status < 300) {
+                                  resolve(JSON.parse(xhr.responseText));
+                                } else {
+                                  reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+                                }
+                              };
+                              xhr.onerror = () => reject(new Error('Upload network error'));
+                              xhr.send(formData);
+                            });
+
+                            videoUrl = uploadData.url;
+                            setClippingProcessSteps(prev =>
+                              prev.map(s => {
+                                if (s.label === 'Upload') return { ...s, status: 'done', detail: undefined };
+                                if (s.label === 'Create project') return { ...s, status: 'active' };
+                                return s;
+                              })
+                            );
+                          } else {
+                            videoUrl = newProjectTitle;
+                          }
+
+                          // Step 2: Create project (only after upload succeeds)
                           const res = await fetch('/api/clipping/projects', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -3075,71 +3118,23 @@ function HomeContent() {
                           setClippingProjects(prev => [data.project, ...prev]);
                           setClippingCurrentProjectId(projectId);
                           setClippingProcessSteps(prev =>
-                            prev.map(s => s.label === 'Create project' ? { ...s, status: 'done' } : s)
+                            prev.map(s => {
+                              if (s.label === 'Create project') return { ...s, status: 'done' };
+                              if (s.label === 'Process video') return { ...s, status: 'active' };
+                              return s;
+                            })
                           );
 
-                          // Upload file if it's a local file
-                          let videoUrl: string;
-                          if (clippingFile?.rawFile) {
-                            setClippingProcessSteps(prev =>
-                              prev.map(s => s.label === 'Upload' ? { ...s, status: 'active', progress: 0 } : s)
-                            );
-                            const formData = new FormData();
-                            formData.append('file', clippingFile.rawFile);
-                            formData.append('projectId', projectId);
+                          // Step 3: Start analysis via SSE
+                          console.log('[clipping] Starting analysis:', { projectId, videoUrl: videoUrl?.substring(0, 60), duration: clippingVideoDuration });
+                          await startClippingAnalysis(projectId, videoUrl, clippingVideoDuration);
 
-                            // Use XHR for upload progress
-                            const uploadData = await new Promise<{ url: string }>((resolve, reject) => {
-                              const xhr = new XMLHttpRequest();
-                              xhr.open('POST', '/api/clipping/upload');
-                              xhr.upload.onprogress = (e) => {
-                                if (e.lengthComputable) {
-                                  const pct = Math.round((e.loaded / e.total) * 100);
-                                  setClippingProcessSteps(prev =>
-                                    prev.map(s => s.label === 'Upload' ? { ...s, progress: pct } : s)
-                                  );
-                                }
-                              };
-                              xhr.onload = () => {
-                                if (xhr.status >= 200 && xhr.status < 300) {
-                                  resolve(JSON.parse(xhr.responseText));
-                                } else {
-                                  reject(new Error(`Upload failed: ${xhr.status}`));
-                                }
-                              };
-                              xhr.onerror = () => reject(new Error('Upload network error'));
-                              xhr.send(formData);
-                            });
-
-                            videoUrl = uploadData.url;
-                          } else {
-                            // Link input
-                            videoUrl = newProjectTitle;
-                          }
-
-                          setClippingProcessSteps(prev =>
-                            prev.map(s => s.label === 'Upload' ? { ...s, status: 'done' } : s)
-                          );
-
-                          // Start analysis via SSE
-                          setClippingProcessSteps(prev =>
-                            prev.map(s => s.label === 'Process video' ? { ...s, status: 'active' } : s)
-                          );
-                          try {
-                            await startClippingAnalysis(projectId, videoUrl, clippingVideoDuration);
-                          } catch (analysisErr) {
-                            console.error('Analysis error:', analysisErr);
-                            const msg = analysisErr instanceof Error ? analysisErr.message : 'Unknown error';
-                            setClippingProcessSteps(prev =>
-                              prev.map(s => s.status === 'active' ? { ...s, status: 'pending', detail: `Error: ${msg}` } : s)
-                            );
-                          }
                         } catch (err) {
                           console.error('Error in clipping pipeline:', err);
                           const msg = err instanceof Error ? err.message : 'Unknown error';
                           setClippingProcessSteps(prev =>
-                            prev.map(s => s.status === 'active' || s.status === 'pending'
-                              ? { ...s, detail: s.status === 'active' ? `Error: ${msg}` : undefined }
+                            prev.map(s => s.status === 'active'
+                              ? { ...s, status: 'pending', detail: `Error: ${msg}` }
                               : s)
                           );
                         }

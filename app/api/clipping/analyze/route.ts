@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
         });
 
         // Step 3: Process video — fire all chunks in parallel (semaphore limits to 10 global)
-        send('progress', { step: 'Process video', status: 'active', totalChunks, completedChunks: 0 });
+        send('progress', { step: 'Process video', status: 'active', totalChunks, completedChunks: 0, detail: `Extracting ${totalChunks} chunks...` });
         await log(projectId, analysisId, 'process_video', 'active',
           `Starting parallel analysis: ${totalChunks} chunk(s) for ${Math.round(durationSec)}s video`);
 
