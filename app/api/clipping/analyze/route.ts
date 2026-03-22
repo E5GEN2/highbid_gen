@@ -4,6 +4,7 @@ import { pool } from '@/lib/db';
 import { getPapaiApiKey } from '@/lib/config';
 import {
   analyzeVideoChunk,
+  extractChunks,
   planChunks,
   mergeChunkResults,
   VIDEO_ANALYSIS_PROMPT,
@@ -101,24 +102,26 @@ export async function POST(req: NextRequest) {
           chunks: chunks.map(c => c.label),
         });
 
-        // Step 3: Process video — fire all chunks in parallel (semaphore limits to 10 global)
-        send('progress', { step: 'Process video', status: 'active', totalChunks, completedChunks: 0, detail: `Extracting ${totalChunks} chunks...` });
+        // Step 3: Process video
+        send('progress', { step: 'Process video', status: 'active', totalChunks, completedChunks: 0, progress: 0 });
         await log(projectId, analysisId, 'process_video', 'active',
-          `Starting parallel analysis: ${totalChunks} chunk(s) for ${Math.round(durationSec)}s video`);
+          `Processing ${totalChunks} chunk(s) for ${Math.round(durationSec)}s video`);
 
+        // Phase 1: Extract chunks sequentially (avoids EAGAIN from parallel ffmpeg)
+        const extractedChunks = await extractChunks(videoUrl, chunks, (extracted, total) => {
+          const extractPct = Math.round((extracted / total) * 30); // 0-30% for extraction
+          send('progress', { step: 'Process video', status: 'active', progress: extractPct });
+        });
+
+        await log(projectId, analysisId, 'extract_chunks', 'done',
+          `Extracted ${extractedChunks.size} chunks`, { count: extractedChunks.size });
+
+        // Phase 2: Analyze chunks in parallel (semaphore limits to 10 global)
         let completedChunks = 0;
         const chunkResults: (GeminiFilesResponse | null)[] = new Array(totalChunks).fill(null);
 
-        // Launch all chunks in parallel — global semaphore handles concurrency
         const chunkPromises = chunks.map(async (chunk) => {
-          await log(projectId, analysisId, 'process_chunk', 'queued',
-            `Chunk ${chunk.index + 1}/${totalChunks} queued: ${chunk.label}`, {
-              chunkIndex: chunk.index,
-              startSec: chunk.startSec,
-              endSec: chunk.endSec,
-            });
-
-          const result = await analyzeVideoChunk(videoUrl, apiKey, chunk);
+          const result = await analyzeVideoChunk(videoUrl, apiKey, chunk, extractedChunks);
           chunkResults[chunk.index] = result;
           completedChunks++;
 
@@ -128,7 +131,7 @@ export async function POST(req: NextRequest) {
             totalChunks,
             completedChunks,
             chunkLabel: chunk.label,
-            progress: Math.round((completedChunks / totalChunks) * 100),
+            progress: 30 + Math.round((completedChunks / totalChunks) * 70), // 30-100%
           });
 
           await log(projectId, analysisId, 'process_chunk', 'done',

@@ -93,34 +93,34 @@ export async function analyzeVideoByUrl(
  * Analyze a specific time range of a video via the Gemini Files API.
  * For local files (file://), extracts the chunk with ffmpeg first.
  */
-export async function analyzeVideoChunk(
+/**
+ * Pre-extract all chunks from a local video file sequentially.
+ * Must be called before analyzeVideoChunk for local files.
+ * Returns map of chunk index → extracted file path.
+ */
+export async function extractChunks(
   fileUrl: string,
-  apiKey: string,
-  chunk: AnalysisChunk,
-): Promise<GeminiFilesResponse> {
-  const isLocal = fileUrl.startsWith('file://');
+  chunks: AnalysisChunk[],
+  onProgress?: (extracted: number, total: number) => void,
+): Promise<Map<number, string>> {
+  const result = new Map<number, string>();
+  if (!fileUrl.startsWith('file://') || chunks.length <= 1) return result;
 
-  // For "Full video" chunk (short videos), send the whole file
-  if (chunk.label === 'Full video') {
-    return callGeminiFiles(fileUrl, apiKey, VIDEO_ANALYSIS_PROMPT);
-  }
+  const localPath = fileUrl.replace('file://', '');
+  const fs = await import('fs');
+  const path = await import('path');
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  const execFileAsync = promisify(execFile);
 
-  const prompt = makeChunkPrompt(chunk.startSec, chunk.endSec);
+  const chunkDir = path.join(path.dirname(localPath), 'chunks');
+  fs.mkdirSync(chunkDir, { recursive: true });
 
-  // For local files with multiple chunks, extract chunk with ffmpeg
-  if (isLocal) {
-    const localPath = fileUrl.replace('file://', '');
-    const fs = await import('fs');
-    const path = await import('path');
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-
-    const chunkDir = path.join(path.dirname(localPath), 'chunks');
-    fs.mkdirSync(chunkDir, { recursive: true });
+  // Extract ONE AT A TIME to avoid EAGAIN
+  for (const chunk of chunks) {
+    if (chunk.label === 'Full video') continue;
     const chunkFile = path.join(chunkDir, `chunk_${chunk.index}.mp4`);
 
-    // Extract chunk (compressed for faster upload)
     if (!fs.existsSync(chunkFile)) {
       await execFileAsync('ffmpeg', [
         '-ss', String(chunk.startSec),
@@ -133,7 +133,34 @@ export async function analyzeVideoChunk(
       ], { timeout: 120000 });
     }
 
-    return callGeminiFiles(`file://${chunkFile}`, apiKey, prompt);
+    result.set(chunk.index, chunkFile);
+    onProgress?.(result.size, chunks.length);
+  }
+
+  return result;
+}
+
+/**
+ * Analyze a specific time range of a video via the Gemini Files API.
+ * For local files, expects chunks to be pre-extracted via extractChunks().
+ */
+export async function analyzeVideoChunk(
+  fileUrl: string,
+  apiKey: string,
+  chunk: AnalysisChunk,
+  extractedChunks?: Map<number, string>,
+): Promise<GeminiFilesResponse> {
+  // For "Full video" chunk (short videos), send the whole file
+  if (chunk.label === 'Full video') {
+    return callGeminiFiles(fileUrl, apiKey, VIDEO_ANALYSIS_PROMPT);
+  }
+
+  const prompt = makeChunkPrompt(chunk.startSec, chunk.endSec);
+
+  // Use pre-extracted chunk file if available
+  const extractedPath = extractedChunks?.get(chunk.index);
+  if (extractedPath) {
+    return callGeminiFiles(`file://${extractedPath}`, apiKey, prompt);
   }
 
   // For remote URLs, send the full video with chunk prompt
