@@ -209,7 +209,7 @@ export function mergeChunkResults(results: GeminiFilesResponse[]): GeminiFilesRe
 }
 
 /** Global concurrency limiter — max 10 parallel API calls across all users */
-const MAX_CONCURRENT = 10;
+const MAX_CONCURRENT = 20;
 let activeCount = 0;
 const waitQueue: (() => void)[] = [];
 
