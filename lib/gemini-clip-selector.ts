@@ -50,7 +50,7 @@ export async function selectClips(
   const promptTemplate = customPrompt || CLIP_SELECTION_PROMPT;
   const prompt = promptTemplate.replace('{{SEGMENTS}}', segmentText);
 
-  // Retry up to 3 times — Gemini sometimes returns text instead of JSON
+  // Use generateContent with responseMimeType for reliable JSON output
   const MAX_ATTEMPTS = 3;
   let text = '';
   let tokensIn = 0;
@@ -59,17 +59,19 @@ export async function selectClips(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const attemptStart = Date.now();
-    const response = await fetch('https://papaiapi.com/v1/chat/completions', {
+    const response = await fetch('https://papaiapi.com/v1beta/models/gemini-flash:generateContent', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'x-goog-api-key': apiKey,
       },
       body: JSON.stringify({
-        model: 'gemini-flash',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: attempt === 1 ? 0.3 : 0.1, // Lower temp on retry
-        max_tokens: 8192,
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 8192,
+          responseMimeType: 'application/json',
+        },
       }),
     });
 
@@ -81,26 +83,18 @@ export async function selectClips(
 
     const data = await response.json();
     durationMs += Date.now() - attemptStart;
-    tokensIn += data.usage?.prompt_tokens || 0;
-    tokensOut += data.usage?.completion_tokens || 0;
+    tokensIn += data.usageMetadata?.promptTokenCount || 0;
+    tokensOut += data.usageMetadata?.candidatesTokenCount || 0;
 
-    text = data.choices?.[0]?.message?.content || '';
+    text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (text) break;
 
-    // Check if response contains JSON
-    const trimmed = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
-    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-      break; // Looks like JSON
-    }
-
-    console.log(`[clip-selector] Attempt ${attempt}/${MAX_ATTEMPTS}: response not JSON, starts with "${trimmed.substring(0, 40)}..."`);
-    if (attempt === MAX_ATTEMPTS) break; // Use whatever we got
+    console.log(`[clip-selector] Attempt ${attempt}/${MAX_ATTEMPTS}: empty response`);
   }
 
   if (!text) {
     throw new Error('No text in Gemini clip selection response after retries');
   }
-
-  const tokensInFinal = tokensIn;
 
   // Parse JSON — clean up and extract array
   let jsonStr = text
