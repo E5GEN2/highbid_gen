@@ -86,8 +86,14 @@ export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      let streamClosed = false;
       const send = (event: string, data: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        if (streamClosed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          streamClosed = true; // Client disconnected — continue processing silently
+        }
       };
 
       try {
@@ -230,7 +236,7 @@ export async function POST(req: NextRequest) {
 
         send('error', { error: errorMsg });
       } finally {
-        controller.close();
+        if (!streamClosed) try { controller.close(); } catch { /* already closed */ }
       }
     },
   });
