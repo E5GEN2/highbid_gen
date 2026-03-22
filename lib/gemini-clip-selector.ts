@@ -42,7 +42,7 @@ export async function selectClips(
 ): Promise<ClipSelectionResult> {
   const startTime = Date.now();
 
-  // Format segments compactly for the prompt
+  // Full segment data — no trimming, PapaiAPI limit is now 1MB
   const segmentText = segments.map(s =>
     `[${s.start.toFixed(1)}-${s.end.toFixed(1)}s] visual: ${s.visual} | speech: ${s.speech || '(none)'} | audio: ${s.audio || '(none)'}`
   ).join('\n');
