@@ -2045,10 +2045,8 @@ function HomeContent() {
                 setClippingProcessSteps(prev =>
                   prev.map(s => {
                     if (s.label === data.step) {
-                      const detail = data.chunkLabel && data.totalChunks > 1
-                        ? `Chunk ${data.completedChunks}/${data.totalChunks} (${data.chunkLabel})`
-                        : data.detail;
-                      return { ...s, status: data.status, progress: data.progress, detail };
+                      const pct = data.progress || 0;
+                      return { ...s, status: data.status, progress: pct };
                     }
                     return s;
                   })
