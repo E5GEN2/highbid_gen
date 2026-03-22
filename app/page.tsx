@@ -3282,7 +3282,7 @@ function HomeContent() {
                         >
                           <div className="relative w-14 h-10 bg-gray-800 rounded-md overflow-hidden flex-shrink-0">
                             <img
-                              src={`/api/clipping/clips/${clip.id}/thumbnail`}
+                              src={`/api/clipping/serve?clipId=${clip.id}&type=thumbnail`}
                               alt=""
                               className="w-full h-full object-cover"
                               onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -3336,8 +3336,8 @@ function HomeContent() {
                                 key={clip.id}
                                 controls
                                 className="w-full h-full object-contain"
-                                src={`/api/clipping/clips/${clip.id}/download`}
-                                poster={`/api/clipping/clips/${clip.id}/thumbnail`}
+                                src={`/api/clipping/serve?clipId=${clip.id}&type=video`}
+                                poster={`/api/clipping/serve?clipId=${clip.id}&type=thumbnail`}
                               />
                             ) : (
                               <div className="absolute inset-0 flex items-center justify-center text-gray-500">
@@ -3350,7 +3350,7 @@ function HomeContent() {
                           <div className="flex items-center gap-3 mb-6">
                             {clip.status === 'done' && (
                               <a
-                                href={`/api/clipping/clips/${clip.id}/download`}
+                                href={`/api/clipping/serve?clipId=${clip.id}&type=video`}
                                 download
                                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
                               >
@@ -3506,6 +3506,17 @@ function HomeContent() {
                             {/* Actions */}
                             <div className="flex gap-2 mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
                               <button
+                                onClick={async () => {
+                                  setClippingCurrentProjectId(project.id);
+                                  setClippingStep('clips');
+                                  try {
+                                    const res = await fetch(`/api/clipping/clips?projectId=${project.id}`);
+                                    const data = await res.json();
+                                    if (data.clips) setClippingGeneratedClips(data.clips);
+                                  } catch (err) {
+                                    console.error('Failed to load clips:', err);
+                                  }
+                                }}
                                 className="flex-1 px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
                               >
                                 Open

@@ -46,6 +46,13 @@ export async function GET(req: NextRequest) {
     [projectId]
   );
 
+  // Get clips
+  const clips = await pool.query(
+    `SELECT id, title, description, score, start_sec, end_sec, duration_sec, transcript, status, file_path, thumbnail_path, file_size_bytes, created_at
+     FROM clipping_clips WHERE project_id = $1 ORDER BY score DESC`,
+    [projectId]
+  );
+
   // Get segments from latest analysis (separate query to keep listing light)
   let segments = null;
   if (analyses.rows.length > 0) {
@@ -58,6 +65,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     project: project.rows[0] || null,
     analyses: analyses.rows,
+    clips: clips.rows,
     segments,
     logs: logs.rows,
   });

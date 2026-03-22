@@ -4,7 +4,7 @@ import { pool } from '@/lib/db';
 
 /**
  * GET /api/clipping/clips?projectId=xxx
- * List all clips for a project.
+ * List clips for a project. Requires auth — user must own the project.
  */
 export async function GET(req: NextRequest) {
   const session = await auth();
@@ -17,23 +17,26 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'projectId required' }, { status: 400 });
   }
 
-  // Verify project belongs to user
+  // Verify ownership
   const projectCheck = await pool.query(
-    `SELECT id FROM clipping_projects WHERE id = $1 AND user_id = $2`,
+    `SELECT id, title, status FROM clipping_projects WHERE id = $1 AND user_id = $2`,
     [projectId, session.user.id]
   );
   if (projectCheck.rows.length === 0) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   }
 
-  const result = await pool.query(
+  const clips = await pool.query(
     `SELECT id, title, description, score, start_sec, end_sec, duration_sec,
             transcript, status, file_size_bytes, created_at
      FROM clipping_clips
      WHERE project_id = $1
-     ORDER BY score DESC, start_sec ASC`,
+     ORDER BY score DESC`,
     [projectId]
   );
 
-  return NextResponse.json({ clips: result.rows });
+  return NextResponse.json({
+    project: projectCheck.rows[0],
+    clips: clips.rows,
+  });
 }
