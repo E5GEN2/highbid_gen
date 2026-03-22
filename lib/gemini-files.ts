@@ -240,7 +240,7 @@ export function getConcurrencyStats() {
 
 /** Default retry config */
 const MAX_RETRIES = 3;
-const RETRY_DELAYS = [5000, 10000, 20000]; // Escalating delays
+const RETRY_DELAYS = [0, 0, 0]; // Retry immediately
 
 /**
  * Low-level call to PapaiAPI Gemini Files endpoint with retry logic.
