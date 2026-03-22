@@ -96,11 +96,22 @@ export async function downloadVideo(url: string, projectId: string): Promise<str
   const ext = url.includes('.mov') ? '.mov' : '.mp4';
   const localPath = path.join(dir, `source${ext}`);
 
-  // Skip if already downloaded
+  // Skip if already exists
   if (fs.existsSync(localPath)) {
     return localPath;
   }
 
+  // Handle file:// URLs — just copy the local file
+  if (url.startsWith('file://')) {
+    const srcPath = url.replace('file://', '');
+    if (!fs.existsSync(srcPath)) {
+      throw new Error(`Local file not found: ${srcPath}`);
+    }
+    fs.copyFileSync(srcPath, localPath);
+    return localPath;
+  }
+
+  // Remote URL — download via fetch
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to download video: ${response.status}`);
