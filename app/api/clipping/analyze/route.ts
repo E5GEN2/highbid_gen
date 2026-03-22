@@ -284,3 +284,5 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({ analysis: result.rows[0] });
 }
+
+export const maxDuration = 300;

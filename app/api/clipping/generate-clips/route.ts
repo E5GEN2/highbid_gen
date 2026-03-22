@@ -106,12 +106,13 @@ export async function POST(req: NextRequest) {
         const localVideoPath = await downloadVideo(videoUrl, projectId);
         send('progress', { step: 'Downloading source', status: 'done' });
 
-        // Step 4: Cut clips with ffmpeg (parallel)
-        send('progress', { step: 'Cutting clips', status: 'active', total: clips.length, completed: 0 });
+        // Step 4: Cut clips with ffmpeg (sequential to avoid EAGAIN)
+        send('progress', { step: 'Cutting clips', status: 'active', total: clips.length, completed: 0, progress: 0 });
 
         let completedCuts = 0;
 
-        const cutPromises = clips.map(async (clip, i) => {
+        for (let i = 0; i < clips.length; i++) {
+          const clip = clips[i];
           const clipId = clipIds[i];
 
           try {
@@ -141,7 +142,6 @@ export async function POST(req: NextRequest) {
               total: clips.length,
               completed: completedCuts,
               progress: Math.round((completedCuts / clips.length) * 100),
-              lastClip: clip.title,
             });
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -150,9 +150,7 @@ export async function POST(req: NextRequest) {
             );
             console.error(`[generate-clips] Cut failed for ${clipId}: ${msg}`);
           }
-        });
-
-        await Promise.all(cutPromises);
+        }
 
         send('progress', { step: 'Cutting clips', status: 'done', completed: completedCuts, total: clips.length });
 
@@ -195,3 +193,6 @@ export async function POST(req: NextRequest) {
     },
   });
 }
+
+// Allow long processing time for clip generation
+export const maxDuration = 300;
