@@ -3103,6 +3103,22 @@ function HomeContent() {
                                 return s;
                               })
                             );
+                          } else if (newProjectTitle.match(/(?:youtube\.com|youtu\.be)/i)) {
+                            // YouTube URL — download via yt-dlp
+                            setClippingProcessSteps(prev =>
+                              prev.map(s => s.label === 'Upload' ? { ...s, status: 'active', detail: 'Downloading from YouTube...' } : s)
+                            );
+                            const tempId = crypto.randomUUID();
+                            const ytRes = await fetch('/api/clipping/download-yt', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ projectId: tempId, url: newProjectTitle }),
+                            });
+                            const ytData = await ytRes.json();
+                            if (!ytRes.ok) throw new Error(ytData.error || 'YouTube download failed');
+                            videoUrl = ytData.url;
+                            if (ytData.duration) setClippingVideoDuration(ytData.duration);
+                            if (ytData.title) setNewProjectTitle(ytData.title);
                           } else {
                             videoUrl = newProjectTitle;
                           }
