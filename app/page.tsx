@@ -2009,14 +2009,17 @@ function HomeContent() {
 
   const startClippingAnalysis = async (projectId: string, videoUrl: string, videoDuration?: number) => {
     try {
+      console.log('[clipping] Starting analysis:', { projectId, videoUrl: videoUrl?.substring(0, 50), videoDuration });
       const response = await fetch('/api/clipping/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId, videoUrl, videoDuration }),
       });
 
+      console.log('[clipping] Analyze response:', response.status, response.statusText);
       if (!response.ok || !response.body) {
-        throw new Error('Failed to start analysis');
+        const errText = await response.text().catch(() => '');
+        throw new Error(`Failed to start analysis: ${response.status} ${errText}`);
       }
 
       const reader = response.body.getReader();
@@ -3119,12 +3122,25 @@ function HomeContent() {
                           );
 
                           // Start analysis via SSE
-                          startClippingAnalysis(projectId, videoUrl, clippingVideoDuration);
+                          setClippingProcessSteps(prev =>
+                            prev.map(s => s.label === 'Process video' ? { ...s, status: 'active' } : s)
+                          );
+                          try {
+                            await startClippingAnalysis(projectId, videoUrl, clippingVideoDuration);
+                          } catch (analysisErr) {
+                            console.error('Analysis error:', analysisErr);
+                            const msg = analysisErr instanceof Error ? analysisErr.message : 'Unknown error';
+                            setClippingProcessSteps(prev =>
+                              prev.map(s => s.status === 'active' ? { ...s, status: 'pending', detail: `Error: ${msg}` } : s)
+                            );
+                          }
                         } catch (err) {
                           console.error('Error in clipping pipeline:', err);
                           const msg = err instanceof Error ? err.message : 'Unknown error';
                           setClippingProcessSteps(prev =>
-                            prev.map(s => s.status === 'active' ? { ...s, status: 'pending', detail: `Error: ${msg}` } : s)
+                            prev.map(s => s.status === 'active' || s.status === 'pending'
+                              ? { ...s, detail: s.status === 'active' ? `Error: ${msg}` : undefined }
+                              : s)
                           );
                         }
                       }}
@@ -3195,8 +3211,8 @@ function HomeContent() {
                               }`}>
                                 {step.label}{step.status === 'active' && step.progress != null ? `...${step.progress}%` : ''}
                               </span>
-                              {step.detail && step.status === 'active' && (
-                                <span className="text-xs text-gray-500 mt-0.5">{step.detail}</span>
+                              {step.detail && (
+                                <span className={`text-xs mt-0.5 ${step.detail.startsWith('Error') ? 'text-red-400' : 'text-gray-500'}`}>{step.detail}</span>
                               )}
                             </div>
                           </div>
