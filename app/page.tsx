@@ -3509,6 +3509,7 @@ function HomeContent() {
                                 onClick={async () => {
                                   setClippingCurrentProjectId(project.id);
                                   setClippingStep('clips');
+                                  setShowNewProjectModal(true);
                                   try {
                                     const res = await fetch(`/api/clipping/clips?projectId=${project.id}`);
                                     const data = await res.json();
