@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { getPapaiApiKey } from '@/lib/config';
 import { selectClips } from '@/lib/gemini-clip-selector';
 import { cutClip, downloadVideo } from '@/lib/clip-cutter';
 import type { VideoSegment } from '@/lib/gemini-files';
@@ -48,9 +49,9 @@ export async function POST(req: NextRequest) {
   const videoUrl: string = analysis.video_url;
   const analysisId: string = analysis.id;
 
-  const apiKey = process.env.PAPAI_API_KEY;
+  const apiKey = await getPapaiApiKey();
   if (!apiKey) {
-    return NextResponse.json({ error: 'PAPAI_API_KEY not configured' }, { status: 500 });
+    return NextResponse.json({ error: 'PAPAI_API_KEY not configured. Set it in Admin > Settings.' }, { status: 500 });
   }
 
   const encoder = new TextEncoder();

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { getPapaiApiKey } from '@/lib/config';
 import {
   analyzeVideoChunk,
   planChunks,
@@ -55,9 +56,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   }
 
-  const apiKey = process.env.PAPAI_API_KEY;
+  const apiKey = await getPapaiApiKey();
   if (!apiKey) {
-    return NextResponse.json({ error: 'PAPAI_API_KEY not configured' }, { status: 500 });
+    return NextResponse.json({ error: 'PAPAI_API_KEY not configured. Set it in Admin > Settings.' }, { status: 500 });
   }
 
   // Create analysis record
