@@ -3104,9 +3104,9 @@ function HomeContent() {
                               })
                             );
                           } else if (newProjectTitle.match(/(?:youtube\.com|youtu\.be)/i)) {
-                            // YouTube URL — download via yt-dlp
+                            // YouTube URL — download via yt-dlp with SSE progress
                             setClippingProcessSteps(prev =>
-                              prev.map(s => s.label === 'Upload' ? { ...s, status: 'active', detail: 'Downloading from YouTube...' } : s)
+                              prev.map(s => s.label === 'Upload' ? { ...s, status: 'active', detail: 'Fetching video info...' } : s)
                             );
                             const tempId = crypto.randomUUID();
                             const ytRes = await fetch('/api/clipping/download-yt', {
@@ -3114,11 +3114,59 @@ function HomeContent() {
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({ projectId: tempId, url: newProjectTitle }),
                             });
-                            const ytData = await ytRes.json();
-                            if (!ytRes.ok) throw new Error(ytData.error || 'YouTube download failed');
-                            videoUrl = ytData.url;
-                            if (ytData.duration) setClippingVideoDuration(ytData.duration);
-                            if (ytData.title) setNewProjectTitle(ytData.title);
+
+                            if (!ytRes.ok || !ytRes.body) {
+                              const errData = await ytRes.json().catch(() => ({}));
+                              throw new Error(errData.error || 'YouTube download failed');
+                            }
+
+                            // Read SSE stream for progress
+                            const ytResult = await new Promise<{ url: string; title?: string; duration?: number }>((resolve, reject) => {
+                              const reader = ytRes.body!.getReader();
+                              const decoder = new TextDecoder();
+                              let buf = '';
+
+                              const read = async () => {
+                                while (true) {
+                                  const { done, value } = await reader.read();
+                                  if (done) { reject(new Error('Stream ended without result')); return; }
+                                  buf += decoder.decode(value, { stream: true });
+                                  const lines = buf.split('\n');
+                                  buf = lines.pop() || '';
+                                  let evtType = '';
+                                  for (const line of lines) {
+                                    if (line.startsWith('event: ')) evtType = line.slice(7);
+                                    else if (line.startsWith('data: ')) {
+                                      try {
+                                        const d = JSON.parse(line.slice(6));
+                                        if (evtType === 'progress') {
+                                          setClippingProcessSteps(prev =>
+                                            prev.map(s => s.label === 'Upload' ? {
+                                              ...s, status: 'active',
+                                              detail: d.message || 'Downloading...',
+                                              progress: d.percent,
+                                            } : s)
+                                          );
+                                          if (d.title) setNewProjectTitle(d.title);
+                                          if (d.duration) setClippingVideoDuration(d.duration);
+                                        } else if (evtType === 'complete') {
+                                          resolve(d);
+                                          return;
+                                        } else if (evtType === 'error') {
+                                          reject(new Error(d.error || 'Download failed'));
+                                          return;
+                                        }
+                                      } catch { /* skip */ }
+                                    }
+                                  }
+                                }
+                              };
+                              read();
+                            });
+
+                            videoUrl = ytResult.url;
+                            if (ytResult.duration) setClippingVideoDuration(ytResult.duration);
+                            if (ytResult.title) setNewProjectTitle(ytResult.title);
                           } else {
                             videoUrl = newProjectTitle;
                           }
