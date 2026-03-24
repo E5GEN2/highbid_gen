@@ -82,9 +82,11 @@ export async function POST(req: NextRequest) {
           ]);
 
           let lastPct = 0;
+          let stderrBuf = '';
 
           proc.stderr.on('data', (data: Buffer) => {
             const line = data.toString();
+            stderrBuf += line;
             // Parse yt-dlp progress: [download]  45.2% of ~111.00MiB at 2.50MiB/s ETA 00:25
             const pctMatch = line.match(/(\d+(?:\.\d+)?)%/);
             if (pctMatch) {
@@ -122,7 +124,7 @@ export async function POST(req: NextRequest) {
           proc.on('close', (code) => {
             clearTimeout(timeout);
             if (code === 0) resolve();
-            else reject(new Error(`yt-dlp exited with code ${code}`));
+            else reject(new Error(`yt-dlp exited with code ${code}: ${stderrBuf.substring(stderrBuf.length - 500)}`));
           });
 
           proc.on('error', (err) => {
