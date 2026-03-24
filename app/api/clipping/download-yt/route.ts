@@ -8,6 +8,9 @@ import path from 'path';
 const execFileAsync = promisify(execFile);
 const CLIPS_DIR = '/tmp/clips';
 
+// Proxy config for yt-dlp to avoid YouTube bot detection
+const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@xgodo.com:3008';
+
 /**
  * POST /api/clipping/download-yt
  * Download a YouTube video via yt-dlp and store locally.
@@ -39,8 +42,9 @@ export async function POST(req: NextRequest) {
     const { stdout: infoJson } = await execFileAsync('yt-dlp', [
       '--dump-json',
       '--no-warnings',
+      '--proxy', PROXY_URL,
       url,
-    ], { timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
+    ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
 
     const info = JSON.parse(infoJson);
     const title = info.title || 'Untitled';
@@ -53,6 +57,7 @@ export async function POST(req: NextRequest) {
       '-o', outputPath,
       '--no-warnings',
       '--no-playlist',
+      '--proxy', PROXY_URL,
       url,
     ], { timeout: 300000 }); // 5 min timeout
 
