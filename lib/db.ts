@@ -360,6 +360,27 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_clipping_clips_project ON clipping_clips(project_id)
     `);
 
+    // Clipping: face detection data for smart cropping
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS clipping_face_data (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id UUID NOT NULL REFERENCES clipping_projects(id) ON DELETE CASCADE,
+        clip_id UUID REFERENCES clipping_clips(id) ON DELETE CASCADE,
+        start_sec REAL,
+        end_sec REAL,
+        fps_sampled INT,
+        total_frames INT,
+        video_width INT,
+        video_height INT,
+        frames JSONB NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(project_id, COALESCE(clip_id, '00000000-0000-0000-0000-000000000000'::uuid))
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_clipping_face_data_project ON clipping_face_data(project_id)
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
