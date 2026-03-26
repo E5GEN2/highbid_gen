@@ -20,9 +20,9 @@ const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@
  * Returns JSON status after each step.
  */
 export async function POST(req: NextRequest) {
-  const { url, projectId: existingId } = await req.json();
-  if (!url) {
-    return NextResponse.json({ error: 'url required' }, { status: 400 });
+  const { url, projectId: existingId, step: requestedStep, sourcePath: existingSourcePath } = await req.json();
+  if (!url && !existingId) {
+    return NextResponse.json({ error: 'url or projectId required' }, { status: 400 });
   }
 
   const dbLog = async (projectId: string, step: string, status: string, message: string) => {
@@ -49,9 +49,15 @@ export async function POST(req: NextRequest) {
     fs.mkdirSync(dir, { recursive: true });
     const outputPath = path.join(dir, 'source.mp4');
 
-    if (fs.existsSync(outputPath)) {
+    if (existingSourcePath && fs.existsSync(existingSourcePath)) {
+      // Copy from an existing downloaded file
+      fs.copyFileSync(existingSourcePath, outputPath);
+      await dbLog(projectId, 'download', 'done', `Copied from ${existingSourcePath}: ${(fs.statSync(outputPath).size / 1e6).toFixed(0)}MB`);
+    } else if (fs.existsSync(outputPath)) {
       await dbLog(projectId, 'download', 'done', `Already exists: ${(fs.statSync(outputPath).size / 1e6).toFixed(0)}MB`);
-    } else if (url.match(/(?:youtube\.com|youtu\.be)/i)) {
+    } else if (requestedStep === 'analyze') {
+      return NextResponse.json({ error: 'Source file not found. Download first.', projectId }, { status: 400 });
+    } else if (url && url.match(/(?:youtube\.com|youtu\.be)/i)) {
       await dbLog(projectId, 'download', 'active', 'Downloading from YouTube...');
       await execFileAsync('yt-dlp', [
         '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -73,11 +79,19 @@ export async function POST(req: NextRequest) {
     ], { timeout: 30000 });
     const duration = parseFloat(JSON.parse(probeOut).format.duration);
 
-    // Return immediately — run the rest in the background
-    const bgProjectId = projectId;
+    // If step=download, return after download
+    if (requestedStep === 'download') {
+      return NextResponse.json({
+        ok: true, projectId, videoUrl, duration, status: 'downloaded',
+        next: `POST with {"projectId":"${projectId}","step":"analyze"}`,
+      });
+    }
 
-    // Fire and forget — pipeline continues after response
-    (async () => {
+    // Run analysis synchronously (within this request)
+    // This is the long-running part but fits in 5min for the analyze + merge portion
+    {
+    const bgProjectId = projectId;
+    try {
       try {
         const apiKey = await getPapaiApiKey();
         if (!apiKey) throw new Error('No PAPAI_API_KEY configured');
@@ -147,19 +161,20 @@ export async function POST(req: NextRequest) {
           }
         }
         await dbLog(bgProjectId, 'pipeline', 'done', `Complete: ${merged.analysis.total_segments} segments, ${selection.clips.length} clips, ${cutCount} cut`);
-      } catch (err) {
-        await dbLog(bgProjectId, 'pipeline', 'error', err instanceof Error ? err.message : 'Unknown error');
-      }
-    })();
 
-    return NextResponse.json({
-      ok: true,
-      projectId,
-      videoUrl,
-      duration,
-      status: 'started',
-      poll: `https://rofe.ai/api/clipping/test-pipeline?projectId=${projectId}`,
-    });
+        return NextResponse.json({
+          ok: true, projectId, videoUrl, duration,
+          segments: merged.analysis.total_segments,
+          clips: selection.clips.length, clipsCut: cutCount,
+          status: 'done',
+          debug: `https://rofe.ai/api/clipping/debug?projectId=${projectId}`,
+        });
+      } catch (err) {
+        const pipelineErr = err instanceof Error ? err.message : 'Unknown error';
+        await dbLog(bgProjectId, 'pipeline', 'error', pipelineErr);
+        return NextResponse.json({ ok: false, projectId, error: pipelineErr }, { status: 500 });
+      }
+    }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
