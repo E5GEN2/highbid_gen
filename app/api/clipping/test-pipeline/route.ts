@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
+import { getPapaiApiKey } from '@/lib/config';
+import { planChunks, extractChunks, analyzeVideoChunk, mergeChunkResults, VIDEO_ANALYSIS_PROMPT, type GeminiFilesResponse } from '@/lib/gemini-files';
+import { selectClips } from '@/lib/gemini-clip-selector';
+import { cutClip } from '@/lib/clip-cutter';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -78,13 +82,96 @@ export async function POST(req: NextRequest) {
     const duration = parseFloat(JSON.parse(probeOut).format.duration);
     log('probe', 'done', `${duration.toFixed(0)}s (${(duration / 60).toFixed(1)}min)`);
 
+    // Step 4: Analyze video (chunked)
+    const apiKey = await getPapaiApiKey();
+    if (!apiKey) throw new Error('No PAPAI_API_KEY configured');
+
+    const chunks = planChunks(duration);
+    log('plan_chunks', 'done', `${chunks.length} chunks for ${duration.toFixed(0)}s`);
+
+    // Create analysis record
+    const analysisRes = await pool.query(
+      `INSERT INTO clipping_analyses (project_id, video_url, status, prompt)
+       VALUES ($1, $2, 'processing', $3) RETURNING id`,
+      [projectId, videoUrl, VIDEO_ANALYSIS_PROMPT]
+    );
+    const analysisId = analysisRes.rows[0].id;
+    await pool.query(`UPDATE clipping_projects SET status = 'processing', updated_at = NOW() WHERE id = $1`, [projectId]);
+
+    // Extract chunks sequentially
+    const t1 = Date.now();
+    const extractedChunks = await extractChunks(videoUrl, chunks);
+    log('extract_chunks', 'done', `${extractedChunks.size} chunks extracted`, Date.now() - t1);
+
+    // Analyze in parallel
+    const t2 = Date.now();
+    let completed = 0;
+    const chunkResults: (GeminiFilesResponse | null)[] = new Array(chunks.length).fill(null);
+
+    await Promise.all(chunks.map(async (chunk) => {
+      const result = await analyzeVideoChunk(videoUrl, apiKey, chunk, extractedChunks);
+      chunkResults[chunk.index] = result;
+      completed++;
+      if (completed % 5 === 0 || completed === chunks.length) {
+        log('analyze', 'progress', `${completed}/${chunks.length} chunks done`);
+      }
+    }));
+
+    const validResults = chunkResults.filter((r): r is GeminiFilesResponse => r !== null);
+    const merged = mergeChunkResults(validResults);
+    log('analyze', 'done', `${merged.analysis.total_segments} segments in ${((Date.now() - t2) / 1000).toFixed(0)}s`, Date.now() - t2);
+
+    // Store in DB
+    await pool.query(
+      `UPDATE clipping_analyses SET status='done', video_duration_seconds=$1, total_segments=$2, segments=$3,
+       raw_response=$4, tokens_in=$5, tokens_out=$6, duration_ms=$7, completed_at=NOW() WHERE id=$8`,
+      [merged.analysis.video_duration_seconds, merged.analysis.total_segments,
+       JSON.stringify(merged.analysis.segments), merged.raw_response,
+       merged.tokens_in, merged.tokens_out, merged.duration_ms, analysisId]
+    );
+    await pool.query(`UPDATE clipping_projects SET status='done', updated_at=NOW() WHERE id=$1`, [projectId]);
+
+    // Step 5: Select clips
+    const t3 = Date.now();
+    const selection = await selectClips(merged.analysis.segments, apiKey, { clipLength: '60s-90s' });
+    log('select_clips', 'done', `${selection.clips.length} clips selected in ${((Date.now() - t3) / 1000).toFixed(0)}s`, Date.now() - t3);
+
+    // Store clips in DB
+    for (let i = 0; i < selection.clips.length; i++) {
+      const c = selection.clips[i];
+      await pool.query(
+        `INSERT INTO clipping_clips (project_id, title, description, score, start_sec, end_sec, duration_sec, transcript, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')`,
+        [projectId, c.title, c.description, c.score, c.start, c.end, c.end - c.start, c.transcript]
+      );
+    }
+    log('store_clips', 'done', `${selection.clips.length} clip records inserted`);
+
+    // Step 6: Cut clips with ffmpeg
+    const t4 = Date.now();
+    const sourcePath = videoUrl.replace('file://', '');
+    let cutCount = 0;
+    for (let i = 0; i < selection.clips.length; i++) {
+      const c = selection.clips[i];
+      try {
+        await cutClip({ sourceVideoPath: sourcePath, projectId, clipId: `clip_${i + 1}`, startSec: c.start, endSec: c.end });
+        cutCount++;
+      } catch (e) {
+        log('cut_clip', 'error', `Clip ${i + 1} failed: ${e instanceof Error ? e.message : 'unknown'}`);
+      }
+    }
+    log('cut_clips', 'done', `${cutCount}/${selection.clips.length} clips cut in ${((Date.now() - t4) / 1000).toFixed(0)}s`, Date.now() - t4);
+
     return NextResponse.json({
       ok: true,
       projectId,
       videoUrl,
       duration,
+      segments: merged.analysis.total_segments,
+      clips: selection.clips.length,
+      clipsCut: cutCount,
       steps,
-      next: `Now call POST /api/clipping/analyze (needs auth) or check /api/clipping/debug?projectId=${projectId}`,
+      debug: `https://rofe.ai/api/clipping/debug?projectId=${projectId}`,
     });
 
   } catch (err) {
