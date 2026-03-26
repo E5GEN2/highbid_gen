@@ -163,8 +163,8 @@ export async function POST(req: NextRequest) {
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
-    log('error', 'failed', msg.substring(0, 300));
-    return NextResponse.json({ ok: false, steps, error: msg.substring(0, 500) }, { status: 500 });
+    console.error('[test-pipeline] Error:', msg);
+    return NextResponse.json({ ok: false, error: msg.substring(0, 500) }, { status: 500 });
   }
 }
 
