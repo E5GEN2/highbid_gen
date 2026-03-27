@@ -83,7 +83,46 @@ export async function POST(req: NextRequest) {
     if (requestedStep === 'download') {
       return NextResponse.json({
         ok: true, projectId, videoUrl, duration, status: 'downloaded',
+        size: fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0,
         next: `POST with {"projectId":"${projectId}","step":"analyze"}`,
+      });
+    }
+
+    // If step=face-detect, run face detection only
+    if (requestedStep === 'face-detect') {
+      await dbLog(projectId, 'face_detect', 'active', `Running YuNet face detection on ${Math.round(duration)}s video...`);
+      const facesOutput = path.join(dir, 'faces.json');
+      const { stderr } = await execFileAsync('python3', [
+        path.join(process.cwd(), 'scripts', 'detect-faces.py'),
+        outputPath,
+        '--fps', '5',
+        '--confidence', '0.6',
+        '--output', facesOutput,
+      ], { timeout: 600000, maxBuffer: 50 * 1024 * 1024 });
+
+      const faceData = JSON.parse(fs.readFileSync(facesOutput, 'utf-8'));
+      const framesWithFaces = faceData.frames.filter((f: { faces: unknown[] }) => f.faces.length > 0).length;
+      const totalDetections = faceData.frames.reduce((s: number, f: { faces: unknown[] }) => s + f.faces.length, 0);
+
+      // Store in DB
+      await pool.query(
+        `INSERT INTO clipping_face_data (project_id, start_sec, end_sec, fps_sampled, total_frames, video_width, video_height, frames)
+         VALUES ($1, 0, $2, 5, $3, $4, $5, $6)
+         ON CONFLICT (project_id, COALESCE(clip_id, '00000000-0000-0000-0000-000000000000'::uuid))
+         DO UPDATE SET start_sec=0, end_sec=$2, fps_sampled=5, total_frames=$3, video_width=$4, video_height=$5, frames=$6, created_at=NOW()`,
+        [projectId, duration, faceData.total_frames, faceData.video_width, faceData.video_height, JSON.stringify(faceData.frames)]
+      );
+
+      await dbLog(projectId, 'face_detect', 'done', `${framesWithFaces}/${faceData.total_frames} frames with faces, ${totalDetections} detections`);
+
+      return NextResponse.json({
+        ok: true, projectId, duration,
+        totalFrames: faceData.total_frames,
+        framesWithFaces,
+        totalDetections,
+        videoSize: `${faceData.video_width}x${faceData.video_height}`,
+        status: 'face-detect-done',
+        stderr: stderr?.substring(0, 500),
       });
     }
 
