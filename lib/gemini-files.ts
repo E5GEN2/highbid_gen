@@ -208,8 +208,8 @@ export function mergeChunkResults(results: GeminiFilesResponse[]): GeminiFilesRe
   };
 }
 
-/** Global concurrency limiter — max 10 parallel API calls across all users */
-const MAX_CONCURRENT = 20;
+/** Global concurrency limiter — PapaiAPI allows max 3 concurrent per user */
+const MAX_CONCURRENT = 3;
 let activeCount = 0;
 const waitQueue: (() => void)[] = [];
 
