@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { CLIPS_DIR } from '@/lib/clips-dir';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -8,7 +9,6 @@ import fs from 'fs';
 
 const execFileAsync = promisify(execFile);
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
-const CLIPS_DIR = '/tmp/clips';
 
 /**
  * POST /api/clipping/detect-faces

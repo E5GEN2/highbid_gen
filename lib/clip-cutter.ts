@@ -9,7 +9,7 @@ import path from 'path';
 
 const execFileAsync = promisify(execFile);
 
-const CLIPS_DIR = '/tmp/clips';
+import { CLIPS_DIR } from './clips-dir';
 
 export interface CutClipOptions {
   sourceVideoPath: string;

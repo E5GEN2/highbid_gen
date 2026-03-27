@@ -4,13 +4,13 @@ import { getPapaiApiKey } from '@/lib/config';
 import { planChunks, extractChunks, analyzeVideoChunk, mergeChunkResults, VIDEO_ANALYSIS_PROMPT, type GeminiFilesResponse } from '@/lib/gemini-files';
 import { selectClips } from '@/lib/gemini-clip-selector';
 import { cutClip } from '@/lib/clip-cutter';
+import { CLIPS_DIR } from '@/lib/clips-dir';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 
 const execFileAsync = promisify(execFile);
-const CLIPS_DIR = '/tmp/clips';
 const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@xgodo.com:3008';
 
 /**
