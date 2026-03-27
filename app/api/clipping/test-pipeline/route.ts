@@ -138,23 +138,41 @@ export async function POST(req: NextRequest) {
         const selection = await selectClips(merged.analysis.segments, apiKey, { clipLength: '60s-90s' });
         await dbLog(bgProjectId, 'select_clips', 'done', `${selection.clips.length} clips selected`);
 
+        // Insert clip records and collect their DB IDs
+        const clipDbIds: string[] = [];
         for (const c of selection.clips) {
-          await pool.query(
+          const r = await pool.query(
             `INSERT INTO clipping_clips (project_id, title, description, score, start_sec, end_sec, duration_sec, transcript, status)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending') RETURNING id`,
             [bgProjectId, c.title, c.description, c.score, c.start, c.end, c.end - c.start, c.transcript]
           );
+          clipDbIds.push(r.rows[0].id);
         }
 
-        // Cut clips
+        // Cut clips and update DB records
         await dbLog(bgProjectId, 'cut_clips', 'active', `Cutting ${selection.clips.length} clips...`);
         const sourcePath = videoUrl.replace('file://', '');
         let cutCount = 0;
         for (let i = 0; i < selection.clips.length; i++) {
           try {
-            await cutClip({ sourceVideoPath: sourcePath, projectId: bgProjectId, clipId: `clip_${i + 1}`, startSec: selection.clips[i].start, endSec: selection.clips[i].end });
+            const result = await cutClip({
+              sourceVideoPath: sourcePath,
+              projectId: bgProjectId,
+              clipId: `clip_${i + 1}`,
+              startSec: selection.clips[i].start,
+              endSec: selection.clips[i].end,
+            });
+            // Update DB with file info
+            await pool.query(
+              `UPDATE clipping_clips SET status='done', file_path=$1, thumbnail_path=$2, file_size_bytes=$3 WHERE id=$4`,
+              [result.filePath, result.thumbnailPath, result.fileSizeBytes, clipDbIds[i]]
+            );
             cutCount++;
           } catch (e) {
+            await pool.query(
+              `UPDATE clipping_clips SET status='error' WHERE id=$1`,
+              [clipDbIds[i]]
+            );
             await dbLog(bgProjectId, 'cut_clip', 'error', `Clip ${i + 1} failed: ${e instanceof Error ? e.message : ''}`);
           }
         }
