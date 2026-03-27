@@ -88,41 +88,59 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // If step=face-detect, run face detection only
+    // If step=face-detect, run face detection on selected clips only
     if (requestedStep === 'face-detect') {
-      await dbLog(projectId, 'face_detect', 'active', `Running YuNet face detection on ${Math.round(duration)}s video...`);
-      const facesOutput = path.join(dir, 'faces.json');
-      const { stderr } = await execFileAsync('python3', [
-        path.join(process.cwd(), 'scripts', 'detect-faces.py'),
-        outputPath,
-        '--fps', '5',
-        '--confidence', '0.6',
-        '--output', facesOutput,
-      ], { timeout: 600000, maxBuffer: 50 * 1024 * 1024 });
-
-      const faceData = JSON.parse(fs.readFileSync(facesOutput, 'utf-8'));
-      const framesWithFaces = faceData.frames.filter((f: { faces: unknown[] }) => f.faces.length > 0).length;
-      const totalDetections = faceData.frames.reduce((s: number, f: { faces: unknown[] }) => s + f.faces.length, 0);
-
-      // Store in DB
-      await pool.query(
-        `INSERT INTO clipping_face_data (project_id, start_sec, end_sec, fps_sampled, total_frames, video_width, video_height, frames)
-         VALUES ($1, 0, $2, 5, $3, $4, $5, $6)
-         ON CONFLICT (project_id, COALESCE(clip_id, '00000000-0000-0000-0000-000000000000'::uuid))
-         DO UPDATE SET start_sec=0, end_sec=$2, fps_sampled=5, total_frames=$3, video_width=$4, video_height=$5, frames=$6, created_at=NOW()`,
-        [projectId, duration, faceData.total_frames, faceData.video_width, faceData.video_height, JSON.stringify(faceData.frames)]
+      const clipsRes = await pool.query(
+        `SELECT id, title, start_sec, end_sec FROM clipping_clips WHERE project_id = $1 ORDER BY start_sec`,
+        [projectId]
       );
+      if (clipsRes.rows.length === 0) {
+        return NextResponse.json({ error: 'No clips found. Run analyze first.', projectId }, { status: 400 });
+      }
 
-      await dbLog(projectId, 'face_detect', 'done', `${framesWithFaces}/${faceData.total_frames} frames with faces, ${totalDetections} detections`);
+      const clips = clipsRes.rows;
+      await dbLog(projectId, 'face_detect', 'active', `Running YuNet on ${clips.length} clips...`);
+
+      const clipResults: { clipId: string; title: string; frames: number; withFaces: number; detections: number }[] = [];
+
+      for (let i = 0; i < clips.length; i++) {
+        const clip = clips[i];
+        const facesOutput = path.join(dir, `faces_clip_${i + 1}.json`);
+
+        await execFileAsync('python3', [
+          path.join(process.cwd(), 'scripts', 'detect-faces.py'),
+          outputPath,
+          '--start', String(clip.start_sec),
+          '--end', String(clip.end_sec),
+          '--fps', '5',
+          '--confidence', '0.6',
+          '--output', facesOutput,
+        ], { timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
+
+        const faceData = JSON.parse(fs.readFileSync(facesOutput, 'utf-8'));
+        const framesWithFaces = faceData.frames.filter((f: { faces: unknown[] }) => f.faces.length > 0).length;
+        const totalDetections = faceData.frames.reduce((s: number, f: { faces: unknown[] }) => s + f.faces.length, 0);
+
+        // Store per-clip face data
+        await pool.query(
+          `INSERT INTO clipping_face_data (project_id, clip_id, start_sec, end_sec, fps_sampled, total_frames, video_width, video_height, frames)
+           VALUES ($1, $2, $3, $4, 5, $5, $6, $7, $8)
+           ON CONFLICT (project_id, COALESCE(clip_id, '00000000-0000-0000-0000-000000000000'::uuid))
+           DO UPDATE SET start_sec=$3, end_sec=$4, total_frames=$5, video_width=$6, video_height=$7, frames=$8, created_at=NOW()`,
+          [projectId, clip.id, clip.start_sec, clip.end_sec, faceData.total_frames, faceData.video_width, faceData.video_height, JSON.stringify(faceData.frames)]
+        );
+
+        clipResults.push({ clipId: clip.id, title: clip.title, frames: faceData.total_frames, withFaces: framesWithFaces, detections: totalDetections });
+        await dbLog(projectId, 'face_detect', 'progress', `Clip ${i + 1}/${clips.length}: ${framesWithFaces}/${faceData.total_frames} faces | ${clip.title}`);
+      }
+
+      await dbLog(projectId, 'face_detect', 'done', `Face detection complete: ${clips.length} clips processed`);
 
       return NextResponse.json({
-        ok: true, projectId, duration,
-        totalFrames: faceData.total_frames,
-        framesWithFaces,
-        totalDetections,
-        videoSize: `${faceData.video_width}x${faceData.video_height}`,
+        ok: true, projectId,
+        clipsProcessed: clips.length,
+        results: clipResults,
         status: 'face-detect-done',
-        stderr: stderr?.substring(0, 500),
       });
     }
 
