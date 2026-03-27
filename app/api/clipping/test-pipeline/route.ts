@@ -121,12 +121,11 @@ export async function POST(req: NextRequest) {
         const framesWithFaces = faceData.frames.filter((f: { faces: unknown[] }) => f.faces.length > 0).length;
         const totalDetections = faceData.frames.reduce((s: number, f: { faces: unknown[] }) => s + f.faces.length, 0);
 
-        // Store per-clip face data
+        // Store per-clip face data (delete old, insert new)
+        await pool.query(`DELETE FROM clipping_face_data WHERE project_id = $1 AND clip_id = $2`, [projectId, clip.id]);
         await pool.query(
           `INSERT INTO clipping_face_data (project_id, clip_id, start_sec, end_sec, fps_sampled, total_frames, video_width, video_height, frames)
-           VALUES ($1, $2, $3, $4, 5, $5, $6, $7, $8)
-           ON CONFLICT (project_id, COALESCE(clip_id, '00000000-0000-0000-0000-000000000000'::uuid))
-           DO UPDATE SET start_sec=$3, end_sec=$4, total_frames=$5, video_width=$6, video_height=$7, frames=$8, created_at=NOW()`,
+           VALUES ($1, $2, $3, $4, 5, $5, $6, $7, $8)`,
           [projectId, clip.id, clip.start_sec, clip.end_sec, faceData.total_frames, faceData.video_width, faceData.video_height, JSON.stringify(faceData.frames)]
         );
 
