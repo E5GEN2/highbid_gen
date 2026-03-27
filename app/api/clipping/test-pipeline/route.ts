@@ -88,10 +88,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Run analysis synchronously (within this request)
-    // This is the long-running part but fits in 5min for the analyze + merge portion
     {
-    const bgProjectId = projectId;
-    try {
+      const bgProjectId = projectId;
       try {
         const apiKey = await getPapaiApiKey();
         if (!apiKey) throw new Error('No PAPAI_API_KEY configured');
