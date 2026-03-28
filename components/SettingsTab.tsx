@@ -421,12 +421,130 @@ function ApiKeysSection() {
   );
 }
 
+function ApiTokenSection() {
+  const [token, setToken] = useState<string | null>(null);
+  const [tokens, setTokens] = useState<Array<{ id: string; name: string; tokenPreview: string; lastUsedAt: string | null; createdAt: string }>>([]);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Load existing tokens
+  React.useEffect(() => {
+    fetch('/api/admin/tokens').then(r => r.json()).then(d => setTokens(d.tokens || [])).catch(() => {});
+  }, []);
+
+  const generateToken = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/admin/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'api-token' }),
+      });
+      const data = await res.json();
+      if (data.token) {
+        setToken(data.token);
+        // Refresh list
+        const listRes = await fetch('/api/admin/tokens');
+        const listData = await listRes.json();
+        setTokens(listData.tokens || []);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  const deleteToken = async (id: string) => {
+    await fetch(`/api/admin/tokens?id=${id}`, { method: 'DELETE' });
+    setTokens(prev => prev.filter(t => t.id !== id));
+    if (token) setToken(null);
+  };
+
+  const copyToken = () => {
+    if (token) {
+      navigator.clipboard.writeText(token);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold text-white mb-1">API Token</h3>
+        <p className="text-sm text-gray-400">
+          Use an API token to access the platform programmatically. Tokens work with all clipping endpoints.
+        </p>
+      </div>
+
+      {/* Newly generated token — only shown once */}
+      {token && (
+        <div className="bg-green-900/20 border border-green-600 rounded-lg p-4">
+          <p className="text-sm text-green-400 mb-2 font-medium">Token created — copy it now, it won't be shown again:</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 bg-black/40 text-green-300 px-3 py-2 rounded text-sm font-mono break-all select-all">
+              {token}
+            </code>
+            <button
+              onClick={copyToken}
+              className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded text-sm flex-shrink-0"
+            >
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Existing tokens */}
+      {tokens.length > 0 && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-medium text-gray-300">Active tokens</h4>
+          {tokens.map(t => (
+            <div key={t.id} className="flex items-center justify-between bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-3">
+              <div>
+                <span className="text-sm text-white font-mono">{t.tokenPreview}</span>
+                <span className="text-xs text-gray-500 ml-3">{t.name}</span>
+                {t.lastUsedAt && (
+                  <span className="text-xs text-gray-500 ml-3">
+                    Last used: {new Date(t.lastUsedAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => deleteToken(t.id)}
+                className="text-red-400 hover:text-red-300 text-sm"
+              >
+                Revoke
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Generate button */}
+      <button
+        onClick={generateToken}
+        disabled={loading}
+        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium"
+      >
+        {loading ? 'Generating...' : 'Generate New Token'}
+      </button>
+
+      <div className="bg-gray-800/30 border border-gray-700 rounded-lg p-4">
+        <p className="text-xs text-gray-400">
+          <strong>Usage:</strong> Add the token as a Bearer header to API requests:<br />
+          <code className="text-gray-300">Authorization: Bearer hb_your_token_here</code>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsTab() {
   const { resetToDefaults } = useSettings();
   const [activeSection, setActiveSection] = useState('apikeys');
 
   const sections = [
     { id: 'apikeys', name: 'API Keys', icon: '🔑' },
+    { id: 'apitoken', name: 'API Token', icon: '🔐' },
     { id: 'templates', name: 'Frame Templates', icon: '🖼️' },
     { id: 'autoselect', name: 'Auto-Selection', icon: '🎯' },
     { id: 'pan', name: 'Camera Pan', icon: '🎬' }
@@ -472,6 +590,7 @@ export function SettingsTab() {
       {/* Main Content */}
       <div className="flex-1 p-6 overflow-y-auto">
         {activeSection === 'apikeys' && <ApiKeysSection />}
+        {activeSection === 'apitoken' && <ApiTokenSection />}
         {activeSection === 'templates' && <FrameTemplatesSection />}
         {activeSection === 'autoselect' && <AutoSelectPreferencesSection />}
         {activeSection === 'pan' && <PanSettingsSection />}
