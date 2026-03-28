@@ -373,12 +373,15 @@ export async function initSchema(): Promise<void> {
         video_width INT,
         video_height INT,
         frames JSONB NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(project_id, COALESCE(clip_id, '00000000-0000-0000-0000-000000000000'::uuid))
+        created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_clipping_face_data_project ON clipping_face_data(project_id)
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_clipping_face_data_unique
+      ON clipping_face_data (project_id, COALESCE(clip_id, '00000000-0000-0000-0000-000000000000'::uuid))
     `);
 
     // API tokens for programmatic access
