@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { getApiUser } from '@/lib/api-auth';
 import { CLIPS_DIR } from '@/lib/clips-dir';
 import fs from 'fs';
 import path from 'path';
@@ -11,8 +11,8 @@ import path from 'path';
  * Returns: { url: string, path: string, size: number, filename: string }
  */
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

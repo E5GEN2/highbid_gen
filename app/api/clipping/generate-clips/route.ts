@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { getApiUser } from '@/lib/api-auth';
 import { pool } from '@/lib/db';
 import { getPapaiApiKey } from '@/lib/config';
 import { selectClips } from '@/lib/gemini-clip-selector';
@@ -13,8 +13,8 @@ import type { VideoSegment } from '@/lib/gemini-files';
  * Returns SSE stream with progress.
  */
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   // Verify project belongs to user
   const projectCheck = await pool.query(
     `SELECT id FROM clipping_projects WHERE id = $1 AND user_id = $2`,
-    [projectId, session.user.id]
+    [projectId, user.id]
   );
   if (projectCheck.rows.length === 0) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });

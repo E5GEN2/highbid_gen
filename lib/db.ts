@@ -381,6 +381,22 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_clipping_face_data_project ON clipping_face_data(project_id)
     `);
 
+    // API tokens for programmatic access
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS api_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL DEFAULT 'default',
+        token VARCHAR(64) UNIQUE NOT NULL,
+        scopes TEXT[] DEFAULT ARRAY['clipping'],
+        last_used_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_tokens_token ON api_tokens(token)
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

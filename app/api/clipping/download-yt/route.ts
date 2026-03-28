@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { getApiUser } from '@/lib/api-auth';
 import { CLIPS_DIR } from '@/lib/clips-dir';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
@@ -18,8 +18,8 @@ const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@
  * Returns SSE stream: progress events, then complete event with file info.
  */
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

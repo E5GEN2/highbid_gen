@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { getApiUser } from '@/lib/api-auth';
 import { pool } from '@/lib/db';
 
 /**
@@ -7,8 +7,8 @@ import { pool } from '@/lib/db';
  * List clips for a project. Requires auth — user must own the project.
  */
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   // Verify ownership
   const projectCheck = await pool.query(
     `SELECT id, title, status FROM clipping_projects WHERE id = $1 AND user_id = $2`,
-    [projectId, session.user.id]
+    [projectId, user.id]
   );
   if (projectCheck.rows.length === 0) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });

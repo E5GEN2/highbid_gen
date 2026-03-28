@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { getApiUser } from '@/lib/api-auth';
 import { pool } from '@/lib/db';
 
 // List clipping projects for the current user
-export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
+export async function GET(req: NextRequest) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -14,7 +14,7 @@ export async function GET() {
      FROM clipping_projects
      WHERE user_id = $1
      ORDER BY updated_at DESC`,
-    [session.user.id]
+    [user.id]
   );
 
   return NextResponse.json({ projects: result.rows });
@@ -22,8 +22,8 @@ export async function GET() {
 
 // Create a new clipping project
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     `INSERT INTO clipping_projects (user_id, title)
      VALUES ($1, $2)
      RETURNING id, title, status, thumbnail_url, video_duration, created_at, updated_at`,
-    [session.user.id, title || 'Untitled']
+    [user.id, title || 'Untitled']
   );
 
   return NextResponse.json({ project: result.rows[0] });

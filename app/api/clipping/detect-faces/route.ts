@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { getApiUser } from '@/lib/api-auth';
 import { pool } from '@/lib/db';
 import { CLIPS_DIR } from '@/lib/clips-dir';
 import { execFile } from 'child_process';
@@ -20,8 +20,8 @@ const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
  * Results stored in clipping_face_data table.
  */
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { getApiUser } from '@/lib/api-auth';
 import { pool } from '@/lib/db';
 import fs from 'fs';
 
@@ -8,8 +8,8 @@ import fs from 'fs';
  * Serve a clip video or thumbnail file. Requires auth.
  */
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const user = await getApiUser(req);
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
   }
 
   const clip = result.rows[0];
-  if (clip.user_id !== session.user.id) {
+  if (clip.user_id !== user.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
   }
 
