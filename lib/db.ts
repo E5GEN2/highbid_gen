@@ -295,6 +295,24 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_clipping_projects_user ON clipping_projects(user_id)
     `);
 
+    // Clipping: add pipeline state columns (idempotent ALTERs)
+    for (const col of [
+      "current_step TEXT",
+      "step_status TEXT DEFAULT 'idle'",
+      "step_progress JSONB DEFAULT '{}'",
+      "source_path TEXT",
+      "source_url TEXT",
+      "error TEXT",
+    ]) {
+      const colName = col.split(' ')[0];
+      await client.query(`
+        DO $$ BEGIN
+          ALTER TABLE clipping_projects ADD COLUMN ${col};
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$
+      `);
+    }
+
     // Clipping: video analysis results (timestamped segments from Gemini)
     await client.query(`
       CREATE TABLE IF NOT EXISTS clipping_analyses (
