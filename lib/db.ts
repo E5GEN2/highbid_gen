@@ -388,7 +388,7 @@ export async function initSchema(): Promise<void> {
         user_id UUID REFERENCES users(id) ON DELETE CASCADE,
         name TEXT NOT NULL DEFAULT 'default',
         token VARCHAR(64) UNIQUE NOT NULL,
-        scopes TEXT[] DEFAULT ARRAY['clipping'],
+        scopes TEXT DEFAULT 'clipping',
         last_used_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
