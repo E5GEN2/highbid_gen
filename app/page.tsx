@@ -10,6 +10,7 @@ import { PageOverrideControls } from '../components/PageOverrideControls';
 import { StoryboardWithOverrides, createStoryboardWithOverrides } from '../lib/storyboardOverrides';
 import FeedViewer, { FeedChannel, FeedFilters, DEFAULT_FEED_FILTERS } from '../components/FeedViewer';
 import AuthButton from '../components/AuthButton';
+import { ApiTokenPopover } from '../components/ApiTokenPopover';
 
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
@@ -2440,6 +2441,9 @@ function HomeContent() {
                 )}
               </div>
             )}
+
+            {/* API Token */}
+            <ApiTokenPopover />
 
             {/* Auth */}
             <AuthButton variant="sidebar" />
