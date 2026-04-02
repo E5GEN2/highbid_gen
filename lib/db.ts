@@ -406,9 +406,9 @@ export async function initSchema(): Promise<void> {
     await client.query(`
       CREATE TABLE IF NOT EXISTS api_tokens (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        user_id UUID,
         name TEXT NOT NULL DEFAULT 'default',
-        token VARCHAR(64) UNIQUE NOT NULL,
+        token VARCHAR(128) UNIQUE NOT NULL,
         scopes TEXT DEFAULT 'clipping',
         last_used_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
@@ -417,6 +417,8 @@ export async function initSchema(): Promise<void> {
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_api_tokens_token ON api_tokens(token)
     `);
+    // Widen token column if needed (was VARCHAR(64), tokens are 67+ chars)
+    await client.query(`ALTER TABLE api_tokens ALTER COLUMN token TYPE VARCHAR(128)`).catch(() => {});
 
     schemaInitialized = true;
     console.log('Database schema initialized');
