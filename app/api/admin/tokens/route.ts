@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 import { createApiToken, listApiTokens, deleteApiToken } from '@/lib/api-auth';
 
 /**
@@ -12,13 +13,21 @@ export async function GET() {
 
 /**
  * POST /api/admin/tokens
- * Create a new API token.
+ * Create a new API token. Auto-links to logged-in user's session.
  * Body: { userId?, name? }
  * Returns the full token (only shown once).
  */
 export async function POST(req: NextRequest) {
   const { userId, name } = await req.json();
-  const result = await createApiToken(userId || null, name || 'cli');
+
+  // Use session user_id if not explicitly provided
+  let resolvedUserId = userId || null;
+  if (!resolvedUserId) {
+    const session = await auth();
+    resolvedUserId = session?.user?.id || null;
+  }
+
+  const result = await createApiToken(resolvedUserId, name || 'cli');
   return NextResponse.json({ id: result.id, token: result.token });
 }
 
