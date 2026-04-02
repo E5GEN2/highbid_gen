@@ -9,7 +9,7 @@
 
 import { NextRequest } from 'next/server';
 import { auth } from './auth';
-import { pool } from './db';
+import { pool, getPool } from './db';
 import crypto from 'crypto';
 
 export interface ApiUser {
@@ -72,6 +72,7 @@ export async function getApiUser(req: NextRequest): Promise<ApiUser | null> {
  * Generate a new API token for a user.
  */
 export async function createApiToken(userId: string | null, name: string = 'default'): Promise<{ id: string; token: string }> {
+  await getPool(); // Ensure schema is initialized
   const token = 'hb_' + crypto.randomBytes(32).toString('hex');
 
   const result = await pool.query(
