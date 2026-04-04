@@ -11,6 +11,7 @@ import { StoryboardWithOverrides, createStoryboardWithOverrides } from '../lib/s
 import FeedViewer, { FeedChannel, FeedFilters, DEFAULT_FEED_FILTERS } from '../components/FeedViewer';
 import AuthButton from '../components/AuthButton';
 import { ApiTokenPopover } from '../components/ApiTokenPopover';
+import NicheTimeline from '../components/NicheTimeline';
 
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
@@ -311,7 +312,7 @@ function HomeContent() {
   const [nicheTotal, setNicheTotal] = useState(0);
   const [nicheKeywords, setNicheKeywords] = useState<Array<{ keyword: string; cnt: string }>>([]);
   const [nicheStats, setNicheStats] = useState<{ total_videos: string; total_keywords: string; total_channels: string; avg_score: string } | null>(null);
-  const [nicheFilter, setNicheFilter] = useState({ keyword: 'all', minScore: 0, maxScore: 100, sort: 'score' });
+  const [nicheFilter, setNicheFilter] = useState({ keyword: 'all', minScore: 0, maxScore: 100, sort: 'score', from: null as string | null, to: null as string | null });
   const [nicheLoading, setNicheLoading] = useState(false);
   const [nicheSyncing, setNicheSyncing] = useState(false);
   const [nicheSyncProgress, setNicheSyncProgress] = useState<{ synced: number; remaining: number; totalLocal: number; totalExternal: number; batches: number; message: string } | null>(null);
@@ -328,6 +329,8 @@ function HomeContent() {
         limit: '60',
         offset: String(offset),
       });
+      if (nicheFilter.from) params.set('from', nicheFilter.from);
+      if (nicheFilter.to) params.set('to', nicheFilter.to);
       const res = await fetch(`/api/niche-spy?${params}`);
       const data = await res.json();
       if (offset === 0) {
@@ -3703,6 +3706,14 @@ function HomeContent() {
           ) : currentView === 'niche' ? (
             /* Niche Explorer View */
             <div className="container mx-auto px-4 py-6 max-w-7xl">
+              {/* Timeline */}
+              <NicheTimeline
+                keyword={nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined}
+                minScore={nicheFilter.minScore}
+                maxScore={nicheFilter.maxScore}
+                onRangeChange={(from, to) => setNicheFilter(prev => ({ ...prev, from, to }))}
+              />
+
               {/* Header */}
               <div className="bg-gray-800/60 border border-gray-700 rounded-xl px-6 py-4 mb-6">
                 <div className="flex items-center justify-between mb-4">
@@ -3800,7 +3811,8 @@ function HomeContent() {
                     >
                       <option value="score">Score</option>
                       <option value="views">Views</option>
-                      <option value="date">Newest</option>
+                      <option value="date">Newest First</option>
+                      <option value="oldest">Oldest First</option>
                       <option value="likes">Likes</option>
                     </select>
                   </div>

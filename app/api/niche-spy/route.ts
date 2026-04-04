@@ -16,6 +16,8 @@ export async function GET(req: NextRequest) {
   const sort = sp.get('sort') || 'score';
   const limit = Math.min(parseInt(sp.get('limit') || '60'), 200);
   const offset = parseInt(sp.get('offset') || '0');
+  const from = sp.get('from');
+  const to = sp.get('to');
 
   // Build WHERE
   const conditions: string[] = [];
@@ -25,6 +27,16 @@ export async function GET(req: NextRequest) {
   if (keyword && keyword !== 'all') {
     conditions.push(`keyword = $${idx}`);
     params.push(keyword);
+    idx++;
+  }
+  if (from) {
+    conditions.push(`posted_at >= $${idx}`);
+    params.push(from);
+    idx++;
+  }
+  if (to) {
+    conditions.push(`posted_at <= $${idx}`);
+    params.push(to);
     idx++;
   }
   if (minScore > 0) {
@@ -44,7 +56,8 @@ export async function GET(req: NextRequest) {
   let orderBy: string;
   switch (sort) {
     case 'views': orderBy = 'view_count DESC NULLS LAST'; break;
-    case 'date': orderBy = 'fetched_at DESC NULLS LAST'; break;
+    case 'date': orderBy = 'posted_at DESC NULLS LAST'; break;
+    case 'oldest': orderBy = 'posted_at ASC NULLS LAST'; break;
     case 'likes': orderBy = 'like_count DESC NULLS LAST'; break;
     default: orderBy = 'score DESC NULLS LAST, view_count DESC NULLS LAST';
   }
