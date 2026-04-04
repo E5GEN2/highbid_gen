@@ -3802,15 +3802,20 @@ function HomeContent() {
                       <div key={v.id} className="bg-gray-800/60 border border-gray-700 rounded-xl overflow-hidden hover:border-gray-500 transition">
                         {/* Thumbnail */}
                         <div className="relative aspect-video bg-gray-900">
-                          {v.thumbnail ? (
-                            <img src={v.thumbnail} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-gray-600">
-                              <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                              </svg>
-                            </div>
-                          )}
+                          {(() => {
+                            // Extract video ID from URL for YouTube thumbnail CDN
+                            const vidMatch = v.url?.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
+                            const thumbUrl = vidMatch ? `https://img.youtube.com/vi/${vidMatch[1]}/hqdefault.jpg` : v.thumbnail;
+                            return thumbUrl ? (
+                              <img src={thumbUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-gray-600">
+                                <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                              </div>
+                            );
+                          })()}
                           {/* Score badge */}
                           <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold flex items-center gap-1 ${
                             v.score >= 80 ? 'bg-green-500 text-white' :
