@@ -41,6 +41,7 @@ export default function AdminPage() {
     { id: 'spy', label: 'Feed Spy' },
     { id: 'feed', label: 'Shorts Feed' },
     { id: 'clipping', label: 'Clipping' },
+    { id: 'niche', label: 'Niche Explorer' },
   ];
   const [visibleTabs, setVisibleTabs] = useState<string[]>(['feed']);
   const [tabsSaving, setTabsSaving] = useState(false);

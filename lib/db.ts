@@ -420,6 +420,49 @@ export async function initSchema(): Promise<void> {
     // Widen token column if needed (was VARCHAR(64), tokens are 67+ chars)
     await client.query(`ALTER TABLE api_tokens ALTER COLUMN token TYPE VARCHAR(128)`).catch(() => {});
 
+    // Niche Explorer: synced video data from external niche spy pipeline
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_spy_videos (
+        id SERIAL PRIMARY KEY,
+        external_id INTEGER UNIQUE,
+        task_id TEXT,
+        keyword TEXT,
+        url TEXT,
+        title TEXT,
+        view_count BIGINT,
+        channel_name TEXT,
+        posted_date TEXT,
+        posted_at TIMESTAMPTZ,
+        score INTEGER,
+        subscriber_count BIGINT,
+        like_count BIGINT,
+        comment_count BIGINT,
+        top_comment TEXT,
+        thumbnail TEXT,
+        fetched_at TIMESTAMPTZ,
+        synced_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_keyword ON niche_spy_videos(keyword)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_score ON niche_spy_videos(score DESC NULLS LAST)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_views ON niche_spy_videos(view_count DESC NULLS LAST)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_spy_pipeline_runs (
+        id SERIAL PRIMARY KEY,
+        external_id INTEGER UNIQUE,
+        ran_at TIMESTAMPTZ,
+        fetched INTEGER,
+        quality INTEGER,
+        duplicates INTEGER,
+        confirmed INTEGER,
+        new_urls INTEGER,
+        scheduled INTEGER,
+        declined INTEGER,
+        synced_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

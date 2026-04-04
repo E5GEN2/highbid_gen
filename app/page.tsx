@@ -243,7 +243,7 @@ function HomeContent() {
   }, []);
 
   // Sidebar Navigation State
-  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed' | 'clipping'>('feed');
+  const [currentView, setCurrentView] = useState<'creator' | 'library' | 'spy' | 'feed' | 'clipping' | 'niche'>('feed');
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -300,6 +300,75 @@ function HomeContent() {
     file_size_bytes: number | null;
   }[]>([]);
   const [clippingSelectedClipIdx, setClippingSelectedClipIdx] = useState(0);
+
+  // Niche Explorer State
+  const [nicheVideos, setNicheVideos] = useState<Array<{
+    id: number; keyword: string; url: string; title: string; view_count: number;
+    channel_name: string; posted_date: string; posted_at: string; score: number;
+    subscriber_count: number; like_count: number; comment_count: number;
+    top_comment: string; thumbnail: string; fetched_at: string;
+  }>>([]);
+  const [nicheTotal, setNicheTotal] = useState(0);
+  const [nicheKeywords, setNicheKeywords] = useState<Array<{ keyword: string; cnt: string }>>([]);
+  const [nicheStats, setNicheStats] = useState<{ total_videos: string; total_keywords: string; total_channels: string; avg_score: string } | null>(null);
+  const [nicheFilter, setNicheFilter] = useState({ keyword: 'all', minScore: 0, maxScore: 100, sort: 'score' });
+  const [nicheLoading, setNicheLoading] = useState(false);
+  const [nicheSyncing, setNicheSyncing] = useState(false);
+  const [nicheOffset, setNicheOffset] = useState(0);
+
+  const fetchNicheData = useCallback(async (offset = 0) => {
+    setNicheLoading(true);
+    try {
+      const params = new URLSearchParams({
+        keyword: nicheFilter.keyword,
+        minScore: String(nicheFilter.minScore),
+        maxScore: String(nicheFilter.maxScore),
+        sort: nicheFilter.sort,
+        limit: '60',
+        offset: String(offset),
+      });
+      const res = await fetch(`/api/niche-spy?${params}`);
+      const data = await res.json();
+      if (offset === 0) {
+        setNicheVideos(data.videos);
+      } else {
+        setNicheVideos(prev => [...prev, ...data.videos]);
+      }
+      setNicheTotal(data.total);
+      setNicheKeywords(data.keywords);
+      setNicheStats(data.stats);
+      setNicheOffset(offset + data.videos.length);
+    } catch (err) { console.error('Niche fetch error:', err); }
+    setNicheLoading(false);
+  }, [nicheFilter]);
+
+  const syncNicheData = async () => {
+    setNicheSyncing(true);
+    try {
+      const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
+      const data = await res.json();
+      console.log('[niche] Synced:', data);
+      if (data.synced > 0 || data.pipelineRuns > 0) {
+        fetchNicheData(0);
+      }
+    } catch (err) { console.error('Niche sync error:', err); }
+    setNicheSyncing(false);
+  };
+
+  // Load niche data when tab becomes active
+  useEffect(() => {
+    if (currentView === 'niche' && nicheVideos.length === 0) {
+      fetchNicheData(0);
+    }
+  }, [currentView, fetchNicheData, nicheVideos.length]);
+
+  // Reload when filters change
+  useEffect(() => {
+    if (currentView === 'niche') {
+      fetchNicheData(0);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nicheFilter]);
 
   // Feed Spy State
   const [spyData, setSpyData] = useState<{
@@ -2421,6 +2490,21 @@ function HomeContent() {
                 </svg>
               </button>
             )}
+            {visibleTabs.includes('niche') && (
+              <button
+                onClick={() => setCurrentView('niche')}
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                  currentView === 'niche'
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                }`}
+                title="Niche Explorer"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </button>
+            )}
           </nav>
 
           {/* Bottom Section */}
@@ -3591,6 +3675,166 @@ function HomeContent() {
                 </div>
               </div>
             )
+          ) : currentView === 'niche' ? (
+            /* Niche Explorer View */
+            <div className="container mx-auto px-4 py-6 max-w-7xl">
+              {/* Header */}
+              <div className="bg-gray-800/60 border border-gray-700 rounded-xl px-6 py-4 mb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <span className="text-2xl font-bold text-white">{nicheStats ? parseInt(nicheStats.total_videos).toLocaleString() : '...'}</span>
+                    <span className="text-gray-400 ml-2">stored videos</span>
+                  </div>
+                  <button
+                    onClick={syncNicheData}
+                    disabled={nicheSyncing}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium"
+                  >
+                    {nicheSyncing ? 'Syncing...' : 'Refresh'}
+                  </button>
+                </div>
+
+                {/* Filters */}
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 uppercase tracking-wider">Keyword</span>
+                    <select
+                      value={nicheFilter.keyword}
+                      onChange={e => setNicheFilter(prev => ({ ...prev, keyword: e.target.value }))}
+                      className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none"
+                    >
+                      <option value="all">All keywords</option>
+                      {nicheKeywords.map(k => (
+                        <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.cnt})</option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-gray-500">{nicheKeywords.length} keywords</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 uppercase tracking-wider">Score</span>
+                    <select
+                      value={nicheFilter.minScore}
+                      onChange={e => setNicheFilter(prev => ({ ...prev, minScore: parseInt(e.target.value) }))}
+                      className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-2 py-1.5"
+                    >
+                      <option value="0">Min</option>
+                      {[10,20,30,40,50,60,70,80,90].map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                    <span className="text-gray-500">–</span>
+                    <select
+                      value={nicheFilter.maxScore}
+                      onChange={e => setNicheFilter(prev => ({ ...prev, maxScore: parseInt(e.target.value) }))}
+                      className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-2 py-1.5"
+                    >
+                      <option value="100">Max</option>
+                      {[90,80,70,60,50,40,30,20,10].map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 uppercase tracking-wider">Sort</span>
+                    <select
+                      value={nicheFilter.sort}
+                      onChange={e => setNicheFilter(prev => ({ ...prev, sort: e.target.value }))}
+                      className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-1.5"
+                    >
+                      <option value="score">Score</option>
+                      <option value="views">Views</option>
+                      <option value="date">Newest</option>
+                      <option value="likes">Likes</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Video Grid */}
+              {nicheLoading && nicheVideos.length === 0 ? (
+                <div className="text-center py-20 text-gray-400">Loading...</div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {nicheVideos.map(v => (
+                      <div key={v.id} className="bg-gray-800/60 border border-gray-700 rounded-xl overflow-hidden hover:border-gray-500 transition">
+                        {/* Thumbnail */}
+                        <div className="relative aspect-video bg-gray-900">
+                          {v.thumbnail ? (
+                            <img src={v.thumbnail} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-gray-600">
+                              <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                              </svg>
+                            </div>
+                          )}
+                          {/* Score badge */}
+                          <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold flex items-center gap-1 ${
+                            v.score >= 80 ? 'bg-green-500 text-white' :
+                            v.score >= 50 ? 'bg-yellow-500 text-black' :
+                            'bg-red-500 text-white'
+                          }`}>
+                            ⚡ {v.score}
+                          </div>
+                        </div>
+
+                        <div className="p-3">
+                          {/* Keyword tag */}
+                          {v.keyword && (
+                            <span className="inline-block text-xs bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5 mb-2">
+                              {v.keyword}
+                            </span>
+                          )}
+
+                          {/* Title */}
+                          <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title}</h3>
+
+                          {/* Stats */}
+                          <div className="flex items-center gap-2 text-xs text-gray-400 mb-1.5">
+                            <span className="text-green-400 font-medium">{v.view_count ? v.view_count.toLocaleString() + ' views' : ''}</span>
+                            {v.channel_name && <span>· {v.channel_name}</span>}
+                            {v.posted_date && <span>· {v.posted_date}</span>}
+                          </div>
+
+                          {/* Engagement */}
+                          <div className="flex items-center gap-3 text-xs text-gray-500 mb-2">
+                            {v.like_count > 0 && <span>👍 {v.like_count.toLocaleString()}</span>}
+                            {v.comment_count > 0 && <span>💬 {v.comment_count.toLocaleString()}</span>}
+                            {v.subscriber_count > 0 && <span>👥 {v.subscriber_count.toLocaleString()} subscribers</span>}
+                          </div>
+
+                          {/* Top comment */}
+                          {v.top_comment && (
+                            <p className="text-xs text-gray-500 italic line-clamp-2 border-l-2 border-gray-700 pl-2 mb-2">
+                              &ldquo;{v.top_comment}&rdquo;
+                            </p>
+                          )}
+
+                          {/* URL */}
+                          {v.url && (
+                            <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate block">
+                              {v.url}
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Load more */}
+                  {nicheVideos.length < nicheTotal && (
+                    <div className="text-center mt-6">
+                      <button
+                        onClick={() => fetchNicheData(nicheOffset)}
+                        disabled={nicheLoading}
+                        className="px-6 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm"
+                      >
+                        {nicheLoading ? 'Loading...' : `Load More (${nicheVideos.length}/${nicheTotal})`}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           ) : currentView === 'library' ? (
             /* Library View */
             <div className="container mx-auto px-4 py-8 max-w-7xl">
