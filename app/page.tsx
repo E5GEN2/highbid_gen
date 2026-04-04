@@ -314,7 +314,7 @@ function HomeContent() {
   const [nicheFilter, setNicheFilter] = useState({ keyword: 'all', minScore: 0, maxScore: 100, sort: 'score' });
   const [nicheLoading, setNicheLoading] = useState(false);
   const [nicheSyncing, setNicheSyncing] = useState(false);
-  const [nicheSyncProgress, setNicheSyncProgress] = useState<{ synced: number; remaining: number; totalLocal: number; batches: number } | null>(null);
+  const [nicheSyncProgress, setNicheSyncProgress] = useState<{ synced: number; remaining: number; totalLocal: number; totalExternal: number; batches: number; message: string } | null>(null);
   const [nicheOffset, setNicheOffset] = useState(0);
 
   const fetchNicheData = useCallback(async (offset = 0) => {
@@ -345,29 +345,39 @@ function HomeContent() {
 
   const syncNicheData = async () => {
     setNicheSyncing(true);
-    setNicheSyncProgress({ synced: 0, remaining: 0, totalLocal: 0, batches: 0 });
+    setNicheSyncProgress({ synced: 0, remaining: 0, totalLocal: 0, totalExternal: 0, batches: 0, message: 'Connecting to source database...' });
     let totalSynced = 0;
     let batches = 0;
     try {
       while (true) {
         const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
         const data = await res.json();
+        if (data.error) { setNicheSyncProgress(prev => prev ? { ...prev, message: `Error: ${data.error}` } : null); break; }
         totalSynced += data.synced || 0;
         batches++;
+        const remaining = data.remaining || 0;
+        const totalExt = data.totalExternal || 0;
+        const pct = totalExt > 0 ? Math.round(((totalExt - remaining) / totalExt) * 100) : 100;
         setNicheSyncProgress({
           synced: totalSynced,
-          remaining: data.remaining || 0,
+          remaining,
           totalLocal: data.totalLocal || 0,
+          totalExternal: totalExt,
           batches,
+          message: remaining > 0
+            ? `Pulling batch ${batches}... ${totalSynced.toLocaleString()} videos synced (${pct}%)`
+            : `Done! ${totalSynced.toLocaleString()} new videos synced.`,
         });
-        console.log(`[niche] Batch ${batches}: +${data.synced}, remaining: ${data.remaining}`);
-        if (!data.synced || data.synced === 0 || data.remaining === 0) break;
-        // Small delay between batches
-        await new Promise(r => setTimeout(r, 500));
+        if (!data.synced || data.synced === 0 || remaining === 0) break;
+        await new Promise(r => setTimeout(r, 300));
       }
       fetchNicheData(0);
-    } catch (err) { console.error('Niche sync error:', err); }
-    setNicheSyncing(false);
+    } catch (err) {
+      console.error('Niche sync error:', err);
+      setNicheSyncProgress(prev => prev ? { ...prev, message: `Error: ${err instanceof Error ? err.message : 'Sync failed'}` } : null);
+    }
+    // Keep progress visible for 3 seconds after completion
+    setTimeout(() => { setNicheSyncing(false); setNicheSyncProgress(null); }, 3000);
   };
 
   // Load niche data when tab becomes active
@@ -3709,30 +3719,35 @@ function HomeContent() {
                   </button>
                 </div>
 
-                {/* Sync progress popup */}
-                {nicheSyncing && nicheSyncProgress && (
-                  <div className="bg-blue-900/30 border border-blue-600/50 rounded-lg px-4 py-3 mb-4">
+                {/* Sync progress */}
+                {nicheSyncProgress && (
+                  <div className="bg-blue-900/20 border border-blue-600/40 rounded-lg px-4 py-3 mb-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm text-blue-300 font-medium">
-                            Syncing... Batch {nicheSyncProgress.batches}
-                          </span>
-                          <span className="text-xs text-blue-400">
-                            {nicheSyncProgress.remaining > 0 ? `${nicheSyncProgress.remaining.toLocaleString()} remaining` : 'Finishing...'}
-                          </span>
-                        </div>
-                        <div className="w-full bg-gray-700 rounded-full h-1.5">
-                          <div
-                            className="bg-blue-500 h-1.5 rounded-full transition-all"
-                            style={{ width: `${nicheSyncProgress.remaining > 0 ? Math.round((nicheSyncProgress.synced / (nicheSyncProgress.synced + nicheSyncProgress.remaining)) * 100) : 100}%` }}
-                          />
-                        </div>
-                        <div className="flex items-center justify-between mt-1">
-                          <span className="text-xs text-gray-400">{nicheSyncProgress.synced.toLocaleString()} synced this session</span>
-                          <span className="text-xs text-gray-400">{nicheSyncProgress.totalLocal.toLocaleString()} total local</span>
-                        </div>
+                      {nicheSyncing && (
+                        <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                      )}
+                      {!nicheSyncing && (
+                        <svg className="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-blue-200 font-medium">{nicheSyncProgress.message}</p>
+                        {nicheSyncProgress.totalExternal > 0 && nicheSyncProgress.remaining > 0 && (
+                          <div className="w-full bg-gray-700 rounded-full h-1.5 mt-2">
+                            <div
+                              className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
+                              style={{ width: `${Math.round(((nicheSyncProgress.totalExternal - nicheSyncProgress.remaining) / nicheSyncProgress.totalExternal) * 100)}%` }}
+                            />
+                          </div>
+                        )}
+                        {nicheSyncProgress.batches > 0 && (
+                          <div className="flex items-center gap-4 mt-1 text-xs text-gray-400">
+                            <span>{nicheSyncProgress.totalLocal.toLocaleString()} local</span>
+                            {nicheSyncProgress.remaining > 0 && <span>{nicheSyncProgress.remaining.toLocaleString()} remaining</span>}
+                            <span>{nicheSyncProgress.totalExternal.toLocaleString()} total in source</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
