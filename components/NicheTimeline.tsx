@@ -158,41 +158,57 @@ export default function NicheTimeline({ keyword, minScore, maxScore, onRangeChan
         <span className="text-xs text-gray-500">{data.granularity} · drag to zoom</span>
       </div>
 
-      {/* Chart */}
+      {/* Chart — SVG bar chart */}
       <div
         ref={containerRef}
-        className="relative h-32 select-none cursor-crosshair"
+        className="relative h-40 select-none cursor-crosshair"
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={() => { setHoveredIdx(null); if (isDragging) handleMouseUp(); }}
       >
-        {/* Bars */}
-        <div className="flex items-end h-full gap-px">
-          {timeline.map((t, i) => {
-            const height = maxCount > 0 ? (t.count / maxCount) * 100 : 0;
-            const isHovered = hoveredIdx === i;
-            const scoreColor = t.avgScore >= 80 ? 'bg-green-500' : t.avgScore >= 50 ? 'bg-yellow-500' : 'bg-red-500';
+        <svg width="100%" height="100%" viewBox={`0 0 ${timeline.length * 40} 160`} preserveAspectRatio="none">
+          {/* Grid lines */}
+          {[0.25, 0.5, 0.75].map(f => (
+            <line key={f} x1="0" y1={160 * (1 - f)} x2={timeline.length * 40} y2={160 * (1 - f)} stroke="#374151" strokeWidth="0.5" strokeDasharray="4" />
+          ))}
 
+          {/* Bars */}
+          {timeline.map((t, i) => {
+            const barH = maxCount > 0 ? (t.count / maxCount) * 140 : 2;
+            const x = i * 40;
+            const isHovered = hoveredIdx === i;
+            const fill = isHovered ? '#60a5fa'
+              : t.avgScore >= 80 ? '#22c55e'
+              : t.avgScore >= 50 ? '#eab308'
+              : '#ef4444';
             return (
-              <div
+              <rect
                 key={i}
-                className="flex-1 flex flex-col justify-end"
-                style={{ minWidth: '2px' }}
-              >
-                <div
-                  className={`w-full rounded-t-sm transition-all ${isHovered ? 'bg-blue-400' : scoreColor} ${isHovered ? 'opacity-100' : 'opacity-70 hover:opacity-90'}`}
-                  style={{ height: `${Math.max(height, 1)}%` }}
-                />
-              </div>
+                x={x + 4}
+                y={160 - Math.max(barH, 2)}
+                width={32}
+                height={Math.max(barH, 2)}
+                rx={3}
+                fill={fill}
+                opacity={isHovered ? 1 : 0.75}
+              />
             );
           })}
-        </div>
+
+          {/* Area/line overlay for trend */}
+          <polyline
+            points={timeline.map((t, i) => `${i * 40 + 20},${160 - (maxCount > 0 ? (t.count / maxCount) * 140 : 0)}`).join(' ')}
+            fill="none"
+            stroke="rgba(96,165,250,0.5)"
+            strokeWidth="2"
+          />
+        </svg>
 
         {/* Drag selection overlay */}
         {isDragging && dragStart !== null && dragEnd !== null && (
           <div
-            className="absolute top-0 bottom-0 bg-blue-500/20 border-x border-blue-400"
+            className="absolute top-0 bottom-0 bg-blue-500/20 border-x-2 border-blue-400 rounded"
             style={{
               left: Math.min(dragStart, dragEnd),
               width: Math.abs(dragEnd - dragStart),
@@ -203,18 +219,21 @@ export default function NicheTimeline({ keyword, minScore, maxScore, onRangeChan
         {/* Hover tooltip */}
         {hoveredIdx !== null && hoveredIdx < timeline.length && (
           <div
-            className="absolute top-0 bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 pointer-events-none z-10 shadow-xl"
+            className="absolute bg-gray-900/95 border border-gray-600 rounded-lg px-3 py-2 pointer-events-none z-10 shadow-xl backdrop-blur-sm"
             style={{
-              left: `${Math.min((hoveredIdx / timeline.length) * 100, 85)}%`,
-              transform: 'translateY(-8px)',
+              left: `${Math.min((hoveredIdx / timeline.length) * 100, 80)}%`,
+              top: '4px',
             }}
           >
             <p className="text-xs text-white font-medium">
               {formatDate(new Date(timeline[hoveredIdx].period), data.granularity)}
             </p>
-            <p className="text-xs text-gray-300">{timeline[hoveredIdx].count} videos</p>
-            <p className="text-xs text-gray-400">
-              Avg score: {timeline[hoveredIdx].avgScore} · Views: {formatCount(timeline[hoveredIdx].totalViews)}
+            <div className="flex items-center gap-3 mt-1">
+              <span className="text-sm text-blue-300 font-bold">{timeline[hoveredIdx].count} videos</span>
+              <span className="text-xs text-gray-400">score: {timeline[hoveredIdx].avgScore}</span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {formatCount(timeline[hoveredIdx].totalViews)} views · {timeline[hoveredIdx].channels} channels
             </p>
           </div>
         )}
