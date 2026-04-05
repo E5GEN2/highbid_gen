@@ -451,6 +451,23 @@ export async function initSchema(): Promise<void> {
     // Add enrichment tracking column
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_created_at TIMESTAMPTZ`).catch(() => {});
+    // Normalize existing URLs to canonical youtu.be/VIDEO_ID format and dedup
+    await client.query(`
+      UPDATE niche_spy_videos
+      SET url = 'https://youtu.be/' || SUBSTRING(url FROM '([a-zA-Z0-9_-]{11})$')
+      WHERE url IS NOT NULL AND url NOT LIKE 'https://youtu.be/___________'
+        AND SUBSTRING(url FROM '([a-zA-Z0-9_-]{11})$') IS NOT NULL
+    `).catch(() => {});
+    // Remove duplicates by URL: keep the row with best data
+    await client.query(`
+      DELETE FROM niche_spy_videos WHERE id IN (
+        SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (PARTITION BY url ORDER BY score DESC NULLS LAST, view_count DESC NULLS LAST, enriched_at DESC NULLS LAST) as rn
+          FROM niche_spy_videos WHERE url IS NOT NULL
+        ) sub WHERE rn > 1
+      )
+    `).catch(() => {});
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_niche_spy_url ON niche_spy_videos(url)`).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_spy_pipeline_runs (
