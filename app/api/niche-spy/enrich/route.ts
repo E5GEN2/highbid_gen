@@ -117,9 +117,9 @@ export async function POST(req: NextRequest) {
                   title = COALESCE(NULLIF(title, ''), $1),
                   channel_name = COALESCE(NULLIF(channel_name, ''), $2),
                   posted_at = COALESCE($3, posted_at),
-                  view_count = GREATEST(view_count, $4),
-                  like_count = GREATEST(like_count, $5),
-                  comment_count = GREATEST(comment_count, $6),
+                  view_count = CASE WHEN $4 > 0 THEN $4 ELSE view_count END,
+                  like_count = CASE WHEN $5 > 0 THEN $5 ELSE like_count END,
+                  comment_count = CASE WHEN $6 > 0 THEN $6 ELSE comment_count END,
                   thumbnail = COALESCE(NULLIF(thumbnail, ''), $7)
                 WHERE id = $8`,
                 [
