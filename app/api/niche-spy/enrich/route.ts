@@ -121,7 +121,8 @@ export async function POST(req: NextRequest) {
                   view_count = CASE WHEN $4 > 0 THEN $4 ELSE view_count END,
                   like_count = CASE WHEN $5 > 0 THEN $5 ELSE like_count END,
                   comment_count = CASE WHEN $6 > 0 THEN $6 ELSE comment_count END,
-                  thumbnail = COALESCE(NULLIF(thumbnail, ''), $7)
+                  thumbnail = COALESCE(NULLIF(thumbnail, ''), $7),
+                  channel_id = COALESCE(channel_id, $9)
                 WHERE id = $8`,
                 [
                   snippet.title || '',
@@ -132,6 +133,7 @@ export async function POST(req: NextRequest) {
                   parseInt(stats.commentCount) || 0,
                   snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || '',
                   dbEntry.dbId,
+                  channelId || null,
                 ]
               );
               enrichedVideos++;
@@ -171,6 +173,7 @@ export async function POST(req: NextRequest) {
               for (const ch of chData.items || []) {
                 const subCount = parseInt(ch.statistics?.subscriberCount) || 0;
                 const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
+                const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
 
                 const videoIds = channelIds.get(ch.id);
                 if (!videoIds) continue;
@@ -179,9 +182,10 @@ export async function POST(req: NextRequest) {
                   await pool.query(
                     `UPDATE niche_spy_videos SET
                       subscriber_count = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
-                      channel_created_at = COALESCE($2, channel_created_at)
+                      channel_created_at = COALESCE($2, channel_created_at),
+                      channel_avatar = COALESCE(NULLIF($4, ''), channel_avatar)
                     WHERE id = $3`,
-                    [subCount, channelCreatedAt, dbId]
+                    [subCount, channelCreatedAt, dbId, avatar]
                   );
                 }
                 if (subCount > 0 || channelCreatedAt) enrichedChannels++;

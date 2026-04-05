@@ -57,6 +57,8 @@ export async function GET(req: NextRequest) {
     pool.query(`
       SELECT
         channel_name,
+        MAX(channel_avatar) as channel_avatar,
+        MAX(channel_id) as channel_id,
         COUNT(*) as video_count,
         SUM(view_count) as total_views,
         ROUND(AVG(view_count)) as avg_views,
@@ -102,6 +104,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     channels: channelsRes.rows.map(r => ({
       channelName: r.channel_name,
+      channelAvatar: r.channel_avatar || null,
+      channelId: r.channel_id || null,
       videoCount: parseInt(r.video_count),
       totalViews: parseInt(r.total_views) || 0,
       avgViews: parseInt(r.avg_views) || 0,

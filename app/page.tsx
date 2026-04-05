@@ -336,12 +336,21 @@ function HomeContent() {
     latest?: { runSaturation: number; globalSaturation: number; universeSize: number; knownBefore: number; lastNew: number; lastOverlap: number } | null;
     runs?: Array<{ run_at: string; run_saturation_pct: string; global_saturation_pct: string; new_count: number }>;
   } | null>(null);
-  const [nicheSubTab, setNicheSubTab] = useState<'videos' | 'channels'>('videos');
+  const [nicheSubTab, setNicheSubTab] = useState<'videos' | 'channels' | 'insights'>('videos');
+  const [nicheSelectedKeyword, setNicheSelectedKeyword] = useState<string | null>(null);
+  const [nicheKeywordCards, setNicheKeywordCards] = useState<Array<{
+    keyword: string; videoCount: number; channelCount: number; avgScore: number;
+    totalViews: number; avgViews: number; highScoreCount: number;
+    newChannelCount: number; newestVideo: string | null;
+    saturation: { globalSaturation: number; runSaturation: number } | null;
+  }>>([]);
+  const [nicheKeywordSearch, setNicheKeywordSearch] = useState('');
+  const [nicheKeywordSort, setNicheKeywordSort] = useState('videos');
   const [nicheChannels, setNicheChannels] = useState<Array<{
     channelName: string; videoCount: number; totalViews: number; avgViews: number; maxViews: number;
     avgScore: number; maxScore: number; subscribers: number; totalLikes: number; totalComments: number;
     channelCreatedAt: string | null; channelAgeDays: number | null; latestVideoAt: string | null;
-    keywords: string[];
+    channelAvatar: string | null; channelId: string | null; keywords: string[];
   }>>([]);
   const [nicheChannelsTotal, setNicheChannelsTotal] = useState(0);
   const [nicheChannelStats, setNicheChannelStats] = useState<{
@@ -381,6 +390,28 @@ function HomeContent() {
     } catch (err) { console.error('Niche fetch error:', err); }
     setNicheLoading(false);
   }, [nicheFilter]);
+
+  const fetchNicheKeywords = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ sort: nicheKeywordSort, limit: '200' });
+      if (nicheKeywordSearch) params.set('search', nicheKeywordSearch);
+      const res = await fetch(`/api/niche-spy/keywords?${params}`);
+      const data = await res.json();
+      setNicheKeywordCards(data.keywords);
+    } catch (err) { console.error('Keyword fetch error:', err); }
+  }, [nicheKeywordSearch, nicheKeywordSort]);
+
+  useEffect(() => {
+    if (currentView === 'niche' && !nicheSelectedKeyword) {
+      fetchNicheKeywords();
+    }
+  }, [currentView, nicheSelectedKeyword, fetchNicheKeywords]);
+
+  const selectNicheKeyword = (kw: string) => {
+    setNicheSelectedKeyword(kw);
+    setNicheFilter(prev => ({ ...prev, keyword: kw }));
+    setNicheSubTab('videos');
+  };
 
   const fetchNicheChannels = useCallback(async () => {
     setNicheChannelsLoading(true);
@@ -3785,6 +3816,109 @@ function HomeContent() {
           ) : currentView === 'niche' ? (
             /* Niche Explorer View */
             <div className="container mx-auto px-4 py-6 max-w-7xl">
+              {!nicheSelectedKeyword ? (
+                /* Niche Selector */
+                <div>
+                  <div className="mb-6">
+                    <h1 className="text-3xl font-bold text-white mb-2">Niche Explorer</h1>
+                    <p className="text-gray-400">Select a niche to explore videos, channels, and insights</p>
+                  </div>
+
+                  {/* Search + sort */}
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        value={nicheKeywordSearch}
+                        onChange={e => setNicheKeywordSearch(e.target.value)}
+                        placeholder="Search niches..."
+                        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <select value={nicheKeywordSort} onChange={e => setNicheKeywordSort(e.target.value)}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-xl px-3 py-2.5">
+                      <option value="videos">Most Videos</option>
+                      <option value="views">Most Views</option>
+                      <option value="score">Highest Score</option>
+                      <option value="channels">Most Channels</option>
+                      <option value="newest">Most Recent</option>
+                    </select>
+                    <button onClick={syncNicheData} disabled={nicheSyncing}
+                      className="px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-xl text-sm font-medium">
+                      {nicheSyncing ? 'Syncing...' : 'Sync'}
+                    </button>
+                    <button onClick={() => { /* enrich all */ }} disabled={nicheEnriching}
+                      className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-xl text-sm font-medium">
+                      Enrich
+                    </button>
+                  </div>
+
+                  {/* Sync progress */}
+                  {nicheSyncProgress && (
+                    <div className={`border rounded-lg px-4 py-3 mb-4 ${nicheSyncProgress.done ? 'bg-green-900/20 border-green-600/40' : 'bg-blue-900/20 border-blue-600/40'}`}>
+                      <p className="text-sm text-blue-200">{nicheSyncProgress.message}</p>
+                    </div>
+                  )}
+
+                  {/* Keyword cards grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                    {nicheKeywordCards.map(kw => (
+                      <button
+                        key={kw.keyword}
+                        onClick={() => selectNicheKeyword(kw.keyword)}
+                        className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 text-left hover:border-amber-500 transition group"
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <h3 className="text-sm font-semibold text-white group-hover:text-amber-400 transition">{kw.keyword}</h3>
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                            kw.avgScore >= 80 ? 'bg-green-500/20 text-green-400' :
+                            kw.avgScore >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-red-500/20 text-red-400'
+                          }`}>⚡ {kw.avgScore}</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 mb-2">
+                          <div>
+                            <div className="text-xs font-bold text-white">{kw.videoCount}</div>
+                            <div className="text-[10px] text-gray-500">videos</div>
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-blue-400">{kw.channelCount}</div>
+                            <div className="text-[10px] text-gray-500">channels</div>
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-green-400">{fmtYT(kw.totalViews)}</div>
+                            <div className="text-[10px] text-gray-500">views</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                          {kw.newChannelCount > 0 && <span className="text-orange-400">{kw.newChannelCount} new ch</span>}
+                          <span>{kw.highScoreCount} high score</span>
+                          {kw.saturation && (
+                            <span className={kw.saturation.globalSaturation >= 90 ? 'text-red-400' : kw.saturation.globalSaturation >= 70 ? 'text-yellow-400' : 'text-green-400'}>
+                              {kw.saturation.globalSaturation}% sat
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+              /* Keyword Detail View */
+              <div>
+                {/* Back + header */}
+                <div className="flex items-center gap-4 mb-4">
+                  <button onClick={() => { setNicheSelectedKeyword(null); setNicheFilter(prev => ({ ...prev, keyword: 'all' })); }}
+                    className="text-gray-400 hover:text-white transition flex items-center gap-1">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                    Back
+                  </button>
+                  <h2 className="text-xl font-bold text-white">{nicheSelectedKeyword}</h2>
+                  <span className="text-sm text-gray-500">{nicheTotal} videos</span>
+                </div>
+
               {/* Timeline */}
               <NicheTimeline
                 keyword={nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined}
@@ -4137,8 +4271,17 @@ function HomeContent() {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {nicheChannels.map(ch => (
                         <div key={ch.channelName} className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 hover:border-gray-500 transition">
-                          {/* Header: name + age badge */}
-                          <div className="flex items-start justify-between mb-3">
+                          {/* Header: avatar + name + age badge */}
+                          <div className="flex items-start gap-3 mb-3">
+                            <div className="w-10 h-10 rounded-full bg-gray-700 flex-shrink-0 overflow-hidden">
+                              {ch.channelAvatar ? (
+                                <img src={ch.channelAvatar} alt="" className="w-full h-full object-cover" loading="lazy" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-gray-500 text-sm font-bold">
+                                  {ch.channelName.charAt(0).toUpperCase()}
+                                </div>
+                              )}
+                            </div>
                             <div className="min-w-0 flex-1">
                               <h3 className="text-sm font-semibold text-white truncate">{ch.channelName}</h3>
                               {ch.subscribers > 0 && (
@@ -4313,6 +4456,7 @@ function HomeContent() {
                   )}
                 </>
               ))}
+              </div>)}
             </div>
           ) : currentView === 'library' ? (
             /* Library View */
