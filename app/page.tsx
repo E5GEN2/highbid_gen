@@ -4363,6 +4363,35 @@ function HomeContent() {
                         </div>
                       ))}
                     </div>
+
+                    {/* Load more channels */}
+                    {nicheChannels.length < nicheChannelsTotal && (
+                      <div className="text-center mt-6">
+                        <button
+                          onClick={async () => {
+                            setNicheChannelsLoading(true);
+                            try {
+                              const params = new URLSearchParams({
+                                keyword: nicheFilter.keyword,
+                                sort: nicheChannelSort,
+                                limit: '60',
+                                offset: String(nicheChannels.length),
+                                minScore: String(nicheFilter.minScore),
+                              });
+                              if (nicheChannelMaxAge) params.set('maxAge', nicheChannelMaxAge);
+                              const res = await fetch(`/api/niche-spy/channels?${params}`);
+                              const data = await res.json();
+                              setNicheChannels(prev => [...prev, ...data.channels]);
+                            } catch (err) { console.error(err); }
+                            setNicheChannelsLoading(false);
+                          }}
+                          disabled={nicheChannelsLoading}
+                          className="px-6 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm"
+                        >
+                          {nicheChannelsLoading ? 'Loading...' : `Load More (${nicheChannels.length}/${nicheChannelsTotal})`}
+                        </button>
+                      </div>
+                    )}
                   )}
                 </div>
               ) : (
