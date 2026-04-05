@@ -331,6 +331,11 @@ function HomeContent() {
     done?: boolean;
   } | null>(null);
   const [nicheOffset, setNicheOffset] = useState(0);
+  const [nicheSaturation, setNicheSaturation] = useState<{
+    keywords?: Array<{ keyword: string; videoCount: number; avgScore: number; runSaturation: number; globalSaturation: number; universeSize: number; lastNew: number; runCount: number }>;
+    latest?: { runSaturation: number; globalSaturation: number; universeSize: number; knownBefore: number; lastNew: number; lastOverlap: number } | null;
+    runs?: Array<{ run_at: string; run_saturation_pct: string; global_saturation_pct: string; new_count: number }>;
+  } | null>(null);
   const [nicheEnriching, setNicheEnriching] = useState(false);
   const [nicheEnrichResult, setNicheEnrichResult] = useState<{ message: string; enriched: number; errors: number } | null>(null);
 
@@ -421,6 +426,12 @@ function HomeContent() {
   useEffect(() => {
     if (currentView === 'niche') {
       fetchNicheData(0);
+      // Fetch saturation data
+      const kw = nicheFilter.keyword !== 'all' ? nicheFilter.keyword : '';
+      fetch(`/api/niche-spy/saturation${kw ? `?keyword=${encodeURIComponent(kw)}` : ''}`)
+        .then(r => r.json())
+        .then(d => setNicheSaturation(d))
+        .catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nicheFilter]);
@@ -3954,6 +3965,60 @@ function HomeContent() {
                 </div>
               </div>
 
+              {/* Saturation Indicators */}
+              {nicheSaturation && (nicheFilter.keyword !== 'all' ? nicheSaturation.latest : nicheSaturation.keywords?.length) && (
+                <div className="bg-gray-800/40 border border-gray-700 rounded-xl px-5 py-3 mb-4">
+                  {nicheFilter.keyword !== 'all' && nicheSaturation.latest ? (
+                    // Single keyword — show run + global saturation
+                    <div className="flex items-center gap-6">
+                      <span className="text-xs text-gray-500 uppercase tracking-wider">Saturation</span>
+                      <div className="flex items-center gap-2 flex-1">
+                        <span className="text-xs text-gray-400 w-20">Run</span>
+                        <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden max-w-xs">
+                          <div className={`h-full rounded-full ${nicheSaturation.latest.runSaturation >= 90 ? 'bg-red-500' : nicheSaturation.latest.runSaturation >= 60 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${nicheSaturation.latest.runSaturation}%` }} />
+                        </div>
+                        <span className={`text-xs font-mono w-12 ${nicheSaturation.latest.runSaturation >= 90 ? 'text-red-400' : nicheSaturation.latest.runSaturation >= 60 ? 'text-yellow-400' : 'text-green-400'}`}>
+                          {nicheSaturation.latest.runSaturation}%
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-1">
+                        <span className="text-xs text-gray-400 w-20">Global</span>
+                        <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden max-w-xs">
+                          <div className={`h-full rounded-full ${nicheSaturation.latest.globalSaturation >= 95 ? 'bg-red-500' : nicheSaturation.latest.globalSaturation >= 80 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${nicheSaturation.latest.globalSaturation}%` }} />
+                        </div>
+                        <span className={`text-xs font-mono w-12 ${nicheSaturation.latest.globalSaturation >= 95 ? 'text-red-400' : nicheSaturation.latest.globalSaturation >= 80 ? 'text-yellow-400' : 'text-green-400'}`}>
+                          {nicheSaturation.latest.globalSaturation}%
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {nicheSaturation.latest.universeSize} est. universe · +{nicheSaturation.latest.lastNew} last run
+                      </div>
+                    </div>
+                  ) : nicheSaturation.keywords && nicheSaturation.keywords.length > 0 ? (
+                    // All keywords — top saturated niches
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-gray-500 uppercase tracking-wider">Niche Saturation</span>
+                        <span className="text-[10px] text-gray-600">{nicheSaturation.keywords.length} tracked</span>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                        {nicheSaturation.keywords.slice(0, 8).map(k => (
+                          <div key={k.keyword} className="flex items-center gap-2">
+                            <span className="text-[11px] text-gray-400 truncate flex-1">{k.keyword}</span>
+                            <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden flex-shrink-0">
+                              <div className={`h-full rounded-full ${k.globalSaturation >= 95 ? 'bg-red-500' : k.globalSaturation >= 80 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${k.globalSaturation}%` }} />
+                            </div>
+                            <span className={`text-[10px] font-mono w-8 text-right ${k.globalSaturation >= 95 ? 'text-red-400' : k.globalSaturation >= 80 ? 'text-yellow-400' : 'text-green-400'}`}>
+                              {k.globalSaturation}%
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
               {/* Video Grid */}
               {nicheLoading && nicheVideos.length === 0 ? (
                 <div className="text-center py-20 text-gray-400">Loading...</div>
@@ -4008,13 +4073,13 @@ function HomeContent() {
                                 const d = new Date(v.posted_at);
                                 const now = new Date();
                                 const diffMs = now.getTime() - d.getTime();
+                                const hours = Math.floor(diffMs / 3600000);
                                 const days = Math.floor(diffMs / 86400000);
-                                if (days < 1) return 'Today';
-                                if (days === 1) return 'Yesterday';
+                                if (hours < 1) return 'Just now';
+                                if (hours < 24) return `${hours} hours ago`;
                                 if (days < 7) return `${days} days ago`;
                                 if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
-                                if (days < 365) return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                                return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+                                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                               })() : v.posted_date}</span>
                             )}
                           </div>
