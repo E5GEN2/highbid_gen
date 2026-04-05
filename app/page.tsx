@@ -3759,13 +3759,39 @@ function HomeContent() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ keyword: nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined, limit: 200 }),
                           });
-                          const data = await res.json();
-                          setNicheEnrichResult({
-                            message: data.error || `Enriched ${data.enriched} videos${data.errors ? `, ${data.errors} errors` : ''}`,
-                            enriched: data.enriched || 0,
-                            errors: data.errors || 0,
-                          });
-                          if (data.enriched > 0) fetchNicheData(0);
+                          // SSE stream
+                          const reader = res.body?.getReader();
+                          const decoder = new TextDecoder();
+                          let buf = '';
+                          if (reader) {
+                            while (true) {
+                              const { done, value } = await reader.read();
+                              if (done) break;
+                              buf += decoder.decode(value, { stream: true });
+                              const lines = buf.split('\n');
+                              buf = lines.pop() || '';
+                              for (const line of lines) {
+                                if (!line.startsWith('data: ')) continue;
+                                try {
+                                  const d = JSON.parse(line.slice(6));
+                                  if (d.step === 'videos' && !d.done && !d.error) {
+                                    setNicheEnrichResult({ message: `Fetching video stats... batch ${d.batch}/${d.total} (${d.percent || 0}%)`, enriched: 0, errors: 0 });
+                                  } else if (d.step === 'videos' && d.done) {
+                                    setNicheEnrichResult({ message: `Videos: ${d.enriched} enriched${d.errors ? `, ${d.errors} errors` : ''}. Fetching channels...`, enriched: d.enriched, errors: d.errors || 0 });
+                                  } else if (d.step === 'channels' && !d.done && !d.error) {
+                                    setNicheEnrichResult(prev => ({ ...(prev || { message: '', enriched: 0, errors: 0 }), message: `Fetching subscriber counts... batch ${d.batch}/${d.total} (${d.percent || 0}%)` }));
+                                  } else if (d.step === 'channels' && d.done) {
+                                    setNicheEnrichResult(prev => ({ ...(prev || { message: '', enriched: 0, errors: 0 }), message: `Done! ${prev?.enriched || 0} videos + ${d.enriched} channels enriched.` }));
+                                  } else if (d.step === 'complete') {
+                                    setNicheEnrichResult({ message: `Done! ${d.enrichedVideos} videos, ${d.enrichedChannels} channels enriched.`, enriched: d.enrichedVideos, errors: d.errors || 0 });
+                                  } else if (d.step === 'error') {
+                                    setNicheEnrichResult({ message: `Error: ${d.error}`, enriched: 0, errors: 1 });
+                                  }
+                                } catch { /* skip */ }
+                              }
+                            }
+                          }
+                          fetchNicheData(0);
                         } catch (err) {
                           setNicheEnrichResult({ message: `Error: ${err instanceof Error ? err.message : 'Failed'}`, enriched: 0, errors: 1 });
                         }
@@ -3967,7 +3993,20 @@ function HomeContent() {
                           <div className="flex items-center gap-2 text-xs text-gray-400 mb-1.5">
                             <span className="text-green-400 font-medium">{v.view_count ? fmtYT(v.view_count) + ' views' : ''}</span>
                             {v.channel_name && <span>· {v.channel_name}</span>}
-                            {v.posted_date && <span>· {v.posted_date}</span>}
+                            {(v.posted_at || v.posted_date) && (
+                              <span>· {v.posted_at ? (() => {
+                                const d = new Date(v.posted_at);
+                                const now = new Date();
+                                const diffMs = now.getTime() - d.getTime();
+                                const days = Math.floor(diffMs / 86400000);
+                                if (days < 1) return 'Today';
+                                if (days === 1) return 'Yesterday';
+                                if (days < 7) return `${days} days ago`;
+                                if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+                                if (days < 365) return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                                return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+                              })() : v.posted_date}</span>
+                            )}
                           </div>
 
                           {/* Engagement */}
