@@ -3,8 +3,14 @@ import { getPool } from '@/lib/db';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
 const NICHE_SPY_JOB_ID = '69a58c4277cb8e2b9f1dddc4';
-// Long-lived JWT for niche spy
-const XGODO_TOKEN = process.env.XGODO_NICHE_SPY_TOKEN || process.env.XGODO_API_TOKEN || '';
+
+async function getXgodoToken(): Promise<string> {
+  const pool = await getPool();
+  const res = await pool.query("SELECT value FROM admin_config WHERE key = 'xgodo_niche_spy_token'");
+  if (res.rows[0]?.value) return res.rows[0].value;
+  // Fallback to env vars
+  return process.env.XGODO_NICHE_SPY_TOKEN || process.env.XGODO_API_TOKEN || '';
+}
 
 // --- Helpers ---
 
@@ -142,8 +148,9 @@ export async function POST() {
   const pool = await getPool();
   const now = new Date();
 
-  if (!XGODO_TOKEN) {
-    return NextResponse.json({ error: 'XGODO_NICHE_SPY_TOKEN not configured' }, { status: 500 });
+  const xgodoToken = await getXgodoToken();
+  if (!xgodoToken) {
+    return NextResponse.json({ error: 'xgodo_niche_spy_token not configured. Set it in Admin settings.' }, { status: 500 });
   }
 
   try {
@@ -152,7 +159,7 @@ export async function POST() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${XGODO_TOKEN}`,
+        'Authorization': `Bearer ${xgodoToken}`,
       },
       body: JSON.stringify({
         job_id: NICHE_SPY_JOB_ID,
@@ -261,7 +268,7 @@ export async function POST() {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${XGODO_TOKEN}`,
+              'Authorization': `Bearer ${xgodoToken}`,
             },
             body: JSON.stringify({
               JobTasks_Ids: batch,

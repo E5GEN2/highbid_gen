@@ -49,6 +49,7 @@ export default function AdminPage() {
 
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
+  const [nicheSpyToken, setNicheSpyToken] = useState('');
   const [xgodoJobId, setXgodoJobId] = useState('');
   const [channelCheckApiKey, setChannelCheckApiKey] = useState('');
   const [configSaving, setConfigSaving] = useState(false);
@@ -126,6 +127,7 @@ export default function AdminPage() {
       const data = await res.json();
       if (data.config) {
         setXgodoToken(data.config.xgodo_api_token || '');
+        setNicheSpyToken(data.config.xgodo_niche_spy_token || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
         setChannelCheckApiKey(data.config.channel_check_api_key || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
@@ -212,6 +214,7 @@ export default function AdminPage() {
         body: JSON.stringify({
           config: {
             xgodo_api_token: xgodoToken,
+            xgodo_niche_spy_token: nicheSpyToken,
             xgodo_shorts_spy_job_id: xgodoJobId,
             channel_check_api_key: channelCheckApiKey,
             youtube_api_key: schedYoutubeKey,
@@ -1102,6 +1105,17 @@ export default function AdminPage() {
                 value={xgodoJobId}
                 onChange={(e) => setXgodoJobId(e.target.value)}
                 placeholder="e.g. 698709196049e1a09a72fb4e"
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Niche Spy Token</label>
+              <input
+                type="password"
+                value={nicheSpyToken}
+                onChange={(e) => setNicheSpyToken(e.target.value)}
+                placeholder="xgodo JWT for niche spy job"
                 className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
               />
             </div>
