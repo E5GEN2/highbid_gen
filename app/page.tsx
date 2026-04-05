@@ -327,6 +327,7 @@ function HomeContent() {
     message: string; batches: number; totalInserted: number; totalUpdated: number;
     totalLocal: number; totalKeywords: number; tasksProcessed: number;
     keywordBreakdown?: Array<{ keyword: string; total: number; new: number }>;
+    saturation?: Array<{ keyword: string; runSatPct: number; globalSatPct: number; A: number; B: number }>;
     done?: boolean;
   } | null>(null);
   const [nicheOffset, setNicheOffset] = useState(0);
@@ -383,6 +384,7 @@ function HomeContent() {
             totalLocal: data.totalLocal || 0, totalKeywords: data.totalKeywords || 0,
             tasksProcessed: data.tasksProcessed || 0,
             keywordBreakdown: data.keywordBreakdown,
+            saturation: data.saturation,
             done: true,
           });
           break;
@@ -3833,6 +3835,27 @@ function HomeContent() {
                             {nicheSyncProgress.keywordBreakdown.length > 8 && (
                               <span className="text-[10px] text-gray-500">+{nicheSyncProgress.keywordBreakdown.length - 8} more</span>
                             )}
+                          </div>
+                        )}
+                        {/* Saturation indicators */}
+                        {nicheSyncProgress.saturation && nicheSyncProgress.saturation.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Saturation</span>
+                            {nicheSyncProgress.saturation.slice(0, 6).map(s => (
+                              <div key={s.keyword} className="flex items-center gap-2">
+                                <span className="text-[10px] text-gray-400 w-28 truncate">{s.keyword}</span>
+                                <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full ${s.runSatPct >= 90 ? 'bg-red-500' : s.runSatPct >= 60 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                                    style={{ width: `${Math.min(s.runSatPct, 100)}%` }}
+                                  />
+                                </div>
+                                <span className={`text-[10px] font-mono w-10 text-right ${s.runSatPct >= 90 ? 'text-red-400' : s.runSatPct >= 60 ? 'text-yellow-400' : 'text-green-400'}`}>
+                                  {s.runSatPct}%
+                                </span>
+                                <span className="text-[10px] text-gray-500">+{s.A} new</span>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>

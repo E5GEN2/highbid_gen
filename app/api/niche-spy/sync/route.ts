@@ -188,14 +188,10 @@ export async function POST() {
       });
     }
 
-    // Step 2: Parse all tasks
-    let totalVideos = 0;
-    let newInserts = 0;
-    let updates = 0;
-    let skipped = 0;
-    const keywordStats: Record<string, { total: number; new: number }> = {};
+    // Step 2: Parse all tasks — collect videos grouped by keyword
     const taskIds: string[] = [];
     const allSaturations: Array<Record<string, unknown>> = [];
+    const videosByKeyword: Record<string, ParsedVideo[]> = {};
 
     for (const task of tasks) {
       const { videos, keyword, saturation } = parseTask(task);
@@ -203,12 +199,63 @@ export async function POST() {
       if (tid) taskIds.push(tid);
       if (saturation) allSaturations.push(saturation);
 
+      if (!videosByKeyword[keyword]) videosByKeyword[keyword] = [];
+      videosByKeyword[keyword].push(...videos);
+    }
+
+    // Step 2b: Calculate A/B/C saturation BEFORE inserting (per keyword)
+    const saturationResults: Array<{ keyword: string; knownBefore: number; runTotal: number; A: number; B: number; C: number; runSatPct: number; globalSatPct: number }> = [];
+
+    for (const [keyword, videos] of Object.entries(videosByKeyword)) {
+      if (!keyword || videos.length === 0) continue;
+
+      const runUrls = [...new Set(videos.map(v => v.url).filter(Boolean))];
+      if (runUrls.length === 0) continue;
+
+      // known_before: how many videos for this keyword already in DB
+      const { rows: [{ cnt: knownBeforeStr }] } = await pool.query(
+        `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE keyword = $1`,
+        [keyword]
+      );
+      const knownBefore = parseInt(knownBeforeStr) || 0;
+
+      // Find which of this run's URLs already exist in DB
+      const { rows: existingRows } = await pool.query(
+        `SELECT url FROM niche_spy_videos WHERE url = ANY($1)`,
+        [runUrls]
+      );
+      const existingUrls = new Set(existingRows.map(r => r.url));
+
+      const A = runUrls.filter(u => !existingUrls.has(u)).length; // new
+      const B = runUrls.filter(u => existingUrls.has(u)).length;  // overlap
+      const C = knownBefore - B; // missed (in DB but not in this run)
+      const runSatPct = (A + B) > 0 ? Math.round((B / (A + B)) * 10000) / 100 : 0;
+      const universeSize = knownBefore + A;
+      const globalSatPct = universeSize > 0 ? Math.round((knownBefore / universeSize) * 10000) / 100 : 0;
+
+      saturationResults.push({ keyword, knownBefore, runTotal: runUrls.length, A, B, C, runSatPct, globalSatPct });
+
+      // Save saturation run record
+      await pool.query(
+        `INSERT INTO niche_saturation_runs (keyword, known_before, run_total, new_count, overlap_count, missed_count, run_saturation_pct, global_saturation_pct, niche_universe_size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [keyword, knownBefore, runUrls.length, A, B, C, runSatPct, globalSatPct, universeSize]
+      ).catch(() => {});
+    }
+
+    // Step 3: NOW insert/update the videos
+    let totalVideos = 0;
+    let newInserts = 0;
+    let updates = 0;
+    let skipped = 0;
+    const keywordStats: Record<string, { total: number; new: number }> = {};
+
+    for (const [keyword, videos] of Object.entries(videosByKeyword)) {
       if (!keywordStats[keyword]) keywordStats[keyword] = { total: 0, new: 0 };
 
       for (const v of videos) {
         totalVideos++;
         keywordStats[keyword].total++;
-
         const postedAt = parseRelativeDate(v.postedDate, now);
 
         try {
@@ -310,6 +357,7 @@ export async function POST() {
         .sort(([, a], [, b]) => b.total - a.total)
         .slice(0, 20)
         .map(([kw, s]) => ({ keyword: kw, total: s.total, new: s.new })),
+      saturation: saturationResults,
     });
   } catch (err) {
     console.error('[niche-spy sync]', err);

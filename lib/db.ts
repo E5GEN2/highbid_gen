@@ -482,6 +482,24 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_saturation_kw ON niche_spy_saturation(keyword, recorded_at DESC)`).catch(() => {});
 
+    // Niche saturation runs — server-side A/B/C model (authoritative)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_saturation_runs (
+        id SERIAL PRIMARY KEY,
+        keyword TEXT NOT NULL,
+        run_at TIMESTAMPTZ DEFAULT NOW(),
+        known_before INTEGER DEFAULT 0,
+        run_total INTEGER DEFAULT 0,
+        new_count INTEGER DEFAULT 0,
+        overlap_count INTEGER DEFAULT 0,
+        missed_count INTEGER DEFAULT 0,
+        run_saturation_pct NUMERIC(5,2) DEFAULT 0,
+        global_saturation_pct NUMERIC(5,2) DEFAULT 0,
+        niche_universe_size INTEGER DEFAULT 0
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_sat_runs_kw ON niche_saturation_runs(keyword, run_at DESC)`).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
