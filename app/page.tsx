@@ -3919,14 +3919,6 @@ function HomeContent() {
                   <span className="text-sm text-gray-500">{nicheTotal} videos</span>
                 </div>
 
-              {/* Timeline */}
-              <NicheTimeline
-                keyword={nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined}
-                minScore={nicheFilter.minScore}
-                maxScore={nicheFilter.maxScore}
-                onRangeChange={(from, to) => setNicheFilter(prev => ({ ...prev, from, to }))}
-              />
-
               {/* Header */}
               <div className="bg-gray-800/60 border border-gray-700 rounded-xl px-6 py-4 mb-6">
                 <div className="flex items-center justify-between mb-4">
@@ -4142,7 +4134,7 @@ function HomeContent() {
 
               {/* Sub-tabs */}
               <div className="flex gap-1 mb-4">
-                {(['videos', 'channels'] as const).map(tab => (
+                {(['videos', 'channels', 'insights'] as const).map(tab => (
                   <button
                     key={tab}
                     onClick={() => setNicheSubTab(tab)}
@@ -4152,67 +4144,99 @@ function HomeContent() {
                         : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
                     }`}
                   >
-                    {tab === 'videos' ? 'Videos' : 'Channels'}
+                    {tab === 'videos' ? 'Videos' : tab === 'channels' ? 'Channels' : 'Insights'}
                   </button>
                 ))}
               </div>
 
-              {/* Saturation Indicators */}
-              {nicheSaturation && (nicheFilter.keyword !== 'all' ? nicheSaturation.latest : nicheSaturation.keywords?.length) && (
-                <div className="bg-gray-800/40 border border-gray-700 rounded-xl px-5 py-3 mb-4">
-                  {nicheFilter.keyword !== 'all' && nicheSaturation.latest ? (
-                    // Single keyword — show run + global saturation
-                    <div className="flex items-center gap-6">
-                      <span className="text-xs text-gray-500 uppercase tracking-wider">Saturation</span>
-                      <div className="flex items-center gap-2 flex-1">
-                        <span className="text-xs text-gray-400 w-20">Run</span>
-                        <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden max-w-xs">
-                          <div className={`h-full rounded-full ${nicheSaturation.latest.runSaturation >= 90 ? 'bg-red-500' : nicheSaturation.latest.runSaturation >= 60 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${nicheSaturation.latest.runSaturation}%` }} />
-                        </div>
-                        <span className={`text-xs font-mono w-12 ${nicheSaturation.latest.runSaturation >= 90 ? 'text-red-400' : nicheSaturation.latest.runSaturation >= 60 ? 'text-yellow-400' : 'text-green-400'}`}>
-                          {nicheSaturation.latest.runSaturation}%
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 flex-1">
-                        <span className="text-xs text-gray-400 w-20">Global</span>
-                        <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden max-w-xs">
-                          <div className={`h-full rounded-full ${nicheSaturation.latest.globalSaturation >= 95 ? 'bg-red-500' : nicheSaturation.latest.globalSaturation >= 80 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${nicheSaturation.latest.globalSaturation}%` }} />
-                        </div>
-                        <span className={`text-xs font-mono w-12 ${nicheSaturation.latest.globalSaturation >= 95 ? 'text-red-400' : nicheSaturation.latest.globalSaturation >= 80 ? 'text-yellow-400' : 'text-green-400'}`}>
-                          {nicheSaturation.latest.globalSaturation}%
-                        </span>
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {nicheSaturation.latest.universeSize} est. universe · +{nicheSaturation.latest.lastNew} last run
-                      </div>
-                    </div>
-                  ) : nicheSaturation.keywords && nicheSaturation.keywords.length > 0 ? (
-                    // All keywords — top saturated niches
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs text-gray-500 uppercase tracking-wider">Niche Saturation</span>
-                        <span className="text-[10px] text-gray-600">{nicheSaturation.keywords.length} tracked</span>
-                      </div>
-                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                        {nicheSaturation.keywords.slice(0, 8).map(k => (
-                          <div key={k.keyword} className="flex items-center gap-2">
-                            <span className="text-[11px] text-gray-400 truncate flex-1">{k.keyword}</span>
-                            <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden flex-shrink-0">
-                              <div className={`h-full rounded-full ${k.globalSaturation >= 95 ? 'bg-red-500' : k.globalSaturation >= 80 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${k.globalSaturation}%` }} />
-                            </div>
-                            <span className={`text-[10px] font-mono w-8 text-right ${k.globalSaturation >= 95 ? 'text-red-400' : k.globalSaturation >= 80 ? 'text-yellow-400' : 'text-green-400'}`}>
-                              {k.globalSaturation}%
+              {/* Content by sub-tab */}
+              {nicheSubTab === 'insights' ? (
+                /* Insights Tab */
+                <div className="space-y-6">
+                  {/* Timeline */}
+                  <NicheTimeline
+                    keyword={nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined}
+                    minScore={nicheFilter.minScore}
+                    maxScore={nicheFilter.maxScore}
+                    onRangeChange={(from, to) => setNicheFilter(prev => ({ ...prev, from, to }))}
+                  />
+
+                  {/* Saturation */}
+                  {nicheSaturation?.latest && (
+                    <div className="bg-gray-800/40 border border-gray-700 rounded-xl px-5 py-4">
+                      <h3 className="text-sm font-medium text-white mb-3">Saturation</h3>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs text-gray-400">Run Saturation</span>
+                            <span className={`text-sm font-bold ${nicheSaturation.latest.runSaturation >= 90 ? 'text-red-400' : nicheSaturation.latest.runSaturation >= 60 ? 'text-yellow-400' : 'text-green-400'}`}>
+                              {nicheSaturation.latest.runSaturation}%
                             </span>
                           </div>
-                        ))}
+                          <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${nicheSaturation.latest.runSaturation >= 90 ? 'bg-red-500' : nicheSaturation.latest.runSaturation >= 60 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${nicheSaturation.latest.runSaturation}%` }} />
+                          </div>
+                          <p className="text-[10px] text-gray-500 mt-1">How redundant was the last scrape</p>
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs text-gray-400">Global Coverage</span>
+                            <span className={`text-sm font-bold ${nicheSaturation.latest.globalSaturation >= 95 ? 'text-red-400' : nicheSaturation.latest.globalSaturation >= 80 ? 'text-yellow-400' : 'text-green-400'}`}>
+                              {nicheSaturation.latest.globalSaturation}%
+                            </span>
+                          </div>
+                          <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${nicheSaturation.latest.globalSaturation >= 95 ? 'bg-red-500' : nicheSaturation.latest.globalSaturation >= 80 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${nicheSaturation.latest.globalSaturation}%` }} />
+                          </div>
+                          <p className="text-[10px] text-gray-500 mt-1">How much of this niche is mapped</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4 mt-3 text-xs text-gray-500">
+                        <span>Est. universe: {nicheSaturation.latest.universeSize}</span>
+                        <span>Known: {nicheSaturation.latest.knownBefore}</span>
+                        <span>Last new: +{nicheSaturation.latest.lastNew}</span>
+                        <span>Last overlap: {nicheSaturation.latest.lastOverlap}</span>
                       </div>
                     </div>
-                  ) : null}
-                </div>
-              )}
+                  )}
 
-              {/* Content by sub-tab */}
-              {nicheSubTab === 'channels' ? (
+                  {/* New vs Established Channels */}
+                  {nicheChannelStats && (
+                    <div className="bg-gray-800/40 border border-gray-700 rounded-xl px-5 py-4">
+                      <h3 className="text-sm font-medium text-white mb-3">New vs Established Channels</h3>
+                      <div className="grid grid-cols-4 gap-3 mb-4">
+                        <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                          <div className="text-2xl font-bold text-white">{nicheChannelStats.totalChannels}</div>
+                          <div className="text-xs text-gray-500">Total</div>
+                        </div>
+                        <div className="bg-orange-900/20 border border-orange-800/30 rounded-lg p-3 text-center">
+                          <div className="text-2xl font-bold text-orange-400">{nicheChannelStats.veryNewChannels}</div>
+                          <div className="text-xs text-gray-500">&lt;30 days</div>
+                        </div>
+                        <div className="bg-green-900/20 border border-green-800/30 rounded-lg p-3 text-center">
+                          <div className="text-2xl font-bold text-green-400">{nicheChannelStats.newChannels}</div>
+                          <div className="text-xs text-gray-500">&lt;6 months</div>
+                        </div>
+                        <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                          <div className="text-2xl font-bold text-gray-400">{nicheChannelStats.establishedChannels}</div>
+                          <div className="text-xs text-gray-500">Established</div>
+                        </div>
+                      </div>
+                      {/* Avg subs comparison */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-gray-900/50 rounded-lg p-3">
+                          <div className="text-xs text-gray-500 mb-1">New Channel Avg Subs</div>
+                          <div className="text-lg font-bold text-green-400">{fmtYT(nicheChannelStats.newAvgSubs)}</div>
+                        </div>
+                        <div className="bg-gray-900/50 rounded-lg p-3">
+                          <div className="text-xs text-gray-500 mb-1">Established Avg Subs</div>
+                          <div className="text-lg font-bold text-gray-300">{fmtYT(nicheChannelStats.estAvgSubs)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : nicheSubTab === 'channels' ? (
                 /* Channels Tab */
                 <div>
                   {/* Channel stats bar */}
