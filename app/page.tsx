@@ -330,6 +330,8 @@ function HomeContent() {
     done?: boolean;
   } | null>(null);
   const [nicheOffset, setNicheOffset] = useState(0);
+  const [nicheEnriching, setNicheEnriching] = useState(false);
+  const [nicheEnrichResult, setNicheEnrichResult] = useState<{ message: string; enriched: number; errors: number } | null>(null);
 
   const fetchNicheData = useCallback(async (offset = 0) => {
     setNicheLoading(true);
@@ -3744,14 +3746,60 @@ function HomeContent() {
                     <span className="text-2xl font-bold text-white">{nicheStats ? parseInt(nicheStats.total_videos).toLocaleString() : '...'}</span>
                     <span className="text-gray-400 ml-2">stored videos</span>
                   </div>
-                  <button
-                    onClick={syncNicheData}
-                    disabled={nicheSyncing}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium"
-                  >
-                    {nicheSyncing ? 'Syncing...' : 'Refresh'}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={async () => {
+                        setNicheEnriching(true);
+                        setNicheEnrichResult(null);
+                        try {
+                          const res = await fetch('/api/niche-spy/enrich', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ keyword: nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined, limit: 200 }),
+                          });
+                          const data = await res.json();
+                          setNicheEnrichResult({
+                            message: data.error || `Enriched ${data.enriched} videos${data.errors ? `, ${data.errors} errors` : ''}`,
+                            enriched: data.enriched || 0,
+                            errors: data.errors || 0,
+                          });
+                          if (data.enriched > 0) fetchNicheData(0);
+                        } catch (err) {
+                          setNicheEnrichResult({ message: `Error: ${err instanceof Error ? err.message : 'Failed'}`, enriched: 0, errors: 1 });
+                        }
+                        setNicheEnriching(false);
+                        setTimeout(() => setNicheEnrichResult(null), 5000);
+                      }}
+                      disabled={nicheEnriching}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium"
+                    >
+                      {nicheEnriching ? 'Enriching...' : 'Enrich Data'}
+                    </button>
+                    <button
+                      onClick={syncNicheData}
+                      disabled={nicheSyncing}
+                      className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium"
+                    >
+                      {nicheSyncing ? 'Syncing...' : 'Refresh'}
+                    </button>
+                  </div>
                 </div>
+
+                {/* Enrich result */}
+                {nicheEnrichResult && (
+                  <div className={`border rounded-lg px-4 py-2.5 mb-3 ${nicheEnrichResult.errors ? 'bg-yellow-900/20 border-yellow-600/40' : 'bg-purple-900/20 border-purple-600/40'}`}>
+                    <div className="flex items-center gap-2">
+                      {nicheEnriching ? (
+                        <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                      ) : (
+                        <svg className="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      )}
+                      <span className="text-sm text-purple-200">{nicheEnrichResult.message}</span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Sync progress */}
                 {nicheSyncProgress && (
