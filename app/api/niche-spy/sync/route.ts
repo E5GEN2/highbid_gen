@@ -256,7 +256,12 @@ export async function POST() {
       for (const v of videos) {
         totalVideos++;
         keywordStats[keyword].total++;
-        const postedAt = parseRelativeDate(v.postedDate, now);
+        // Only store posted_at if it's an absolute date (ISO/parseable), not relative ("2 months ago")
+        let postedAt: Date | null = null;
+        if (v.postedDate && !v.postedDate.match(/\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago/i)) {
+          const parsed = new Date(v.postedDate);
+          if (!isNaN(parsed.getTime())) postedAt = parsed;
+        }
 
         try {
           const result = await pool.query(
