@@ -56,8 +56,8 @@ export async function GET(req: NextRequest) {
   let orderBy: string;
   switch (sort) {
     case 'views': orderBy = 'view_count DESC NULLS LAST'; break;
-    case 'date': orderBy = 'posted_at DESC NULLS LAST'; break;
-    case 'oldest': orderBy = 'posted_at ASC NULLS LAST'; break;
+    case 'date': orderBy = 'fetched_at DESC NULLS LAST, posted_at DESC NULLS LAST'; break;
+    case 'oldest': orderBy = 'fetched_at ASC NULLS LAST, posted_at ASC NULLS LAST'; break;
     case 'likes': orderBy = 'like_count DESC NULLS LAST'; break;
     default: orderBy = 'score DESC NULLS LAST, view_count DESC NULLS LAST';
   }
