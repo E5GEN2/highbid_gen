@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
   const [videosRes, countRes, keywordsRes, statsRes] = await Promise.all([
     pool.query(
       `SELECT id, keyword, url, title, view_count, channel_name, posted_date, posted_at,
-              score, subscriber_count, like_count, comment_count, top_comment, thumbnail, fetched_at
+              score, subscriber_count, like_count, comment_count, top_comment, thumbnail, fetched_at, channel_created_at
        FROM niche_spy_videos ${where}
        ORDER BY ${orderBy}
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,

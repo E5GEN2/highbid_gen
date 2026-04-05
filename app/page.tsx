@@ -313,7 +313,7 @@ function HomeContent() {
   // Niche Explorer State
   const [nicheVideos, setNicheVideos] = useState<Array<{
     id: number; keyword: string; url: string; title: string; view_count: number;
-    channel_name: string; posted_date: string; posted_at: string; score: number;
+    channel_name: string; posted_date: string; posted_at: string; score: number; channel_created_at: string;
     subscriber_count: number; like_count: number; comment_count: number;
     top_comment: string; thumbnail: string; fetched_at: string;
   }>>([]);
@@ -4089,6 +4089,12 @@ function HomeContent() {
                             {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
                             {v.comment_count > 0 && <span>💬 {fmtYT(v.comment_count)}</span>}
                             {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)} subscribers</span>}
+                            {v.channel_created_at && (() => {
+                              const days = Math.floor((Date.now() - new Date(v.channel_created_at).getTime()) / 86400000);
+                              if (days < 30) return <span className="text-orange-400">📅 {days}d old</span>;
+                              if (days < 365) return <span>📅 {Math.floor(days / 30)}mo old</span>;
+                              return <span>📅 {(days / 365).toFixed(1)}yr old</span>;
+                            })()}
                           </div>
 
                           {/* Top comment */}
