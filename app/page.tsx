@@ -4285,9 +4285,9 @@ function HomeContent() {
                   </div>
 
                   {/* Channel cards grid */}
-                  {nicheChannelsLoading ? (
+                  {nicheChannelsLoading && nicheChannels.length === 0 ? (
                     <div className="text-center py-20 text-gray-400">Loading channels...</div>
-                  ) : (
+                  ) : (<>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {nicheChannels.map(ch => (
                         <div key={ch.channelName} className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 hover:border-gray-500 transition">
@@ -4392,7 +4392,7 @@ function HomeContent() {
                         </button>
                       </div>
                     )}
-                  )}
+                  </>)}
                 </div>
               ) : (
               /* Videos Tab */
