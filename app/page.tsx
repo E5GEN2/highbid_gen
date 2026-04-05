@@ -320,7 +320,7 @@ function HomeContent() {
   const [nicheTotal, setNicheTotal] = useState(0);
   const [nicheKeywords, setNicheKeywords] = useState<Array<{ keyword: string; cnt: string }>>([]);
   const [nicheStats, setNicheStats] = useState<{ total_videos: string; total_keywords: string; total_channels: string; avg_score: string } | null>(null);
-  const [nicheFilter, setNicheFilter] = useState({ keyword: 'all', minScore: 0, maxScore: 100, sort: 'score', from: null as string | null, to: null as string | null });
+  const [nicheFilter, setNicheFilter] = useState({ keyword: 'all', minScore: 80, maxScore: 100, sort: 'date', from: null as string | null, to: null as string | null });
   const [nicheLoading, setNicheLoading] = useState(false);
   const [nicheSyncing, setNicheSyncing] = useState(false);
   const [nicheSyncProgress, setNicheSyncProgress] = useState<{
