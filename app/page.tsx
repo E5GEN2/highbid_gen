@@ -336,6 +336,21 @@ function HomeContent() {
     latest?: { runSaturation: number; globalSaturation: number; universeSize: number; knownBefore: number; lastNew: number; lastOverlap: number } | null;
     runs?: Array<{ run_at: string; run_saturation_pct: string; global_saturation_pct: string; new_count: number }>;
   } | null>(null);
+  const [nicheSubTab, setNicheSubTab] = useState<'videos' | 'channels'>('videos');
+  const [nicheChannels, setNicheChannels] = useState<Array<{
+    channelName: string; videoCount: number; totalViews: number; avgViews: number; maxViews: number;
+    avgScore: number; maxScore: number; subscribers: number; totalLikes: number; totalComments: number;
+    channelCreatedAt: string | null; channelAgeDays: number | null; latestVideoAt: string | null;
+    keywords: string[];
+  }>>([]);
+  const [nicheChannelsTotal, setNicheChannelsTotal] = useState(0);
+  const [nicheChannelStats, setNicheChannelStats] = useState<{
+    totalChannels: number; newChannels: number; veryNewChannels: number; establishedChannels: number;
+    newAvgSubs: number; estAvgSubs: number;
+  } | null>(null);
+  const [nicheChannelSort, setNicheChannelSort] = useState('views');
+  const [nicheChannelMaxAge, setNicheChannelMaxAge] = useState('');
+  const [nicheChannelsLoading, setNicheChannelsLoading] = useState(false);
   const [nicheEnriching, setNicheEnriching] = useState(false);
   const [nicheEnrichResult, setNicheEnrichResult] = useState<{ message: string; enriched: number; errors: number } | null>(null);
 
@@ -366,6 +381,32 @@ function HomeContent() {
     } catch (err) { console.error('Niche fetch error:', err); }
     setNicheLoading(false);
   }, [nicheFilter]);
+
+  const fetchNicheChannels = useCallback(async () => {
+    setNicheChannelsLoading(true);
+    try {
+      const params = new URLSearchParams({
+        keyword: nicheFilter.keyword,
+        sort: nicheChannelSort,
+        limit: '60',
+        minScore: String(nicheFilter.minScore),
+      });
+      if (nicheChannelMaxAge) params.set('maxAge', nicheChannelMaxAge);
+      const res = await fetch(`/api/niche-spy/channels?${params}`);
+      const data = await res.json();
+      setNicheChannels(data.channels);
+      setNicheChannelsTotal(data.total);
+      setNicheChannelStats(data.stats);
+    } catch (err) { console.error('Channel fetch error:', err); }
+    setNicheChannelsLoading(false);
+  }, [nicheFilter.keyword, nicheFilter.minScore, nicheChannelSort, nicheChannelMaxAge]);
+
+  // Load channels when sub-tab switches
+  useEffect(() => {
+    if (currentView === 'niche' && nicheSubTab === 'channels') {
+      fetchNicheChannels();
+    }
+  }, [currentView, nicheSubTab, fetchNicheChannels]);
 
   const syncNicheData = async () => {
     setNicheSyncing(true);
@@ -3965,6 +4006,23 @@ function HomeContent() {
                 </div>
               </div>
 
+              {/* Sub-tabs */}
+              <div className="flex gap-1 mb-4">
+                {(['videos', 'channels'] as const).map(tab => (
+                  <button
+                    key={tab}
+                    onClick={() => setNicheSubTab(tab)}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                      nicheSubTab === tab
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+                    }`}
+                  >
+                    {tab === 'videos' ? 'Videos' : 'Channels'}
+                  </button>
+                ))}
+              </div>
+
               {/* Saturation Indicators */}
               {nicheSaturation && (nicheFilter.keyword !== 'all' ? nicheSaturation.latest : nicheSaturation.keywords?.length) && (
                 <div className="bg-gray-800/40 border border-gray-700 rounded-xl px-5 py-3 mb-4">
@@ -4019,8 +4077,134 @@ function HomeContent() {
                 </div>
               )}
 
-              {/* Video Grid */}
-              {nicheLoading && nicheVideos.length === 0 ? (
+              {/* Content by sub-tab */}
+              {nicheSubTab === 'channels' ? (
+                /* Channels Tab */
+                <div>
+                  {/* Channel stats bar */}
+                  {nicheChannelStats && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                      <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-3">
+                        <div className="text-xl font-bold text-white">{nicheChannelStats.totalChannels.toLocaleString()}</div>
+                        <div className="text-xs text-gray-500">Total Channels</div>
+                      </div>
+                      <div className="bg-gray-800/60 border border-green-800/50 rounded-lg px-4 py-3">
+                        <div className="text-xl font-bold text-green-400">{nicheChannelStats.newChannels}</div>
+                        <div className="text-xs text-gray-500">New (&lt;6mo)</div>
+                      </div>
+                      <div className="bg-gray-800/60 border border-orange-800/50 rounded-lg px-4 py-3">
+                        <div className="text-xl font-bold text-orange-400">{nicheChannelStats.veryNewChannels}</div>
+                        <div className="text-xs text-gray-500">Very New (&lt;30d)</div>
+                      </div>
+                      <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-3">
+                        <div className="text-xl font-bold text-gray-300">{nicheChannelStats.establishedChannels}</div>
+                        <div className="text-xs text-gray-500">Established</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Channel filters */}
+                  <div className="flex items-center gap-3 mb-4 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 uppercase">Sort</span>
+                      <select value={nicheChannelSort} onChange={e => setNicheChannelSort(e.target.value)}
+                        className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-1.5">
+                        <option value="views">Total Views</option>
+                        <option value="videos">Video Count</option>
+                        <option value="subs">Subscribers</option>
+                        <option value="newest">Newest Channels</option>
+                        <option value="score">Avg Score</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 uppercase">Age</span>
+                      <select value={nicheChannelMaxAge} onChange={e => setNicheChannelMaxAge(e.target.value)}
+                        className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-1.5">
+                        <option value="">All channels</option>
+                        <option value="30">Last 30 days</option>
+                        <option value="90">Last 3 months</option>
+                        <option value="180">Last 6 months</option>
+                        <option value="365">Last year</option>
+                      </select>
+                    </div>
+                    <span className="text-xs text-gray-500">{nicheChannelsTotal} channels</span>
+                  </div>
+
+                  {/* Channel cards grid */}
+                  {nicheChannelsLoading ? (
+                    <div className="text-center py-20 text-gray-400">Loading channels...</div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {nicheChannels.map(ch => (
+                        <div key={ch.channelName} className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 hover:border-gray-500 transition">
+                          {/* Header: name + age badge */}
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="min-w-0 flex-1">
+                              <h3 className="text-sm font-semibold text-white truncate">{ch.channelName}</h3>
+                              {ch.subscribers > 0 && (
+                                <span className="text-xs text-gray-400">{fmtYT(ch.subscribers)} subscribers</span>
+                              )}
+                            </div>
+                            {ch.channelAgeDays !== null && (
+                              <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ml-2 ${
+                                ch.channelAgeDays < 30 ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30' :
+                                ch.channelAgeDays < 180 ? 'bg-green-500/20 text-green-300 border border-green-500/30' :
+                                'bg-gray-700 text-gray-400'
+                              }`}>
+                                {ch.channelAgeDays < 30 ? `${ch.channelAgeDays}d` :
+                                 ch.channelAgeDays < 365 ? `${Math.floor(ch.channelAgeDays / 30)}mo` :
+                                 `${(ch.channelAgeDays / 365).toFixed(1)}yr`}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Stats grid */}
+                          <div className="grid grid-cols-3 gap-2 mb-3">
+                            <div>
+                              <div className="text-sm font-bold text-green-400">{fmtYT(ch.totalViews)}</div>
+                              <div className="text-[10px] text-gray-500">Total Views</div>
+                            </div>
+                            <div>
+                              <div className="text-sm font-bold text-blue-400">{ch.videoCount}</div>
+                              <div className="text-[10px] text-gray-500">Videos</div>
+                            </div>
+                            <div>
+                              <div className="text-sm font-bold text-purple-400">{fmtYT(ch.avgViews)}</div>
+                              <div className="text-[10px] text-gray-500">Avg Views</div>
+                            </div>
+                          </div>
+
+                          {/* Score + engagement */}
+                          <div className="flex items-center gap-3 text-xs text-gray-500 mb-2">
+                            <span className={`font-medium ${ch.avgScore >= 80 ? 'text-green-400' : ch.avgScore >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                              ⚡ {ch.avgScore} avg score
+                            </span>
+                            {ch.totalLikes > 0 && <span>👍 {fmtYT(ch.totalLikes)}</span>}
+                            {ch.totalComments > 0 && <span>💬 {fmtYT(ch.totalComments)}</span>}
+                          </div>
+
+                          {/* Best video */}
+                          <div className="text-[10px] text-gray-500">
+                            Best: {fmtYT(ch.maxViews)} views · Max score: {ch.maxScore}
+                          </div>
+
+                          {/* Keywords */}
+                          {ch.keywords.length > 1 && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {ch.keywords.slice(0, 3).map(kw => (
+                                <span key={kw} className="text-[9px] bg-purple-600/20 text-purple-300 px-1.5 py-0.5 rounded-full">{kw}</span>
+                              ))}
+                              {ch.keywords.length > 3 && <span className="text-[9px] text-gray-600">+{ch.keywords.length - 3}</span>}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+              /* Videos Tab */
+              nicheLoading && nicheVideos.length === 0 ? (
                 <div className="text-center py-20 text-gray-400">Loading...</div>
               ) : (
                 <>
@@ -4128,7 +4312,7 @@ function HomeContent() {
                     </div>
                   )}
                 </>
-              )}
+              ))}
             </div>
           ) : currentView === 'library' ? (
             /* Library View */
