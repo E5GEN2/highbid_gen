@@ -3868,29 +3868,29 @@ function HomeContent() {
                         onClick={() => selectNicheKeyword(kw.keyword)}
                         className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 text-left hover:border-amber-500 transition group"
                       >
-                        <div className="flex items-start justify-between mb-2">
-                          <h3 className="text-sm font-semibold text-white group-hover:text-amber-400 transition">{kw.keyword}</h3>
-                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                        <div className="flex items-start justify-between mb-3">
+                          <h3 className="text-lg font-bold text-white group-hover:text-amber-400 transition leading-tight">{kw.keyword}</h3>
+                          <span className={`text-sm px-2 py-1 rounded-lg font-bold ${
                             kw.avgScore >= 80 ? 'bg-green-500/20 text-green-400' :
                             kw.avgScore >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
                             'bg-red-500/20 text-red-400'
                           }`}>⚡ {kw.avgScore}</span>
                         </div>
-                        <div className="grid grid-cols-3 gap-2 mb-2">
+                        <div className="grid grid-cols-3 gap-2 mb-3">
                           <div>
-                            <div className="text-xs font-bold text-white">{kw.videoCount}</div>
-                            <div className="text-[10px] text-gray-500">videos</div>
+                            <div className="text-lg font-bold text-white">{kw.videoCount}</div>
+                            <div className="text-xs text-gray-500">videos</div>
                           </div>
                           <div>
-                            <div className="text-xs font-bold text-blue-400">{kw.channelCount}</div>
-                            <div className="text-[10px] text-gray-500">channels</div>
+                            <div className="text-lg font-bold text-blue-400">{kw.channelCount}</div>
+                            <div className="text-xs text-gray-500">channels</div>
                           </div>
                           <div>
-                            <div className="text-xs font-bold text-green-400">{fmtYT(kw.totalViews)}</div>
-                            <div className="text-[10px] text-gray-500">views</div>
+                            <div className="text-lg font-bold text-green-400">{fmtYT(kw.totalViews)}</div>
+                            <div className="text-xs text-gray-500">views</div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
                           {kw.newChannelCount > 0 && <span className="text-orange-400">{kw.newChannelCount} new ch</span>}
                           <span>{kw.highScoreCount} high score</span>
                           {kw.saturation && (
