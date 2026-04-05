@@ -3753,50 +3753,60 @@ function HomeContent() {
                       onClick={async () => {
                         setNicheEnriching(true);
                         setNicheEnrichResult(null);
+                        let totalEnrichedV = 0, totalEnrichedC = 0, totalErrors = 0, round = 0;
                         try {
-                          const res = await fetch('/api/niche-spy/enrich', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ keyword: nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined, limit: 200 }),
-                          });
-                          // SSE stream
-                          const reader = res.body?.getReader();
-                          const decoder = new TextDecoder();
-                          let buf = '';
-                          if (reader) {
-                            while (true) {
-                              const { done, value } = await reader.read();
-                              if (done) break;
-                              buf += decoder.decode(value, { stream: true });
-                              const lines = buf.split('\n');
-                              buf = lines.pop() || '';
-                              for (const line of lines) {
-                                if (!line.startsWith('data: ')) continue;
-                                try {
-                                  const d = JSON.parse(line.slice(6));
-                                  if (d.step === 'videos' && !d.done && !d.error) {
-                                    setNicheEnrichResult({ message: `Fetching video stats... batch ${d.batch}/${d.total} (${d.percent || 0}%)`, enriched: 0, errors: 0 });
-                                  } else if (d.step === 'videos' && d.done) {
-                                    setNicheEnrichResult({ message: `Videos: ${d.enriched} enriched${d.errors ? `, ${d.errors} errors` : ''}. Fetching channels...`, enriched: d.enriched, errors: d.errors || 0 });
-                                  } else if (d.step === 'channels' && !d.done && !d.error) {
-                                    setNicheEnrichResult(prev => ({ ...(prev || { message: '', enriched: 0, errors: 0 }), message: `Fetching subscriber counts... batch ${d.batch}/${d.total} (${d.percent || 0}%)` }));
-                                  } else if (d.step === 'channels' && d.done) {
-                                    setNicheEnrichResult(prev => ({ ...(prev || { message: '', enriched: 0, errors: 0 }), message: `Done! ${prev?.enriched || 0} videos + ${d.enriched} channels enriched.` }));
-                                  } else if (d.step === 'complete') {
-                                    setNicheEnrichResult({ message: `Done! ${d.enrichedVideos} videos, ${d.enrichedChannels} channels enriched.`, enriched: d.enrichedVideos, errors: d.errors || 0 });
-                                  } else if (d.step === 'error') {
-                                    setNicheEnrichResult({ message: `Error: ${d.error}`, enriched: 0, errors: 1 });
-                                  }
-                                } catch { /* skip */ }
+                          while (true) {
+                            round++;
+                            setNicheEnrichResult({ message: `Round ${round}: fetching data from YouTube API...`, enriched: totalEnrichedV, errors: totalErrors });
+                            const res = await fetch('/api/niche-spy/enrich', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ keyword: nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined, limit: 200 }),
+                            });
+                            const reader = res.body?.getReader();
+                            const decoder = new TextDecoder();
+                            let buf = '';
+                            let roundVideos = 0, roundChannels = 0;
+                            if (reader) {
+                              while (true) {
+                                const { done, value } = await reader.read();
+                                if (done) break;
+                                buf += decoder.decode(value, { stream: true });
+                                const lines = buf.split('\n');
+                                buf = lines.pop() || '';
+                                for (const line of lines) {
+                                  if (!line.startsWith('data: ')) continue;
+                                  try {
+                                    const d = JSON.parse(line.slice(6));
+                                    if (d.step === 'videos' && !d.done && !d.error) {
+                                      setNicheEnrichResult({ message: `Round ${round}: video stats batch ${d.batch}/${d.total}...`, enriched: totalEnrichedV, errors: totalErrors });
+                                    } else if (d.step === 'videos' && d.done) {
+                                      roundVideos = d.enriched || 0;
+                                      setNicheEnrichResult({ message: `Round ${round}: ${roundVideos} videos done, fetching channels...`, enriched: totalEnrichedV + roundVideos, errors: totalErrors });
+                                    } else if (d.step === 'channels' && !d.done && !d.error) {
+                                      setNicheEnrichResult({ message: `Round ${round}: subscriber counts batch ${d.batch}/${d.total}...`, enriched: totalEnrichedV + roundVideos, errors: totalErrors });
+                                    } else if (d.step === 'complete') {
+                                      roundVideos = d.enrichedVideos || 0;
+                                      roundChannels = d.enrichedChannels || 0;
+                                      totalErrors += d.errors || 0;
+                                    }
+                                  } catch { /* skip */ }
+                                }
                               }
                             }
+                            totalEnrichedV += roundVideos;
+                            totalEnrichedC += roundChannels;
+                            setNicheEnrichResult({ message: `Round ${round} done: +${roundVideos} videos, +${roundChannels} channels (total: ${totalEnrichedV} videos, ${totalEnrichedC} channels)`, enriched: totalEnrichedV, errors: totalErrors });
+                            if (roundVideos === 0) break; // No more to enrich
+                            await new Promise(r => setTimeout(r, 500));
                           }
+                          setNicheEnrichResult({ message: `All done! ${totalEnrichedV} videos, ${totalEnrichedC} channels enriched across ${round} rounds.`, enriched: totalEnrichedV, errors: totalErrors });
                           fetchNicheData(0);
                         } catch (err) {
-                          setNicheEnrichResult({ message: `Error: ${err instanceof Error ? err.message : 'Failed'}`, enriched: 0, errors: 1 });
+                          setNicheEnrichResult({ message: `Error: ${err instanceof Error ? err.message : 'Failed'}`, enriched: totalEnrichedV, errors: totalErrors + 1 });
                         }
                         setNicheEnriching(false);
-                        setTimeout(() => setNicheEnrichResult(null), 5000);
+                        setTimeout(() => setNicheEnrichResult(null), 8000);
                       }}
                       disabled={nicheEnriching}
                       className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium"
