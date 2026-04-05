@@ -24,10 +24,11 @@ export async function POST(req: NextRequest) {
   const proxy = await getProxy();
   const proxyStats = await getProxyStats();
 
-  // Find videos needing enrichment (missing likes, subs, or exact date)
+  // Find videos needing enrichment:
+  // - missing subs/likes/comments/date
+  // - OR never enriched (relative dates only, no exact publishedAt)
   const conditions = [
-    '(like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0 OR posted_at IS NULL)',
-    '(enriched_at IS NULL OR enriched_at < NOW() - INTERVAL \'7 days\')',
+    '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
   ];
   const params: (string | number)[] = [];
   let idx = 1;
@@ -220,7 +221,7 @@ export async function GET(req: NextRequest) {
   const keyword = req.nextUrl.searchParams.get('keyword');
 
   const conditions = [
-    '(like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0 OR posted_at IS NULL)',
+    '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
   ];
   const params: string[] = [];
   if (keyword && keyword !== 'all') {
@@ -230,6 +231,7 @@ export async function GET(req: NextRequest) {
 
   const res = await pool.query(
     `SELECT COUNT(*) as need_enrichment,
+            COUNT(*) FILTER (WHERE enriched_at IS NULL) as never_enriched,
             COUNT(*) FILTER (WHERE like_count IS NULL OR like_count = 0) as missing_likes,
             COUNT(*) FILTER (WHERE subscriber_count IS NULL OR subscriber_count = 0) as missing_subs,
             COUNT(*) FILTER (WHERE posted_at IS NULL) as missing_date
