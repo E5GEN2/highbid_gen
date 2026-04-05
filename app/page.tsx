@@ -3933,13 +3933,32 @@ function HomeContent() {
                         setNicheEnrichResult(null);
                         let totalEnrichedV = 0, totalEnrichedC = 0, totalErrors = 0, round = 0;
                         try {
+                          // First check how many need enrichment
+                          const kw = nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined;
+                          const checkRes = await fetch(`/api/niche-spy/enrich${kw ? `?keyword=${encodeURIComponent(kw)}` : ''}`);
+                          const checkData = await checkRes.json();
+                          const totalNeeded = parseInt(checkData.need_enrichment) || 0;
+                          const totalRounds = Math.ceil(totalNeeded / 200);
+
+                          if (totalNeeded === 0) {
+                            setNicheEnrichResult({ message: 'All videos already enriched.', enriched: 0, errors: 0 });
+                            setNicheEnriching(false);
+                            setTimeout(() => setNicheEnrichResult(null), 3000);
+                            return;
+                          }
+
+                          setNicheEnrichResult({ message: `${totalNeeded.toLocaleString()} videos need enrichment (~${totalRounds} rounds)...`, enriched: 0, errors: 0 });
+
                           while (true) {
                             round++;
-                            setNicheEnrichResult({ message: `Round ${round}: fetching data from YouTube API...`, enriched: totalEnrichedV, errors: totalErrors });
+                            const remaining = totalNeeded - totalEnrichedV;
+                            const pct = totalNeeded > 0 ? Math.round((totalEnrichedV / totalNeeded) * 100) : 0;
+                            setNicheEnrichResult({ message: `Round ${round}/${totalRounds}: enriching... (${pct}%, ${remaining.toLocaleString()} remaining)`, enriched: totalEnrichedV, errors: totalErrors });
+
                             const res = await fetch('/api/niche-spy/enrich', {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ keyword: nicheFilter.keyword !== 'all' ? nicheFilter.keyword : undefined, limit: 200 }),
+                              body: JSON.stringify({ keyword: kw, limit: 200 }),
                             });
                             const reader = res.body?.getReader();
                             const decoder = new TextDecoder();
@@ -3957,12 +3976,12 @@ function HomeContent() {
                                   try {
                                     const d = JSON.parse(line.slice(6));
                                     if (d.step === 'videos' && !d.done && !d.error) {
-                                      setNicheEnrichResult({ message: `Round ${round}: video stats batch ${d.batch}/${d.total}...`, enriched: totalEnrichedV, errors: totalErrors });
+                                      const rpct = totalNeeded > 0 ? Math.round(((totalEnrichedV + (d.batch || 0) * 50) / totalNeeded) * 100) : 0;
+                                      setNicheEnrichResult({ message: `Round ${round}/${totalRounds}: video stats... (${rpct}%)`, enriched: totalEnrichedV, errors: totalErrors });
                                     } else if (d.step === 'videos' && d.done) {
                                       roundVideos = d.enriched || 0;
-                                      setNicheEnrichResult({ message: `Round ${round}: ${roundVideos} videos done, fetching channels...`, enriched: totalEnrichedV + roundVideos, errors: totalErrors });
                                     } else if (d.step === 'channels' && !d.done && !d.error) {
-                                      setNicheEnrichResult({ message: `Round ${round}: subscriber counts batch ${d.batch}/${d.total}...`, enriched: totalEnrichedV + roundVideos, errors: totalErrors });
+                                      setNicheEnrichResult({ message: `Round ${round}/${totalRounds}: fetching subscriber counts...`, enriched: totalEnrichedV + roundVideos, errors: totalErrors });
                                     } else if (d.step === 'complete') {
                                       roundVideos = d.enrichedVideos || 0;
                                       roundChannels = d.enrichedChannels || 0;
@@ -3974,8 +3993,7 @@ function HomeContent() {
                             }
                             totalEnrichedV += roundVideos;
                             totalEnrichedC += roundChannels;
-                            setNicheEnrichResult({ message: `Round ${round} done: +${roundVideos} videos, +${roundChannels} channels (total: ${totalEnrichedV} videos, ${totalEnrichedC} channels)`, enriched: totalEnrichedV, errors: totalErrors });
-                            if (roundVideos === 0) break; // No more to enrich
+                            if (roundVideos === 0) break;
                             await new Promise(r => setTimeout(r, 500));
                           }
                           setNicheEnrichResult({ message: `All done! ${totalEnrichedV} videos, ${totalEnrichedC} channels enriched across ${round} rounds.`, enriched: totalEnrichedV, errors: totalErrors });
@@ -4239,28 +4257,6 @@ function HomeContent() {
               ) : nicheSubTab === 'channels' ? (
                 /* Channels Tab */
                 <div>
-                  {/* Channel stats bar */}
-                  {nicheChannelStats && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                      <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-3">
-                        <div className="text-xl font-bold text-white">{nicheChannelStats.totalChannels.toLocaleString()}</div>
-                        <div className="text-xs text-gray-500">Total Channels</div>
-                      </div>
-                      <div className="bg-gray-800/60 border border-green-800/50 rounded-lg px-4 py-3">
-                        <div className="text-xl font-bold text-green-400">{nicheChannelStats.newChannels}</div>
-                        <div className="text-xs text-gray-500">New (&lt;6mo)</div>
-                      </div>
-                      <div className="bg-gray-800/60 border border-orange-800/50 rounded-lg px-4 py-3">
-                        <div className="text-xl font-bold text-orange-400">{nicheChannelStats.veryNewChannels}</div>
-                        <div className="text-xs text-gray-500">Very New (&lt;30d)</div>
-                      </div>
-                      <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-3">
-                        <div className="text-xl font-bold text-gray-300">{nicheChannelStats.establishedChannels}</div>
-                        <div className="text-xs text-gray-500">Established</div>
-                      </div>
-                    </div>
-                  )}
-
                   {/* Channel filters */}
                   <div className="flex items-center gap-3 mb-4 flex-wrap">
                     <div className="flex items-center gap-2">
