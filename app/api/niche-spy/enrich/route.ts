@@ -159,7 +159,7 @@ export async function POST(req: NextRequest) {
             send({ step: 'channels', batch: batchNum, total: totalBatches, percent: 60 + Math.round((i / uniqueChannelIds.length) * 40) });
 
             try {
-              const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${batch.join(',')}&key=${ytApiKey}`;
+              const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${batch.join(',')}&key=${ytApiKey}`;
               const chRes = await fetch(chUrl, { signal: AbortSignal.timeout(30000) });
 
               if (!chRes.ok) {
@@ -170,18 +170,21 @@ export async function POST(req: NextRequest) {
               const chData = await chRes.json();
               for (const ch of chData.items || []) {
                 const subCount = parseInt(ch.statistics?.subscriberCount) || 0;
-                if (subCount === 0) continue;
+                const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
 
                 const videoIds = channelIds.get(ch.id);
                 if (!videoIds) continue;
 
                 for (const dbId of videoIds) {
                   await pool.query(
-                    `UPDATE niche_spy_videos SET subscriber_count = GREATEST(subscriber_count, $1) WHERE id = $2`,
-                    [subCount, dbId]
+                    `UPDATE niche_spy_videos SET
+                      subscriber_count = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
+                      channel_created_at = COALESCE($2, channel_created_at)
+                    WHERE id = $3`,
+                    [subCount, channelCreatedAt, dbId]
                   );
                 }
-                enrichedChannels++;
+                if (subCount > 0 || channelCreatedAt) enrichedChannels++;
               }
             } catch (err) {
               send({ step: 'channels', error: (err as Error).message?.substring(0, 80) });
