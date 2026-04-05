@@ -446,6 +446,8 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_keyword ON niche_spy_videos(keyword)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_score ON niche_spy_videos(score DESC NULLS LAST)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_views ON niche_spy_videos(view_count DESC NULLS LAST)`);
+    // Add unique URL constraint if not exists
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_niche_spy_url ON niche_spy_videos(url)`).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_spy_pipeline_runs (
@@ -462,6 +464,21 @@ export async function initSchema(): Promise<void> {
         synced_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+
+    // Niche saturation tracking (worker-reported)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_spy_saturation (
+        id SERIAL PRIMARY KEY,
+        keyword TEXT NOT NULL,
+        task_id TEXT,
+        total_seen INTEGER DEFAULT 0,
+        total_known INTEGER DEFAULT 0,
+        total_unseen INTEGER DEFAULT 0,
+        saturation_pct NUMERIC(5,2) DEFAULT 0,
+        recorded_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_saturation_kw ON niche_spy_saturation(keyword, recorded_at DESC)`).catch(() => {});
 
     schemaInitialized = true;
     console.log('Database schema initialized');

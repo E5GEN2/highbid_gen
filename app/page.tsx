@@ -323,7 +323,12 @@ function HomeContent() {
   const [nicheFilter, setNicheFilter] = useState({ keyword: 'all', minScore: 0, maxScore: 100, sort: 'score', from: null as string | null, to: null as string | null });
   const [nicheLoading, setNicheLoading] = useState(false);
   const [nicheSyncing, setNicheSyncing] = useState(false);
-  const [nicheSyncProgress, setNicheSyncProgress] = useState<{ synced: number; remaining: number; totalLocal: number; totalExternal: number; batches: number; message: string } | null>(null);
+  const [nicheSyncProgress, setNicheSyncProgress] = useState<{
+    message: string; batches: number; totalInserted: number; totalUpdated: number;
+    totalLocal: number; totalKeywords: number; tasksProcessed: number;
+    keywordBreakdown?: Array<{ keyword: string; total: number; new: number }>;
+    done?: boolean;
+  } | null>(null);
   const [nicheOffset, setNicheOffset] = useState(0);
 
   const fetchNicheData = useCallback(async (offset = 0) => {
@@ -356,39 +361,49 @@ function HomeContent() {
 
   const syncNicheData = async () => {
     setNicheSyncing(true);
-    setNicheSyncProgress({ synced: 0, remaining: 0, totalLocal: 0, totalExternal: 0, batches: 0, message: 'Connecting to source database...' });
-    let totalSynced = 0;
+    setNicheSyncProgress({ message: 'Fetching tasks from xgodo...', batches: 0, totalInserted: 0, totalUpdated: 0, totalLocal: 0, totalKeywords: 0, tasksProcessed: 0 });
+    let totalInserted = 0;
+    let totalUpdated = 0;
     let batches = 0;
     try {
       while (true) {
         const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
         const data = await res.json();
         if (data.error) { setNicheSyncProgress(prev => prev ? { ...prev, message: `Error: ${data.error}` } : null); break; }
-        totalSynced += data.synced || 0;
         batches++;
-        const remaining = data.remaining || 0;
-        const totalExt = data.totalExternal || 0;
-        const pct = totalExt > 0 ? Math.round(((totalExt - remaining) / totalExt) * 100) : 100;
+        totalInserted += data.videosInserted || 0;
+        totalUpdated += data.videosUpdated || 0;
+
+        if (data.status === 'idle' || data.tasksProcessed === 0) {
+          setNicheSyncProgress({
+            message: totalInserted > 0 ? `Done! ${totalInserted} new, ${totalUpdated} updated across ${batches} batches.` : 'All caught up — no new tasks.',
+            batches, totalInserted, totalUpdated,
+            totalLocal: data.totalLocal || 0, totalKeywords: data.totalKeywords || 0,
+            tasksProcessed: data.tasksProcessed || 0,
+            keywordBreakdown: data.keywordBreakdown,
+            done: true,
+          });
+          break;
+        }
+
         setNicheSyncProgress({
-          synced: totalSynced,
-          remaining,
-          totalLocal: data.totalLocal || 0,
-          totalExternal: totalExt,
-          batches,
-          message: remaining > 0
-            ? `Pulling batch ${batches}... ${totalSynced.toLocaleString()} videos synced (${pct}%)`
-            : `Done! ${totalSynced.toLocaleString()} new videos synced.`,
+          message: `Batch ${batches}: ${data.tasksProcessed} tasks → ${data.videosInserted} new, ${data.videosUpdated} updated, ${data.tasksConfirmed} confirmed`,
+          batches, totalInserted, totalUpdated,
+          totalLocal: data.totalLocal || 0, totalKeywords: data.totalKeywords || 0,
+          tasksProcessed: data.tasksProcessed,
+          keywordBreakdown: data.keywordBreakdown,
         });
-        if (!data.synced || data.synced === 0 || remaining === 0) break;
-        await new Promise(r => setTimeout(r, 300));
+
+        // Keep pulling if there might be more tasks
+        if (data.tasksProcessed < 100) break; // Last batch was partial — done
+        await new Promise(r => setTimeout(r, 500));
       }
       fetchNicheData(0);
     } catch (err) {
       console.error('Niche sync error:', err);
       setNicheSyncProgress(prev => prev ? { ...prev, message: `Error: ${err instanceof Error ? err.message : 'Sync failed'}` } : null);
     }
-    // Keep progress visible for 3 seconds after completion
-    setTimeout(() => { setNicheSyncing(false); setNicheSyncProgress(null); }, 3000);
+    setTimeout(() => { setNicheSyncing(false); setNicheSyncProgress(null); }, 5000);
   };
 
   // Load niche data when tab becomes active
@@ -3740,31 +3755,36 @@ function HomeContent() {
 
                 {/* Sync progress */}
                 {nicheSyncProgress && (
-                  <div className="bg-blue-900/20 border border-blue-600/40 rounded-lg px-4 py-3 mb-4">
+                  <div className={`border rounded-lg px-4 py-3 mb-4 ${nicheSyncProgress.done ? 'bg-green-900/20 border-green-600/40' : 'bg-blue-900/20 border-blue-600/40'}`}>
                     <div className="flex items-center gap-3">
-                      {nicheSyncing && (
+                      {nicheSyncing && !nicheSyncProgress.done && (
                         <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
                       )}
-                      {!nicheSyncing && (
+                      {(nicheSyncProgress.done || !nicheSyncing) && (
                         <svg className="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                         </svg>
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-blue-200 font-medium">{nicheSyncProgress.message}</p>
-                        {nicheSyncProgress.totalExternal > 0 && nicheSyncProgress.remaining > 0 && (
-                          <div className="w-full bg-gray-700 rounded-full h-1.5 mt-2">
-                            <div
-                              className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
-                              style={{ width: `${Math.round(((nicheSyncProgress.totalExternal - nicheSyncProgress.remaining) / nicheSyncProgress.totalExternal) * 100)}%` }}
-                            />
+                        {nicheSyncProgress.batches > 0 && (
+                          <div className="flex items-center gap-4 mt-1.5 text-xs text-gray-400 flex-wrap">
+                            <span className="text-green-400">+{nicheSyncProgress.totalInserted} new</span>
+                            <span className="text-yellow-400">{nicheSyncProgress.totalUpdated} updated</span>
+                            <span>{nicheSyncProgress.totalLocal.toLocaleString()} total</span>
+                            <span>{nicheSyncProgress.totalKeywords} keywords</span>
                           </div>
                         )}
-                        {nicheSyncProgress.batches > 0 && (
-                          <div className="flex items-center gap-4 mt-1 text-xs text-gray-400">
-                            <span>{nicheSyncProgress.totalLocal.toLocaleString()} local</span>
-                            {nicheSyncProgress.remaining > 0 && <span>{nicheSyncProgress.remaining.toLocaleString()} remaining</span>}
-                            <span>{nicheSyncProgress.totalExternal.toLocaleString()} total in source</span>
+                        {nicheSyncProgress.keywordBreakdown && nicheSyncProgress.keywordBreakdown.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {nicheSyncProgress.keywordBreakdown.slice(0, 8).map(k => (
+                              <span key={k.keyword} className="text-[10px] bg-gray-800 text-gray-300 px-2 py-0.5 rounded-full">
+                                {k.keyword} <span className="text-green-400">+{k.new}</span>/{k.total}
+                              </span>
+                            ))}
+                            {nicheSyncProgress.keywordBreakdown.length > 8 && (
+                              <span className="text-[10px] text-gray-500">+{nicheSyncProgress.keywordBreakdown.length - 8} more</span>
+                            )}
                           </div>
                         )}
                       </div>
