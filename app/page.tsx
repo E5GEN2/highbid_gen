@@ -13,6 +13,14 @@ import AuthButton from '../components/AuthButton';
 import { ApiTokenPopover } from '../components/ApiTokenPopover';
 import NicheTimeline from '../components/NicheTimeline';
 
+// Format numbers YouTube-style: 1530000 → "1.5M", 23475 → "23K", 601 → "601"
+const fmtYT = (n: number): string => {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+};
+
 // Helper function to check if URL is a video
 const isVideoFile = (url: string): boolean => {
   const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
@@ -3866,16 +3874,16 @@ function HomeContent() {
 
                           {/* Stats */}
                           <div className="flex items-center gap-2 text-xs text-gray-400 mb-1.5">
-                            <span className="text-green-400 font-medium">{v.view_count ? v.view_count.toLocaleString() + ' views' : ''}</span>
+                            <span className="text-green-400 font-medium">{v.view_count ? fmtYT(v.view_count) + ' views' : ''}</span>
                             {v.channel_name && <span>· {v.channel_name}</span>}
                             {v.posted_date && <span>· {v.posted_date}</span>}
                           </div>
 
                           {/* Engagement */}
                           <div className="flex items-center gap-3 text-xs text-gray-500 mb-2">
-                            {v.like_count > 0 && <span>👍 {v.like_count.toLocaleString()}</span>}
-                            {v.comment_count > 0 && <span>💬 {v.comment_count.toLocaleString()}</span>}
-                            {v.subscriber_count > 0 && <span>👥 {v.subscriber_count.toLocaleString()} subscribers</span>}
+                            {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
+                            {v.comment_count > 0 && <span>💬 {fmtYT(v.comment_count)}</span>}
+                            {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)} subscribers</span>}
                           </div>
 
                           {/* Top comment */}
