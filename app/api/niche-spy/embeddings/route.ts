@@ -2,68 +2,105 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { batchEmbed, getEmbeddingStats } from '@/lib/embeddings';
 
+const BATCH_SIZE = 100;
+const DELAY_BETWEEN_BATCHES_MS = 2000; // 2s delay to avoid rate limits
+
 /**
  * POST /api/niche-spy/embeddings
- * Generate title embeddings for videos that don't have them yet.
- * Body: { keyword?, limit?, batchSize? }
- * No auth required (debug/CLI endpoint).
- *
- * Processes in batches of 100 (Google API limit), stores in DB.
- * Returns progress report.
+ * Start embedding generation job. Fire-and-forget with DB progress.
+ * Body: { keyword?, limit? }
  */
 export async function POST(req: NextRequest) {
   const pool = await getPool();
   const body = await req.json().catch(() => ({}));
-  const keyword = body.keyword;
-  const limit = Math.min(parseInt(body.limit) || 500, 5000);
-  const batchSize = Math.min(parseInt(body.batchSize) || 100, 100);
+  const keyword = body.keyword || null;
+  const limit = Math.min(parseInt(body.limit) || 2000, 10000);
 
-  // Find videos needing embeddings
+  // Check if a job is already running
+  const running = await pool.query(
+    `SELECT id FROM niche_spy_embedding_jobs WHERE status = 'running' LIMIT 1`
+  );
+  if (running.rows.length > 0) {
+    return NextResponse.json({ ok: true, status: 'already-running', jobId: running.rows[0].id });
+  }
+
+  // Count how many need embedding
   const conditions = ["title IS NOT NULL", "title != ''", "title_embedding IS NULL"];
   const params: (string | number)[] = [];
   let idx = 1;
-
   if (keyword && keyword !== 'all') {
     conditions.push(`keyword = $${idx}`);
     params.push(keyword);
     idx++;
   }
+  params.push(limit);
+  const countRes = await pool.query(
+    `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE ${conditions.join(' AND ')} LIMIT $${idx}`,
+    params
+  );
+  const totalNeeded = Math.min(parseInt(countRes.rows[0].cnt), limit);
 
+  if (totalNeeded === 0) {
+    return NextResponse.json({ ok: true, status: 'done', message: 'All videos already embedded', ...await getEmbeddingStats() });
+  }
+
+  // Create job record
+  const totalBatches = Math.ceil(totalNeeded / BATCH_SIZE);
+  const jobRes = await pool.query(
+    `INSERT INTO niche_spy_embedding_jobs (status, keyword, total_needed, total_batches) VALUES ('running', $1, $2, $3) RETURNING id`,
+    [keyword, totalNeeded, totalBatches]
+  );
+  const jobId = jobRes.rows[0].id;
+
+  // Fire and forget — run in background
+  runEmbeddingJob(jobId, keyword, limit).catch(async (err) => {
+    await pool.query(
+      `UPDATE niche_spy_embedding_jobs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
+      [(err as Error).message?.substring(0, 500), jobId]
+    );
+  });
+
+  return NextResponse.json({ ok: true, status: 'started', jobId, totalNeeded, totalBatches });
+}
+
+async function runEmbeddingJob(jobId: number, keyword: string | null, limit: number) {
+  const pool = await getPool();
+
+  const conditions = ["title IS NOT NULL", "title != ''", "title_embedding IS NULL"];
+  const params: (string | number)[] = [];
+  let idx = 1;
+  if (keyword && keyword !== 'all') {
+    conditions.push(`keyword = $${idx}`);
+    params.push(keyword);
+    idx++;
+  }
   params.push(limit);
 
   const videosRes = await pool.query(
-    `SELECT id, title, keyword FROM niche_spy_videos
-     WHERE ${conditions.join(' AND ')}
-     ORDER BY score DESC NULLS LAST
-     LIMIT $${idx}`,
+    `SELECT id, title FROM niche_spy_videos WHERE ${conditions.join(' AND ')} ORDER BY score DESC NULLS LAST LIMIT $${idx}`,
     params
   );
 
-  if (videosRes.rows.length === 0) {
-    const stats = await getEmbeddingStats();
-    return NextResponse.json({ status: 'done', message: 'All videos already have embeddings', processed: 0, ...stats });
-  }
-
   const videos = videosRes.rows;
-  const totalToProcess = videos.length;
   let processed = 0;
   let errors = 0;
-  const batchResults: Array<{ batch: number; processed: number; error?: string }> = [];
 
-  // Process in batches
-  for (let i = 0; i < videos.length; i += batchSize) {
-    const batch = videos.slice(i, i + batchSize);
-    const batchNum = Math.floor(i / batchSize) + 1;
-    const totalBatches = Math.ceil(videos.length / batchSize);
+  for (let i = 0; i < videos.length; i += BATCH_SIZE) {
+    const batch = videos.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+
+    // Update progress in DB
+    await pool.query(
+      `UPDATE niche_spy_embedding_jobs SET current_batch = $1, processed = $2, errors = $3 WHERE id = $4`,
+      [batchNum, processed, errors, jobId]
+    );
 
     try {
       const texts = batch.map(v => v.title);
       const embeddings = await batchEmbed(texts);
 
-      // Store embeddings
       for (let j = 0; j < batch.length; j++) {
         if (embeddings[j] && embeddings[j].length > 0) {
-          // Store as REAL[] using PostgreSQL array literal
           const arrayLiteral = `{${embeddings[j].join(',')}}`;
           await pool.query(
             `UPDATE niche_spy_videos SET title_embedding = $1::real[], embedded_at = NOW() WHERE id = $2`,
@@ -72,63 +109,83 @@ export async function POST(req: NextRequest) {
           processed++;
         }
       }
-
-      batchResults.push({ batch: batchNum, processed: batch.length });
     } catch (err) {
-      const errMsg = (err as Error).message?.substring(0, 150);
-      batchResults.push({ batch: batchNum, processed: 0, error: errMsg });
+      const errMsg = (err as Error).message || '';
       errors++;
 
-      // If quota exceeded, stop
+      // On rate limit, wait longer then retry
       if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RATE_LIMIT')) {
-        batchResults.push({ batch: batchNum + 1, processed: 0, error: 'Rate limited — stopping. Try again later or add more API keys.' });
-        break;
+        await pool.query(
+          `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
+          [`Rate limited at batch ${batchNum}, waiting 30s...`, jobId]
+        );
+        await new Promise(r => setTimeout(r, 30000)); // Wait 30s on rate limit
+        i -= BATCH_SIZE; // Retry this batch
+        errors--; // Don't count as error if we retry
+        continue;
       }
+
+      await pool.query(
+        `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
+        [errMsg.substring(0, 500), jobId]
+      );
+    }
+
+    // Delay between batches to respect rate limits
+    if (i + BATCH_SIZE < videos.length) {
+      await new Promise(r => setTimeout(r, DELAY_BETWEEN_BATCHES_MS));
     }
   }
 
-  const stats = await getEmbeddingStats();
-
-  return NextResponse.json({
-    status: errors > 0 ? 'partial' : 'done',
-    totalToProcess,
-    processed,
-    errors,
-    batches: batchResults,
-    ...stats,
-  });
+  // Job complete
+  await pool.query(
+    `UPDATE niche_spy_embedding_jobs SET status = $1, processed = $2, errors = $3, completed_at = NOW() WHERE id = $4`,
+    [errors > 0 ? 'partial' : 'done', processed, errors, jobId]
+  );
 }
 
 /**
  * GET /api/niche-spy/embeddings
- * Get embedding stats + check how many videos need processing.
+ * Get stats + current job progress.
  */
 export async function GET(req: NextRequest) {
-  const keyword = req.nextUrl.searchParams.get('keyword');
   const pool = await getPool();
-
-  const conditions = ["title IS NOT NULL", "title != ''"];
-  const params: string[] = [];
-  if (keyword && keyword !== 'all') {
-    conditions.push(`keyword = $1`);
-    params.push(keyword);
-  }
-
-  const res = await pool.query(`
-    SELECT
-      COUNT(*) as total,
-      COUNT(*) FILTER (WHERE title_embedding IS NOT NULL) as embedded,
-      COUNT(*) FILTER (WHERE title_embedding IS NULL) as not_embedded
-    FROM niche_spy_videos WHERE ${conditions.join(' AND ')}
-  `, params);
+  const keyword = req.nextUrl.searchParams.get('keyword');
 
   const stats = await getEmbeddingStats();
 
-  return NextResponse.json({
-    keyword: keyword || 'all',
-    ...res.rows[0],
-    ...stats,
-  });
+  // Get current/latest job
+  const jobRes = await pool.query(
+    `SELECT * FROM niche_spy_embedding_jobs ORDER BY started_at DESC LIMIT 1`
+  );
+  const job = jobRes.rows[0] || null;
+
+  // Per-keyword stats if requested
+  let keywordStats = null;
+  if (keyword && keyword !== 'all') {
+    const kwRes = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE title_embedding IS NOT NULL) as embedded,
+        COUNT(*) FILTER (WHERE title_embedding IS NULL AND title IS NOT NULL AND title != '') as not_embedded
+      FROM niche_spy_videos WHERE keyword = $1
+    `, [keyword]);
+    keywordStats = kwRes.rows[0];
+  }
+
+  return NextResponse.json({ ...stats, job, keywordStats });
 }
 
-export const maxDuration = 300;
+/**
+ * DELETE /api/niche-spy/embeddings
+ * Cancel running embedding job.
+ */
+export async function DELETE() {
+  const pool = await getPool();
+  await pool.query(
+    `UPDATE niche_spy_embedding_jobs SET status = 'cancelled', completed_at = NOW() WHERE status = 'running'`
+  );
+  return NextResponse.json({ ok: true });
+}
+
+export const maxDuration = 600;

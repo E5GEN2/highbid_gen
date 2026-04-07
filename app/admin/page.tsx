@@ -28,6 +28,24 @@ export default function AdminPage() {
   const [syncLimit, setSyncLimit] = useState('50');
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
+  // Admin section tabs
+  const [adminSection, setAdminSection] = useState<'general' | 'niche'>('general');
+
+  // Niche Explorer embedding state
+  const [embeddingStats, setEmbeddingStats] = useState<{
+    totalVideos: number; embedded: number; notEmbedded: number; apiKeysConfigured: number; model: string;
+    job: { id: number; status: string; total_needed: number; processed: number; errors: number; current_batch: number; total_batches: number; error_message: string | null; started_at: string; completed_at: string | null } | null;
+  } | null>(null);
+
+  // Poll embedding progress
+  useEffect(() => {
+    if (adminSection !== 'niche') return;
+    const fetchStats = () => fetch('/api/niche-spy/embeddings').then(r => r.json()).then(setEmbeddingStats).catch(() => {});
+    fetchStats();
+    const iv = setInterval(fetchStats, 3000);
+    return () => clearInterval(iv);
+  }, [adminSection]);
+
   // DB stats
   const [stats, setStats] = useState<{
     total_videos: string; total_channels: string;
@@ -419,6 +437,19 @@ export default function AdminPage() {
           </a>
         </div>
 
+        {/* Admin Section Tabs */}
+        <div className="flex gap-2 mb-8">
+          <button onClick={() => setAdminSection('general')}
+            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'general' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            General
+          </button>
+          <button onClick={() => setAdminSection('niche')}
+            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'niche' ? 'bg-amber-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Niche Explorer
+          </button>
+        </div>
+
+        <div style={{ display: adminSection === 'general' ? 'block' : 'none' }}>
         {/* Navigation */}
         <div className="space-y-3 mb-8">
           <a
@@ -1165,11 +1196,122 @@ export default function AdminPage() {
             </div>
           </div>
 
-          {/* Niche Explorer Configuration */}
-          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
-            <h2 className="text-lg font-bold text-white mb-2">Niche Explorer</h2>
-            <p className="text-gray-400 text-sm mb-6">API keys for embedding generation and enrichment.</p>
+        </div>
+        </div>
 
+        <div style={{ display: adminSection === 'niche' ? 'block' : 'none' }}>
+        {/* Niche Explorer Admin Tab */}
+        <div className="space-y-6">
+          {/* Embedding Stats */}
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-4">Embedding Generation</h2>
+
+            {embeddingStats && (
+              <div className="space-y-4">
+                {/* Stats grid */}
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-white">{embeddingStats.totalVideos.toLocaleString()}</div>
+                    <div className="text-xs text-gray-500">Total Videos</div>
+                  </div>
+                  <div className="bg-green-900/20 border border-green-800/30 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-green-400">{embeddingStats.embedded.toLocaleString()}</div>
+                    <div className="text-xs text-gray-500">Embedded</div>
+                  </div>
+                  <div className="bg-yellow-900/20 border border-yellow-800/30 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-yellow-400">{embeddingStats.notEmbedded.toLocaleString()}</div>
+                    <div className="text-xs text-gray-500">Remaining</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-blue-400">{embeddingStats.apiKeysConfigured}</div>
+                    <div className="text-xs text-gray-500">API Keys</div>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                {embeddingStats.totalVideos > 0 && (
+                  <div>
+                    <div className="flex justify-between text-xs text-gray-400 mb-1">
+                      <span>{Math.round((embeddingStats.embedded / embeddingStats.totalVideos) * 100)}% embedded</span>
+                      <span>{embeddingStats.model}</span>
+                    </div>
+                    <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+                      <div className="h-full bg-green-500 rounded-full transition-all duration-500"
+                        style={{ width: `${(embeddingStats.embedded / embeddingStats.totalVideos) * 100}%` }} />
+                    </div>
+                  </div>
+                )}
+
+                {/* Current job status */}
+                {embeddingStats.job && (
+                  <div className={`border rounded-lg px-4 py-3 ${
+                    embeddingStats.job.status === 'running' ? 'bg-blue-900/20 border-blue-600/40' :
+                    embeddingStats.job.status === 'done' ? 'bg-green-900/20 border-green-600/40' :
+                    embeddingStats.job.status === 'error' ? 'bg-red-900/20 border-red-600/40' :
+                    'bg-gray-900/20 border-gray-700'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      {embeddingStats.job.status === 'running' && (
+                        <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                      )}
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-white">
+                            {embeddingStats.job.status === 'running' ? `Batch ${embeddingStats.job.current_batch}/${embeddingStats.job.total_batches}` :
+                             embeddingStats.job.status === 'done' ? 'Complete' :
+                             embeddingStats.job.status === 'error' ? 'Error' :
+                             embeddingStats.job.status}
+                          </span>
+                          <span className="text-xs text-gray-400">
+                            {embeddingStats.job.processed}/{embeddingStats.job.total_needed} processed
+                            {embeddingStats.job.errors > 0 && ` · ${embeddingStats.job.errors} errors`}
+                          </span>
+                        </div>
+                        {embeddingStats.job.status === 'running' && embeddingStats.job.total_needed > 0 && (
+                          <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden mt-2">
+                            <div className="h-full bg-blue-500 rounded-full transition-all"
+                              style={{ width: `${(embeddingStats.job.processed / embeddingStats.job.total_needed) * 100}%` }} />
+                          </div>
+                        )}
+                        {embeddingStats.job.error_message && (
+                          <p className="text-xs text-yellow-400 mt-1">{embeddingStats.job.error_message}</p>
+                        )}
+                        <p className="text-[10px] text-gray-500 mt-1">
+                          Started: {new Date(embeddingStats.job.started_at).toLocaleString()}
+                          {embeddingStats.job.completed_at && ` · Completed: ${new Date(embeddingStats.job.completed_at).toLocaleString()}`}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={async () => {
+                      await fetch('/api/niche-spy/embeddings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 5000 }) });
+                    }}
+                    disabled={embeddingStats.job?.status === 'running'}
+                    className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition"
+                  >
+                    {embeddingStats.job?.status === 'running' ? 'Running...' : 'Generate Embeddings'}
+                  </button>
+                  {embeddingStats.job?.status === 'running' && (
+                    <button
+                      onClick={async () => { await fetch('/api/niche-spy/embeddings', { method: 'DELETE' }); }}
+                      className="px-5 py-2.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* API Keys Config */}
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-4">Configuration</h2>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Google API Keys (for embeddings)</label>
@@ -1180,9 +1322,8 @@ export default function AdminPage() {
                   rows={4}
                   className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono text-sm"
                 />
-                <p className="text-xs text-gray-500 mt-1">Free Google AI API keys for text-embedding-004. One per line, rotated automatically.</p>
+                <p className="text-xs text-gray-500 mt-1">Free Google AI keys for gemini-embedding. One per line, rotated automatically.</p>
               </div>
-
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Embedding Model</label>
                 <select
@@ -1194,19 +1335,26 @@ export default function AdminPage() {
                   <option value="gemini-embedding-2-preview">gemini-embedding-2-preview (3072d, latest)</option>
                 </select>
               </div>
-
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Niche Spy xgodo Token</label>
+                <input
+                  type="password"
+                  value={nicheSpyToken}
+                  onChange={(e) => setNicheSpyToken(e.target.value)}
+                  placeholder="xgodo JWT for niche spy job"
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono text-sm"
+                />
+              </div>
               <div className="flex items-center gap-3">
-                <button
-                  onClick={saveConfig}
-                  disabled={configSaving}
-                  className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition"
-                >
-                  {configSaving ? 'Saving...' : 'Save Niche Config'}
+                <button onClick={saveConfig} disabled={configSaving}
+                  className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition">
+                  {configSaving ? 'Saving...' : 'Save Config'}
                 </button>
                 {configSaved && <span className="text-green-400 text-sm">Saved</span>}
               </div>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>

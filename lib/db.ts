@@ -455,6 +455,23 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_avatar TEXT`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS title_embedding REAL[]`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ`).catch(() => {});
+
+    // Embedding job progress (survives page reload)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_spy_embedding_jobs (
+        id SERIAL PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'running',
+        keyword TEXT,
+        total_needed INTEGER DEFAULT 0,
+        processed INTEGER DEFAULT 0,
+        errors INTEGER DEFAULT 0,
+        current_batch INTEGER DEFAULT 0,
+        total_batches INTEGER DEFAULT 0,
+        error_message TEXT,
+        started_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      )
+    `).catch(() => {});
     // Normalize existing URLs to canonical youtu.be/VIDEO_ID format and dedup
     await client.query(`
       UPDATE niche_spy_videos
