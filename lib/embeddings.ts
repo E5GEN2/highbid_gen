@@ -7,7 +7,7 @@
 
 import { getPool } from './db';
 import { getProxy } from './xgodo-proxy';
-import { ProxyAgent } from 'undici';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -90,24 +90,46 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
 
   // Use proxy to avoid Railway IP rate limits
   const proxy = await getProxy();
-  const fetchOptions: RequestInit & { dispatcher?: unknown } = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: texts.map(text => ({
-        model: `models/${model}`,
-        content: { parts: [{ text }] },
-      })),
-    }),
-  };
-  if (proxy) {
-    fetchOptions.dispatcher = new ProxyAgent(proxy.url);
-  }
+  const url = `${EMBED_API_BASE}/${model}:batchEmbedContents?key=${key}`;
+  const bodyJson = JSON.stringify({
+    requests: texts.map(text => ({
+      model: `models/${model}`,
+      content: { parts: [{ text }] },
+    })),
+  });
 
-  const res = await fetch(
-    `${EMBED_API_BASE}/${model}:batchEmbedContents?key=${key}`,
-    fetchOptions as RequestInit,
-  );
+  let res: Response;
+  if (proxy) {
+    // Use https-proxy-agent for proxied requests
+    const agent = new HttpsProxyAgent(proxy.url);
+    const https = await import('https');
+    res = await new Promise<Response>((resolve, reject) => {
+      const urlObj = new URL(url);
+      const req = https.request({
+        hostname: urlObj.hostname,
+        port: 443,
+        path: urlObj.pathname + urlObj.search,
+        method: 'POST',
+        agent,
+        headers: { 'Content-Type': 'application/json' },
+      }, (resp) => {
+        let data = '';
+        resp.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        resp.on('end', () => {
+          resolve(new Response(data, { status: resp.statusCode || 500 }));
+        });
+      });
+      req.on('error', reject);
+      req.write(bodyJson);
+      req.end();
+    });
+  } else {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: bodyJson,
+    });
+  }
 
   if (!res.ok) {
     const err = await res.text();
