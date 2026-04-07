@@ -6,6 +6,8 @@
  */
 
 import { getPool } from './db';
+import { getProxy } from './xgodo-proxy';
+import { ProxyAgent } from 'undici';
 
 const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -86,18 +88,25 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   const key = await getNextKey();
   const model = await getModel();
 
+  // Use proxy to avoid Railway IP rate limits
+  const proxy = await getProxy();
+  const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: texts.map(text => ({
+        model: `models/${model}`,
+        content: { parts: [{ text }] },
+      })),
+    }),
+  };
+  if (proxy) {
+    fetchOptions.dispatcher = new ProxyAgent(proxy.url);
+  }
+
   const res = await fetch(
     `${EMBED_API_BASE}/${model}:batchEmbedContents?key=${key}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requests: texts.map(text => ({
-          model: `models/${model}`,
-          content: { parts: [{ text }] },
-        })),
-      }),
-    }
+    fetchOptions as RequestInit,
   );
 
   if (!res.ok) {
