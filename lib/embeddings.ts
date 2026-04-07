@@ -1,13 +1,13 @@
 /**
  * Google Text Embedding API client.
- * Uses text-embedding-004 model (768 dimensions).
+ * Uses gemini-embedding-001 model (768 dimensions).
  * Rotates across multiple API keys for quota distribution.
  * Supports batch embedding (up to 100 texts per call).
  */
 
 import { getPool } from './db';
 
-const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1/models';
+const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 let cachedKeys: string[] = [];
 let keyIndex = 0;
@@ -39,7 +39,7 @@ async function getNextKey(): Promise<string> {
 async function getModel(): Promise<string> {
   const pool = await getPool();
   const res = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_embedding_model'");
-  return res.rows[0]?.value || 'text-embedding-004';
+  return res.rows[0]?.value || 'gemini-embedding-001';
 }
 
 export interface EmbeddingResult {
