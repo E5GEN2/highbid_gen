@@ -47,6 +47,10 @@ export default function AdminPage() {
   const [tabsSaving, setTabsSaving] = useState(false);
   const [tabsSaved, setTabsSaved] = useState(false);
 
+  // Niche Explorer config
+  const [nicheGoogleApiKeys, setNicheGoogleApiKeys] = useState('');
+  const [nicheEmbeddingModel, setNicheEmbeddingModel] = useState('text-embedding-004');
+
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
   const [nicheSpyToken, setNicheSpyToken] = useState('');
@@ -128,6 +132,8 @@ export default function AdminPage() {
       if (data.config) {
         setXgodoToken(data.config.xgodo_api_token || '');
         setNicheSpyToken(data.config.xgodo_niche_spy_token || '');
+        setNicheGoogleApiKeys(data.config.niche_google_api_keys || '');
+        setNicheEmbeddingModel(data.config.niche_embedding_model || 'text-embedding-004');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
         setChannelCheckApiKey(data.config.channel_check_api_key || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
@@ -215,6 +221,8 @@ export default function AdminPage() {
           config: {
             xgodo_api_token: xgodoToken,
             xgodo_niche_spy_token: nicheSpyToken,
+            niche_google_api_keys: nicheGoogleApiKeys,
+            niche_embedding_model: nicheEmbeddingModel,
             xgodo_shorts_spy_job_id: xgodoJobId,
             channel_check_api_key: channelCheckApiKey,
             youtube_api_key: schedYoutubeKey,
@@ -1154,6 +1162,49 @@ export default function AdminPage() {
               {configSaved && (
                 <span className="text-green-400 text-sm">Saved</span>
               )}
+            </div>
+          </div>
+
+          {/* Niche Explorer Configuration */}
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-2">Niche Explorer</h2>
+            <p className="text-gray-400 text-sm mb-6">API keys for embedding generation and enrichment.</p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Google API Keys (for embeddings)</label>
+                <textarea
+                  value={nicheGoogleApiKeys}
+                  onChange={(e) => setNicheGoogleApiKeys(e.target.value)}
+                  placeholder="One API key per line. Keys are rotated automatically."
+                  rows={4}
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono text-sm"
+                />
+                <p className="text-xs text-gray-500 mt-1">Free Google AI API keys for text-embedding-004. One per line, rotated automatically.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Embedding Model</label>
+                <select
+                  value={nicheEmbeddingModel}
+                  onChange={(e) => setNicheEmbeddingModel(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
+                >
+                  <option value="text-embedding-004">text-embedding-004 (768d, recommended)</option>
+                  <option value="embedding-001">embedding-001 (768d, legacy)</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={saveConfig}
+                  disabled={configSaving}
+                  className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition"
+                >
+                  {configSaving ? 'Saving...' : 'Save Niche Config'}
+                </button>
+                {configSaved && <span className="text-green-400 text-sm">Saved</span>}
+              </div>
             </div>
           </div>
         </div>

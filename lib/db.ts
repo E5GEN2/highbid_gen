@@ -453,6 +453,8 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_created_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_id VARCHAR(64)`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_avatar TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS title_embedding REAL[]`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS embedded_at TIMESTAMPTZ`).catch(() => {});
     // Normalize existing URLs to canonical youtu.be/VIDEO_ID format and dedup
     await client.query(`
       UPDATE niche_spy_videos
