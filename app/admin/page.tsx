@@ -1190,8 +1190,8 @@ export default function AdminPage() {
                   onChange={(e) => setNicheEmbeddingModel(e.target.value)}
                   className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
                 >
-                  <option value="gemini-embedding-001">gemini-embedding-001 (768d, stable)</option>
-                  <option value="gemini-embedding-2-preview">gemini-embedding-2-preview (preview, latest)</option>
+                  <option value="gemini-embedding-001">gemini-embedding-001 (3072d, stable)</option>
+                  <option value="gemini-embedding-2-preview">gemini-embedding-2-preview (3072d, latest)</option>
                 </select>
               </div>
 
