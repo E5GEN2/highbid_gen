@@ -7,7 +7,7 @@
 
 import { getPool } from './db';
 
-const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1/models';
 
 let cachedKeys: string[] = [];
 let keyIndex = 0;
