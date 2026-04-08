@@ -2,16 +2,17 @@
  * Google Text Embedding API client.
  * Uses gemini-embedding-001 model (3072 dimensions).
  * Rotates across multiple API keys for quota distribution.
- * Routes through xgodo proxy via curl subprocess to avoid Railway IP rate limits.
+ * Routes through xgodo proxy via Python subprocess (same as yt-dlp proxy support).
  */
 
 import { getPool } from './db';
 import { getProxy } from './xgodo-proxy';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import path from 'path';
 
 const execFileAsync = promisify(execFile);
-const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 
 let cachedKeys: string[] = [];
 let keyIndex = 0;
@@ -42,15 +43,9 @@ async function getModel(): Promise<string> {
   return res.rows[0]?.value || 'gemini-embedding-001';
 }
 
-export interface EmbeddingResult {
-  text: string;
-  embedding: number[];
-  dimensions: number;
-}
-
 /**
  * Batch embed multiple texts (up to 100 per call).
- * Uses curl with proxy to avoid Railway IP rate limits.
+ * Uses Python subprocess with urllib proxy support — same approach that works for yt-dlp.
  */
 export async function batchEmbed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
@@ -60,65 +55,33 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   const model = await getModel();
   const proxy = await getProxy();
 
-  const url = `${EMBED_API_BASE}/${model}:batchEmbedContents?key=${key}`;
-  const bodyJson = JSON.stringify({
-    requests: texts.map(text => ({
-      model: `models/${model}`,
-      content: { parts: [{ text }] },
-    })),
+  const input = JSON.stringify({
+    texts,
+    key,
+    model,
+    proxy: proxy?.url || '',
   });
 
-  // Write body to temp file to avoid arg escaping issues
-  const fs = await import('fs');
-  const os = await import('os');
-  const path = await import('path');
-  const tmpFile = path.join(os.tmpdir(), `embed_${Date.now()}.json`);
-  fs.writeFileSync(tmpFile, bodyJson);
+  const { stdout, stderr } = await execFileAsync(
+    'python3',
+    [path.join(SCRIPTS_DIR, 'embed-batch.py')],
+    { timeout: 45000, maxBuffer: 50 * 1024 * 1024, input }
+  );
 
-  // Use curl subprocess — try with proxy, fallback to direct on failure
-  const args = ['-s', '--max-time', '30', '-X', 'POST', url, '-H', 'Content-Type: application/json', '-d', `@${tmpFile}`];
-  if (proxy) {
-    args.push('--proxy', proxy.url);
-  }
+  if (stderr) console.log('[embedding] stderr:', stderr.substring(0, 200));
 
-  let stdout: string;
+  let result: number[][] | { error: string };
   try {
-    const result = await execFileAsync('curl', args, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
-    stdout = result.stdout;
-  } catch (proxyErr) {
-    // If proxy failed, retry without proxy
-    if (proxy) {
-      console.log('[embedding] Proxy failed, retrying direct...');
-      const directArgs = args.filter(a => a !== '--proxy' && a !== proxy.url);
-      try {
-        const result = await execFileAsync('curl', directArgs, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
-        stdout = result.stdout;
-      } catch (directErr) {
-        fs.unlinkSync(tmpFile);
-        const e = directErr as { stderr?: string; message?: string };
-        throw new Error(`curl direct failed: ${e.stderr?.substring(0, 200) || e.message?.substring(0, 200)}`);
-      }
-    } else {
-      fs.unlinkSync(tmpFile);
-      const e = proxyErr as { stderr?: string; message?: string };
-      throw new Error(`curl failed: ${e.stderr?.substring(0, 200) || e.message?.substring(0, 200)}`);
-    }
-  }
-  fs.unlinkSync(tmpFile);
-
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(stdout);
+    result = JSON.parse(stdout);
   } catch {
-    throw new Error(`Failed to parse embedding response: ${stdout.substring(0, 200)}`);
+    throw new Error(`Failed to parse embedding output: ${stdout.substring(0, 200)}`);
   }
 
-  if ((data as { error?: { message?: string } }).error) {
-    const err = data as { error: { code?: number; message?: string } };
-    throw new Error(`Embedding API ${err.error.code}: ${err.error.message?.substring(0, 150)}`);
+  if (!Array.isArray(result)) {
+    throw new Error((result as { error: string }).error || 'Unknown embedding error');
   }
 
-  return ((data as { embeddings?: Array<{ values: number[] }> }).embeddings || []).map(e => e.values);
+  return result;
 }
 
 /**
