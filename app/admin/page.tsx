@@ -35,8 +35,9 @@ export default function AdminPage() {
   const [embeddingStats, setEmbeddingStats] = useState<{
     totalVideos: number; embedded: number; notEmbedded: number; apiKeysConfigured: number; model: string;
     job: { id: number; status: string; total_needed: number; processed: number; errors: number; current_batch: number; total_batches: number; error_message: string | null; started_at: string; completed_at: string | null } | null;
-    keys?: Array<{ key: string; banned: boolean; banExpiresIn: number | null }>;
+    keys?: Array<{ key: string; proxy: string; banned: boolean; banExpiresIn: number | null }>;
     proxy?: { total: number; online: number; cached: boolean; cacheAge: number; current: { deviceId: string; networkType: string } | null };
+    keywordCoverage?: Array<{ keyword: string; total: number; embedded: number; pct: number }>;
   } | null>(null);
 
   // Poll embedding progress
@@ -72,6 +73,7 @@ export default function AdminPage() {
   const [nicheEmbeddingModel, setNicheEmbeddingModel] = useState('text-embedding-004');
   const [nicheBatchSize, setNicheBatchSize] = useState(50);
   const [nicheLimit, setNicheLimit] = useState(5000);
+  const [nichePriorityKeywords, setNichePriorityKeywords] = useState('');
 
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
@@ -156,6 +158,7 @@ export default function AdminPage() {
         setNicheSpyToken(data.config.xgodo_niche_spy_token || '');
         setNicheGoogleApiKeys(data.config.niche_google_api_keys || '');
         setNicheEmbeddingModel(data.config.niche_embedding_model || 'text-embedding-004');
+        setNichePriorityKeywords(data.config.niche_priority_keywords || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
         setChannelCheckApiKey(data.config.channel_check_api_key || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
@@ -245,6 +248,7 @@ export default function AdminPage() {
             xgodo_niche_spy_token: nicheSpyToken,
             niche_google_api_keys: nicheGoogleApiKeys,
             niche_embedding_model: nicheEmbeddingModel,
+            niche_priority_keywords: nichePriorityKeywords,
             xgodo_shorts_spy_job_id: xgodoJobId,
             channel_check_api_key: channelCheckApiKey,
             youtube_api_key: schedYoutubeKey,
@@ -1343,7 +1347,10 @@ export default function AdminPage() {
                         <div className="space-y-1.5">
                           {embeddingStats.keys.map((k, i) => (
                             <div key={i} className="flex items-center justify-between text-xs">
-                              <span className="font-mono text-gray-300">{k.key}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-gray-300">{k.key}</span>
+                                <span className="text-blue-400 font-mono">→ {k.proxy}</span>
+                              </div>
                               {k.banned ? (
                                 <span className="text-red-400 flex items-center gap-1">
                                   <span className="w-2 h-2 bg-red-500 rounded-full" />
@@ -1385,6 +1392,28 @@ export default function AdminPage() {
                     )}
                   </div>
                 )}
+
+                {/* Per-keyword embedding coverage */}
+                {embeddingStats.keywordCoverage && embeddingStats.keywordCoverage.length > 0 && (
+                  <div className="mt-4 bg-gray-900/50 rounded-lg p-3">
+                    <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Embedding Coverage by Keyword</h4>
+                    <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                      {embeddingStats.keywordCoverage.map(k => (
+                        <div key={k.keyword} className="flex items-center gap-2 text-xs">
+                          <span className="text-gray-400 w-40 truncate">{k.keyword}</span>
+                          <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${k.pct >= 100 ? 'bg-green-500' : k.pct > 0 ? 'bg-amber-500' : 'bg-gray-600'}`}
+                              style={{ width: `${k.pct}%` }} />
+                          </div>
+                          <span className={`font-mono w-10 text-right ${k.pct >= 100 ? 'text-green-400' : k.pct > 0 ? 'text-amber-400' : 'text-gray-600'}`}>
+                            {k.pct}%
+                          </span>
+                          <span className="text-gray-600 w-16 text-right">{k.embedded}/{k.total}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1414,6 +1443,17 @@ export default function AdminPage() {
                   <option value="gemini-embedding-001">gemini-embedding-001 (3072d, stable)</option>
                   <option value="gemini-embedding-2-preview">gemini-embedding-2-preview (3072d, latest)</option>
                 </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Priority Keywords (embed first)</label>
+                <textarea
+                  value={nichePriorityKeywords}
+                  onChange={(e) => setNichePriorityKeywords(e.target.value)}
+                  placeholder="One keyword per line. These niches get embedded first."
+                  rows={3}
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
+                />
+                <p className="text-xs text-gray-500 mt-1">Videos matching these keywords are embedded before others. One per line.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Niche Spy xgodo Token</label>

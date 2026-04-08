@@ -79,8 +79,20 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
   }
   params.push(limit);
 
+  // Get priority keywords from config
+  const priorityRes = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_priority_keywords'");
+  const priorityKeywords = (priorityRes.rows[0]?.value || '').split('\n').map((k: string) => k.trim()).filter(Boolean);
+
+  // Order: priority keywords first (by their order), then rest by score
+  let orderClause = 'score DESC NULLS LAST';
+  if (priorityKeywords.length > 0) {
+    // CASE WHEN keyword IN (...) THEN position ELSE 999 END, score DESC
+    const cases = priorityKeywords.map((kw: string, i: number) => `WHEN keyword = '${kw.replace(/'/g, "''")}' THEN ${i}`).join(' ');
+    orderClause = `CASE ${cases} ELSE 999 END, score DESC NULLS LAST`;
+  }
+
   const videosRes = await pool.query(
-    `SELECT id, title FROM niche_spy_videos WHERE ${conditions.join(' AND ')} ORDER BY score DESC NULLS LAST LIMIT $${idx}`,
+    `SELECT id, title, keyword FROM niche_spy_videos WHERE ${conditions.join(' AND ')} ORDER BY ${orderClause} LIMIT $${idx}`,
     params
   );
 
@@ -225,6 +237,19 @@ export async function GET(req: NextRequest) {
     keywordStats = kwRes.rows[0];
   }
 
+  // Per-keyword embedding coverage (top 20 by video count)
+  const kwCoverage = await pool.query(`
+    SELECT keyword,
+      COUNT(*) as total,
+      COUNT(*) FILTER (WHERE title_embedding IS NOT NULL) as embedded,
+      ROUND(COUNT(*) FILTER (WHERE title_embedding IS NOT NULL)::numeric / GREATEST(COUNT(*), 1) * 100) as pct
+    FROM niche_spy_videos
+    WHERE keyword IS NOT NULL
+    GROUP BY keyword
+    ORDER BY total DESC
+    LIMIT 30
+  `);
+
   return NextResponse.json({
     ...stats, job, keywordStats,
     keys: keyStatus,
@@ -232,6 +257,12 @@ export async function GET(req: NextRequest) {
       ...proxyStats,
       current: currentProxy ? { deviceId: currentProxy.deviceId.substring(0, 8), networkType: currentProxy.networkType } : null,
     },
+    keywordCoverage: kwCoverage.rows.map(r => ({
+      keyword: r.keyword,
+      total: parseInt(r.total),
+      embedded: parseInt(r.embedded),
+      pct: parseInt(r.pct),
+    })),
   });
 }
 
