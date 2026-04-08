@@ -1,25 +1,25 @@
 /**
  * Google Text Embedding API client.
- * Uses gemini-embedding-001 model (768 dimensions).
+ * Uses gemini-embedding-001 model (3072 dimensions).
  * Rotates across multiple API keys for quota distribution.
- * Supports batch embedding (up to 100 texts per call).
+ * Routes through xgodo proxy via curl subprocess to avoid Railway IP rate limits.
  */
 
 import { getPool } from './db';
 import { getProxy } from './xgodo-proxy';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
+const execFileAsync = promisify(execFile);
 const EMBED_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 let cachedKeys: string[] = [];
 let keyIndex = 0;
 let lastKeyFetch = 0;
-const KEY_CACHE_TTL = 5 * 60 * 1000; // 5 min
+const KEY_CACHE_TTL = 5 * 60 * 1000;
 
-/** Load Google API keys from admin config (one per line) */
 async function getApiKeys(): Promise<string[]> {
   if (Date.now() - lastKeyFetch < KEY_CACHE_TTL && cachedKeys.length > 0) return cachedKeys;
-
   const pool = await getPool();
   const res = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_google_api_keys'");
   const raw = res.rows[0]?.value || '';
@@ -28,7 +28,6 @@ async function getApiKeys(): Promise<string[]> {
   return cachedKeys;
 }
 
-/** Get next API key (round-robin) */
 async function getNextKey(): Promise<string> {
   const keys = await getApiKeys();
   if (keys.length === 0) throw new Error('No Google API keys configured. Add them in Admin > Niche Explorer.');
@@ -37,7 +36,6 @@ async function getNextKey(): Promise<string> {
   return key;
 }
 
-/** Get embedding model from config */
 async function getModel(): Promise<string> {
   const pool = await getPool();
   const res = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_embedding_model'");
@@ -51,35 +49,8 @@ export interface EmbeddingResult {
 }
 
 /**
- * Generate embedding for a single text.
- */
-export async function embedText(text: string): Promise<number[]> {
-  const key = await getNextKey();
-  const model = await getModel();
-
-  const res = await fetch(
-    `${EMBED_API_BASE}/${model}:embedContent?key=${key}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: `models/${model}`,
-        content: { parts: [{ text }] },
-      }),
-    }
-  );
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Embedding API ${res.status}: ${err.substring(0, 200)}`);
-  }
-
-  const data = await res.json();
-  return data.embedding?.values || [];
-}
-
-/**
  * Batch embed multiple texts (up to 100 per call).
+ * Uses curl with proxy to avoid Railway IP rate limits.
  */
 export async function batchEmbed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
@@ -87,9 +58,8 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
 
   const key = await getNextKey();
   const model = await getModel();
-
-  // Use proxy to avoid Railway IP rate limits
   const proxy = await getProxy();
+
   const url = `${EMBED_API_BASE}/${model}:batchEmbedContents?key=${key}`;
   const bodyJson = JSON.stringify({
     requests: texts.map(text => ({
@@ -98,50 +68,39 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
     })),
   });
 
-  let res: Response;
+  // Use curl subprocess with proxy — proven to work with xgodo proxies
+  const args = ['-s', '--max-time', '30', '-X', 'POST', url, '-H', 'Content-Type: application/json', '-d', bodyJson];
   if (proxy) {
-    // Use https-proxy-agent for proxied requests
-    const agent = new HttpsProxyAgent(proxy.url);
-    const https = await import('https');
-    res = await new Promise<Response>((resolve, reject) => {
-      const urlObj = new URL(url);
-      const req = https.request({
-        hostname: urlObj.hostname,
-        port: 443,
-        path: urlObj.pathname + urlObj.search,
-        method: 'POST',
-        agent,
-        headers: { 'Content-Type': 'application/json' },
-      }, (resp) => {
-        let data = '';
-        resp.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-        resp.on('end', () => {
-          resolve(new Response(data, { status: resp.statusCode || 500 }));
-        });
-      });
-      req.on('error', reject);
-      req.write(bodyJson);
-      req.end();
-    });
-  } else {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: bodyJson,
-    });
+    args.push('--proxy', proxy.url);
   }
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Batch embedding API ${res.status}: ${err.substring(0, 200)}`);
+  const { stdout } = await execFileAsync('curl', args, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    throw new Error(`Failed to parse embedding response: ${stdout.substring(0, 200)}`);
   }
 
-  const data = await res.json();
-  return (data.embeddings || []).map((e: { values: number[] }) => e.values);
+  if ((data as { error?: { message?: string } }).error) {
+    const err = data as { error: { code?: number; message?: string } };
+    throw new Error(`Embedding API ${err.error.code}: ${err.error.message?.substring(0, 150)}`);
+  }
+
+  return ((data as { embeddings?: Array<{ values: number[] }> }).embeddings || []).map(e => e.values);
 }
 
 /**
- * Get embedding stats
+ * Generate embedding for a single text.
+ */
+export async function embedText(text: string): Promise<number[]> {
+  const results = await batchEmbed([text]);
+  return results[0] || [];
+}
+
+/**
+ * Get embedding stats.
  */
 export async function getEmbeddingStats(): Promise<{
   totalVideos: number;
