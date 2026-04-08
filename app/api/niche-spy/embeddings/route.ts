@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { batchEmbed, getEmbeddingStats } from '@/lib/embeddings';
 
-const BATCH_SIZE = 20; // Small batches — mobile proxy drops large responses
-const DELAY_BETWEEN_BATCHES_MS = 1500;
+const BATCH_SIZE = 5; // Tiny batches — mobile proxy drops large HTTPS responses
+const DELAY_BETWEEN_BATCHES_MS = 1000;
 
 /**
  * POST /api/niche-spy/embeddings
