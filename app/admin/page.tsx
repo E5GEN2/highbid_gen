@@ -70,6 +70,8 @@ export default function AdminPage() {
   // Niche Explorer config
   const [nicheGoogleApiKeys, setNicheGoogleApiKeys] = useState('');
   const [nicheEmbeddingModel, setNicheEmbeddingModel] = useState('text-embedding-004');
+  const [nicheBatchSize, setNicheBatchSize] = useState(50);
+  const [nicheLimit, setNicheLimit] = useState(5000);
 
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
@@ -1287,11 +1289,34 @@ export default function AdminPage() {
                   </div>
                 )}
 
-                {/* Action buttons */}
-                <div className="flex gap-3">
+                {/* Controls + Action buttons */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Batch</label>
+                    <select value={nicheBatchSize} onChange={e => setNicheBatchSize(parseInt(e.target.value))}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Limit</label>
+                    <select value={nicheLimit} onChange={e => setNicheLimit(parseInt(e.target.value))}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                      <option value={100}>100</option>
+                      <option value={500}>500</option>
+                      <option value={1000}>1K</option>
+                      <option value={2000}>2K</option>
+                      <option value={5000}>5K</option>
+                      <option value={10000}>10K</option>
+                    </select>
+                  </div>
                   <button
                     onClick={async () => {
-                      await fetch('/api/niche-spy/embeddings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 5000 }) });
+                      await fetch('/api/niche-spy/embeddings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize }) });
                     }}
                     disabled={embeddingStats.job?.status === 'running'}
                     className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition"
