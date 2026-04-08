@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
   const limit = Math.min(parseInt(body.limit) || 2000, 10000);
   const batchSize = Math.min(parseInt(body.batchSize) || DEFAULT_BATCH_SIZE, 100);
   const delayMs = parseInt(body.delayMs) || DEFAULT_DELAY_MS;
+  const threads = Math.min(parseInt(body.threads) || 1, 10);
 
   // Check if a job is already running
   const running = await pool.query(
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
   const jobId = jobRes.rows[0].id;
 
   // Fire and forget — run in background
-  runEmbeddingJob(jobId, keyword, limit, batchSize, delayMs).catch(async (err) => {
+  runEmbeddingJob(jobId, keyword, limit, batchSize, delayMs, threads).catch(async (err) => {
     await pool.query(
       `UPDATE niche_spy_embedding_jobs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
       [(err as Error).message?.substring(0, 500), jobId]
@@ -66,7 +67,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true, status: 'started', jobId, totalNeeded, totalBatches });
 }
 
-async function runEmbeddingJob(jobId: number, keyword: string | null, limit: number, batchSize: number = DEFAULT_BATCH_SIZE, delayMs: number = DEFAULT_DELAY_MS) {
+async function runEmbeddingJob(jobId: number, keyword: string | null, limit: number, batchSize: number = DEFAULT_BATCH_SIZE, delayMs: number = DEFAULT_DELAY_MS, threads: number = 1) {
   const pool = await getPool();
 
   const conditions = ["title IS NOT NULL", "title != ''", "title_embedding IS NULL"];
@@ -96,110 +97,93 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
     params
   );
 
+  // Split videos into chunks for parallel threads
   const videos = videosRes.rows;
-  let processed = 0;
-  let errors = 0;
+  const totalBatches = Math.ceil(videos.length / batchSize);
+  let globalProcessed = 0;
+  let globalErrors = 0;
+  let batchesDone = 0;
 
+  // Create a shared batch queue
+  const batches: Array<{ batchNum: number; items: typeof videos }> = [];
   for (let i = 0; i < videos.length; i += batchSize) {
-    const batch = videos.slice(i, i + batchSize);
-    const batchNum = Math.floor(i / batchSize) + 1;
+    batches.push({ batchNum: batches.length + 1, items: videos.slice(i, i + batchSize) });
+  }
+  let batchIdx = 0; // shared index into batches queue
 
-    // Update progress in DB — include which key+proxy will be used
-    const nextKey = await import('@/lib/embeddings').then(m => m.getKeyStatus());
-    const nextProxy = await import('@/lib/xgodo-proxy').then(m => m.getProxy());
-    const activeKey = nextKey.find(k => !k.banned)?.key || 'all banned';
-    await pool.query(
-      `UPDATE niche_spy_embedding_jobs SET current_batch = $1, processed = $2, errors = $3, error_message = $4 WHERE id = $5`,
-      [batchNum, processed, errors, `key=${activeKey} proxy=${nextProxy?.deviceId?.substring(0, 8) || 'none'}`, jobId]
-    );
+  // Worker function — each thread pulls batches from the queue
+  async function worker(threadId: number) {
+    while (true) {
+      // Grab next batch atomically
+      const myIdx = batchIdx++;
+      if (myIdx >= batches.length) break;
+      const { batchNum, items } = batches[myIdx];
 
-    try {
-      // Retry up to 3 times per batch
+      // Retry up to 3 times
       let success = false;
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
         try {
-          const texts = batch.map(v => v.title);
+          const texts = items.map(v => v.title);
           const embeddings = await batchEmbed(texts);
-          for (let j = 0; j < batch.length; j++) {
+          for (let j = 0; j < items.length; j++) {
             if (embeddings[j] && embeddings[j].length > 0) {
               const arrayLiteral = `{${embeddings[j].join(',')}}`;
               await pool.query(
                 `UPDATE niche_spy_videos SET title_embedding = $1::real[], embedded_at = NOW() WHERE id = $2`,
-                [arrayLiteral, batch[j].id]
+                [arrayLiteral, items[j].id]
               );
-              processed++;
+              globalProcessed++;
             }
           }
           success = true;
-        } catch (retryErr) {
-          if (attempt < 2) continue; // retry
-          throw retryErr; // give up after 3 attempts
+        } catch (err) {
+          const errMsg = (err as Error).message || '';
+          const isGoogleRateLimit = errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED');
+          const isGoogleAuthDenied = errMsg.includes('API 403') && errMsg.includes('denied access');
+          const isProxyError = errMsg.includes('curl exit') || errMsg.includes('Connection refused') || errMsg.includes('Tunnel') || errMsg.includes('socket');
+
+          if (isGoogleRateLimit || isGoogleAuthDenied) {
+            const usedKey = getLastUsedKey();
+            banKey(usedKey);
+            // Retry with next key-proxy pair
+            continue;
+          }
+          if (isProxyError) {
+            // Retry with different proxy
+            continue;
+          }
+          if (attempt === 2) {
+            globalErrors++;
+            await pool.query(
+              `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
+              [`T${threadId} batch ${batchNum}: ${errMsg.substring(0, 200)}`, jobId]
+            );
+          }
         }
       }
-    } catch (err) {
-      const errMsg = (err as Error).message || '';
-      errors++;
 
-      // Only ban key on ACTUAL Google API rate limit/auth errors, NOT proxy failures
-      const isGoogleRateLimit = errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED');
-      const isGoogleAuthDenied = errMsg.includes('API 403') && errMsg.includes('denied access');
-      const isProxyError = errMsg.includes('curl exit') || errMsg.includes('Connection refused') || errMsg.includes('Tunnel') || errMsg.includes('socket');
-
-      if (isGoogleRateLimit) {
-        const usedKey = getLastUsedKey();
-        banKey(usedKey);
-        await pool.query(
-          `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-          [`Rate limited — banned key ${usedKey.substring(0,10)}..., switching to next`, jobId]
-        );
-        await new Promise(r => setTimeout(r, 2000));
-        i -= batchSize;
-        errors--;
-        continue;
-      }
-
-      if (isGoogleAuthDenied) {
-        const usedKey = getLastUsedKey();
-        banKey(usedKey);
-        await pool.query(
-          `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-          [`Key denied (403) — banned ${usedKey.substring(0,10)}..., switching`, jobId]
-        );
-        await new Promise(r => setTimeout(r, 1000));
-        i -= batchSize;
-        errors--;
-        continue;
-      }
-
-      if (isProxyError) {
-        // Proxy failure — retry with different proxy, don't ban key
-        await pool.query(
-          `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-          [`Proxy error, retrying... ${errMsg.substring(0, 80)}`, jobId]
-        );
-        await new Promise(r => setTimeout(r, 2000));
-        i -= batchSize;
-        errors--;
-        continue;
-      }
-
+      batchesDone++;
+      // Update progress
       await pool.query(
-        `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-        [errMsg.substring(0, 500), jobId]
+        `UPDATE niche_spy_embedding_jobs SET current_batch = $1, total_batches = $2, processed = $3, errors = $4, error_message = $5 WHERE id = $6`,
+        [batchesDone, totalBatches, globalProcessed, globalErrors, `${threads} threads, batch ${batchesDone}/${totalBatches}`, jobId]
       );
-    }
 
-    // Delay between batches to respect rate limits
-    if (i + batchSize < videos.length) {
+      // Delay between batches per thread
       await new Promise(r => setTimeout(r, delayMs));
     }
   }
 
+  // Launch parallel workers
+  console.log(`[embedding] Starting ${threads} threads for ${batches.length} batches`);
+  const workers = Array.from({ length: Math.min(threads, batches.length) }, (_, i) => worker(i + 1));
+  await Promise.all(workers);
+
   // Job complete
   await pool.query(
-    `UPDATE niche_spy_embedding_jobs SET status = $1, processed = $2, errors = $3, completed_at = NOW() WHERE id = $4`,
-    [errors > 0 ? 'partial' : 'done', processed, errors, jobId]
+    `UPDATE niche_spy_embedding_jobs SET status = $1, processed = $2, errors = $3, completed_at = NOW(), error_message = $4 WHERE id = $5`,
+    [globalErrors > 0 ? 'partial' : 'done', globalProcessed, globalErrors, `Done: ${globalProcessed} embedded, ${globalErrors} errors, ${threads} threads`, jobId]
   );
 }
 

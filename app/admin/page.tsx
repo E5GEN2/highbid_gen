@@ -74,6 +74,7 @@ export default function AdminPage() {
   const [nicheBatchSize, setNicheBatchSize] = useState(50);
   const [nicheLimit, setNicheLimit] = useState(5000);
   const [nichePriorityKeywords, setNichePriorityKeywords] = useState('');
+  const [nicheThreads, setNicheThreads] = useState(2);
 
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
@@ -1318,9 +1319,20 @@ export default function AdminPage() {
                       <option value={10000}>10K</option>
                     </select>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Threads</label>
+                    <select value={nicheThreads} onChange={e => setNicheThreads(parseInt(e.target.value))}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                      <option value={3}>3</option>
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                    </select>
+                  </div>
                   <button
                     onClick={async () => {
-                      await fetch('/api/niche-spy/embeddings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize }) });
+                      await fetch('/api/niche-spy/embeddings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize, threads: nicheThreads }) });
                     }}
                     disabled={embeddingStats.job?.status === 'running'}
                     className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition"
