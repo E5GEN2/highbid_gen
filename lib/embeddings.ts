@@ -68,13 +68,26 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
     })),
   });
 
+  // Write body to temp file to avoid arg escaping issues
+  const fs = await import('fs');
+  const os = await import('os');
+  const path = await import('path');
+  const tmpFile = path.join(os.tmpdir(), `embed_${Date.now()}.json`);
+  fs.writeFileSync(tmpFile, bodyJson);
+
   // Use curl subprocess with proxy — proven to work with xgodo proxies
-  const args = ['-s', '--max-time', '30', '-X', 'POST', url, '-H', 'Content-Type: application/json', '-d', bodyJson];
+  const args = ['-s', '--max-time', '30', '-X', 'POST', url, '-H', 'Content-Type: application/json', '-d', `@${tmpFile}`];
   if (proxy) {
     args.push('--proxy', proxy.url);
   }
 
-  const { stdout } = await execFileAsync('curl', args, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
+  let stdout: string;
+  try {
+    const result = await execFileAsync('curl', args, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
+    stdout = result.stdout;
+  } finally {
+    fs.unlinkSync(tmpFile);
+  }
 
   let data: Record<string, unknown>;
   try {
