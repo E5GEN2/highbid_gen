@@ -54,11 +54,23 @@ def main():
             print(json.dumps({'error': f'curl exit {result.returncode}: {result.stderr[:300]}'}))
             sys.exit(1)
 
-        if not result.stdout.strip():
+        stdout = result.stdout.strip()
+        if not stdout:
             print(json.dumps({'error': f'Empty response. stderr: {result.stderr[:300]}'}))
             sys.exit(1)
 
-        response = json.loads(result.stdout)
+        # Handle curl --retry concatenating multiple responses — take the last valid JSON
+        # Find the last occurrence of {"embeddings" which is our expected response
+        last_idx = stdout.rfind('{"embeddings"')
+        if last_idx > 0:
+            stdout = stdout[last_idx:]
+        # Also handle if it starts with error JSON from a failed attempt
+        elif stdout.count('{"e') > 1:
+            # Multiple JSON objects concatenated — take the last one
+            parts = stdout.split('\n{')
+            stdout = '{' + parts[-1] if len(parts) > 1 else stdout
+
+        response = json.loads(stdout)
 
         if 'error' in response:
             err = response['error']
