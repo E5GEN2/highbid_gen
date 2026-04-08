@@ -67,10 +67,10 @@ async function refreshProxies(): Promise<ProxyInfo[]> {
     const proxies: ProxyInfo[] = [];
     for (const d of devices) {
       if (!d.online) continue;
+      // Only use devices with proxy_password set — others aren't routing
+      if (!d.proxy_password) continue;
 
-      // Get password from proxy_passwords array first, fallback to proxy_password
-      const password = d.proxy_passwords?.[0]?.password || d.proxy_password || 'xgodo';
-
+      const password = d.proxy_password;
       const username = d.proxy_username || d.remote_device_id;
       proxies.push({
         url: `http://${username}:${password}@${PROXY_HOST}:${PROXY_PORT}`,

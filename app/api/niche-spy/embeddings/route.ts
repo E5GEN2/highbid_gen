@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { batchEmbed, getEmbeddingStats } from '@/lib/embeddings';
 
-const BATCH_SIZE = 5; // Tiny batches — mobile proxy drops large HTTPS responses
-const DELAY_BETWEEN_BATCHES_MS = 1000;
+const DEFAULT_BATCH_SIZE = 5;
+const DEFAULT_DELAY_MS = 1000;
 
 /**
  * POST /api/niche-spy/embeddings
@@ -15,6 +15,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const keyword = body.keyword || null;
   const limit = Math.min(parseInt(body.limit) || 2000, 10000);
+  const batchSize = Math.min(parseInt(body.batchSize) || DEFAULT_BATCH_SIZE, 100);
+  const delayMs = parseInt(body.delayMs) || DEFAULT_DELAY_MS;
 
   // Check if a job is already running
   const running = await pool.query(
