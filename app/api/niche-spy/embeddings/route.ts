@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
-import { batchEmbed, getEmbeddingStats, getKeyStatus } from '@/lib/embeddings';
+import { batchEmbed, getEmbeddingStats, getKeyStatus, banKey, getLastUsedKey } from '@/lib/embeddings';
 import { getProxyStats, getProxy } from '@/lib/xgodo-proxy';
 
 const DEFAULT_BATCH_SIZE = 5;
@@ -130,21 +130,26 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
       errors++;
 
       if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RATE_LIMIT')) {
+        const usedKey = getLastUsedKey();
+        banKey(usedKey);
         await pool.query(
           `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-          [`Rate limited at batch ${batchNum} — key banned, retrying with next key...`, jobId]
+          [`Rate limited — banned key ${usedKey.substring(0,10)}..., switching to next`, jobId]
         );
-        await new Promise(r => setTimeout(r, 5000)); // Short wait — banned key is skipped automatically
+        await new Promise(r => setTimeout(r, 2000));
         i -= batchSize;
         errors--;
         continue;
       }
 
       if (errMsg.includes('403')) {
+        const usedKey = getLastUsedKey();
+        banKey(usedKey);
         await pool.query(
           `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-          [`Key denied (403) at batch ${batchNum} — key banned, trying next...`, jobId]
+          [`Key denied (403) — banned ${usedKey.substring(0,10)}..., switching`, jobId]
         );
+        await new Promise(r => setTimeout(r, 1000));
         i -= batchSize;
         errors--;
         continue;

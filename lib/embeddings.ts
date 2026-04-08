@@ -64,6 +64,9 @@ async function getNextKey(): Promise<string> {
 }
 
 /** Ban a key for 5 minutes after rate limit */
+let lastUsedKey = '';
+export function getLastUsedKey(): string { return lastUsedKey; }
+
 export function banKey(key: string): void {
   bannedKeys.set(key, Date.now() + KEY_BAN_DURATION);
   console.log(`[embedding] Banned key ${key.substring(0, 10)}... for 5min. Banned: ${bannedKeys.size}/${cachedKeys.length}`);
@@ -84,8 +87,8 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   if (texts.length > 100) throw new Error('Batch limit is 100 texts');
 
   const key = await getNextKey();
+  lastUsedKey = key;
   const model = await getModel();
-  // Rotate proxy on every call — different IP avoids per-IP rate limits
   const proxy = await getProxy();
   console.log(`[embedding] key=${key.substring(0,10)}... proxy=${proxy?.deviceId?.substring(0,8) || 'direct'} texts=${texts.length}`);
 
