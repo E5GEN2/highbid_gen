@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Create job record
-  const totalBatches = Math.ceil(totalNeeded / BATCH_SIZE);
+  const totalBatches = Math.ceil(totalNeeded / batchSize);
   const jobRes = await pool.query(
     `INSERT INTO niche_spy_embedding_jobs (status, keyword, total_needed, total_batches) VALUES ('running', $1, $2, $3) RETURNING id`,
     [keyword, totalNeeded, totalBatches]
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
   const jobId = jobRes.rows[0].id;
 
   // Fire and forget — run in background
-  runEmbeddingJob(jobId, keyword, limit).catch(async (err) => {
+  runEmbeddingJob(jobId, keyword, limit, batchSize, delayMs).catch(async (err) => {
     await pool.query(
       `UPDATE niche_spy_embedding_jobs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
       [(err as Error).message?.substring(0, 500), jobId]
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true, status: 'started', jobId, totalNeeded, totalBatches });
 }
 
-async function runEmbeddingJob(jobId: number, keyword: string | null, limit: number) {
+async function runEmbeddingJob(jobId: number, keyword: string | null, limit: number, batchSize: number = DEFAULT_BATCH_SIZE, delayMs: number = DEFAULT_DELAY_MS) {
   const pool = await getPool();
 
   const conditions = ["title IS NOT NULL", "title != ''", "title_embedding IS NULL"];
@@ -87,9 +87,9 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
   let processed = 0;
   let errors = 0;
 
-  for (let i = 0; i < videos.length; i += BATCH_SIZE) {
-    const batch = videos.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+  for (let i = 0; i < videos.length; i += batchSize) {
+    const batch = videos.slice(i, i + batchSize);
+    const batchNum = Math.floor(i / batchSize) + 1;
 
     // Update progress in DB
     await pool.query(
@@ -131,7 +131,7 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
           [`Rate limited at batch ${batchNum}, waiting 30s...`, jobId]
         );
         await new Promise(r => setTimeout(r, 30000));
-        i -= BATCH_SIZE;
+        i -= batchSize;
         errors--;
         continue;
       }
@@ -143,8 +143,8 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
     }
 
     // Delay between batches to respect rate limits
-    if (i + BATCH_SIZE < videos.length) {
-      await new Promise(r => setTimeout(r, DELAY_BETWEEN_BATCHES_MS));
+    if (i + batchSize < videos.length) {
+      await new Promise(r => setTimeout(r, delayMs));
     }
   }
 
