@@ -85,9 +85,15 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   try {
     const result = await execFileAsync('curl', args, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
     stdout = result.stdout;
-  } finally {
+    if (!stdout && result.stderr) {
+      throw new Error(`curl stderr: ${result.stderr.substring(0, 200)}`);
+    }
+  } catch (err) {
     fs.unlinkSync(tmpFile);
+    const e = err as { stderr?: string; message?: string };
+    throw new Error(`${e.message?.substring(0, 200)}${e.stderr ? ' | stderr: ' + e.stderr.substring(0, 200) : ''}`);
   }
+  fs.unlinkSync(tmpFile);
 
   let data: Record<string, unknown>;
   try {
