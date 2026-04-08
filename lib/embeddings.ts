@@ -62,11 +62,13 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
     proxy: proxy?.url || '',
   });
 
-  const { stdout, stderr } = await execFileAsync(
+  const { stdout: rawOut, stderr: rawErr } = await execFileAsync(
     'python3',
     [path.join(SCRIPTS_DIR, 'embed-batch.py')],
-    { timeout: 45000, maxBuffer: 50 * 1024 * 1024, input }
+    { timeout: 45000, maxBuffer: 50 * 1024 * 1024, input, encoding: 'utf-8' } as Parameters<typeof execFileAsync>[2]
   );
+  const stdout = String(rawOut);
+  const stderr = String(rawErr);
 
   if (stderr) console.log('[embedding] stderr:', stderr.substring(0, 200));
 
