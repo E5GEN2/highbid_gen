@@ -37,16 +37,16 @@ def main():
         # Build curl command
         cmd = ['curl', '-s', '--max-time', '60', '-X', 'POST', url,
                '-H', 'Content-Type: application/json',
-               '-d', f'@{tmp_path}']
+               '-d', f'@{tmp_path}',
+               '--retry', '2', '--retry-delay', '3']
 
         if proxy_url:
-            # Split proxy URL into components for --proxy-user and --proxy
-            # Format: http://user:pass@host:port
             from urllib.parse import urlparse
             parsed = urlparse(proxy_url)
             proxy_host = f'http://{parsed.hostname}:{parsed.port}'
             proxy_user = f'{parsed.username}:{parsed.password}'
-            cmd.extend(['--proxy', proxy_host, '--proxy-user', proxy_user])
+            cmd.extend(['--proxy', proxy_host, '--proxy-user', proxy_user,
+                        '--proxy-insecure'])
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
 
