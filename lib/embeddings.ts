@@ -115,13 +115,23 @@ async function getModel(): Promise<string> {
 // --- Embedding API ---
 
 /**
- * Batch embed texts. Each call uses a dedicated key-proxy pair.
+ * Get a specific pair by index (for thread assignment).
+ * Thread 0 gets pair 0, thread 1 gets pair 1, etc.
  */
-export async function batchEmbed(texts: string[]): Promise<number[][]> {
+export async function getPairForThread(threadIdx: number): Promise<KeyProxyPair | null> {
+  const allPairs = await buildPairs();
+  if (allPairs.length === 0) return null;
+  return allPairs[threadIdx % allPairs.length];
+}
+
+/**
+ * Batch embed texts. Uses getNextPair() by default, or a fixed pair if provided.
+ */
+export async function batchEmbed(texts: string[], fixedPairIdx?: number): Promise<number[][]> {
   if (texts.length === 0) return [];
   if (texts.length > 100) throw new Error('Batch limit is 100 texts');
 
-  const pair = await getNextPair();
+  const pair = fixedPairIdx !== undefined ? await getPairForThread(fixedPairIdx) || await getNextPair() : await getNextPair();
   lastUsedKey = pair.key;
   const model = await getModel();
 

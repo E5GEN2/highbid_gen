@@ -125,7 +125,7 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
         if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
         try {
           const texts = items.map(v => v.title);
-          const embeddings = await batchEmbed(texts);
+          const embeddings = await batchEmbed(texts, threadId - 1);
           for (let j = 0; j < items.length; j++) {
             if (embeddings[j] && embeddings[j].length > 0) {
               const arrayLiteral = `{${embeddings[j].join(',')}}`;
