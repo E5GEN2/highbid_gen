@@ -27,8 +27,10 @@ export async function upsertVector(videoId: number, keyword: string, title: stri
 }
 
 /** Find similar videos by cosine similarity within same keyword */
-export async function findSimilar(videoId: number, limit: number = 30): Promise<Array<{ videoId: number; similarity: number }>> {
-  // Get the source vector's keyword
+export async function findSimilar(videoId: number, options?: { limit?: number; minSimilarity?: number }): Promise<Array<{ videoId: number; similarity: number }>> {
+  const limit = options?.limit || 200;
+  const minSimilarity = options?.minSimilarity || 0;
+
   const src = await vectorPool.query(
     'SELECT keyword, embedding FROM niche_video_vectors WHERE video_id = $1',
     [videoId]
@@ -38,13 +40,15 @@ export async function findSimilar(videoId: number, limit: number = 30): Promise<
   const { keyword, embedding } = src.rows[0];
 
   // pgvector cosine distance: <=> operator. Similarity = 1 - distance.
+  // Filter by minimum similarity threshold if set.
   const result = await vectorPool.query(
     `SELECT video_id, 1 - (embedding <=> $1::vector) as similarity
      FROM niche_video_vectors
      WHERE keyword = $2 AND video_id != $3
+       AND 1 - (embedding <=> $1::vector) >= $5
      ORDER BY embedding <=> $1::vector
      LIMIT $4`,
-    [embedding, keyword, videoId, limit]
+    [embedding, keyword, videoId, limit, minSimilarity]
   );
 
   return result.rows.map(r => ({

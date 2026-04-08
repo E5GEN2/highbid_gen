@@ -313,7 +313,7 @@ function HomeContent() {
   // Niche Explorer State
   const [nicheVideos, setNicheVideos] = useState<Array<{
     id: number; keyword: string; url: string; title: string; view_count: number;
-    channel_name: string; posted_date: string; posted_at: string; score: number; channel_created_at: string;
+    channel_name: string; posted_date: string; posted_at: string; score: number; channel_created_at: string; embedded_at: string | null;
     subscriber_count: number; like_count: number; comment_count: number;
     top_comment: string; thumbnail: string; fetched_at: string;
   }>>([]);
@@ -341,6 +341,7 @@ function HomeContent() {
   const [nicheSimilarSource, setNicheSimilarSource] = useState<{ id: number; title: string } | null>(null);
   const [nicheSimilarVideos, setNicheSimilarVideos] = useState<typeof nicheVideos>([]);
   const [nicheSimilarLoading, setNicheSimilarLoading] = useState(false);
+  const [nicheSimilarMinScore, setNicheSimilarMinScore] = useState(0.7);
   const [nicheKeywordCards, setNicheKeywordCards] = useState<Array<{
     keyword: string; videoCount: number; channelCount: number; avgScore: number;
     totalViews: number; avgViews: number; highScoreCount: number;
@@ -414,7 +415,7 @@ function HomeContent() {
     setNicheSimilarSource({ id: videoId, title });
     setNicheSimilarLoading(true);
     try {
-      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=50`);
+      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=200&minSimilarity=${nicheSimilarMinScore}`);
       const data = await res.json();
       setNicheSimilarVideos((data.similar || []).map((v: Record<string, unknown>) => ({
         id: v.id as number, keyword: v.keyword as string, url: v.url as string, title: v.title as string,
@@ -4510,12 +4511,14 @@ function HomeContent() {
                                 {v.url}
                               </a>
                             )}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); fetchSimilarVideos(v.id, v.title); }}
-                              className="text-[10px] bg-purple-600/20 text-purple-300 border border-purple-600/30 px-2 py-0.5 rounded-full hover:bg-purple-600/40 transition flex-shrink-0"
-                            >
-                              Similar
-                            </button>
+                            {v.embedded_at && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); fetchSimilarVideos(v.id, v.title); }}
+                                className="text-[10px] bg-purple-600/20 text-purple-300 border border-purple-600/30 px-2 py-0.5 rounded-full hover:bg-purple-600/40 transition flex-shrink-0"
+                              >
+                                Similar
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -4545,7 +4548,26 @@ function HomeContent() {
                     <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
                       <div>
                         <h3 className="text-lg font-bold text-white">Similar to: <span className="text-purple-400">{nicheSimilarSource.title}</span></h3>
-                        <p className="text-xs text-gray-500 mt-1">{nicheSimilarVideos.length} results by embedding similarity</p>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-xs text-gray-500">{nicheSimilarVideos.length} results</span>
+                          <label className="text-xs text-gray-500">Min match:</label>
+                          <select
+                            value={nicheSimilarMinScore}
+                            onChange={e => {
+                              setNicheSimilarMinScore(parseFloat(e.target.value));
+                              if (nicheSimilarSource) fetchSimilarVideos(nicheSimilarSource.id, nicheSimilarSource.title);
+                            }}
+                            className="bg-gray-800 border border-gray-700 text-white text-xs rounded px-2 py-0.5"
+                          >
+                            <option value={0}>All</option>
+                            <option value={0.5}>50%+</option>
+                            <option value={0.6}>60%+</option>
+                            <option value={0.7}>70%+</option>
+                            <option value={0.8}>80%+</option>
+                            <option value={0.9}>90%+</option>
+                            <option value={0.95}>95%+</option>
+                          </select>
+                        </div>
                       </div>
                       <button onClick={() => { setNicheSimilarSource(null); setNicheSimilarVideos([]); }} className="text-gray-400 hover:text-white">
                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>

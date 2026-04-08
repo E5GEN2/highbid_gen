@@ -12,11 +12,12 @@ export async function GET(req: NextRequest) {
   const videoId = req.nextUrl.searchParams.get('videoId');
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '30'), 100);
 
+  const minSimilarity = parseFloat(req.nextUrl.searchParams.get('minSimilarity') || '0');
+
   if (!videoId) return NextResponse.json({ error: 'videoId required' }, { status: 400 });
 
   const vid = parseInt(videoId);
 
-  // Get source video info from main DB
   const sourceRes = await pool.query(
     'SELECT id, title, keyword FROM niche_spy_videos WHERE id = $1',
     [vid]
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
   const source = sourceRes.rows[0];
 
   // Find similar via pgvector (fast cosine similarity search)
-  const similar = await findSimilar(vid, limit);
+  const similar = await findSimilar(vid, { limit, minSimilarity });
 
   if (similar.length === 0) {
     return NextResponse.json({
