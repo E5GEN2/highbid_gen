@@ -338,6 +338,9 @@ function HomeContent() {
   } | null>(null);
   const [nicheSubTab, setNicheSubTab] = useState<'videos' | 'channels' | 'insights'>('videos');
   const [nicheSelectedKeyword, setNicheSelectedKeyword] = useState<string | null>(null);
+  const [nicheSimilarSource, setNicheSimilarSource] = useState<{ id: number; title: string } | null>(null);
+  const [nicheSimilarVideos, setNicheSimilarVideos] = useState<typeof nicheVideos>([]);
+  const [nicheSimilarLoading, setNicheSimilarLoading] = useState(false);
   const [nicheKeywordCards, setNicheKeywordCards] = useState<Array<{
     keyword: string; videoCount: number; channelCount: number; avgScore: number;
     totalViews: number; avgViews: number; highScoreCount: number;
@@ -406,6 +409,26 @@ function HomeContent() {
       fetchNicheKeywords();
     }
   }, [currentView, nicheSelectedKeyword, fetchNicheKeywords]);
+
+  const fetchSimilarVideos = async (videoId: number, title: string) => {
+    setNicheSimilarSource({ id: videoId, title });
+    setNicheSimilarLoading(true);
+    try {
+      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=20`);
+      const data = await res.json();
+      setNicheSimilarVideos((data.similar || []).map((v: Record<string, unknown>) => ({
+        id: v.id as number, keyword: v.keyword as string, url: v.url as string, title: v.title as string,
+        view_count: v.viewCount as number, channel_name: v.channelName as string,
+        posted_date: v.postedDate as string, posted_at: v.postedAt as string,
+        score: v.score as number, subscriber_count: v.subscriberCount as number,
+        like_count: v.likeCount as number, comment_count: v.commentCount as number,
+        top_comment: v.topComment as string, thumbnail: v.thumbnail as string,
+        fetched_at: '', channel_created_at: '',
+        _similarity: v.similarity as number,
+      })));
+    } catch (err) { console.error('Similar fetch error:', err); }
+    setNicheSimilarLoading(false);
+  };
 
   const selectNicheKeyword = (kw: string) => {
     setNicheSelectedKeyword(kw);
@@ -4480,12 +4503,20 @@ function HomeContent() {
                             </p>
                           )}
 
-                          {/* URL */}
-                          {v.url && (
-                            <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate block">
-                              {v.url}
-                            </a>
-                          )}
+                          {/* URL + Similar */}
+                          <div className="flex items-center justify-between gap-2">
+                            {v.url && (
+                              <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate">
+                                {v.url}
+                              </a>
+                            )}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); fetchSimilarVideos(v.id, v.title); }}
+                              className="text-[10px] bg-purple-600/20 text-purple-300 border border-purple-600/30 px-2 py-0.5 rounded-full hover:bg-purple-600/40 transition flex-shrink-0"
+                            >
+                              Similar
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -4506,6 +4537,60 @@ function HomeContent() {
                 </>
               ))}
               </div>)}
+
+              {/* Similar Videos Modal */}
+              {nicheSimilarSource && (
+                <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-start justify-center pt-10 px-4 overflow-y-auto" onClick={() => { setNicheSimilarSource(null); setNicheSimilarVideos([]); }}>
+                  <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-6xl mb-10" onClick={e => e.stopPropagation()}>
+                    <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+                      <div>
+                        <h3 className="text-lg font-bold text-white">Similar to: <span className="text-purple-400">{nicheSimilarSource.title}</span></h3>
+                        <p className="text-xs text-gray-500 mt-1">{nicheSimilarVideos.length} results by embedding similarity</p>
+                      </div>
+                      <button onClick={() => { setNicheSimilarSource(null); setNicheSimilarVideos([]); }} className="text-gray-400 hover:text-white">
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                      </button>
+                    </div>
+                    <div className="p-6">
+                      {nicheSimilarLoading ? (
+                        <div className="text-center py-12 text-gray-400">Finding similar videos...</div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {nicheSimilarVideos.map((v) => (
+                            <div key={v.id} className="bg-gray-800/60 border border-gray-700 rounded-xl overflow-hidden">
+                              <div className="relative aspect-video bg-gray-900">
+                                {(() => {
+                                  const vidMatch = v.url?.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
+                                  const thumbUrl = vidMatch ? `https://img.youtube.com/vi/${vidMatch[1]}/hqdefault.jpg` : v.thumbnail;
+                                  return thumbUrl ? <img src={thumbUrl} alt="" className="w-full h-full object-cover" loading="lazy" /> : null;
+                                })()}
+                                <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${v.score >= 80 ? 'bg-green-500 text-white' : v.score >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'}`}>
+                                  ⚡ {v.score}
+                                </div>
+                                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-xs font-bold bg-purple-600 text-white">
+                                  {Math.round(((v as Record<string, unknown>)._similarity as number || 0) * 100)}% match
+                                </div>
+                              </div>
+                              <div className="p-3">
+                                <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title}</h3>
+                                <div className="flex items-center gap-2 text-xs text-gray-400 mb-1">
+                                  <span className="text-green-400">{fmtYT(v.view_count)} views</span>
+                                  {v.channel_name && <span>· {v.channel_name}</span>}
+                                </div>
+                                <div className="flex items-center gap-3 text-xs text-gray-500">
+                                  {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
+                                  {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)}</span>}
+                                </div>
+                                {v.url && <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 mt-1 block truncate">{v.url}</a>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           ) : currentView === 'library' ? (
             /* Library View */
