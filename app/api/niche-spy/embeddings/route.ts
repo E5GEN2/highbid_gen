@@ -92,10 +92,13 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
     const batch = videos.slice(i, i + batchSize);
     const batchNum = Math.floor(i / batchSize) + 1;
 
-    // Update progress in DB
+    // Update progress in DB — include which key+proxy will be used
+    const nextKey = await import('@/lib/embeddings').then(m => m.getKeyStatus());
+    const nextProxy = await import('@/lib/xgodo-proxy').then(m => m.getProxy());
+    const activeKey = nextKey.find(k => !k.banned)?.key || 'all banned';
     await pool.query(
-      `UPDATE niche_spy_embedding_jobs SET current_batch = $1, processed = $2, errors = $3 WHERE id = $4`,
-      [batchNum, processed, errors, jobId]
+      `UPDATE niche_spy_embedding_jobs SET current_batch = $1, processed = $2, errors = $3, error_message = $4 WHERE id = $5`,
+      [batchNum, processed, errors, `key=${activeKey} proxy=${nextProxy?.deviceId?.substring(0, 8) || 'none'}`, jobId]
     );
 
     try {
@@ -129,9 +132,19 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
       if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RATE_LIMIT')) {
         await pool.query(
           `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-          [`Rate limited at batch ${batchNum}, waiting 30s...`, jobId]
+          [`Rate limited at batch ${batchNum} — key banned, retrying with next key...`, jobId]
         );
-        await new Promise(r => setTimeout(r, 30000));
+        await new Promise(r => setTimeout(r, 5000)); // Short wait — banned key is skipped automatically
+        i -= batchSize;
+        errors--;
+        continue;
+      }
+
+      if (errMsg.includes('403')) {
+        await pool.query(
+          `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
+          [`Key denied (403) at batch ${batchNum} — key banned, trying next...`, jobId]
+        );
         i -= batchSize;
         errors--;
         continue;
