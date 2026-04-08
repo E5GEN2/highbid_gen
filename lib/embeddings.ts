@@ -17,7 +17,9 @@ const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 let cachedKeys: string[] = [];
 let keyIndex = 0;
 let lastKeyFetch = 0;
-const KEY_CACHE_TTL = 5 * 60 * 1000;
+const KEY_CACHE_TTL = 60 * 1000; // 1 min cache — refresh faster when keys change
+const bannedKeys: Map<string, number> = new Map(); // key → ban expiry timestamp
+const KEY_BAN_DURATION = 5 * 60 * 1000; // 5 min ban on rate-limited keys
 
 async function getApiKeys(): Promise<string[]> {
   if (Date.now() - lastKeyFetch < KEY_CACHE_TTL && cachedKeys.length > 0) return cachedKeys;
@@ -32,9 +34,30 @@ async function getApiKeys(): Promise<string[]> {
 async function getNextKey(): Promise<string> {
   const keys = await getApiKeys();
   if (keys.length === 0) throw new Error('No Google API keys configured. Add them in Admin > Niche Explorer.');
-  const key = keys[keyIndex % keys.length];
-  keyIndex++;
+
+  // Try to find an unbanned key
+  const now = Date.now();
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[(keyIndex + i) % keys.length];
+    const banExpiry = bannedKeys.get(key);
+    if (!banExpiry || now > banExpiry) {
+      keyIndex = (keyIndex + i + 1) % keys.length;
+      bannedKeys.delete(key); // Clear expired ban
+      return key;
+    }
+  }
+
+  // All keys banned — use least recently banned
+  keyIndex = (keyIndex + 1) % keys.length;
+  const key = keys[keyIndex];
+  console.log(`[embedding] All keys banned, forcing key ${key.substring(0, 10)}...`);
   return key;
+}
+
+/** Ban a key for 5 minutes after rate limit */
+export function banKey(key: string): void {
+  bannedKeys.set(key, Date.now() + KEY_BAN_DURATION);
+  console.log(`[embedding] Banned key ${key.substring(0, 10)}... for 5min. Banned: ${bannedKeys.size}/${cachedKeys.length}`);
 }
 
 async function getModel(): Promise<string> {
@@ -92,7 +115,12 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   }
 
   if (!Array.isArray(result)) {
-    throw new Error((result as { error: string }).error || 'Unknown embedding error');
+    const errMsg = (result as { error: string }).error || 'Unknown embedding error';
+    // Ban this key if rate limited or access denied
+    if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RATE_LIMIT') || errMsg.includes('403')) {
+      banKey(key);
+    }
+    throw new Error(errMsg);
   }
 
   return result;
