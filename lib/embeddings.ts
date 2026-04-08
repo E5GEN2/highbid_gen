@@ -53,7 +53,9 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
 
   const key = await getNextKey();
   const model = await getModel();
+  // Rotate proxy on every call — different IP avoids per-IP rate limits
   const proxy = await getProxy();
+  console.log(`[embedding] key=${key.substring(0,10)}... proxy=${proxy?.deviceId?.substring(0,8) || 'direct'} texts=${texts.length}`);
 
   const fs = await import('fs');
   const os = await import('os');
