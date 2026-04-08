@@ -9,8 +9,8 @@
 import { getPool } from './db';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
-const PROXY_HOST = 'xgodo.com';
-const PROXY_PORT = 3008;
+const PROXY_HOST = '54.36.178.74';
+const PROXY_PORT = 1082;
 
 interface XgodoDevice {
   remote_device_id: string;
@@ -68,11 +68,8 @@ async function refreshProxies(): Promise<ProxyInfo[]> {
     for (const d of devices) {
       if (!d.online) continue;
 
-      // Get password: prefer proxy_passwords array, fallback to proxy_password
-      let password = d.proxy_password || 'xgodo';
-      if (d.proxy_passwords && d.proxy_passwords.length > 0) {
-        password = d.proxy_passwords[0].password;
-      }
+      // Get password from proxy_passwords array first, fallback to proxy_password
+      const password = d.proxy_passwords?.[0]?.password || d.proxy_password || 'xgodo';
 
       const username = d.proxy_username || d.remote_device_id;
       proxies.push({

@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Batch embed texts via Google Embedding API through proxy.
-Usage: echo '{"texts":["a","b"],"key":"...","model":"...","proxy":"..."}' | python3 embed-batch.py
+Batch embed texts via Google Embedding API through proxy using curl.
+Usage: python3 embed-batch.py <input.json>
+Input JSON: {"texts":["a","b"],"key":"...","model":"...","proxy":"..."}
 Output: JSON array of embeddings
 """
 import sys
 import json
-import urllib.request
-import urllib.error
+import subprocess
+import tempfile
+import os
 
 def main():
-    # Read from file arg or stdin
     if len(sys.argv) > 1:
         with open(sys.argv[1]) as f:
             data = json.load(f)
     else:
         data = json.loads(sys.stdin.read())
+
     texts = data['texts']
     key = data['key']
     model = data.get('model', 'gemini-embedding-001')
@@ -24,31 +26,50 @@ def main():
     url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents?key={key}'
     body = json.dumps({
         'requests': [{'model': f'models/{model}', 'content': {'parts': [{'text': t}]}} for t in texts]
-    }).encode()
+    })
 
-    if proxy_url:
-        proxy_handler = urllib.request.ProxyHandler({
-            'http': proxy_url,
-            'https': proxy_url,
-        })
-        opener = urllib.request.build_opener(proxy_handler)
-    else:
-        opener = urllib.request.build_opener()
-
-    req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'}, method='POST')
-
+    # Write body to temp file
+    fd, tmp_path = tempfile.mkstemp(suffix='.json')
     try:
-        resp = opener.open(req, timeout=30)
-        result = json.loads(resp.read())
-        embeddings = [e['values'] for e in result.get('embeddings', [])]
+        with os.fdopen(fd, 'w') as f:
+            f.write(body)
+
+        # Build curl command
+        cmd = ['curl', '-s', '--max-time', '60', '-X', 'POST', url,
+               '-H', 'Content-Type: application/json',
+               '-d', f'@{tmp_path}']
+
+        if proxy_url:
+            # Split proxy URL into components for --proxy-user and --proxy
+            # Format: http://user:pass@host:port
+            from urllib.parse import urlparse
+            parsed = urlparse(proxy_url)
+            proxy_host = f'http://{parsed.hostname}:{parsed.port}'
+            proxy_user = f'{parsed.username}:{parsed.password}'
+            cmd.extend(['--proxy', proxy_host, '--proxy-user', proxy_user])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+
+        if result.returncode != 0:
+            print(json.dumps({'error': f'curl exit {result.returncode}: {result.stderr[:300]}'}))
+            sys.exit(1)
+
+        if not result.stdout.strip():
+            print(json.dumps({'error': f'Empty response. stderr: {result.stderr[:300]}'}))
+            sys.exit(1)
+
+        response = json.loads(result.stdout)
+
+        if 'error' in response:
+            err = response['error']
+            print(json.dumps({'error': f"API {err.get('code', '?')}: {err.get('message', '')[:200]}"}))
+            sys.exit(1)
+
+        embeddings = [e['values'] for e in response.get('embeddings', [])]
         print(json.dumps(embeddings))
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode()[:300]
-        print(json.dumps({'error': f'HTTP {e.code}: {error_body}'}))
-        sys.exit(1)
-    except Exception as e:
-        print(json.dumps({'error': str(e)[:300]}))
-        sys.exit(1)
+
+    finally:
+        os.unlink(tmp_path)
 
 if __name__ == '__main__':
     try:
