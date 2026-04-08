@@ -39,16 +39,19 @@ export async function GET() {
     if (proxy) {
       try {
         const { stdout: proxyOut, stderr: proxyErr } = await execFileAsync('curl', [
-          '-s', '-w', '\\n%{http_code}', '--max-time', '15',
+          '-v', '-w', '\\n%{http_code}', '--max-time', '15',
           '--proxy', proxy.url,
           'https://httpbin.org/ip'
         ], { timeout: 20000 });
         const lines = proxyOut.trim().split('\n');
         results.proxyHttpbinStatus = lines[lines.length - 1];
         results.proxyHttpbinBody = lines.slice(0, -1).join('\n').substring(0, 200);
-        results.proxyStderr = proxyErr?.substring(0, 100);
+        results.proxyStderr = proxyErr?.substring(0, 300);
       } catch (e) {
-        results.proxyHttpbinError = (e as { message?: string; stderr?: string }).stderr?.substring(0, 200) || (e as Error).message?.substring(0, 200);
+        const err = e as { message?: string; stderr?: string; stdout?: string };
+        results.proxyHttpbinError = err.message?.substring(0, 100);
+        results.proxyHttpbinStderr = err.stderr?.substring(0, 400);
+        results.proxyHttpbinStdout = err.stdout?.substring(0, 200);
       }
 
       // 4. Test curl with proxy to Google API
