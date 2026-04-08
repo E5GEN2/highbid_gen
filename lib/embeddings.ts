@@ -128,8 +128,9 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
 
   if (!Array.isArray(result)) {
     const errMsg = (result as { error: string }).error || 'Unknown embedding error';
-    // Ban this key if rate limited or access denied
-    if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RATE_LIMIT') || errMsg.includes('403')) {
+    // Only ban on actual Google API errors, not proxy/connection failures
+    if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED') ||
+        (errMsg.includes('API 403') && errMsg.includes('denied access'))) {
       banKey(key);
     }
     throw new Error(errMsg);

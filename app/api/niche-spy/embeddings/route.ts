@@ -129,7 +129,12 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
       const errMsg = (err as Error).message || '';
       errors++;
 
-      if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RATE_LIMIT')) {
+      // Only ban key on ACTUAL Google API rate limit/auth errors, NOT proxy failures
+      const isGoogleRateLimit = errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED');
+      const isGoogleAuthDenied = errMsg.includes('API 403') && errMsg.includes('denied access');
+      const isProxyError = errMsg.includes('curl exit') || errMsg.includes('Connection refused') || errMsg.includes('Tunnel') || errMsg.includes('socket');
+
+      if (isGoogleRateLimit) {
         const usedKey = getLastUsedKey();
         banKey(usedKey);
         await pool.query(
@@ -142,7 +147,7 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
         continue;
       }
 
-      if (errMsg.includes('403')) {
+      if (isGoogleAuthDenied) {
         const usedKey = getLastUsedKey();
         banKey(usedKey);
         await pool.query(
@@ -150,6 +155,18 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
           [`Key denied (403) — banned ${usedKey.substring(0,10)}..., switching`, jobId]
         );
         await new Promise(r => setTimeout(r, 1000));
+        i -= batchSize;
+        errors--;
+        continue;
+      }
+
+      if (isProxyError) {
+        // Proxy failure — retry with different proxy, don't ban key
+        await pool.query(
+          `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
+          [`Proxy error, retrying... ${errMsg.substring(0, 80)}`, jobId]
+        );
+        await new Promise(r => setTimeout(r, 2000));
         i -= batchSize;
         errors--;
         continue;
