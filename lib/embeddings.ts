@@ -72,8 +72,9 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
     rawErr = result.stderr;
   } catch (err) {
     fs.unlinkSync(tmpFile);
-    const e = err as { stderr?: string; message?: string };
-    throw new Error(`Python embed failed: ${e.stderr?.substring(0, 300) || e.message?.substring(0, 300)}`);
+    const e = err as { stderr?: string; stdout?: string; message?: string };
+    const detail = e.stdout?.substring(0, 300) || e.stderr?.substring(0, 300) || e.message?.substring(0, 300);
+    throw new Error(`Python embed failed: ${detail}`);
   }
   fs.unlinkSync(tmpFile);
   const stdout = String(rawOut);
