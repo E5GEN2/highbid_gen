@@ -414,7 +414,7 @@ function HomeContent() {
     setNicheSimilarSource({ id: videoId, title });
     setNicheSimilarLoading(true);
     try {
-      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=20`);
+      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=50`);
       const data = await res.json();
       setNicheSimilarVideos((data.similar || []).map((v: Record<string, unknown>) => ({
         id: v.id as number, keyword: v.keyword as string, url: v.url as string, title: v.title as string,

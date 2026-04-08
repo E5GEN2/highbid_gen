@@ -1,74 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
+import { findSimilar } from '@/lib/vector-db';
 
 /**
- * GET /api/niche-spy/similar?videoId=123&limit=20
- * Find videos with most similar title embeddings within the same keyword.
- * Uses cosine similarity on the 3072-dim embeddings.
+ * GET /api/niche-spy/similar?videoId=123&limit=30
+ * Find similar videos using pgvector cosine similarity.
+ * Lightning fast — uses HNSW/IVFFlat index on the vector DB.
  */
 export async function GET(req: NextRequest) {
   const pool = await getPool();
   const videoId = req.nextUrl.searchParams.get('videoId');
-  const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '20'), 50);
+  const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '30'), 100);
 
-  if (!videoId) {
-    return NextResponse.json({ error: 'videoId required' }, { status: 400 });
-  }
+  if (!videoId) return NextResponse.json({ error: 'videoId required' }, { status: 400 });
 
-  // Get the source video's embedding and keyword
+  const vid = parseInt(videoId);
+
+  // Get source video info from main DB
   const sourceRes = await pool.query(
-    `SELECT id, title, keyword, title_embedding FROM niche_spy_videos WHERE id = $1`,
-    [parseInt(videoId)]
+    'SELECT id, title, keyword FROM niche_spy_videos WHERE id = $1',
+    [vid]
   );
-
-  if (sourceRes.rows.length === 0) {
-    return NextResponse.json({ error: 'Video not found' }, { status: 404 });
-  }
-
+  if (sourceRes.rows.length === 0) return NextResponse.json({ error: 'Video not found' }, { status: 404 });
   const source = sourceRes.rows[0];
-  if (!source.title_embedding) {
-    return NextResponse.json({ error: 'Video has no embedding. Run enrichment first.' }, { status: 400 });
+
+  // Find similar via pgvector (fast cosine similarity search)
+  const similar = await findSimilar(vid, limit);
+
+  if (similar.length === 0) {
+    return NextResponse.json({
+      source: { id: source.id, title: source.title, keyword: source.keyword },
+      similar: [],
+      message: 'No similar vectors found. Run embedding generation first.',
+    });
   }
 
-  // Find similar videos in the same keyword using cosine similarity
-  // PostgreSQL doesn't have native vector ops, so we compute in SQL using array math
-  // cosine_similarity = dot(a,b) / (|a| * |b|)
-  // For normalized vectors, just dot product suffices. But our embeddings aren't normalized,
-  // so we use the full formula.
-  //
-  // However, computing cosine similarity on 3072-dim arrays in SQL is slow.
-  // Instead, fetch all embeddings for this keyword and compute in JS.
+  // Fetch full video data from main DB for the similar IDs
+  const ids = similar.map(s => s.videoId);
+  const simMap = new Map(similar.map(s => [s.videoId, s.similarity]));
 
-  const candidatesRes = await pool.query(
+  const fullRes = await pool.query(
     `SELECT id, title, url, view_count, channel_name, posted_at, posted_date, score,
             subscriber_count, like_count, comment_count, top_comment, thumbnail,
-            keyword, channel_created_at, title_embedding
-     FROM niche_spy_videos
-     WHERE keyword = $1 AND title_embedding IS NOT NULL AND id != $2
-     ORDER BY score DESC NULLS LAST`,
-    [source.keyword, source.id]
+            keyword, channel_created_at
+     FROM niche_spy_videos WHERE id = ANY($1)`,
+    [ids]
   );
 
-  if (candidatesRes.rows.length === 0) {
-    return NextResponse.json({ source: { id: source.id, title: source.title, keyword: source.keyword }, similar: [], message: 'No embedded videos in this niche' });
-  }
-
-  // Compute cosine similarity
-  const sourceEmb: number[] = source.title_embedding;
-  const sourceMag = Math.sqrt(sourceEmb.reduce((s, v) => s + v * v, 0));
-
-  const scored = candidatesRes.rows.map(row => {
-    const emb: number[] = row.title_embedding;
-    let dot = 0;
-    let mag = 0;
-    for (let i = 0; i < emb.length; i++) {
-      dot += sourceEmb[i] * emb[i];
-      mag += emb[i] * emb[i];
-    }
-    mag = Math.sqrt(mag);
-    const similarity = sourceMag > 0 && mag > 0 ? dot / (sourceMag * mag) : 0;
-
-    return {
+  const results = fullRes.rows
+    .map(row => ({
       id: row.id,
       title: row.title,
       url: row.url,
@@ -84,17 +64,13 @@ export async function GET(req: NextRequest) {
       thumbnail: row.thumbnail,
       keyword: row.keyword,
       channelCreatedAt: row.channel_created_at,
-      similarity: Math.round(similarity * 10000) / 10000,
-    };
-  });
-
-  // Sort by similarity descending, take top N
-  scored.sort((a, b) => b.similarity - a.similarity);
-  const similar = scored.slice(0, limit);
+      similarity: simMap.get(row.id) || 0,
+    }))
+    .sort((a, b) => b.similarity - a.similarity);
 
   return NextResponse.json({
     source: { id: source.id, title: source.title, keyword: source.keyword },
-    similar,
-    totalCandidates: candidatesRes.rows.length,
+    similar: results,
+    totalCandidates: similar.length,
   });
 }

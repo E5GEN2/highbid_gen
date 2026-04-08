@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { batchEmbed, getEmbeddingStats, getKeyStatus, banKey, getLastUsedKey } from '@/lib/embeddings';
 import { getProxyStats, getProxy } from '@/lib/xgodo-proxy';
+import { upsertVector } from '@/lib/vector-db';
 
 const DEFAULT_BATCH_SIZE = 5;
 const DEFAULT_DELAY_MS = 1000;
@@ -133,6 +134,8 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
                 `UPDATE niche_spy_videos SET title_embedding = $1::real[], embedded_at = NOW() WHERE id = $2`,
                 [arrayLiteral, items[j].id]
               );
+              // Also write to pgvector DB for fast similarity search
+              await upsertVector(items[j].id, items[j].keyword || '', items[j].title, embeddings[j]).catch(() => {});
               globalProcessed++;
             }
           }
