@@ -96,32 +96,41 @@ async function runEmbeddingJob(jobId: number, keyword: string | null, limit: num
     );
 
     try {
-      const texts = batch.map(v => v.title);
-      const embeddings = await batchEmbed(texts);
-
-      for (let j = 0; j < batch.length; j++) {
-        if (embeddings[j] && embeddings[j].length > 0) {
-          const arrayLiteral = `{${embeddings[j].join(',')}}`;
-          await pool.query(
-            `UPDATE niche_spy_videos SET title_embedding = $1::real[], embedded_at = NOW() WHERE id = $2`,
-            [arrayLiteral, batch[j].id]
-          );
-          processed++;
+      // Retry up to 3 times per batch
+      let success = false;
+      for (let attempt = 0; attempt < 3 && !success; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
+        try {
+          const texts = batch.map(v => v.title);
+          const embeddings = await batchEmbed(texts);
+          for (let j = 0; j < batch.length; j++) {
+            if (embeddings[j] && embeddings[j].length > 0) {
+              const arrayLiteral = `{${embeddings[j].join(',')}}`;
+              await pool.query(
+                `UPDATE niche_spy_videos SET title_embedding = $1::real[], embedded_at = NOW() WHERE id = $2`,
+                [arrayLiteral, batch[j].id]
+              );
+              processed++;
+            }
+          }
+          success = true;
+        } catch (retryErr) {
+          if (attempt < 2) continue; // retry
+          throw retryErr; // give up after 3 attempts
         }
       }
     } catch (err) {
       const errMsg = (err as Error).message || '';
       errors++;
 
-      // On rate limit, wait longer then retry
       if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RATE_LIMIT')) {
         await pool.query(
           `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
           [`Rate limited at batch ${batchNum}, waiting 30s...`, jobId]
         );
-        await new Promise(r => setTimeout(r, 30000)); // Wait 30s on rate limit
-        i -= BATCH_SIZE; // Retry this batch
-        errors--; // Don't count as error if we retry
+        await new Promise(r => setTimeout(r, 30000));
+        i -= BATCH_SIZE;
+        errors--;
         continue;
       }
 

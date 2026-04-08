@@ -37,8 +37,7 @@ def main():
         # Build curl command
         cmd = ['curl', '-s', '--max-time', '60', '-X', 'POST', url,
                '-H', 'Content-Type: application/json',
-               '-d', f'@{tmp_path}',
-               '--retry', '2', '--retry-delay', '3']
+               '-d', f'@{tmp_path}']
 
         if proxy_url:
             from urllib.parse import urlparse
@@ -58,17 +57,6 @@ def main():
         if not stdout:
             print(json.dumps({'error': f'Empty response. stderr: {result.stderr[:300]}'}))
             sys.exit(1)
-
-        # Handle curl --retry concatenating multiple responses — take the last valid JSON
-        # Find the last occurrence of {"embeddings" which is our expected response
-        last_idx = stdout.rfind('{"embeddings"')
-        if last_idx > 0:
-            stdout = stdout[last_idx:]
-        # Also handle if it starts with error JSON from a failed attempt
-        elif stdout.count('{"e') > 1:
-            # Multiple JSON objects concatenated — take the last one
-            parts = stdout.split('\n{')
-            stdout = '{' + parts[-1] if len(parts) > 1 else stdout
 
         response = json.loads(stdout)
 
