@@ -75,7 +75,7 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   const tmpFile = path.join(os.tmpdir(), `embed_${Date.now()}.json`);
   fs.writeFileSync(tmpFile, bodyJson);
 
-  // Use curl subprocess with proxy — proven to work with xgodo proxies
+  // Use curl subprocess — try with proxy, fallback to direct on failure
   const args = ['-s', '--max-time', '30', '-X', 'POST', url, '-H', 'Content-Type: application/json', '-d', `@${tmpFile}`];
   if (proxy) {
     args.push('--proxy', proxy.url);
@@ -85,13 +85,24 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   try {
     const result = await execFileAsync('curl', args, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
     stdout = result.stdout;
-    if (!stdout && result.stderr) {
-      throw new Error(`curl stderr: ${result.stderr.substring(0, 200)}`);
+  } catch (proxyErr) {
+    // If proxy failed, retry without proxy
+    if (proxy) {
+      console.log('[embedding] Proxy failed, retrying direct...');
+      const directArgs = args.filter(a => a !== '--proxy' && a !== proxy.url);
+      try {
+        const result = await execFileAsync('curl', directArgs, { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
+        stdout = result.stdout;
+      } catch (directErr) {
+        fs.unlinkSync(tmpFile);
+        const e = directErr as { stderr?: string; message?: string };
+        throw new Error(`curl direct failed: ${e.stderr?.substring(0, 200) || e.message?.substring(0, 200)}`);
+      }
+    } else {
+      fs.unlinkSync(tmpFile);
+      const e = proxyErr as { stderr?: string; message?: string };
+      throw new Error(`curl failed: ${e.stderr?.substring(0, 200) || e.message?.substring(0, 200)}`);
     }
-  } catch (err) {
-    fs.unlinkSync(tmpFile);
-    const e = err as { stderr?: string; message?: string };
-    throw new Error(`${e.message?.substring(0, 200)}${e.stderr ? ' | stderr: ' + e.stderr.substring(0, 200) : ''}`);
   }
   fs.unlinkSync(tmpFile);
 
