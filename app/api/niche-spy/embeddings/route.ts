@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
-import { batchEmbed, getEmbeddingStats } from '@/lib/embeddings';
+import { batchEmbed, getEmbeddingStats, getKeyStatus } from '@/lib/embeddings';
+import { getProxyStats, getProxy } from '@/lib/xgodo-proxy';
 
 const DEFAULT_BATCH_SIZE = 5;
 const DEFAULT_DELAY_MS = 1000;
@@ -163,7 +164,12 @@ export async function GET(req: NextRequest) {
   const pool = await getPool();
   const keyword = req.nextUrl.searchParams.get('keyword');
 
-  const stats = await getEmbeddingStats();
+  const [stats, keyStatus, proxyStats] = await Promise.all([
+    getEmbeddingStats(),
+    getKeyStatus(),
+    getProxyStats(),
+  ]);
+  const currentProxy = await getProxy();
 
   // Get current/latest job
   const jobRes = await pool.query(
@@ -184,7 +190,14 @@ export async function GET(req: NextRequest) {
     keywordStats = kwRes.rows[0];
   }
 
-  return NextResponse.json({ ...stats, job, keywordStats });
+  return NextResponse.json({
+    ...stats, job, keywordStats,
+    keys: keyStatus,
+    proxy: {
+      ...proxyStats,
+      current: currentProxy ? { deviceId: currentProxy.deviceId.substring(0, 8), networkType: currentProxy.networkType } : null,
+    },
+  });
 }
 
 /**

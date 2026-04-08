@@ -35,6 +35,8 @@ export default function AdminPage() {
   const [embeddingStats, setEmbeddingStats] = useState<{
     totalVideos: number; embedded: number; notEmbedded: number; apiKeysConfigured: number; model: string;
     job: { id: number; status: string; total_needed: number; processed: number; errors: number; current_batch: number; total_batches: number; error_message: string | null; started_at: string; completed_at: string | null } | null;
+    keys?: Array<{ key: string; banned: boolean; banExpiresIn: number | null }>;
+    proxy?: { total: number; online: number; cached: boolean; cacheAge: number; current: { deviceId: string; networkType: string } | null };
   } | null>(null);
 
   // Poll embedding progress
@@ -1305,6 +1307,59 @@ export default function AdminPage() {
                     </button>
                   )}
                 </div>
+
+                {/* Key & Proxy Status Table */}
+                {(embeddingStats.keys || embeddingStats.proxy) && (
+                  <div className="grid grid-cols-2 gap-4 mt-4">
+                    {/* API Keys */}
+                    {embeddingStats.keys && embeddingStats.keys.length > 0 && (
+                      <div className="bg-gray-900/50 rounded-lg p-3">
+                        <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-2">API Keys</h4>
+                        <div className="space-y-1.5">
+                          {embeddingStats.keys.map((k, i) => (
+                            <div key={i} className="flex items-center justify-between text-xs">
+                              <span className="font-mono text-gray-300">{k.key}</span>
+                              {k.banned ? (
+                                <span className="text-red-400 flex items-center gap-1">
+                                  <span className="w-2 h-2 bg-red-500 rounded-full" />
+                                  banned ({k.banExpiresIn}s)
+                                </span>
+                              ) : (
+                                <span className="text-green-400 flex items-center gap-1">
+                                  <span className="w-2 h-2 bg-green-500 rounded-full" />
+                                  active
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Proxy Status */}
+                    {embeddingStats.proxy && (
+                      <div className="bg-gray-900/50 rounded-lg p-3">
+                        <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Proxy</h4>
+                        <div className="space-y-1.5 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Available</span>
+                            <span className="text-white font-medium">{embeddingStats.proxy.total} devices</span>
+                          </div>
+                          {embeddingStats.proxy.current && (
+                            <div className="flex justify-between">
+                              <span className="text-gray-400">Current</span>
+                              <span className="text-blue-400 font-mono">{embeddingStats.proxy.current.deviceId}... ({embeddingStats.proxy.current.networkType})</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Cache</span>
+                            <span className="text-gray-300">{embeddingStats.proxy.cached ? `fresh (${embeddingStats.proxy.cacheAge}s)` : 'stale'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>

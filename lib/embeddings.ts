@@ -137,6 +137,21 @@ export async function embedText(text: string): Promise<number[]> {
 /**
  * Get embedding stats.
  */
+/** Get detailed key status for admin UI */
+export async function getKeyStatus(): Promise<Array<{ key: string; banned: boolean; banExpiresIn: number | null }>> {
+  const keys = await getApiKeys();
+  const now = Date.now();
+  return keys.map(k => {
+    const banExpiry = bannedKeys.get(k);
+    const banned = !!banExpiry && now < banExpiry;
+    return {
+      key: k.substring(0, 10) + '...' + k.substring(k.length - 4),
+      banned,
+      banExpiresIn: banned && banExpiry ? Math.round((banExpiry - now) / 1000) : null,
+    };
+  });
+}
+
 export async function getEmbeddingStats(): Promise<{
   totalVideos: number;
   embedded: number;
