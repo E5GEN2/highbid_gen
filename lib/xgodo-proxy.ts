@@ -9,8 +9,8 @@
 import { getPool } from './db';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
-const PROXY_HOST = '54.36.178.74';
-const PROXY_PORT = 1082;
+const PROXY_HOST = 'xgodo.com';
+const PROXY_PORT = 3008;
 
 interface XgodoDevice {
   remote_device_id: string;

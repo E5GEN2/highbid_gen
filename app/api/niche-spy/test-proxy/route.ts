@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile);
 /**
  * GET /api/niche-spy/test-proxy
  * Debug: test curl with proxy from Railway.
+ * Tests both xgodo.com:3008 and 54.36.178.74:1082 hosts.
  */
 export async function GET() {
   const results: Record<string, unknown> = {};
