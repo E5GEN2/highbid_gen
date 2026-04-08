@@ -35,23 +35,32 @@ async function getNextKey(): Promise<string> {
   const keys = await getApiKeys();
   if (keys.length === 0) throw new Error('No Google API keys configured. Add them in Admin > Niche Explorer.');
 
-  // Try to find an unbanned key
   const now = Date.now();
+  const statuses = keys.map(k => {
+    const exp = bannedKeys.get(k);
+    return `${k.substring(0,8)}=${exp && now < exp ? 'BAN(' + Math.round((exp - now) / 1000) + 's)' : 'OK'}`;
+  });
+
   for (let i = 0; i < keys.length; i++) {
     const key = keys[(keyIndex + i) % keys.length];
     const banExpiry = bannedKeys.get(key);
     if (!banExpiry || now > banExpiry) {
       keyIndex = (keyIndex + i + 1) % keys.length;
-      bannedKeys.delete(key); // Clear expired ban
+      if (banExpiry) bannedKeys.delete(key);
+      console.log(`[embedding] Selected key ${key.substring(0, 10)}... idx=${keyIndex} [${statuses.join(', ')}]`);
       return key;
     }
   }
 
-  // All keys banned — use least recently banned
-  keyIndex = (keyIndex + 1) % keys.length;
-  const key = keys[keyIndex];
-  console.log(`[embedding] All keys banned, forcing key ${key.substring(0, 10)}...`);
-  return key;
+  // All banned — pick the one expiring soonest
+  let bestKey = keys[0];
+  let bestExpiry = Infinity;
+  for (const k of keys) {
+    const exp = bannedKeys.get(k) || Infinity;
+    if (exp < bestExpiry) { bestExpiry = exp; bestKey = k; }
+  }
+  console.log(`[embedding] ALL BANNED, forcing ${bestKey.substring(0, 10)}... [${statuses.join(', ')}]`);
+  return bestKey;
 }
 
 /** Ban a key for 5 minutes after rate limit */
