@@ -55,18 +55,27 @@ export async function batchEmbed(texts: string[]): Promise<number[][]> {
   const model = await getModel();
   const proxy = await getProxy();
 
-  const input = JSON.stringify({
-    texts,
-    key,
-    model,
-    proxy: proxy?.url || '',
-  });
+  const fs = await import('fs');
+  const os = await import('os');
+  const inputData = JSON.stringify({ texts, key, model, proxy: proxy?.url || '' });
+  const tmpFile = path.join(os.tmpdir(), `embed_input_${Date.now()}.json`);
+  fs.writeFileSync(tmpFile, inputData);
 
-  const { stdout: rawOut, stderr: rawErr } = await execFileAsync(
-    'python3',
-    [path.join(SCRIPTS_DIR, 'embed-batch.py')],
-    { timeout: 45000, maxBuffer: 50 * 1024 * 1024, input, encoding: 'utf-8' } as Parameters<typeof execFileAsync>[2]
-  );
+  let rawOut: string | Buffer, rawErr: string | Buffer;
+  try {
+    const result = await execFileAsync(
+      'python3',
+      [path.join(SCRIPTS_DIR, 'embed-batch.py'), tmpFile],
+      { timeout: 45000, maxBuffer: 50 * 1024 * 1024 }
+    );
+    rawOut = result.stdout;
+    rawErr = result.stderr;
+  } catch (err) {
+    fs.unlinkSync(tmpFile);
+    const e = err as { stderr?: string; message?: string };
+    throw new Error(`Python embed failed: ${e.stderr?.substring(0, 300) || e.message?.substring(0, 300)}`);
+  }
+  fs.unlinkSync(tmpFile);
   const stdout = String(rawOut);
   const stderr = String(rawErr);
 

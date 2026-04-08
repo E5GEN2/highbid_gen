@@ -10,7 +10,12 @@ import urllib.request
 import urllib.error
 
 def main():
-    data = json.loads(sys.stdin.read())
+    # Read from file arg or stdin
+    if len(sys.argv) > 1:
+        with open(sys.argv[1]) as f:
+            data = json.load(f)
+    else:
+        data = json.loads(sys.stdin.read())
     texts = data['texts']
     key = data['key']
     model = data.get('model', 'gemini-embedding-001')
