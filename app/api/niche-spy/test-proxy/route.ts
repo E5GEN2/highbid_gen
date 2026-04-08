@@ -37,6 +37,22 @@ export async function GET() {
 
     // 3. Test curl with proxy
     if (proxy) {
+      // Also test with the known-working yt-dlp proxy
+      const ytdlpProxy = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@xgodo.com:3008';
+      try {
+        const { stdout: ytOut, stderr: ytErr } = await execFileAsync('curl', [
+          '-s', '-w', '\\n%{http_code}', '--max-time', '15',
+          '--proxy', ytdlpProxy,
+          'https://httpbin.org/ip'
+        ], { timeout: 20000 });
+        const ytLines = ytOut.trim().split('\n');
+        results.ytdlpProxyStatus = ytLines[ytLines.length - 1];
+        results.ytdlpProxyBody = ytLines.slice(0, -1).join('\n').substring(0, 200);
+      } catch (e) {
+        const err = e as { stderr?: string; message?: string };
+        results.ytdlpProxyError = err.stderr?.substring(0, 300) || err.message?.substring(0, 200);
+      }
+
       try {
         const { stdout: proxyOut, stderr: proxyErr } = await execFileAsync('curl', [
           '-v', '-w', '\\n%{http_code}', '--max-time', '15',
