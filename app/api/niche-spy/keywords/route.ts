@@ -87,3 +87,57 @@ export async function GET(req: NextRequest) {
     total: result.rows.length,
   });
 }
+
+/**
+ * DELETE /api/niche-spy/keywords
+ * Delete a keyword and ALL associated videos, embeddings, saturation data.
+ * Body: { keyword } or { keywords: string[] }
+ */
+export async function DELETE(req: NextRequest) {
+  const pool = await getPool();
+  const body = await req.json();
+  const keywords: string[] = body.keywords || (body.keyword ? [body.keyword] : []);
+
+  if (keywords.length === 0) {
+    return NextResponse.json({ error: 'keyword or keywords[] required' }, { status: 400 });
+  }
+
+  const results: Array<{ keyword: string; videosDeleted: number; saturationDeleted: number; vectorsDeleted: number }> = [];
+
+  for (const keyword of keywords) {
+    // Count before delete
+    const countRes = await pool.query('SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE keyword = $1', [keyword]);
+    const videoCount = parseInt(countRes.rows[0].cnt);
+
+    // Delete videos (this also removes their embeddings from main DB)
+    await pool.query('DELETE FROM niche_spy_videos WHERE keyword = $1', [keyword]);
+
+    // Delete saturation data
+    const satRes = await pool.query('DELETE FROM niche_spy_saturation WHERE keyword = $1', [keyword]);
+    const satRunsRes = await pool.query('DELETE FROM niche_saturation_runs WHERE keyword = $1', [keyword]);
+
+    // Delete vectors from pgvector DB
+    let vectorsDeleted = 0;
+    try {
+      const { Pool: PgPool } = await import('pg');
+      const vectorUrl = process.env.VECTOR_DB_URL || 'postgresql://postgres:rLcWspOFJIPFDMbJSDdNlynLgcnupOfY@gondola.proxy.rlwy.net:10303/railway';
+      const vectorPool = new PgPool({ connectionString: vectorUrl, max: 2, connectionTimeoutMillis: 5000 });
+      const vRes = await vectorPool.query('DELETE FROM niche_video_vectors WHERE keyword = $1', [keyword]);
+      vectorsDeleted = vRes.rowCount || 0;
+      await vectorPool.end();
+    } catch { /* vector DB might not be available */ }
+
+    results.push({
+      keyword,
+      videosDeleted: videoCount,
+      saturationDeleted: (satRes.rowCount || 0) + (satRunsRes.rowCount || 0),
+      vectorsDeleted,
+    });
+  }
+
+  return NextResponse.json({
+    deleted: results,
+    totalKeywords: results.length,
+    totalVideos: results.reduce((s, r) => s + r.videosDeleted, 0),
+  });
+}
