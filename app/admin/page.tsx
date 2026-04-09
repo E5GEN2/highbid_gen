@@ -29,7 +29,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich'>('general');
 
   // Niche Explorer embedding state
   const [embeddingStats, setEmbeddingStats] = useState<{
@@ -466,6 +466,10 @@ export default function AdminPage() {
           <button onClick={() => setAdminSection('niche')}
             className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'niche' ? 'bg-amber-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Niche Explorer
+          </button>
+          <button onClick={() => setAdminSection('enrich')}
+            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'enrich' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Enrich Data
           </button>
         </div>
 
@@ -1441,73 +1445,6 @@ export default function AdminPage() {
             )}
           </div>
 
-          {/* Enrich Data */}
-          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
-            <h2 className="text-lg font-bold text-white mb-4">Enrich Data (YouTube Data API)</h2>
-
-            {nicheEnrichStats && (
-              <div className="space-y-4">
-                {/* Stats grid */}
-                <div className="grid grid-cols-4 gap-3">
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-yellow-400">{parseInt(nicheEnrichStats.need_enrichment).toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Need Enrichment</div>
-                  </div>
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-orange-400">{parseInt(nicheEnrichStats.never_enriched).toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Never Enriched</div>
-                  </div>
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-red-400">{parseInt(nicheEnrichStats.missing_subs).toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Missing Subs</div>
-                  </div>
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-blue-400">{nicheEnrichStats.proxyStats?.total || 0}</div>
-                    <div className="text-xs text-gray-500">Proxies</div>
-                  </div>
-                </div>
-
-                {/* Action */}
-                <div className="flex gap-3 items-center">
-                  <button
-                    onClick={async () => {
-                      setNicheEnrichRunning(true);
-                      try {
-                        const res = await fetch('/api/niche-spy/enrich', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ limit: 500 }),
-                        });
-                        // SSE — just consume until done
-                        const reader = res.body?.getReader();
-                        if (reader) { while (!(await reader.read()).done) {} }
-                      } catch { /* ignore */ }
-                      setNicheEnrichRunning(false);
-                    }}
-                    disabled={nicheEnrichRunning}
-                    className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition"
-                  >
-                    {nicheEnrichRunning ? 'Enriching...' : 'Enrich Data'}
-                  </button>
-                  <span className="text-xs text-gray-500">Uses YT Data API keys via proxies to fill views, likes, subs, exact dates</span>
-                </div>
-              </div>
-            )}
-
-            {/* YouTube Data API Keys */}
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-gray-300 mb-1">YouTube Data API Keys</label>
-              <textarea
-                value={nicheYtApiKeys}
-                onChange={(e) => setNicheYtApiKeys(e.target.value)}
-                placeholder="One YouTube Data API v3 key per line. Used for enrichment (views, subs, dates)."
-                rows={3}
-                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
-              />
-              <p className="text-xs text-gray-500 mt-1">Separate from embedding keys. These are for YouTube Data API v3. One per line.</p>
-            </div>
-          </div>
-
           {/* API Keys Config */}
           <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
             <h2 className="text-lg font-bold text-white mb-4">Configuration</h2>
@@ -1559,6 +1496,84 @@ export default function AdminPage() {
                 <button onClick={saveConfig} disabled={configSaving}
                   className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition">
                   {configSaving ? 'Saving...' : 'Save Config'}
+                </button>
+                {configSaved && <span className="text-green-400 text-sm">Saved</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Enrich Data Tab */}
+        <div style={{ display: adminSection === 'enrich' ? 'block' : 'none' }}>
+        <div className="space-y-6">
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-4">Enrich Data (YouTube Data API)</h2>
+
+            {nicheEnrichStats && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-yellow-400">{parseInt(nicheEnrichStats.need_enrichment).toLocaleString()}</div>
+                    <div className="text-xs text-gray-500">Need Enrichment</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-orange-400">{parseInt(nicheEnrichStats.never_enriched).toLocaleString()}</div>
+                    <div className="text-xs text-gray-500">Never Enriched</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-red-400">{parseInt(nicheEnrichStats.missing_subs).toLocaleString()}</div>
+                    <div className="text-xs text-gray-500">Missing Subs</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-2xl font-bold text-blue-400">{nicheEnrichStats.proxyStats?.total || 0}</div>
+                    <div className="text-xs text-gray-500">Proxies</div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 items-center">
+                  <button
+                    onClick={async () => {
+                      setNicheEnrichRunning(true);
+                      try {
+                        const res = await fetch('/api/niche-spy/enrich', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ limit: 500 }),
+                        });
+                        const reader = res.body?.getReader();
+                        if (reader) { while (!(await reader.read()).done) {} }
+                      } catch { /* ignore */ }
+                      setNicheEnrichRunning(false);
+                    }}
+                    disabled={nicheEnrichRunning}
+                    className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition"
+                  >
+                    {nicheEnrichRunning ? 'Enriching...' : 'Enrich Data'}
+                  </button>
+                  <span className="text-xs text-gray-500">Fills views, likes, subs, exact dates, channel age via YT Data API + proxies</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* YouTube Data API Keys */}
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-4">YouTube Data API Keys</h2>
+            <div className="space-y-4">
+              <div>
+                <textarea
+                  value={nicheYtApiKeys}
+                  onChange={(e) => setNicheYtApiKeys(e.target.value)}
+                  placeholder="One YouTube Data API v3 key per line. Keys are rotated automatically."
+                  rows={4}
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+                />
+                <p className="text-xs text-gray-500 mt-1">Used for enrichment (views, subs, dates, channel age). One per line, rotated per batch.</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={saveConfig} disabled={configSaving}
+                  className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition">
+                  {configSaving ? 'Saving...' : 'Save Keys'}
                 </button>
                 {configSaved && <span className="text-green-400 text-sm">Saved</span>}
               </div>
