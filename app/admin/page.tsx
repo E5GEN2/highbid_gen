@@ -1502,6 +1502,7 @@ export default function AdminPage() {
             </div>
           </div>
         </div>
+        </div>
 
         {/* Enrich Data Tab */}
         <div style={{ display: adminSection === 'enrich' ? 'block' : 'none' }}>
