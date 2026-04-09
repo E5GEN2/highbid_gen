@@ -1445,6 +1445,43 @@ export default function AdminPage() {
             )}
           </div>
 
+          {/* Keyword Management */}
+          {embeddingStats?.keywordCoverage && (
+            <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+              <h2 className="text-lg font-bold text-white mb-4">Keyword Management</h2>
+              <p className="text-xs text-gray-500 mb-3">Delete a keyword to remove it and ALL associated videos, embeddings, and saturation data.</p>
+              <div className="space-y-1.5 max-h-80 overflow-y-auto">
+                {embeddingStats.keywordCoverage.map(k => (
+                  <div key={k.keyword} className="flex items-center gap-3 text-sm bg-gray-900/30 rounded-lg px-3 py-2">
+                    <span className="text-gray-300 flex-1 truncate">{k.keyword}</span>
+                    <span className="text-xs text-gray-500 w-16 text-right">{k.total} vids</span>
+                    <span className={`text-xs w-10 text-right ${k.pct >= 100 ? 'text-green-400' : k.pct > 0 ? 'text-amber-400' : 'text-gray-600'}`}>
+                      {k.pct}%
+                    </span>
+                    <button
+                      onClick={async () => {
+                        if (!confirm(`Delete "${k.keyword}" and all ${k.total} videos?`)) return;
+                        await fetch('/api/niche-spy/keywords', {
+                          method: 'DELETE',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ keyword: k.keyword }),
+                        });
+                        // Refresh stats
+                        fetch('/api/niche-spy/embeddings').then(r => r.json()).then(setEmbeddingStats).catch(() => {});
+                      }}
+                      className="text-red-500/60 hover:text-red-400 transition"
+                      title={`Delete ${k.keyword}`}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* API Keys Config */}
           <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
             <h2 className="text-lg font-bold text-white mb-4">Configuration</h2>

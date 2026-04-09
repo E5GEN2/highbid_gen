@@ -3914,33 +3914,14 @@ function HomeContent() {
                             <div className="text-xs text-gray-500">views</div>
                           </div>
                         </div>
-                        <div className="flex items-center justify-between text-xs text-gray-500">
-                          <div className="flex items-center gap-2">
-                            {kw.newChannelCount > 0 && <span className="text-orange-400">{kw.newChannelCount} new ch</span>}
-                            <span>{kw.highScoreCount} high score</span>
-                            {kw.saturation && (
-                              <span className={kw.saturation.globalSaturation >= 90 ? 'text-red-400' : kw.saturation.globalSaturation >= 70 ? 'text-yellow-400' : 'text-green-400'}>
-                                {kw.saturation.globalSaturation}% sat
-                              </span>
-                            )}
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (!confirm(`Delete "${kw.keyword}" and all ${kw.videoCount} videos?`)) return;
-                              fetch('/api/niche-spy/keywords', {
-                                method: 'DELETE',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ keyword: kw.keyword }),
-                              }).then(() => fetchNicheKeywords());
-                            }}
-                            className="text-red-500/50 hover:text-red-400 transition p-1"
-                            title="Delete keyword"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                          </button>
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          {kw.newChannelCount > 0 && <span className="text-orange-400">{kw.newChannelCount} new ch</span>}
+                          <span>{kw.highScoreCount} high score</span>
+                          {kw.saturation && (
+                            <span className={kw.saturation.globalSaturation >= 90 ? 'text-red-400' : kw.saturation.globalSaturation >= 70 ? 'text-yellow-400' : 'text-green-400'}>
+                              {kw.saturation.globalSaturation}% sat
+                            </span>
+                          )}
                         </div>
                       </button>
                     ))}
