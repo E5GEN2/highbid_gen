@@ -14,12 +14,16 @@ export async function POST(req: NextRequest) {
   const keyword = body.keyword;
   const limit = Math.min(parseInt(body.limit) || 200, 500);
 
-  // Get YouTube API key
-  const keyRes = await pool.query("SELECT value FROM admin_config WHERE key = 'youtube_api_key'");
-  const ytApiKey = keyRes.rows[0]?.value;
-  if (!ytApiKey) {
-    return NextResponse.json({ error: 'youtube_api_key not configured in admin' }, { status: 500 });
+  // Get YouTube API keys — try niche_yt_api_keys first, fallback to youtube_api_key
+  const multiKeyRes = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_yt_api_keys'");
+  const singleKeyRes = await pool.query("SELECT value FROM admin_config WHERE key = 'youtube_api_key'");
+  const ytApiKeys = (multiKeyRes.rows[0]?.value || '').split('\n').map((k: string) => k.trim()).filter((k: string) => k.length > 10);
+  if (ytApiKeys.length === 0 && singleKeyRes.rows[0]?.value) ytApiKeys.push(singleKeyRes.rows[0].value);
+  if (ytApiKeys.length === 0) {
+    return NextResponse.json({ error: 'No YouTube API keys configured. Add them in Admin > Niche Explorer.' }, { status: 500 });
   }
+  let ytKeyIdx = 0;
+  const getYtKey = () => { const k = ytApiKeys[ytKeyIdx % ytApiKeys.length]; ytKeyIdx++; return k; };
 
   const proxy = await getProxy();
   const proxyStats = await getProxyStats();
@@ -86,7 +90,7 @@ export async function POST(req: NextRequest) {
           send({ step: 'videos', batch: batchNum, total: totalBatches, percent: Math.round((i / allIds.length) * 60) });
 
           try {
-            const ytUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${batch.join(',')}&key=${ytApiKey}`;
+            const ytUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${batch.join(',')}&key=${getYtKey()}`;
             const ytRes = await fetch(ytUrl, { signal: AbortSignal.timeout(30000) });
 
             if (!ytRes.ok) {
@@ -161,7 +165,7 @@ export async function POST(req: NextRequest) {
             send({ step: 'channels', batch: batchNum, total: totalBatches, percent: 60 + Math.round((i / uniqueChannelIds.length) * 40) });
 
             try {
-              const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${batch.join(',')}&key=${ytApiKey}`;
+              const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${batch.join(',')}&key=${getYtKey()}`;
               const chRes = await fetch(chUrl, { signal: AbortSignal.timeout(30000) });
 
               if (!chRes.ok) {
