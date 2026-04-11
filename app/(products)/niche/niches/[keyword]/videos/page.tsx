@@ -471,6 +471,21 @@ function NicheVideosInner() {
                     <span>Last run: {new Date(clusterRun.run.completedAt).toLocaleDateString()}</span>
                   </>
                 )}
+                <button
+                  onClick={async () => {
+                    const res = await fetch('/api/niche-spy/clusters', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ keyword }),
+                    });
+                    const data = await res.json();
+                    if (data.ok) fetchClusters();
+                    else alert(data.error || 'Failed');
+                  }}
+                  className="ml-auto px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-medium transition"
+                >
+                  Re-run
+                </button>
               </div>
 
               {/* Sub-niche cards grid */}

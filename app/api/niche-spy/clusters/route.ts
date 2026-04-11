@@ -46,13 +46,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, status: 'labeling', runId: latest.run.id });
   }
 
-  // Check for already running job
+  // Check for already running job — allow re-run if stuck for >5 min
   const runningRes = await pool.query(
-    `SELECT id FROM niche_cluster_runs WHERE keyword = $1 AND status IN ('running', 'labeling') LIMIT 1`,
+    `SELECT id, started_at FROM niche_cluster_runs WHERE keyword = $1 AND status IN ('running', 'labeling') LIMIT 1`,
     [keyword]
   );
   if (runningRes.rows.length > 0) {
-    return NextResponse.json({ error: 'Clustering already in progress', runId: runningRes.rows[0].id }, { status: 409 });
+    const stuckMinutes = (Date.now() - new Date(runningRes.rows[0].started_at).getTime()) / 60000;
+    if (stuckMinutes < 5) {
+      return NextResponse.json({ error: 'Clustering already in progress', runId: runningRes.rows[0].id }, { status: 409 });
+    }
+    // Stuck for >5 min — mark as error and allow re-run
+    await pool.query(
+      `UPDATE niche_cluster_runs SET status = 'error', error_message = 'Timed out (stuck >5min)', completed_at = NOW() WHERE id = $1`,
+      [runningRes.rows[0].id]
+    );
   }
 
   // Count embedded videos
