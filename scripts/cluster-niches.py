@@ -20,6 +20,7 @@ def main():
 
     db_url = config['db_url']
     keyword = config['keyword']
+    video_ids = config.get('video_ids', None)  # Only cluster these IDs (score >= 80)
     min_cluster_size = config.get('min_cluster_size', None)
     min_samples = config.get('min_samples', None)
     umap_dims = config.get('umap_dims', 50)
@@ -27,10 +28,19 @@ def main():
     # 1. Fetch embeddings from pgvector DB
     conn = psycopg2.connect(db_url)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT video_id, title, embedding FROM niche_video_vectors WHERE keyword = %s",
-        (keyword,)
-    )
+    if video_ids and len(video_ids) > 0:
+        # Only fetch embeddings for eligible videos (score >= threshold)
+        placeholders = ','.join(['%s'] * len(video_ids))
+        cur.execute(
+            f"SELECT video_id, title, embedding FROM niche_video_vectors WHERE keyword = %s AND video_id IN ({placeholders})",
+            [keyword] + video_ids
+        )
+        sys.stderr.write(f"[cluster] Filtering to {len(video_ids)} eligible video IDs\n")
+    else:
+        cur.execute(
+            "SELECT video_id, title, embedding FROM niche_video_vectors WHERE keyword = %s",
+            (keyword,)
+        )
     rows = cur.fetchall()
     conn.close()
 

@@ -17,6 +17,7 @@ interface ClusterParams {
   minClusterSize?: number;
   minSamples?: number;
   umapDims?: number;
+  minScore?: number;
 }
 
 interface ClusterRun {
@@ -59,11 +60,28 @@ export async function runClusteringJob(runId: number, keyword: string, params: C
     const vectorDbUrl = process.env.VECTOR_DB_URL ||
       'postgresql://postgres:rLcWspOFJIPFDMbJSDdNlynLgcnupOfY@gondola.proxy.rlwy.net:10303/railway';
 
+    // Get eligible video IDs (score >= 80 only — below that they're not really in the niche)
+    const minScore = params.minScore || 80;
+    const eligibleRes = await pool.query(
+      `SELECT id FROM niche_spy_videos WHERE keyword = $1 AND score >= $2 AND title_embedding IS NOT NULL`,
+      [keyword, minScore]
+    );
+    const eligibleIds = eligibleRes.rows.map((r: { id: number }) => r.id);
+
+    if (eligibleIds.length < 10) {
+      await pool.query(
+        `UPDATE niche_cluster_runs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
+        [`Only ${eligibleIds.length} videos with score >= ${minScore}. Need at least 10.`, runId]
+      );
+      return;
+    }
+
     // Write input config to temp file
     const tmpFile = path.join(os.tmpdir(), `cluster-${runId}.json`);
     fs.writeFileSync(tmpFile, JSON.stringify({
       db_url: vectorDbUrl,
       keyword,
+      video_ids: eligibleIds,
       min_cluster_size: params.minClusterSize || null,
       min_samples: params.minSamples || null,
       umap_dims: params.umapDims || 50,

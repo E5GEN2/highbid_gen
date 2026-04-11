@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
 
   const pool = await getPool();
   const body = await req.json();
-  const { keyword, action = 'cluster', minClusterSize, minSamples, umapDims } = body;
+  const { keyword, action = 'cluster', minClusterSize, minSamples, umapDims, minScore } = body;
 
   if (!keyword) return NextResponse.json({ error: 'keyword required' }, { status: 400 });
 
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Create run record
-  const params = { minClusterSize, minSamples, umapDims: umapDims || 50 };
+  const params = { minClusterSize, minSamples, umapDims: umapDims || 50, minScore: minScore || 80 };
   const runRes = await pool.query(
     `INSERT INTO niche_cluster_runs (keyword, params, total_videos) VALUES ($1, $2, $3) RETURNING id`,
     [keyword, JSON.stringify(params), embeddedCount]
