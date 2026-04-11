@@ -46,6 +46,7 @@ export default function NicheVideos() {
   const [similarVideos, setSimilarVideos] = useState<NicheVideo[]>([]);
   const [similarLoading, setSimilarLoading] = useState(false);
   const [similarMinScore, setSimilarMinScore] = useState(0.7);
+  const [similarSort, setSimilarSort] = useState<'similarity' | 'views' | 'score' | 'newest' | 'likes'>('similarity');
 
   // Set keyword in context on mount
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
@@ -508,12 +509,38 @@ export default function NicheVideos() {
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
+            {/* Sort pills */}
+            <div className="px-6 pt-3 pb-0 flex gap-2 flex-wrap">
+              {([
+                { value: 'similarity', label: 'Best Match' },
+                { value: 'views', label: 'Most Views' },
+                { value: 'score', label: 'Highest Score' },
+                { value: 'newest', label: 'Newest' },
+                { value: 'likes', label: 'Most Likes' },
+              ] as const).map(opt => (
+                <button key={opt.value} onClick={() => setSimilarSort(opt.value)}
+                  className={`px-3 py-1 rounded-full text-xs transition ${
+                    similarSort === opt.value ? 'bg-white text-black font-medium' : 'text-[#888] border border-[#333] hover:border-[#555]'
+                  }`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
             <div className="p-6">
               {similarLoading ? (
                 <div className="text-center py-12 text-[#888]">Finding similar videos...</div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {similarVideos.map(v => (
+                  {[...similarVideos].sort((a, b) => {
+                    switch (similarSort) {
+                      case 'views': return (b.view_count || 0) - (a.view_count || 0);
+                      case 'score': return (b.score || 0) - (a.score || 0);
+                      case 'newest': return new Date(b.posted_at || 0).getTime() - new Date(a.posted_at || 0).getTime();
+                      case 'likes': return (b.like_count || 0) - (a.like_count || 0);
+                      default: return (b._similarity || 0) - (a._similarity || 0);
+                    }
+                  }).map(v => (
                     <div key={v.id} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
                       <div className="relative aspect-video bg-[#0a0a0a]">
                         {(() => {
@@ -532,10 +559,11 @@ export default function NicheVideos() {
                         <div className="flex items-center gap-2 text-xs text-[#888] mb-1">
                           <span className="text-green-400">{fmtYT(v.view_count)} views</span>
                           {v.channel_name && <span>· {v.channel_name}</span>}
+                          {(v.posted_at || v.posted_date) && <span>· {v.posted_at ? timeAgo(v.posted_at) : v.posted_date}</span>}
                         </div>
                         <div className="flex items-center gap-3 text-xs text-[#666]">
-                          {v.like_count > 0 && <span>{fmtYT(v.like_count)} likes</span>}
-                          {v.subscriber_count > 0 && <span>{fmtYT(v.subscriber_count)} subs</span>}
+                          {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
+                          {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)}</span>}
                         </div>
                         {v.url && <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 mt-1 block truncate">{v.url}</a>}
                       </div>
