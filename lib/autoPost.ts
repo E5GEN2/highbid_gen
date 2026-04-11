@@ -53,7 +53,7 @@ export async function executeAutoPost(pool: Pool): Promise<AutoPostResult> {
       log(logs, 'credentials', 'error', 'X account not connected. Click "Connect X Account" in the admin panel.');
       return { success: false, logs, error: 'X account not connected' };
     }
-    const { client, username } = authed;
+    const { accessToken, username } = authed;
     log(logs, 'credentials', 'ok', `Authenticated as @${username}`);
 
     // Step 2: Fetch unposted channels
@@ -79,7 +79,7 @@ export async function executeAutoPost(pool: Pool): Promise<AutoPostResult> {
 
     // Step 4: Post to Twitter
     log(logs, 'post', 'ok', 'Posting thread to X...');
-    const result = await postThread(client, tweets);
+    const result = await postThread(accessToken, tweets);
 
     if (result.tweetIds.length === 0) {
       log(logs, 'post', 'error', `Failed to post any tweets: ${result.error || 'Unknown error'}`);

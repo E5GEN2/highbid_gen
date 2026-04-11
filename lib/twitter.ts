@@ -1,20 +1,39 @@
 import { TwitterApi } from 'twitter-api-v2';
+import { ProxyAgent, fetch as proxyFetch } from 'undici';
 import type { Pool } from 'pg';
 
 const SCOPES = ['tweet.read', 'tweet.write', 'users.read', 'offline.access'];
 const TOKEN_URL = 'https://api.x.com/2/oauth2/token';
+const API_BASE = 'https://api.x.com/2';
 
-/** Fetch with retry on 503 — Twitter Free tier returns transient 503s */
-async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 6): Promise<Response> {
+// ─── Proxy-aware fetch ───────────────────────────────────────────────
+// All Twitter API calls go through TWITTER_PROXY_URL if set (residential proxy
+// bypasses Railway IP block on Twitter Free tier)
+
+function getDispatcher(): ProxyAgent | undefined {
+  const url = process.env.TWITTER_PROXY_URL;
+  if (!url) return undefined;
+  return new ProxyAgent(url);
+}
+
+/** Proxied fetch with retry on 503 */
+async function twitterFetch(url: string, init: Record<string, unknown> = {}, maxRetries = 3): Promise<Response> {
+  const dispatcher = getDispatcher();
+  const opts = { ...init, ...(dispatcher ? { dispatcher } : {}) };
+
   let lastRes: Response | undefined;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    lastRes = await fetch(url, init);
+    // Use undici fetch if proxy is configured, otherwise global fetch
+    lastRes = dispatcher
+      ? await proxyFetch(url, opts as Parameters<typeof proxyFetch>[1]) as unknown as Response
+      : await fetch(url, init as RequestInit);
     if (lastRes.status !== 503 || attempt === maxRetries) return lastRes;
-    // 2s, 4s, 8s, 16s, 32s
     await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
   }
   return lastRes!;
 }
+
+// ─── DB helpers ──────────────────────────────────────────────────────
 
 async function getConfig(pool: Pool, keys: string[]): Promise<Record<string, string>> {
   const result = await pool.query(
@@ -36,7 +55,8 @@ async function saveConfig(pool: Pool, entries: Record<string, string>) {
   }
 }
 
-/** Expose OAuth config for fallback manual token exchange */
+// ─── OAuth config (for curl fallback page) ───────────────────────────
+
 export async function getOAuthConfig(pool: Pool) {
   const cfg = await getConfig(pool, [
     'x_client_id', 'x_client_secret',
@@ -50,10 +70,8 @@ export async function getOAuthConfig(pool: Pool) {
   };
 }
 
-/**
- * Generate OAuth 2.0 PKCE authorization link.
- * Returns { url, codeVerifier, state } — store codeVerifier+state in admin_config.
- */
+// ─── Auth link generation (uses library — no network call, just URL building) ─
+
 export async function generateAuthLink(pool: Pool, callbackUrl: string): Promise<string> {
   const cfg = await getConfig(pool, ['x_client_id', 'x_client_secret']);
   if (!cfg.x_client_id) throw new Error('x_client_id not configured');
@@ -63,7 +81,6 @@ export async function generateAuthLink(pool: Pool, callbackUrl: string): Promise
     scope: SCOPES,
   });
 
-  // Store codeVerifier and state for the callback
   await saveConfig(pool, {
     x_oauth2_code_verifier: codeVerifier,
     x_oauth2_state: state,
@@ -73,9 +90,8 @@ export async function generateAuthLink(pool: Pool, callbackUrl: string): Promise
   return url;
 }
 
-/**
- * Handle OAuth 2.0 callback — exchange code for tokens.
- */
+// ─── Token exchange (direct fetch through proxy) ─────────────────────
+
 export async function handleOAuth2Callback(
   pool: Pool,
   code: string,
@@ -90,13 +106,9 @@ export async function handleOAuth2Callback(
     throw new Error('Invalid OAuth state');
   }
 
-  // Public client PKCE token exchange — no client_secret, just client_id in body
-  const tokenRes = await fetchWithRetry(TOKEN_URL, {
+  const tokenRes = await twitterFetch(TOKEN_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'HighbidGen/1.0',
-    },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       client_id: cfg.x_client_id,
@@ -111,45 +123,48 @@ export async function handleOAuth2Callback(
     throw new Error(`Token exchange ${tokenRes.status}: ${text}`);
   }
 
-  const tokenData = await tokenRes.json();
-  const accessToken: string = tokenData.access_token;
-  const refreshToken: string | undefined = tokenData.refresh_token;
+  const tokenData = await tokenRes.json() as { access_token: string; refresh_token?: string };
+  if (!tokenData.refresh_token) throw new Error('No refresh token — offline.access scope required');
 
-  if (!refreshToken) throw new Error('No refresh token received — offline.access scope required');
+  // Get username via proxy
+  const meRes = await twitterFetch(`${API_BASE}/users/me`, {
+    headers: { Authorization: `Bearer ${tokenData.access_token}` },
+  });
+  let username = 'connected';
+  if (meRes.ok) {
+    const meData = await meRes.json() as { data: { username: string } };
+    username = meData.data.username;
+  }
 
-  // Get username
-  const loggedClient = new TwitterApi(accessToken);
-  const me = await loggedClient.v2.me();
-
-  // Store tokens
   await saveConfig(pool, {
-    x_oauth2_access_token: accessToken,
-    x_oauth2_refresh_token: refreshToken,
-    x_oauth2_username: me.data.username,
+    x_oauth2_access_token: tokenData.access_token,
+    x_oauth2_refresh_token: tokenData.refresh_token,
+    x_oauth2_username: username,
   });
 
-  // Clean up temporary OAuth state
   await pool.query(`DELETE FROM admin_config WHERE key IN ('x_oauth2_code_verifier', 'x_oauth2_state')`);
-
-  return { username: me.data.username };
+  return { username };
 }
 
-/**
- * Save manually-obtained tokens (from curl fallback).
- */
+// ─── Save tokens manually (from curl fallback) ──────────────────────
+
 export async function saveTokensManually(
   pool: Pool,
   accessToken: string,
   refreshToken: string
 ): Promise<{ username: string }> {
-  // Try to get username, but don't fail if Twitter blocks Railway IP
+  // Try to get username through proxy
   let username = 'connected';
   try {
-    const loggedClient = new TwitterApi(accessToken);
-    const me = await loggedClient.v2.me();
-    username = me.data.username;
+    const meRes = await twitterFetch(`${API_BASE}/users/me`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (meRes.ok) {
+      const meData = await meRes.json() as { data: { username: string } };
+      username = meData.data.username;
+    }
   } catch {
-    // Railway IP blocked — save tokens anyway
+    // Proxy might not be configured yet — save tokens anyway
   }
 
   await saveConfig(pool, {
@@ -159,15 +174,12 @@ export async function saveTokensManually(
   });
 
   await pool.query(`DELETE FROM admin_config WHERE key IN ('x_oauth2_code_verifier', 'x_oauth2_state')`);
-
   return { username };
 }
 
-/**
- * Get an authenticated Twitter client using stored OAuth 2.0 refresh token.
- * Auto-refreshes the access token each time.
- */
-export async function getAuthedClient(pool: Pool): Promise<{ client: TwitterApi; username: string } | null> {
+// ─── Authed client (refresh token + return accessToken) ──────────────
+
+export async function getAuthedClient(pool: Pool): Promise<{ accessToken: string; username: string } | null> {
   const cfg = await getConfig(pool, [
     'x_client_id', 'x_client_secret',
     'x_oauth2_refresh_token', 'x_oauth2_username',
@@ -175,13 +187,9 @@ export async function getAuthedClient(pool: Pool): Promise<{ client: TwitterApi;
 
   if (!cfg.x_client_id || !cfg.x_oauth2_refresh_token) return null;
 
-  // Public client token refresh — no client_secret
-  const tokenRes = await fetchWithRetry(TOKEN_URL, {
+  const tokenRes = await twitterFetch(TOKEN_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'HighbidGen/1.0',
-    },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: cfg.x_client_id,
@@ -194,20 +202,19 @@ export async function getAuthedClient(pool: Pool): Promise<{ client: TwitterApi;
     throw new Error(`Token refresh ${tokenRes.status}: ${text}`);
   }
 
-  const tokenData = await tokenRes.json();
-  const accessToken: string = tokenData.access_token;
-  const newRefreshToken: string | undefined = tokenData.refresh_token;
+  const tokenData = await tokenRes.json() as { access_token: string; refresh_token?: string };
 
-  // Store the new tokens (refresh tokens are single-use)
-  const updates: Record<string, string> = { x_oauth2_access_token: accessToken };
-  if (newRefreshToken) updates.x_oauth2_refresh_token = newRefreshToken;
+  const updates: Record<string, string> = { x_oauth2_access_token: tokenData.access_token };
+  if (tokenData.refresh_token) updates.x_oauth2_refresh_token = tokenData.refresh_token;
   await saveConfig(pool, updates);
 
   return {
-    client: new TwitterApi(accessToken),
+    accessToken: tokenData.access_token,
     username: cfg.x_oauth2_username || 'unknown',
   };
 }
+
+// ─── Post thread (direct fetch through proxy) ────────────────────────
 
 export interface PostThreadResult {
   tweetIds: string[];
@@ -216,30 +223,38 @@ export interface PostThreadResult {
 }
 
 export async function postThread(
-  client: TwitterApi,
+  accessToken: string,
   tweets: { text: string }[]
 ): Promise<PostThreadResult> {
   const tweetIds: string[] = [];
   let error: string | undefined;
 
   try {
-    const first = await client.v2.tweet(tweets[0].text);
-    tweetIds.push(first.data.id);
+    for (let i = 0; i < tweets.length; i++) {
+      const body: Record<string, unknown> = { text: tweets[i].text };
+      if (i > 0) {
+        body.reply = { in_reply_to_tweet_id: tweetIds[i - 1] };
+      }
 
-    for (let i = 1; i < tweets.length; i++) {
-      const reply = await client.v2.reply(tweets[i].text, tweetIds[i - 1]);
-      tweetIds.push(reply.data.id);
+      const res = await twitterFetch(`${API_BASE}/tweets`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Tweet ${res.status}: ${text}`);
+      }
+
+      const data = await res.json() as { data: { id: string } };
+      tweetIds.push(data.data.id);
     }
   } catch (err: unknown) {
-    const parts: string[] = [];
-    if (err instanceof Error) {
-      parts.push(err.message);
-      if ('code' in err) parts.push(`code: ${(err as Record<string, unknown>).code}`);
-      if ('data' in err) parts.push(`data: ${JSON.stringify((err as Record<string, unknown>).data)}`);
-    } else {
-      parts.push(String(err));
-    }
-    error = parts.join(' | ');
+    error = err instanceof Error ? err.message : String(err);
   }
 
   const threadUrl = tweetIds.length > 0
