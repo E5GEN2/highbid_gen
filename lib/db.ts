@@ -539,6 +539,62 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_sat_runs_kw ON niche_saturation_runs(keyword, run_at DESC)`).catch(() => {});
 
+    // Clustering tables for sub-niche discovery
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_cluster_runs (
+        id SERIAL PRIMARY KEY,
+        keyword TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running',
+        algorithm TEXT DEFAULT 'hdbscan',
+        params JSONB DEFAULT '{}',
+        num_clusters INTEGER DEFAULT 0,
+        num_noise INTEGER DEFAULT 0,
+        total_videos INTEGER DEFAULT 0,
+        error_message TEXT,
+        started_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ncr_keyword ON niche_cluster_runs(keyword, started_at DESC)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_clusters (
+        id SERIAL PRIMARY KEY,
+        run_id INTEGER NOT NULL REFERENCES niche_cluster_runs(id) ON DELETE CASCADE,
+        keyword TEXT NOT NULL,
+        cluster_index INTEGER NOT NULL,
+        auto_label TEXT,
+        ai_label TEXT,
+        label TEXT,
+        video_count INTEGER DEFAULT 0,
+        avg_score REAL,
+        avg_views BIGINT,
+        total_views BIGINT,
+        top_channels TEXT[],
+        representative_video_id INTEGER,
+        centroid_2d REAL[],
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nc_run ON niche_clusters(run_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nc_keyword ON niche_clusters(keyword)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_cluster_assignments (
+        id SERIAL PRIMARY KEY,
+        run_id INTEGER NOT NULL REFERENCES niche_cluster_runs(id) ON DELETE CASCADE,
+        video_id INTEGER NOT NULL,
+        cluster_id INTEGER REFERENCES niche_clusters(id) ON DELETE CASCADE,
+        cluster_index INTEGER NOT NULL,
+        x_2d REAL,
+        y_2d REAL,
+        distance_to_centroid REAL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_run ON niche_cluster_assignments(run_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_cluster ON niche_cluster_assignments(cluster_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_video ON niche_cluster_assignments(video_id)`).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

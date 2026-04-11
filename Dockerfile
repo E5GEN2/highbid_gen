@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp \
-    && pip3 install --break-system-packages opencv-python-headless \
+    && pip3 install --break-system-packages opencv-python-headless hdbscan umap-learn scikit-learn psycopg2-binary numpy \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
