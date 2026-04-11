@@ -142,7 +142,10 @@ export default function NichesGrid() {
             className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 text-left hover:border-amber-500/60 transition group"
           >
             <div className="flex items-start justify-between mb-3">
-              <h3 className="text-base font-bold text-white group-hover:text-amber-400 transition leading-tight">{kw.keyword}</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-white group-hover:text-amber-400 transition leading-tight">{kw.keyword}</h3>
+                <span className="text-[9px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-1.5 py-0.5 rounded-full">manual</span>
+              </div>
               <span className={`text-xs px-2 py-1 rounded-lg font-bold ${
                 kw.avgScore >= 80 ? 'bg-green-500/20 text-green-400' :
                 kw.avgScore >= 50 ? 'bg-yellow-500/20 text-yellow-400' :

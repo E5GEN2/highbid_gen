@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import React, { useState, useCallback, useEffect, useMemo, Suspense } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useNiche } from '@/components/NicheProvider';
 import { fmtYT } from '@/lib/format';
 
@@ -15,6 +15,14 @@ interface NicheVideo {
 }
 
 export default function NicheVideos() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-[50vh]"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-amber-500" /></div>}>
+      <NicheVideosInner />
+    </Suspense>
+  );
+}
+
+function NicheVideosInner() {
   const { keyword: rawKeyword } = useParams<{ keyword: string }>();
   const keyword = decodeURIComponent(rawKeyword);
   const router = useRouter();
@@ -48,33 +56,73 @@ export default function NicheVideos() {
   const [similarMinScore, setSimilarMinScore] = useState(0.7);
   const [similarSort, setSimilarSort] = useState<'similarity' | 'views' | 'score' | 'newest' | 'likes'>('similarity');
 
+  // View mode: all videos vs sub-niches
+  const searchParams = useSearchParams();
+  const clusterParam = searchParams.get('cluster');
+  const [viewMode, setViewMode] = useState<'videos' | 'subniches'>(clusterParam ? 'videos' : 'videos');
+  const [clusterRun, setClusterRun] = useState<{
+    run: { id: number; status: string; numClusters: number; numNoise: number; totalVideos: number; completedAt: string | null; errorMessage?: string | null } | null;
+    clusters: Array<{
+      id: number; clusterIndex: number; label: string | null; autoLabel: string | null; aiLabel: string | null;
+      videoCount: number; avgScore: number | null; avgViews: number | null; totalViews: number | null;
+      topChannels: string[]; representativeVideoId: number | null;
+    }>;
+  }>({ run: null, clusters: [] });
+  const [clusterName, setClusterName] = useState<string | null>(null);
+
   // Set keyword in context on mount
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
+
+  // Fetch cluster data
+  useEffect(() => {
+    fetch(`/api/niche-spy/clusters?keyword=${encodeURIComponent(keyword)}`)
+      .then(r => r.json())
+      .then(d => setClusterRun(d))
+      .catch(() => {});
+  }, [keyword]);
+
+  // If ?cluster=ID, find the cluster name
+  useEffect(() => {
+    if (clusterParam && clusterRun.clusters.length > 0) {
+      const c = clusterRun.clusters.find(c => String(c.id) === clusterParam);
+      setClusterName(c?.label || c?.autoLabel || `Cluster ${c?.clusterIndex}`);
+    } else {
+      setClusterName(null);
+    }
+  }, [clusterParam, clusterRun]);
 
   const fetchVideos = useCallback(async (off = 0) => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({
-        keyword,
-        minScore: String(filter.minScore),
-        maxScore: String(filter.maxScore),
-        sort: filter.sort,
-        limit: '60',
-        offset: String(off),
-      });
-      if (filter.from) params.set('from', filter.from);
-      if (filter.to) params.set('to', filter.to);
-      const res = await fetch(`/api/niche-spy?${params}`);
+      let url: string;
+      if (clusterParam) {
+        // Fetch videos for a specific cluster
+        const params = new URLSearchParams({ sort: filter.sort, limit: '60', offset: String(off) });
+        url = `/api/niche-spy/clusters/${clusterParam}/videos?${params}`;
+      } else {
+        const params = new URLSearchParams({
+          keyword,
+          minScore: String(filter.minScore),
+          maxScore: String(filter.maxScore),
+          sort: filter.sort,
+          limit: '60',
+          offset: String(off),
+        });
+        if (filter.from) params.set('from', filter.from);
+        if (filter.to) params.set('to', filter.to);
+        url = `/api/niche-spy?${params}`;
+      }
+      const res = await fetch(url);
       const data = await res.json();
       if (off === 0) setVideos(data.videos);
       else setVideos(prev => [...prev, ...data.videos]);
       setTotal(data.total);
-      setKeywords(data.keywords || []);
-      setStats(data.stats || null);
+      if (data.keywords) setKeywords(data.keywords);
+      if (data.stats) setStats(data.stats);
       setOffset(off + data.videos.length);
     } catch (err) { console.error('Video fetch error:', err); }
     setLoading(false);
-  }, [keyword, filter]);
+  }, [keyword, filter, clusterParam]);
 
   useEffect(() => { fetchVideos(0); }, [fetchVideos]);
 
@@ -344,6 +392,136 @@ export default function NicheVideos() {
         </div>
       </div>
 
+      {/* View toggle: All Videos | Sub-niches */}
+      <div className="flex items-center gap-2 mb-4">
+        <button
+          onClick={() => { setViewMode('videos'); if (clusterParam) router.push(`/niche/niches/${encodeURIComponent(keyword)}/videos`); }}
+          className={`px-4 py-2 rounded-full text-sm font-medium transition ${
+            viewMode === 'videos' && !clusterParam ? 'bg-white text-black' : 'text-[#888] border border-[#333] hover:border-[#555]'
+          }`}
+        >
+          All Videos
+        </button>
+        <button
+          onClick={() => setViewMode('subniches')}
+          className={`px-4 py-2 rounded-full text-sm font-medium transition ${
+            viewMode === 'subniches' ? 'bg-white text-black' : 'text-[#888] border border-[#333] hover:border-[#555]'
+          }`}
+        >
+          Sub-niches
+          {clusterRun.run?.numClusters ? (
+            <span className="ml-1.5 text-xs opacity-70">({clusterRun.run.numClusters})</span>
+          ) : null}
+        </button>
+        {clusterParam && clusterName && (
+          <div className="flex items-center gap-2 ml-2">
+            <span className="text-[#444]">/</span>
+            <span className="text-amber-400 text-sm font-medium">{clusterName}</span>
+            <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full">ai-clustered</span>
+            <button
+              onClick={() => { setViewMode('subniches'); router.push(`/niche/niches/${encodeURIComponent(keyword)}/videos`); }}
+              className="text-xs text-[#888] hover:text-white ml-1"
+            >
+              Back to Sub-niches
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Sub-niches view */}
+      {viewMode === 'subniches' && !clusterParam && (
+        <div>
+          {!clusterRun.run || clusterRun.run.status === 'error' ? (
+            <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center">
+              <div className="text-4xl mb-3">🔬</div>
+              <h3 className="text-lg font-semibold text-white mb-2">No sub-niches discovered yet</h3>
+              <p className="text-sm text-[#888]">Run clustering from the admin panel to discover sub-niches automatically.</p>
+              {clusterRun.run?.errorMessage && (
+                <p className="text-xs text-red-400 mt-2">Last error: {clusterRun.run.errorMessage}</p>
+              )}
+            </div>
+          ) : clusterRun.run.status === 'running' || clusterRun.run.status === 'labeling' ? (
+            <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-6">
+              <div className="flex items-center gap-3">
+                <div className="w-5 h-5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                <span className="text-sm text-amber-200">
+                  {clusterRun.run.status === 'labeling' ? 'Generating AI labels...' : 'Clustering in progress...'}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Status bar */}
+              <div className="flex items-center gap-3 mb-4 text-sm text-[#888]">
+                <span className="font-medium text-white">{clusterRun.run.numClusters} sub-niches</span>
+                <span>·</span>
+                <span>{clusterRun.run.numNoise} unclustered</span>
+                {clusterRun.run.completedAt && (
+                  <>
+                    <span>·</span>
+                    <span>Last run: {new Date(clusterRun.run.completedAt).toLocaleDateString()}</span>
+                  </>
+                )}
+              </div>
+
+              {/* Sub-niche cards grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {clusterRun.clusters.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => {
+                      setViewMode('videos');
+                      router.push(`/niche/niches/${encodeURIComponent(keyword)}/videos?cluster=${c.id}`);
+                    }}
+                    className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 text-left hover:border-amber-500/60 transition group"
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <h3 className="text-sm font-bold text-white group-hover:text-amber-400 transition leading-tight line-clamp-2">
+                        {c.label || c.autoLabel || `Cluster ${c.clusterIndex}`}
+                      </h3>
+                      <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full flex-shrink-0 ml-2">
+                        ai-clustered
+                      </span>
+                    </div>
+                    {c.avgScore !== null && (
+                      <span className={`inline-block text-xs px-2 py-0.5 rounded-lg font-bold mb-2 ${
+                        c.avgScore >= 80 ? 'bg-green-500/20 text-green-400' :
+                        c.avgScore >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
+                        'bg-red-500/20 text-red-400'
+                      }`}>⚡ {Math.round(c.avgScore)}</span>
+                    )}
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <div>
+                        <div className="text-lg font-bold text-white">{c.videoCount}</div>
+                        <div className="text-[10px] text-[#666]">videos</div>
+                      </div>
+                      <div>
+                        <div className="text-lg font-bold text-green-400">{c.avgViews ? fmtYT(c.avgViews) : '—'}</div>
+                        <div className="text-[10px] text-[#666]">avg views</div>
+                      </div>
+                    </div>
+                    {c.topChannels.length > 0 && (
+                      <div className="text-[10px] text-[#666] line-clamp-1">
+                        {c.topChannels.slice(0, 3).join(' · ')}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* Noise count */}
+              {clusterRun.run.numNoise > 0 && (
+                <div className="mt-4 text-xs text-[#666]">
+                  {clusterRun.run.numNoise} videos did not fit into any sub-niche cluster
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Video list (shown when viewMode === 'videos' or when cluster is selected) */}
+      {(viewMode === 'videos' || clusterParam) && (<>
       {/* Filters */}
       <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 mb-6">
         {/* Sort pills */}
@@ -481,6 +659,7 @@ export default function NicheVideos() {
           )}
         </>
       )}
+      </>)}
 
       {/* Similar Videos Modal */}
       {similarSource && (

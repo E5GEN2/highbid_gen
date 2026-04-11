@@ -1483,6 +1483,52 @@ export default function AdminPage() {
             )}
           </div>
 
+          {/* Sub-niche Clustering */}
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-2">Sub-niche Clustering</h2>
+            <p className="text-xs text-gray-500 mb-4">Run HDBSCAN clustering on video embeddings to discover sub-niches within a keyword.</p>
+
+            <div className="flex items-center gap-3 mb-4">
+              <select id="cluster-keyword" className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm flex-1">
+                {embeddingStats?.keywordCoverage?.map((k: { keyword: string; embedded: number }) => (
+                  <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.embedded} embedded)</option>
+                ))}
+              </select>
+              <button
+                onClick={async () => {
+                  const kw = (document.getElementById('cluster-keyword') as HTMLSelectElement)?.value;
+                  if (!kw) return;
+                  const res = await fetch('/api/niche-spy/clusters', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: kw }),
+                  });
+                  const data = await res.json();
+                  alert(data.ok ? `Clustering started (run #${data.runId}, ${data.embeddedVideos} videos)` : `Error: ${data.error}`);
+                }}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-medium"
+              >
+                Run Clustering
+              </button>
+              <button
+                onClick={async () => {
+                  const kw = (document.getElementById('cluster-keyword') as HTMLSelectElement)?.value;
+                  if (!kw) return;
+                  const res = await fetch('/api/niche-spy/clusters', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: kw, action: 'label' }),
+                  });
+                  const data = await res.json();
+                  alert(data.ok ? 'AI labeling started' : `Error: ${data.error}`);
+                }}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium"
+              >
+                Upgrade Labels
+              </button>
+            </div>
+          </div>
+
           {/* Keyword Management */}
           {embeddingStats?.keywordCoverage && (
             <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
