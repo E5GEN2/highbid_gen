@@ -147,7 +147,7 @@ export default function NichesGrid() {
                 kw.avgScore >= 80 ? 'bg-green-500/20 text-green-400' :
                 kw.avgScore >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
                 'bg-red-500/20 text-red-400'
-              }`}>{kw.avgScore}</span>
+              }`}>⚡ {kw.avgScore}</span>
             </div>
             <div className="grid grid-cols-3 gap-2 mb-3">
               <div>

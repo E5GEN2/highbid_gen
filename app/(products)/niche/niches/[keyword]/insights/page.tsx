@@ -26,7 +26,7 @@ export default function NicheInsights() {
   useEffect(() => {
     fetch(`/api/niche-spy/saturation?keyword=${encodeURIComponent(keyword)}`)
       .then(r => r.json()).then(d => setSaturation(d)).catch(() => {});
-    fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=1&sort=views`)
+    fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=0&sort=views&minScore=${filter.minScore}`)
       .then(r => r.json()).then(d => { if (d.stats) setChannelStats(d.stats); }).catch(() => {});
   }, [keyword]);
 

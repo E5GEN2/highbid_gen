@@ -414,16 +414,29 @@ export default function NicheVideos() {
                   <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
                     v.score >= 80 ? 'bg-green-500 text-white' : v.score >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
                   }`}>
-                    {v.score}
+                    ⚡ {v.score}
                   </div>
                 </div>
 
                 <div className="p-3">
-                  {v.keyword && (
-                    <span className="inline-block text-xs bg-amber-600/20 text-amber-300 border border-amber-600/30 rounded-full px-2 py-0.5 mb-2">
-                      {v.keyword}
-                    </span>
-                  )}
+                  <div className="flex items-center justify-between mb-2">
+                    {v.keyword && (
+                      <span className="text-xs bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5">
+                        {v.keyword}
+                      </span>
+                    )}
+                    {v.embedded_at && (
+                      <button
+                        onClick={() => fetchSimilar(v.id, v.title)}
+                        className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        Similar
+                      </button>
+                    )}
+                  </div>
                   <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title}</h3>
                   <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
                     <span className="text-green-400 font-medium">{v.view_count ? fmtYT(v.view_count) + ' views' : ''}</span>
@@ -431,30 +444,26 @@ export default function NicheVideos() {
                     {(v.posted_at || v.posted_date) && <span>· {v.posted_at ? timeAgo(v.posted_at) : v.posted_date}</span>}
                   </div>
                   <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
-                    {v.like_count > 0 && <span>{fmtYT(v.like_count)} likes</span>}
-                    {v.comment_count > 0 && <span>{fmtYT(v.comment_count)} comments</span>}
-                    {v.subscriber_count > 0 && <span>{fmtYT(v.subscriber_count)} subs</span>}
+                    {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
+                    {v.comment_count > 0 && <span>💬 {fmtYT(v.comment_count)}</span>}
+                    {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)} subscribers</span>}
+                    {v.channel_created_at && (() => {
+                      const days = Math.floor((Date.now() - new Date(v.channel_created_at).getTime()) / 86400000);
+                      if (days < 30) return <span className="text-orange-400">📅 {days}d old</span>;
+                      if (days < 365) return <span>📅 {Math.floor(days / 30)}mo old</span>;
+                      return <span>📅 {(days / 365).toFixed(1)}yr old</span>;
+                    })()}
                   </div>
                   {v.top_comment && (
                     <p className="text-xs text-[#666] italic line-clamp-2 border-l-2 border-[#333] pl-2 mb-2">
                       &ldquo;{v.top_comment}&rdquo;
                     </p>
                   )}
-                  <div className="flex items-center justify-between gap-2">
-                    {v.url && (
-                      <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate">
-                        {v.url}
-                      </a>
-                    )}
-                    {v.embedded_at && (
-                      <button
-                        onClick={() => fetchSimilar(v.id, v.title)}
-                        className="text-[10px] bg-purple-600/20 text-purple-300 border border-purple-600/30 px-2 py-0.5 rounded-full hover:bg-purple-600/40 transition flex-shrink-0"
-                      >
-                        Similar
-                      </button>
-                    )}
-                  </div>
+                  {v.url && (
+                    <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate block">
+                      {v.url}
+                    </a>
+                  )}
                 </div>
               </div>
             ))}
@@ -512,7 +521,7 @@ export default function NicheVideos() {
                           return thumbUrl ? <img src={thumbUrl} alt="" className="w-full h-full object-cover" loading="lazy" /> : null;
                         })()}
                         <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${v.score >= 80 ? 'bg-green-500 text-white' : v.score >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'}`}>
-                          {v.score}
+                          ⚡ {v.score}
                         </div>
                         <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-xs font-bold bg-purple-600 text-white">
                           {Math.round((v._similarity || 0) * 100)}% match

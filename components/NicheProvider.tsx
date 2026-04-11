@@ -33,9 +33,9 @@ export function useNiche() {
 export function NicheProvider({ children }: { children: React.ReactNode }) {
   const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
   const [filter, setFilter] = useState<NicheFilter>({
-    minScore: 0,
+    minScore: 80,
     maxScore: 100,
-    sort: 'score',
+    sort: 'date',
     search: '',
     from: null,
     to: null,

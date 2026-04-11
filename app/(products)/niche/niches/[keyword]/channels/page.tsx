@@ -168,10 +168,10 @@ export default function NicheChannels() {
                 {/* Score + engagement */}
                 <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
                   <span className={`font-medium ${ch.avgScore >= 80 ? 'text-green-400' : ch.avgScore >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
-                    {ch.avgScore} avg score
+                    ⚡ {ch.avgScore} avg score
                   </span>
-                  {ch.totalLikes > 0 && <span>{fmtYT(ch.totalLikes)} likes</span>}
-                  {ch.totalComments > 0 && <span>{fmtYT(ch.totalComments)} comments</span>}
+                  {ch.totalLikes > 0 && <span>👍 {fmtYT(ch.totalLikes)}</span>}
+                  {ch.totalComments > 0 && <span>💬 {fmtYT(ch.totalComments)}</span>}
                 </div>
 
                 <div className="text-[10px] text-[#666]">Best: {fmtYT(ch.maxViews)} views · Max score: {ch.maxScore}</div>
@@ -179,7 +179,7 @@ export default function NicheChannels() {
                 {ch.keywords.length > 1 && (
                   <div className="flex flex-wrap gap-1 mt-2">
                     {ch.keywords.slice(0, 3).map(kw => (
-                      <span key={kw} className="text-[9px] bg-amber-600/20 text-amber-300 px-1.5 py-0.5 rounded-full">{kw}</span>
+                      <span key={kw} className="text-[9px] bg-purple-600/20 text-purple-300 px-1.5 py-0.5 rounded-full">{kw}</span>
                     ))}
                     {ch.keywords.length > 3 && <span className="text-[9px] text-[#444]">+{ch.keywords.length - 3}</span>}
                   </div>
