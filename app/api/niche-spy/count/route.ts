@@ -1,29 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
+import { isAdmin } from '@/lib/admin-auth';
 
 /**
  * GET /api/niche-spy/count?niche=weight+loss
  * Return the number of videos stored for a given niche (keyword).
- * Admin-level API — requires admin cookie.
+ * Admin-level API.
  */
 export async function GET(req: NextRequest) {
-  // Admin auth
-  const cookies = req.headers.get('cookie') || '';
-  const adminToken = cookies.match(/admin_token=([^;]+)/)?.[1];
-  if (!adminToken) {
-    // Also allow via x-admin-token header for API access
-    const headerToken = req.headers.get('x-admin-token');
-    if (!headerToken) return NextResponse.json({ error: 'Admin access required', count: 0 }, { status: 403 });
-    try {
-      const decoded = Buffer.from(headerToken, 'base64').toString();
-      if (!decoded.includes('rofe_admin_secret')) return NextResponse.json({ error: 'Invalid admin token', count: 0 }, { status: 403 });
-    } catch { return NextResponse.json({ error: 'Invalid admin token', count: 0 }, { status: 403 }); }
-  } else {
-    try {
-      const decoded = Buffer.from(adminToken, 'base64').toString();
-      if (!decoded.includes('rofe_admin_secret')) return NextResponse.json({ error: 'Invalid admin token', count: 0 }, { status: 403 });
-    } catch { return NextResponse.json({ error: 'Invalid admin token', count: 0 }, { status: 403 }); }
-  }
+  if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required', count: 0 }, { status: 403 });
 
   const niche = req.nextUrl.searchParams.get('niche');
   if (!niche) return NextResponse.json({ error: 'niche parameter required', count: 0 }, { status: 400 });

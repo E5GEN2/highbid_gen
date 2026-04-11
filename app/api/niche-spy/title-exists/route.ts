@@ -1,24 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
+import { isAdmin } from '@/lib/admin-auth';
 
 /**
  * POST /api/niche-spy/title-exists
  * Check if a video title already exists (case-insensitive, trimmed).
- * Admin-level API — requires admin cookie or x-admin-token header.
+ * Admin-level API.
  * Body: { "title": "How to lose weight fast" }
  */
 export async function POST(req: NextRequest) {
-  // Admin auth
-  const cookies = req.headers.get('cookie') || '';
-  const adminToken = cookies.match(/admin_token=([^;]+)/)?.[1];
-  const headerToken = req.headers.get('x-admin-token');
-  const token = adminToken || headerToken;
-
-  if (!token) return NextResponse.json({ error: 'Admin access required', exists: false }, { status: 403 });
-  try {
-    const decoded = Buffer.from(token, 'base64').toString();
-    if (!decoded.includes('rofe_admin_secret')) return NextResponse.json({ error: 'Invalid admin token', exists: false }, { status: 403 });
-  } catch { return NextResponse.json({ error: 'Invalid admin token', exists: false }, { status: 403 }); }
+  if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required', exists: false }, { status: 403 });
 
   const body = await req.json().catch(() => ({}));
   const title = (body.title || '').trim();

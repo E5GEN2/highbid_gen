@@ -29,7 +29,12 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens'>('general');
+
+  // Admin tokens state
+  const [adminTokens, setAdminTokens] = useState<Array<{ id: string; name: string; tokenPreview: string; lastUsedAt: string | null; createdAt: string }>>([]);
+  const [newAdminToken, setNewAdminToken] = useState<string | null>(null);
+  const [adminTokenCopied, setAdminTokenCopied] = useState(false);
 
   // Niche Explorer embedding state
   const [embeddingStats, setEmbeddingStats] = useState<{
@@ -470,6 +475,10 @@ export default function AdminPage() {
           <button onClick={() => setAdminSection('enrich')}
             className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'enrich' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Enrich Data
+          </button>
+          <button onClick={() => { setAdminSection('tokens'); fetch('/api/admin/admin-tokens').then(r => r.json()).then(d => setAdminTokens(d.tokens || [])).catch(() => {}); }}
+            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'tokens' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Admin Tokens
           </button>
         </div>
 
@@ -1615,6 +1624,72 @@ export default function AdminPage() {
                 </button>
                 {configSaved && <span className="text-green-400 text-sm">Saved</span>}
               </div>
+            </div>
+          </div>
+        </div>
+        </div>
+
+        {/* Admin Tokens Tab */}
+        <div style={{ display: adminSection === 'tokens' ? 'block' : 'none' }}>
+        <div className="space-y-6">
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-2">Admin API Tokens</h2>
+            <p className="text-gray-400 text-sm mb-4">Generate tokens for admin-level API access. Prefix: <code className="text-red-400">hba_</code></p>
+
+            {/* New token display */}
+            {newAdminToken && (
+              <div className="bg-red-900/20 border border-red-600 rounded-lg p-4 mb-4">
+                <p className="text-sm text-red-300 mb-2 font-medium">Token created — copy now, won&apos;t be shown again:</p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 bg-black/40 text-red-300 px-3 py-2 rounded text-sm font-mono break-all select-all">{newAdminToken}</code>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(newAdminToken); setAdminTokenCopied(true); setTimeout(() => setAdminTokenCopied(false), 2000); }}
+                    className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded text-sm flex-shrink-0"
+                  >{adminTokenCopied ? 'Copied!' : 'Copy'}</button>
+                </div>
+              </div>
+            )}
+
+            {/* Existing tokens */}
+            {adminTokens.length > 0 && (
+              <div className="space-y-2 mb-4">
+                <h3 className="text-sm font-medium text-gray-300">Active admin tokens</h3>
+                {adminTokens.map(t => (
+                  <div key={t.id} className="flex items-center justify-between bg-gray-900/50 border border-gray-700 rounded-lg px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm text-white font-mono">{t.tokenPreview}</span>
+                      <span className="text-xs text-gray-500">{t.name}</span>
+                      {t.lastUsedAt && <span className="text-xs text-gray-600">Used: {new Date(t.lastUsedAt).toLocaleDateString()}</span>}
+                    </div>
+                    <button
+                      onClick={async () => {
+                        await fetch(`/api/admin/admin-tokens?id=${t.id}`, { method: 'DELETE' });
+                        setAdminTokens(prev => prev.filter(x => x.id !== t.id));
+                      }}
+                      className="text-red-400 hover:text-red-300 text-sm"
+                    >Revoke</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={async () => {
+                const res = await fetch('/api/admin/admin-tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'admin-api' }) });
+                const data = await res.json();
+                if (data.token) {
+                  setNewAdminToken(data.token);
+                  const listRes = await fetch('/api/admin/admin-tokens');
+                  setAdminTokens((await listRes.json()).tokens || []);
+                }
+              }}
+              className="px-5 py-2.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition"
+            >Generate Admin Token</button>
+
+            <div className="bg-gray-900/30 border border-gray-700 rounded-lg p-4 mt-4">
+              <p className="text-xs text-gray-400 mb-2"><strong>Usage:</strong></p>
+              <code className="text-xs text-gray-300 block">Authorization: Bearer hba_your_token_here</code>
+              <p className="text-xs text-gray-500 mt-2">Admin tokens work with: keyword delete, niche count, title exists, and all admin endpoints.</p>
             </div>
           </div>
         </div>

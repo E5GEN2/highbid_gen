@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
+import { isAdmin } from '@/lib/admin-auth';
 
 /**
  * GET /api/niche-spy/keywords
@@ -94,20 +95,7 @@ export async function GET(req: NextRequest) {
  * Body: { keyword } or { keywords: string[] }
  */
 export async function DELETE(req: NextRequest) {
-  // Admin only — check admin cookie
-  const cookies = req.headers.get('cookie') || '';
-  const adminToken = cookies.match(/admin_token=([^;]+)/)?.[1];
-  if (!adminToken) {
-    return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
-  }
-  try {
-    const decoded = Buffer.from(adminToken, 'base64').toString();
-    if (!decoded.includes('rofe_admin_secret')) {
-      return NextResponse.json({ error: 'Invalid admin token' }, { status: 403 });
-    }
-  } catch {
-    return NextResponse.json({ error: 'Invalid admin token' }, { status: 403 });
-  }
+  if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
 
   const pool = await getPool();
   const body = await req.json();
