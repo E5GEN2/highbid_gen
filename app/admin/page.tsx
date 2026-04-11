@@ -94,6 +94,8 @@ export default function AdminPage() {
   const [xgodoToken, setXgodoToken] = useState('');
   const [nicheSpyToken, setNicheSpyToken] = useState('');
   const [xgodoJobId, setXgodoJobId] = useState('');
+  const [xgodoProxyHost, setXgodoProxyHost] = useState('ec2-44-200-81-136.compute-1.amazonaws.com');
+  const [xgodoProxyPort, setXgodoProxyPort] = useState('1082');
   const [channelCheckApiKey, setChannelCheckApiKey] = useState('');
   const [configSaving, setConfigSaving] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
@@ -176,6 +178,8 @@ export default function AdminPage() {
         setNichePriorityKeywords(data.config.niche_priority_keywords || '');
         setNicheYtApiKeys(data.config.niche_yt_api_keys || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
+        setXgodoProxyHost(data.config.xgodo_proxy_host || 'ec2-44-200-81-136.compute-1.amazonaws.com');
+        setXgodoProxyPort(data.config.xgodo_proxy_port || '1082');
         setChannelCheckApiKey(data.config.channel_check_api_key || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
         // Auto-schedule config
@@ -262,6 +266,8 @@ export default function AdminPage() {
           config: {
             xgodo_api_token: xgodoToken,
             xgodo_niche_spy_token: nicheSpyToken,
+            xgodo_proxy_host: xgodoProxyHost,
+            xgodo_proxy_port: xgodoProxyPort,
             niche_google_api_keys: nicheGoogleApiKeys,
             niche_embedding_model: nicheEmbeddingModel,
             niche_priority_keywords: nichePriorityKeywords,
@@ -1190,6 +1196,29 @@ export default function AdminPage() {
                 placeholder="xgodo JWT for niche spy job"
                 className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
               />
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-300 mb-1">Proxy Host</label>
+                <input
+                  type="text"
+                  value={xgodoProxyHost}
+                  onChange={(e) => setXgodoProxyHost(e.target.value)}
+                  placeholder="ec2-44-200-81-136.compute-1.amazonaws.com"
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Port</label>
+                <input
+                  type="text"
+                  value={xgodoProxyPort}
+                  onChange={(e) => setXgodoProxyPort(e.target.value)}
+                  placeholder="1082"
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+                />
+              </div>
             </div>
 
             <div>

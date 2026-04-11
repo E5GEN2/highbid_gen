@@ -3,14 +3,31 @@
  * Fetches online devices from xgodo API and provides rotating proxy URLs.
  *
  * All devices share the same host/port — only credentials change.
- * Host: 54.36.178.74, Port: 1082
+ * Host + port are configurable via admin_config (keys: xgodo_proxy_host, xgodo_proxy_port).
  */
 
 import { getPool } from './db';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
-const PROXY_HOST = '54.36.178.74';
-const PROXY_PORT = 1082;
+const DEFAULT_PROXY_HOST = 'ec2-44-200-81-136.compute-1.amazonaws.com';
+const DEFAULT_PROXY_PORT = 1082;
+
+/** Read proxy host/port from admin_config, fallback to defaults */
+async function getProxyHostPort(): Promise<{ host: string; port: number }> {
+  try {
+    const pool = await getPool();
+    const res = await pool.query("SELECT key, value FROM admin_config WHERE key IN ('xgodo_proxy_host', 'xgodo_proxy_port')");
+    let host = DEFAULT_PROXY_HOST;
+    let port = DEFAULT_PROXY_PORT;
+    for (const row of res.rows) {
+      if (row.key === 'xgodo_proxy_host' && row.value) host = row.value;
+      if (row.key === 'xgodo_proxy_port' && row.value) port = parseInt(row.value) || DEFAULT_PROXY_PORT;
+    }
+    return { host, port };
+  } catch {
+    return { host: DEFAULT_PROXY_HOST, port: DEFAULT_PROXY_PORT };
+  }
+}
 
 interface XgodoDevice {
   remote_device_id: string;
@@ -52,6 +69,7 @@ async function refreshProxies(): Promise<ProxyInfo[]> {
   }
 
   try {
+    const { host, port } = await getProxyHostPort();
     const res = await fetch(`${XGODO_API}/devices`, {
       headers: { 'Authorization': `Bearer ${token}` },
     });
@@ -73,7 +91,7 @@ async function refreshProxies(): Promise<ProxyInfo[]> {
       const password = d.proxy_password;
       const username = d.proxy_username || d.remote_device_id;
       proxies.push({
-        url: `http://${username}:${password}@${PROXY_HOST}:${PROXY_PORT}`,
+        url: `http://${username}:${password}@${host}:${port}`,
         deviceId: d.remote_device_id,
         networkType: d.networkType || 'unknown',
       });
@@ -81,7 +99,7 @@ async function refreshProxies(): Promise<ProxyInfo[]> {
 
     cachedProxies = proxies;
     lastFetchTime = Date.now();
-    console.log(`[proxy] Refreshed: ${proxies.length} online proxies`);
+    console.log(`[proxy] Refreshed: ${proxies.length} online proxies (host=${host}:${port})`);
     return proxies;
   } catch (err) {
     console.error('[proxy] Refresh error:', (err as Error).message);
