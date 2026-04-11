@@ -10,7 +10,7 @@ import { findSimilar } from '@/lib/vector-db';
 export async function GET(req: NextRequest) {
   const pool = await getPool();
   const videoId = req.nextUrl.searchParams.get('videoId');
-  const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '30'), 100);
+  const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '30'), 500);
 
   const minSimilarity = parseFloat(req.nextUrl.searchParams.get('minSimilarity') || '0');
 
