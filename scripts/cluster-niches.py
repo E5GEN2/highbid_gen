@@ -74,17 +74,19 @@ def main():
     if min_cluster_size is None:
         min_cluster_size = max(5, int(n * 0.005))  # 0.5% of videos, min 5
     if min_samples is None:
-        min_samples = max(3, min(min_cluster_size // 3, 10))
+        min_samples = max(5, min(min_cluster_size, 15))
 
     sys.stderr.write(f"[cluster] min_cluster_size={min_cluster_size}, min_samples={min_samples}\n")
 
     # 3. UMAP reduce to umap_dims for clustering
     from umap import UMAP
 
+    n_neighbors = config.get('n_neighbors', 5)
     reducer_cluster = UMAP(
         n_components=umap_dims,
-        n_neighbors=15,
+        n_neighbors=n_neighbors,
         metric='cosine',
+        min_dist=0.0,
         random_state=42,
         verbose=False
     )
@@ -109,8 +111,9 @@ def main():
     # 5. UMAP reduce to 2D for scatter plot
     reducer_2d = UMAP(
         n_components=2,
-        n_neighbors=15,
+        n_neighbors=n_neighbors,
         metric='cosine',
+        min_dist=0.0,
         random_state=42,
         verbose=False
     )
