@@ -73,13 +73,22 @@ function NicheVideosInner() {
   // Set keyword in context on mount
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
 
-  // Fetch cluster data
-  useEffect(() => {
+  // Fetch cluster data + poll while running/labeling
+  const fetchClusters = useCallback(() => {
     fetch(`/api/niche-spy/clusters?keyword=${encodeURIComponent(keyword)}`)
       .then(r => r.json())
       .then(d => setClusterRun(d))
       .catch(() => {});
   }, [keyword]);
+
+  useEffect(() => { fetchClusters(); }, [fetchClusters]);
+
+  useEffect(() => {
+    if (clusterRun.run?.status === 'running' || clusterRun.run?.status === 'labeling') {
+      const interval = setInterval(fetchClusters, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [clusterRun.run?.status, fetchClusters]);
 
   // If ?cluster=ID, find the cluster name
   useEffect(() => {

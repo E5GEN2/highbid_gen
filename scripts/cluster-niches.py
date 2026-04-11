@@ -62,9 +62,9 @@ def main():
 
     # 2. Auto-tune min_cluster_size
     if min_cluster_size is None:
-        min_cluster_size = max(5, int(n * 0.02))
+        min_cluster_size = max(5, int(n * 0.005))  # 0.5% of videos, min 5
     if min_samples is None:
-        min_samples = max(3, min_cluster_size // 2)
+        min_samples = max(3, min(min_cluster_size // 3, 10))
 
     sys.stderr.write(f"[cluster] min_cluster_size={min_cluster_size}, min_samples={min_samples}\n")
 
