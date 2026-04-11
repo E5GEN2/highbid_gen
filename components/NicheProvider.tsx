@@ -7,6 +7,8 @@ interface NicheFilter {
   maxScore: number;
   sort: string;
   search: string;
+  from: string | null;
+  to: string | null;
 }
 
 interface NicheContextType {
@@ -35,6 +37,8 @@ export function NicheProvider({ children }: { children: React.ReactNode }) {
     maxScore: 100,
     sort: 'score',
     search: '',
+    from: null,
+    to: null,
   });
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<Record<string, unknown> | null>(null);
