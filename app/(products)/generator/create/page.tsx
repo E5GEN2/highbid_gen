@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import Image from 'next/image';
 import JSZip from 'jszip';
 import { useSearchParams } from 'next/navigation';
@@ -10,6 +10,14 @@ import type { StoryBulb, StoryboardScene } from '@/types/creator';
 import { isVideoFile, calculateImageColumns } from '@/lib/format';
 
 export default function CreatePage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-[50vh]"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500" /></div>}>
+      <CreatePageInner />
+    </Suspense>
+  );
+}
+
+function CreatePageInner() {
   const { settings } = useSettings();
   const searchParams = useSearchParams();
 
