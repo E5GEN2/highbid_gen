@@ -449,13 +449,11 @@ function NicheVideosInner() {
                 <p className="text-xs text-red-400 mt-2">Last error: {clusterRun.run.errorMessage}</p>
               )}
             </div>
-          ) : clusterRun.run.status === 'running' || clusterRun.run.status === 'labeling' ? (
+          ) : clusterRun.run.status === 'running' && clusterRun.clusters.length === 0 ? (
             <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-6">
               <div className="flex items-center gap-3">
                 <div className="w-5 h-5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm text-amber-200">
-                  {clusterRun.run.status === 'labeling' ? 'Generating AI labels...' : 'Clustering in progress...'}
-                </span>
+                <span className="text-sm text-amber-200">Clustering in progress...</span>
               </div>
             </div>
           ) : (
@@ -470,6 +468,12 @@ function NicheVideosInner() {
                     <span>·</span>
                     <span>Last run: {new Date(clusterRun.run.completedAt).toLocaleDateString()}</span>
                   </>
+                )}
+                {clusterRun.run.status === 'labeling' && (
+                  <span className="flex items-center gap-1.5 text-amber-300">
+                    <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                    AI labeling...
+                  </span>
                 )}
                 <button
                   onClick={async () => {
