@@ -88,15 +88,15 @@ export default function NicheInsights() {
         </div>
       )}
 
-      {/* Subscriber Distribution */}
-      {subsDist.length > 0 && subsDist.some(b => b.count > 0) && (
-        <DistChart title="Subscriber Distribution" unit="channels" buckets={subsDist} />
-      )}
-
-      {/* Views Distribution */}
-      {viewsDist.length > 0 && viewsDist.some(b => b.count > 0) && (
-        <DistChart title="Views Distribution" unit="videos" buckets={viewsDist} />
-      )}
+      {/* Distribution Charts — side by side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {subsDist.length > 0 && subsDist.some(b => b.count > 0) && (
+          <DistChart title="Subscriber Distribution" unit="channels" buckets={subsDist} />
+        )}
+        {viewsDist.length > 0 && viewsDist.some(b => b.count > 0) && (
+          <DistChart title="Views Distribution" unit="videos" buckets={viewsDist} />
+        )}
+      </div>
 
       {/* New vs Established Channels */}
       {channelStats && (
@@ -154,35 +154,32 @@ function DistChart({ title, unit, buckets }: {
         </div>
       </div>
 
-      {/* Vertical bars */}
-      <div className="flex items-end gap-2" style={{ height: 140 }}>
+      {/* Vertical bars — tight spacing */}
+      <div className="flex items-end gap-0.5" style={{ height: 130 }}>
         {buckets.map((b, i) => {
           const pct = maxCount > 0 ? (b.count / maxCount) * 100 : 0;
           const sharePct = total > 0 ? Math.round((b.count / total) * 100) : 0;
           return (
-            <div key={i} className="flex-1 flex flex-col items-center gap-1 group">
-              {/* Count above bar */}
-              <div className="text-xs font-bold text-white opacity-0 group-hover:opacity-100 transition">
+            <div key={i} className="flex-1 flex flex-col items-center group min-w-0">
+              {/* Count + percentage */}
+              <div className="text-[10px] font-bold text-white mb-0.5 truncate">
                 {b.count > 0 ? b.count.toLocaleString() : ''}
               </div>
-              {/* Percentage always visible */}
-              <div className="text-[10px] text-[#888] font-medium">
+              <div className="text-[9px] text-[#666] mb-1">
                 {b.count > 0 ? `${sharePct}%` : ''}
               </div>
               {/* Bar */}
-              <div className="w-full flex justify-center" style={{ height: 90 }}>
-                <div className="relative w-full max-w-[48px] flex items-end h-full">
-                  <div
-                    className="w-full rounded-t-md transition-all duration-300 hover:opacity-100 opacity-85"
-                    style={{
-                      height: `${Math.max(pct, b.count > 0 ? 3 : 0)}%`,
-                      backgroundColor: b.color,
-                    }}
-                  />
-                </div>
+              <div className="w-full px-0.5 flex-1 flex items-end">
+                <div
+                  className="w-full rounded-t transition-all duration-300 group-hover:opacity-100 opacity-80"
+                  style={{
+                    height: `${Math.max(pct, b.count > 0 ? 4 : 0)}%`,
+                    backgroundColor: b.color,
+                  }}
+                />
               </div>
-              {/* Label below */}
-              <div className="text-[10px] text-[#888] text-center whitespace-nowrap mt-1">{b.label}</div>
+              {/* Label */}
+              <div className="text-[9px] text-[#666] text-center mt-1.5 truncate w-full">{b.label}</div>
             </div>
           );
         })}
