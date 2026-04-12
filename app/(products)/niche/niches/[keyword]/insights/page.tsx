@@ -26,9 +26,10 @@ export default function NicheInsights() {
 
   // Channel scatter data (subs vs views + video info)
   const [scatterChannels, setScatterChannels] = useState<Array<{
-    name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
+    id: number; name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
     videoUrl: string | null; videoTitle: string | null; thumbnail: string | null;
     likeCount: number; commentCount: number; postedAt: string | null; postedDate: string | null; keyword: string | null;
+    embeddedAt: string | null; topComment: string | null;
   }>>([]);
 
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
@@ -205,15 +206,53 @@ function DistChart({ title, unit, buckets }: {
 }
 
 /** Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale */
-function ChannelScatter({ channels }: {
-  channels: Array<{
-    name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
-    videoUrl: string | null; videoTitle: string | null; thumbnail: string | null;
-    likeCount: number; commentCount: number; postedAt: string | null; postedDate: string | null; keyword: string | null;
-  }>;
-}) {
+interface ScatterVideo {
+  id: number; name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
+  videoUrl: string | null; videoTitle: string | null; thumbnail: string | null;
+  likeCount: number; commentCount: number; postedAt: string | null; postedDate: string | null; keyword: string | null;
+  embeddedAt: string | null; topComment: string | null;
+}
+
+function ChannelScatter({ channels }: { channels: ScatterVideo[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+
+  // Similar modal state (same pattern as videos page)
+  const [similarSource, setSimilarSource] = useState<{ id: number; title: string } | null>(null);
+  const [allSimilarVideos, setAllSimilarVideos] = useState<Array<{ id: number; title: string; url: string; view_count: number; channel_name: string; score: number; subscriber_count: number; like_count: number; posted_at: string; posted_date: string; thumbnail: string; keyword: string; _similarity: number }>>([]);
+  const [similarVideos, setSimilarVideos] = useState<typeof allSimilarVideos>([]);
+  const [similarLoading, setSimilarLoading] = useState(false);
+  const [similarMinScore, setSimilarMinScore] = useState(0.7);
+  const [similarSort, setSimilarSort] = useState<'similarity' | 'views' | 'score' | 'newest' | 'likes'>('similarity');
+
+  const fetchSimilar = async (videoId: number, title: string) => {
+    setSimilarSource({ id: videoId, title });
+    setSimilarLoading(true);
+    try {
+      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=500&minSimilarity=0`);
+      const data = await res.json();
+      const mapped = (data.similar || []).map((v: Record<string, unknown>) => {
+        const vidMatch = (v.url as string)?.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
+        return {
+          id: v.id as number, title: v.title as string, url: v.url as string,
+          view_count: (v.viewCount as number) || 0, channel_name: v.channelName as string,
+          score: (v.score as number) || 0, subscriber_count: (v.subscriberCount as number) || 0,
+          like_count: (v.likeCount as number) || 0, posted_at: v.postedAt as string, posted_date: v.postedDate as string,
+          thumbnail: vidMatch ? `https://img.youtube.com/vi/${vidMatch[1]}/hqdefault.jpg` : (v.thumbnail as string || ''),
+          keyword: v.keyword as string, _similarity: (v.similarity as number) || 0,
+        };
+      });
+      setAllSimilarVideos(mapped);
+      setSimilarVideos(mapped.filter((v: { _similarity: number }) => v._similarity >= similarMinScore));
+    } catch (err) { console.error('Similar fetch error:', err); }
+    setSimilarLoading(false);
+  };
+
+  useEffect(() => {
+    if (allSimilarVideos.length > 0) {
+      setSimilarVideos(allSimilarVideos.filter(v => v._similarity >= similarMinScore));
+    }
+  }, [similarMinScore, allSimilarVideos]);
   const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
   const [onePerChannel, setOnePerChannel] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -477,9 +516,20 @@ function ChannelScatter({ channels }: {
                         return <span>📅 {(ch.ageDays! / 365).toFixed(1)}yr old</span>;
                       })()}
                     </div>
-                    {ch.videoUrl && (
-                      <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate block">{ch.videoUrl}</a>
-                    )}
+                    <div className="flex items-center justify-between mt-2">
+                      {ch.videoUrl && (
+                        <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate">{ch.videoUrl}</a>
+                      )}
+                      {ch.embeddedAt && (
+                        <button onClick={() => fetchSimilar(ch.id, ch.videoTitle || ch.name)}
+                          className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium ml-2">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                          Similar
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -497,6 +547,99 @@ function ChannelScatter({ channels }: {
           </div>
         </div>
       </div>
+
+      {/* Similar Videos Modal — exact same as videos page */}
+      {similarSource && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-start justify-center pt-10 px-4 overflow-y-auto" onClick={() => { setSimilarSource(null); setSimilarVideos([]); setAllSimilarVideos([]); }}>
+          <div className="bg-[#111] border border-[#1f1f1f] rounded-2xl w-full max-w-6xl mb-10" onClick={e => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-[#1f1f1f] flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white">Similar to: <span className="text-purple-400">{similarSource.title}</span></h3>
+                <div className="flex items-center gap-3 mt-1">
+                  <span className="text-xs text-[#888]">{similarVideos.length} results</span>
+                  <label className="text-xs text-[#888]">Min match:</label>
+                  <select value={similarMinScore} onChange={e => setSimilarMinScore(parseFloat(e.target.value))}
+                    className="bg-[#141414] border border-[#1f1f1f] text-white text-xs rounded px-2 py-0.5">
+                    <option value={0}>All</option>
+                    <option value={0.5}>50%+</option>
+                    <option value={0.6}>60%+</option>
+                    <option value={0.7}>70%+</option>
+                    <option value={0.8}>80%+</option>
+                    <option value={0.9}>90%+</option>
+                    <option value={0.95}>95%+</option>
+                  </select>
+                </div>
+              </div>
+              <button onClick={() => { setSimilarSource(null); setSimilarVideos([]); setAllSimilarVideos([]); }} className="text-[#888] hover:text-white">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            {/* Sort pills */}
+            <div className="px-6 pt-3 pb-0 flex gap-2 flex-wrap">
+              {([
+                { value: 'similarity', label: 'Best Match' },
+                { value: 'views', label: 'Most Views' },
+                { value: 'score', label: 'Highest Score' },
+                { value: 'newest', label: 'Newest' },
+                { value: 'likes', label: 'Most Likes' },
+              ] as const).map(opt => (
+                <button key={opt.value} onClick={() => setSimilarSort(opt.value)}
+                  className={`px-3 py-1 rounded-full text-xs transition ${
+                    similarSort === opt.value ? 'bg-white text-black font-medium' : 'text-[#888] border border-[#333] hover:border-[#555]'
+                  }`}>{opt.label}</button>
+              ))}
+            </div>
+            <div className="p-6">
+              {similarLoading ? (
+                <div className="text-center py-12 text-[#888]">Finding similar videos...</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {[...similarVideos].sort((a, b) => {
+                    switch (similarSort) {
+                      case 'views': return b.view_count - a.view_count;
+                      case 'score': return b.score - a.score;
+                      case 'newest': return new Date(b.posted_at || 0).getTime() - new Date(a.posted_at || 0).getTime();
+                      case 'likes': return b.like_count - a.like_count;
+                      default: return b._similarity - a._similarity;
+                    }
+                  }).map(v => (
+                    <div key={v.id} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
+                      <div className="relative aspect-video bg-[#0a0a0a]">
+                        {v.thumbnail && <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />}
+                        <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${v.score >= 80 ? 'bg-green-500 text-white' : v.score >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'}`}>
+                          ⚡ {v.score}
+                        </div>
+                        <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-xs font-bold bg-purple-600 text-white">
+                          {Math.round(v._similarity * 100)}% match
+                        </div>
+                      </div>
+                      <div className="p-3">
+                        <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title}</h3>
+                        <div className="flex items-center gap-2 text-xs text-[#888] mb-1">
+                          <span className="text-green-400">{fmtYT(v.view_count)} views</span>
+                          {v.channel_name && <span>· {v.channel_name}</span>}
+                          {(v.posted_at || v.posted_date) && <span>· {v.posted_at ? (() => {
+                            const days = Math.floor((Date.now() - new Date(v.posted_at).getTime()) / 86400000);
+                            if (days < 1) return 'Just now';
+                            if (days < 7) return `${days} days ago`;
+                            if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+                            return new Date(v.posted_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                          })() : v.posted_date}</span>}
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-[#666]">
+                          {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
+                          {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)}</span>}
+                        </div>
+                        {v.url && <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 mt-1 block truncate">{v.url}</a>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

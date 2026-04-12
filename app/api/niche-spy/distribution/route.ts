@@ -62,10 +62,11 @@ export async function GET(req: NextRequest) {
   // Video scatter data — 1 dot per video, X = channel subs, Y = video views
   const scatterRes = await pool.query(`
     SELECT
-      channel_name, channel_id, subscriber_count as subs,
+      id, channel_name, channel_id, subscriber_count as subs,
       view_count, score, channel_created_at,
       url as video_url, title as video_title,
-      like_count, comment_count, posted_at, posted_date, keyword
+      like_count, comment_count, posted_at, posted_date, keyword,
+      embedded_at, top_comment
     FROM niche_spy_videos
     WHERE keyword = $1 AND score >= $2
       AND (subscriber_count > 0 OR view_count > 0)
@@ -78,6 +79,7 @@ export async function GET(req: NextRequest) {
     const vidMatch = r.video_url?.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
     const thumbnail = vidMatch ? `https://img.youtube.com/vi/${vidMatch[1]}/hqdefault.jpg` : null;
     return {
+      id: r.id,
       name: r.channel_name,
       channelId: r.channel_id || null,
       subs: parseInt(r.subs) || 0,
@@ -93,6 +95,8 @@ export async function GET(req: NextRequest) {
       postedAt: r.posted_at || null,
       postedDate: r.posted_date || null,
       keyword: r.keyword || null,
+      embeddedAt: r.embedded_at || null,
+      topComment: r.top_comment || null,
     };
   });
 
