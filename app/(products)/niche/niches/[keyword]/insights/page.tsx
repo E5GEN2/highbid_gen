@@ -332,64 +332,70 @@ function ChannelScatter({ channels }: {
           <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
         </div>
 
-        {/* Video card — right side, same height as chart */}
+        {/* Video card — right side, same markup as video grid cards */}
         <div className="w-72 flex-shrink-0 hidden lg:block">
           {hovered !== null && channels[hovered] ? (() => {
             const ch = channels[hovered];
             const timeAgo = (dateStr: string) => {
               const d = new Date(dateStr);
-              const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-              if (days < 1) return 'Today';
-              if (days < 7) return `${days}d ago`;
-              if (days < 30) return `${Math.floor(days / 7)}w ago`;
-              return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+              const diffMs = Date.now() - d.getTime();
+              const days = Math.floor(diffMs / 86400000);
+              if (days < 1) return 'Just now';
+              if (days < 7) return `${days} days ago`;
+              if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+              return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
             };
             return (
-              <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl overflow-hidden h-full flex flex-col">
+              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition">
                 {/* Thumbnail */}
-                {ch.thumbnail ? (
-                  <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer" className="block relative">
-                    <img src={ch.thumbnail} alt="" className="w-full aspect-video object-cover" />
-                    <div className={`absolute top-2 right-2 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                      ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
-                    }`}>⚡ {ch.avgScore}</div>
-                  </a>
-                ) : (
-                  <div className="w-full aspect-video bg-[#111] flex items-center justify-center text-[#333] text-3xl">🎬</div>
-                )}
-
-                {/* Info */}
-                <div className="p-3 flex-1 flex flex-col">
-                  {ch.keyword && (
-                    <span className="inline-block text-[10px] bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5 mb-2 self-start">{ch.keyword}</span>
+                <div className="relative aspect-video bg-[#0a0a0a]">
+                  {ch.thumbnail ? (
+                    <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer">
+                      <img src={ch.thumbnail} alt="" className="w-full h-full object-cover" />
+                    </a>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[#333]">
+                      <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </div>
                   )}
-                  <h4 className="text-sm font-medium text-white line-clamp-2 mb-2">{ch.videoTitle || ch.name}</h4>
-                  <div className="text-[10px] text-[#888] mb-1.5">
-                    <span className="text-green-400 font-medium">{fmtYT(ch.views)} views</span>
-                    <span> · {ch.name}</span>
-                    {(ch.postedAt || ch.postedDate) && <span> · {ch.postedAt ? timeAgo(ch.postedAt) : ch.postedDate}</span>}
+                  <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
+                    ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
+                  }`}>
+                    ⚡ {ch.avgScore}
                   </div>
-                  <div className="flex flex-wrap gap-2 text-[10px] text-[#666] mb-3">
-                    {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subs</span>}
+                </div>
+
+                <div className="p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    {ch.keyword && (
+                      <span className="text-xs bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5">
+                        {ch.keyword}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{ch.videoTitle || ch.name}</h3>
+                  <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
+                    <span className="text-green-400 font-medium">{fmtYT(ch.views)} views</span>
+                    <span>· {ch.name}</span>
+                    {(ch.postedAt || ch.postedDate) && <span>· {ch.postedAt ? timeAgo(ch.postedAt) : ch.postedDate}</span>}
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
                     {ch.likeCount > 0 && <span>👍 {fmtYT(ch.likeCount)}</span>}
                     {ch.commentCount > 0 && <span>💬 {fmtYT(ch.commentCount)}</span>}
-                    {ch.ageDays !== null && <span>📅 {ch.ageDays! < 365 ? `${ch.ageDays}d` : `${(ch.ageDays! / 365).toFixed(1)}yr`}</span>}
+                    {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subscribers</span>}
+                    {ch.ageDays !== null && (() => {
+                      if (ch.ageDays! < 30) return <span className="text-orange-400">📅 {ch.ageDays}d old</span>;
+                      if (ch.ageDays! < 365) return <span>📅 {Math.floor(ch.ageDays! / 30)}mo old</span>;
+                      return <span>📅 {(ch.ageDays! / 365).toFixed(1)}yr old</span>;
+                    })()}
                   </div>
-
-                  <div className="mt-auto flex flex-col gap-1.5">
-                    {ch.videoUrl && (
-                      <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-xs bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 transition text-center font-medium">
-                        Open Video
-                      </a>
-                    )}
-                    {ch.channelId && (
-                      <a href={`https://www.youtube.com/channel/${ch.channelId}`} target="_blank" rel="noopener noreferrer"
-                        className="text-xs bg-white/5 text-[#888] border border-[#333] px-3 py-2 rounded-lg hover:bg-white/10 transition text-center">
-                        View Channel
-                      </a>
-                    )}
-                  </div>
+                  {ch.videoUrl && (
+                    <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate block">
+                      {ch.videoUrl}
+                    </a>
+                  )}
                 </div>
               </div>
             );
