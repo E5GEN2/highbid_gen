@@ -175,36 +175,41 @@ function DistChart({ title, unit, buckets }: {
         </div>
       </div>
 
-      {/* Vertical bars — tight spacing */}
-      <div className="flex items-end gap-0.5" style={{ height: 130 }}>
-        {buckets.map((b, i) => {
-          const pct = maxCount > 0 ? (b.count / maxCount) * 100 : 0;
-          const sharePct = total > 0 ? Math.round((b.count / total) * 100) : 0;
-          return (
-            <div key={i} className="flex-1 flex flex-col items-center group min-w-0">
-              {/* Count + percentage */}
-              <div className="text-[10px] font-bold text-white mb-0.5 truncate">
-                {b.count > 0 ? b.count.toLocaleString() : ''}
-              </div>
-              <div className="text-[9px] text-[#666] mb-1">
-                {b.count > 0 ? `${sharePct}%` : ''}
-              </div>
-              {/* Bar */}
-              <div className="w-full px-0.5 flex-1 flex items-end">
-                <div
-                  className="w-full rounded-t transition-all duration-300 group-hover:opacity-100 opacity-80"
-                  style={{
-                    height: `${Math.max(pct, b.count > 0 ? 4 : 0)}%`,
-                    backgroundColor: b.color,
-                  }}
-                />
-              </div>
-              {/* Label */}
-              <div className="text-[9px] text-[#666] text-center mt-1.5 truncate w-full">{b.label}</div>
-            </div>
-          );
-        })}
-      </div>
+      {/* Vertical bars — tight, pixel-based heights */}
+      {(() => {
+        const barMaxH = 80; // max bar height in px
+        return (
+          <div className="flex items-end gap-1">
+            {buckets.map((b, i) => {
+              const barH = maxCount > 0 ? Math.max((b.count / maxCount) * barMaxH, b.count > 0 ? 4 : 0) : 0;
+              const sharePct = total > 0 ? Math.round((b.count / total) * 100) : 0;
+              return (
+                <div key={i} className="flex-1 flex flex-col items-center min-w-0">
+                  {/* Count */}
+                  <div className="text-[10px] font-bold text-white mb-0.5">
+                    {b.count > 0 ? b.count.toLocaleString() : ''}
+                  </div>
+                  {/* Percentage */}
+                  <div className="text-[9px] text-[#666] mb-1">
+                    {b.count > 0 ? `${sharePct}%` : ''}
+                  </div>
+                  {/* Bar — fixed pixel height */}
+                  <div className="w-full px-0.5" style={{ height: barMaxH }}>
+                    <div className="w-full h-full flex items-end">
+                      <div
+                        className="w-full rounded-t-sm"
+                        style={{ height: barH, backgroundColor: b.color, opacity: 0.85 }}
+                      />
+                    </div>
+                  </div>
+                  {/* Label */}
+                  <div className="text-[9px] text-[#666] text-center mt-1 truncate w-full">{b.label}</div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -214,7 +219,7 @@ function ChannelScatter({ channels }: {
   channels: Array<{ name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null }>;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
-  const [colorBy, setColorBy] = useState<'age' | 'score'>('age');
+  const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
 
   const logSafe = (n: number) => Math.log10(Math.max(n, 1));
 
@@ -291,7 +296,7 @@ function ChannelScatter({ channels }: {
         {/* Y-axis title */}
         <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[9px] text-[#444] whitespace-nowrap">Views</div>
 
-        <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full bg-[#0a0a0a] rounded-lg" style={{ aspectRatio: '5 / 3' }}
+        <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full bg-[#0a0a0a] rounded-lg" style={{ aspectRatio: '16 / 9' }}
           onMouseLeave={() => setHovered(null)}>
           {/* Grid */}
           {yTicks.map(t => {
@@ -314,8 +319,9 @@ function ChannelScatter({ channels }: {
             const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
             const isH = hovered === i;
             return (
-              <circle key={i} cx={x} cy={y} r={isH ? 2.2 : 0.9}
-                fill={getColor(c)} opacity={isH ? 1 : 0.55}
+              <circle key={i} cx={x} cy={y} r={isH ? 2.5 : 1.3}
+                fill={getColor(c)} opacity={isH ? 1 : 0.7}
+                stroke={isH ? '#fff' : 'none'} strokeWidth={isH ? 0.3 : 0}
                 className="cursor-pointer"
                 onMouseEnter={() => setHovered(i)} />
             );
