@@ -24,6 +24,11 @@ export default function NicheInsights() {
   const [subsDist, setSubsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
   const [viewsDist, setViewsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
 
+  // Channel scatter data (subs vs views)
+  const [scatterChannels, setScatterChannels] = useState<Array<{
+    name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null;
+  }>>([]);
+
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
 
   useEffect(() => {
@@ -36,6 +41,19 @@ export default function NicheInsights() {
       .then(r => r.json()).then(d => {
         if (d.subsDist) setSubsDist(d.subsDist);
         if (d.viewsDist) setViewsDist(d.viewsDist);
+      }).catch(() => {});
+    // Fetch channels for scatter plot (subs vs views)
+    fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=2000&sort=views&minScore=${filter.minScore}`)
+      .then(r => r.json()).then(d => {
+        if (!d.channels) return;
+        setScatterChannels(d.channels.filter((c: { subscribers: number; totalViews: number }) => c.subscribers > 0 || c.totalViews > 0).map((c: { channelName: string; subscribers: number; totalViews: number; videoCount: number; avgScore: number; channelAgeDays: number | null }) => ({
+          name: c.channelName,
+          subs: c.subscribers || 0,
+          views: c.totalViews || 0,
+          videos: c.videoCount || 0,
+          avgScore: c.avgScore || 0,
+          ageDays: c.channelAgeDays,
+        })));
       }).catch(() => {});
   }, [keyword, filter.minScore]);
 
@@ -97,6 +115,9 @@ export default function NicheInsights() {
           <DistChart title="Views Distribution" unit="videos" buckets={viewsDist} />
         )}
       </div>
+
+      {/* Channel Landscape: Subs vs Views scatter */}
+      {scatterChannels.length > 0 && <ChannelScatter channels={scatterChannels} />}
 
       {/* New vs Established Channels */}
       {channelStats && (
@@ -184,6 +205,143 @@ function DistChart({ title, unit, buckets }: {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/** Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale */
+function ChannelScatter({ channels }: {
+  channels: Array<{ name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null }>;
+}) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  const [colorBy, setColorBy] = useState<'age' | 'score'>('age');
+
+  const logSafe = (n: number) => Math.log10(Math.max(n, 1));
+
+  const subsVals = channels.filter(c => c.subs > 0).map(c => logSafe(c.subs));
+  const viewsVals = channels.filter(c => c.views > 0).map(c => logSafe(c.views));
+  const minLogSubs = subsVals.length > 0 ? Math.min(...subsVals) : 0;
+  const maxLogSubs = subsVals.length > 0 ? Math.max(...subsVals) : 6;
+  const minLogViews = viewsVals.length > 0 ? Math.min(...viewsVals) : 0;
+  const maxLogViews = viewsVals.length > 0 ? Math.max(...viewsVals) : 7;
+  const rangeX = maxLogSubs - minLogSubs || 1;
+  const rangeY = maxLogViews - minLogViews || 1;
+
+  const getColor = (c: typeof channels[0]) => {
+    if (colorBy === 'age') {
+      if (c.ageDays === null) return '#555';
+      if (c.ageDays < 30) return '#f97316';
+      if (c.ageDays < 180) return '#22c55e';
+      return '#6b7280';
+    }
+    if (c.avgScore >= 80) return '#22c55e';
+    if (c.avgScore >= 50) return '#eab308';
+    return '#ef4444';
+  };
+
+  const xTicks = [1, 100, 1000, 10000, 100000, 1000000].filter(v => logSafe(v) >= minLogSubs - 0.3 && logSafe(v) <= maxLogSubs + 0.3);
+  const yTicks = [100, 1000, 10000, 100000, 1000000, 10000000].filter(v => logSafe(v) >= minLogViews - 0.3 && logSafe(v) <= maxLogViews + 0.3);
+  const fmtTick = (n: number) => n >= 1000000 ? `${n / 1000000}M` : n >= 1000 ? `${n / 1000}K` : String(n);
+
+  const chartW = 100;
+  const chartH = 100;
+
+  return (
+    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-5 py-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-sm font-medium text-white">Channel Landscape</h3>
+          <p className="text-[10px] text-[#666]">{channels.length} channels — subscribers vs total views (log scale)</p>
+        </div>
+        <div className="flex gap-1">
+          <button onClick={() => setColorBy('age')}
+            className={`px-2.5 py-1 rounded-md text-[10px] transition ${colorBy === 'age' ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#888]'}`}>
+            Color: Age
+          </button>
+          <button onClick={() => setColorBy('score')}
+            className={`px-2.5 py-1 rounded-md text-[10px] transition ${colorBy === 'score' ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#888]'}`}>
+            Color: Score
+          </button>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-4 mb-3 text-[10px] text-[#888]">
+        {colorBy === 'age' ? (
+          <>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500" /> &lt;30 days</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" /> &lt;6 months</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-500" /> Established</span>
+          </>
+        ) : (
+          <>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" /> Score 80+</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500" /> Score 50-79</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500" /> Score &lt;50</span>
+          </>
+        )}
+      </div>
+
+      {/* Chart */}
+      <div className="relative" style={{ paddingLeft: 40, paddingBottom: 28 }}>
+        {/* Y-axis labels */}
+        <div className="absolute left-0 top-0 bottom-[28px] flex flex-col justify-between text-[9px] text-[#666] font-mono w-[36px] text-right pr-1 py-1">
+          {[...yTicks].reverse().map(t => <span key={t}>{fmtTick(t)}</span>)}
+        </div>
+        {/* Y-axis title */}
+        <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[9px] text-[#444] whitespace-nowrap">Views</div>
+
+        <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full bg-[#0a0a0a] rounded-lg" style={{ aspectRatio: '5 / 3' }}
+          onMouseLeave={() => setHovered(null)}>
+          {/* Grid */}
+          {yTicks.map(t => {
+            const y = chartH - ((logSafe(t) - minLogViews) / rangeY) * chartH;
+            return <line key={`y${t}`} x1="0" y1={y} x2={chartW} y2={y} stroke="#1a1a1a" strokeWidth="0.15" />;
+          })}
+          {xTicks.map(t => {
+            const x = ((logSafe(t) - minLogSubs) / rangeX) * chartW;
+            return <line key={`x${t}`} x1={x} y1="0" x2={x} y2={chartH} stroke="#1a1a1a" strokeWidth="0.15" />;
+          })}
+
+          {/* Quadrant hint */}
+          <text x="2" y="5" fill="#2a2a2a" fontSize="2.2">High views, few subs</text>
+          <text x={chartW - 2} y="5" fill="#2a2a2a" fontSize="2.2" textAnchor="end">Big players</text>
+
+          {/* Dots */}
+          {channels.map((c, i) => {
+            if (c.subs <= 0 && c.views <= 0) return null;
+            const x = ((logSafe(c.subs) - minLogSubs) / rangeX) * chartW;
+            const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
+            const isH = hovered === i;
+            return (
+              <circle key={i} cx={x} cy={y} r={isH ? 2.2 : 0.9}
+                fill={getColor(c)} opacity={isH ? 1 : 0.55}
+                className="cursor-pointer"
+                onMouseEnter={() => setHovered(i)} />
+            );
+          })}
+        </svg>
+
+        {/* X-axis labels */}
+        <div className="flex justify-between mt-1.5 text-[9px] text-[#666] font-mono">
+          {xTicks.map(t => <span key={t}>{fmtTick(t)}</span>)}
+        </div>
+        <div className="text-center text-[9px] text-[#444] mt-0.5">Subscribers →</div>
+      </div>
+
+      {/* Hover tooltip */}
+      {hovered !== null && channels[hovered] && (
+        <div className="mt-2 bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
+          <span className="text-xs text-white font-medium">{channels[hovered].name}</span>
+          <div className="flex gap-4 mt-1 text-[10px] text-[#888]">
+            <span>{fmtYT(channels[hovered].subs)} subs</span>
+            <span>{fmtYT(channels[hovered].views)} views</span>
+            <span>{channels[hovered].videos} videos</span>
+            <span>Score: {channels[hovered].avgScore}</span>
+            {channels[hovered].ageDays !== null && <span>{channels[hovered].ageDays! < 365 ? `${channels[hovered].ageDays}d old` : `${(channels[hovered].ageDays! / 365).toFixed(1)}yr old`}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
