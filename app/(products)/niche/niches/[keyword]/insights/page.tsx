@@ -24,9 +24,11 @@ export default function NicheInsights() {
   const [subsDist, setSubsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
   const [viewsDist, setViewsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
 
-  // Channel scatter data (subs vs views)
+  // Channel scatter data (subs vs views + video info)
   const [scatterChannels, setScatterChannels] = useState<Array<{
     name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
+    videoUrl: string | null; videoTitle: string | null; thumbnail: string | null;
+    likeCount: number; commentCount: number; postedAt: string | null; postedDate: string | null; keyword: string | null;
   }>>([]);
 
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
@@ -47,6 +49,9 @@ export default function NicheInsights() {
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto space-y-6">
+      {/* Channel Landscape — top of page */}
+      {scatterChannels.length > 0 && <ChannelScatter channels={scatterChannels} />}
+
       {/* Timeline */}
       <NicheTimeline
         keyword={keyword}
@@ -103,9 +108,6 @@ export default function NicheInsights() {
           <DistChart title="Views Distribution" unit="videos" buckets={viewsDist} />
         )}
       </div>
-
-      {/* Channel Landscape: Subs vs Views scatter */}
-      {scatterChannels.length > 0 && <ChannelScatter channels={scatterChannels} />}
 
       {/* New vs Established Channels */}
       {channelStats && (
@@ -204,7 +206,11 @@ function DistChart({ title, unit, buckets }: {
 
 /** Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale */
 function ChannelScatter({ channels }: {
-  channels: Array<{ name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null }>;
+  channels: Array<{
+    name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
+    videoUrl: string | null; videoTitle: string | null; thumbnail: string | null;
+    likeCount: number; commentCount: number; postedAt: string | null; postedDate: string | null; keyword: string | null;
+  }>;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
@@ -326,8 +332,9 @@ function ChannelScatter({ channels }: {
                 className="cursor-pointer"
                 onMouseEnter={() => setHovered(i)}
                 onClick={() => {
-                  if (c.channelId) window.open(`https://www.youtube.com/channel/${c.channelId}`, '_blank');
-                  else window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(c.name)}`, '_blank');
+                  setHovered(i);
+                  if (c.videoUrl) window.open(c.videoUrl, '_blank');
+                  else if (c.channelId) window.open(`https://www.youtube.com/channel/${c.channelId}`, '_blank');
                 }} />
             );
           })}
@@ -340,28 +347,65 @@ function ChannelScatter({ channels }: {
         <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
       </div>
 
-      {/* Hover tooltip */}
+      {/* Selected video card */}
       {hovered !== null && channels[hovered] && (() => {
         const ch = channels[hovered];
-        const ytUrl = ch.channelId
-          ? `https://www.youtube.com/channel/${ch.channelId}`
-          : `https://www.youtube.com/results?search_query=${encodeURIComponent(ch.name)}`;
+        const timeAgo = (dateStr: string) => {
+          const d = new Date(dateStr);
+          const diffMs = Date.now() - d.getTime();
+          const days = Math.floor(diffMs / 86400000);
+          if (days < 1) return 'Today';
+          if (days < 7) return `${days} days ago`;
+          if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        };
         return (
-          <div className="mt-2 bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2 flex items-center justify-between">
-            <div>
-              <span className="text-xs text-white font-medium">{ch.name}</span>
-              <div className="flex gap-4 mt-1 text-[10px] text-[#888]">
-                <span>{fmtYT(ch.subs)} subs</span>
-                <span>{fmtYT(ch.views)} views</span>
-                <span>{ch.videos} videos</span>
-                <span>Score: {ch.avgScore}</span>
-                {ch.ageDays !== null && <span>{ch.ageDays! < 365 ? `${ch.ageDays}d old` : `${(ch.ageDays! / 365).toFixed(1)}yr old`}</span>}
+          <div className="mt-3 bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl overflow-hidden flex">
+            {/* Thumbnail */}
+            {ch.thumbnail && (
+              <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer"
+                className="flex-shrink-0 w-48 aspect-video bg-[#111] relative">
+                <img src={ch.thumbnail} alt="" className="w-full h-full object-cover" />
+                <div className={`absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                  ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
+                }`}>⚡ {ch.avgScore}</div>
+              </a>
+            )}
+            {/* Info */}
+            <div className="flex-1 p-3 min-w-0">
+              {ch.keyword && (
+                <span className="inline-block text-[10px] bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5 mb-1.5">{ch.keyword}</span>
+              )}
+              <h4 className="text-sm font-medium text-white line-clamp-2 mb-1.5">
+                {ch.videoTitle || ch.name}
+              </h4>
+              <div className="flex items-center gap-2 text-[10px] text-[#888] mb-1">
+                <span className="text-green-400 font-medium">{fmtYT(ch.views)} views</span>
+                <span>· {ch.name}</span>
+                {(ch.postedAt || ch.postedDate) && <span>· {ch.postedAt ? timeAgo(ch.postedAt) : ch.postedDate}</span>}
+              </div>
+              <div className="flex items-center gap-3 text-[10px] text-[#666]">
+                {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subs</span>}
+                {ch.likeCount > 0 && <span>👍 {fmtYT(ch.likeCount)}</span>}
+                {ch.commentCount > 0 && <span>💬 {fmtYT(ch.commentCount)}</span>}
+                {ch.ageDays !== null && <span>📅 {ch.ageDays! < 365 ? `${ch.ageDays}d old` : `${(ch.ageDays! / 365).toFixed(1)}yr`}</span>}
               </div>
             </div>
-            <a href={ytUrl} target="_blank" rel="noopener noreferrer"
-              className="text-[10px] bg-red-600/20 text-red-400 border border-red-600/30 px-2.5 py-1 rounded-lg hover:bg-red-600/30 transition flex-shrink-0 ml-3">
-              Open Channel
-            </a>
+            {/* Actions */}
+            <div className="flex flex-col gap-1.5 p-3 flex-shrink-0">
+              {ch.videoUrl && (
+                <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] bg-red-600/20 text-red-400 border border-red-600/30 px-2.5 py-1.5 rounded-lg hover:bg-red-600/30 transition text-center">
+                  Open Video
+                </a>
+              )}
+              {ch.channelId && (
+                <a href={`https://www.youtube.com/channel/${ch.channelId}`} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] bg-white/5 text-[#888] border border-[#333] px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition text-center">
+                  Channel
+                </a>
+              )}
+            </div>
           </div>
         );
       })()}
