@@ -26,7 +26,7 @@ export default function NicheInsights() {
 
   // Channel scatter data (subs vs views)
   const [scatterChannels, setScatterChannels] = useState<Array<{
-    name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null;
+    name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
   }>>([]);
 
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
@@ -46,13 +46,14 @@ export default function NicheInsights() {
     fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=2000&sort=views&minScore=${filter.minScore}`)
       .then(r => r.json()).then(d => {
         if (!d.channels) return;
-        setScatterChannels(d.channels.filter((c: { subscribers: number; totalViews: number }) => c.subscribers > 0 || c.totalViews > 0).map((c: { channelName: string; subscribers: number; totalViews: number; videoCount: number; avgScore: number; channelAgeDays: number | null }) => ({
+        setScatterChannels(d.channels.filter((c: { subscribers: number; totalViews: number }) => c.subscribers > 0 || c.totalViews > 0).map((c: { channelName: string; subscribers: number; totalViews: number; videoCount: number; avgScore: number; channelAgeDays: number | null; channelId: string | null }) => ({
           name: c.channelName,
           subs: c.subscribers || 0,
           views: c.totalViews || 0,
           videos: c.videoCount || 0,
           avgScore: c.avgScore || 0,
           ageDays: c.channelAgeDays,
+          channelId: c.channelId || null,
         })));
       }).catch(() => {});
   }, [keyword, filter.minScore]);
@@ -216,7 +217,7 @@ function DistChart({ title, unit, buckets }: {
 
 /** Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale */
 function ChannelScatter({ channels }: {
-  channels: Array<{ name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null }>;
+  channels: Array<{ name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null }>;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
@@ -290,11 +291,11 @@ function ChannelScatter({ channels }: {
       {/* Chart */}
       <div className="relative" style={{ paddingLeft: 40, paddingBottom: 28 }}>
         {/* Y-axis labels */}
-        <div className="absolute left-0 top-0 bottom-[28px] flex flex-col justify-between text-[9px] text-[#666] font-mono w-[36px] text-right pr-1 py-1">
+        <div className="absolute left-0 top-0 bottom-[28px] flex flex-col justify-between text-[10px] text-[#888] font-mono w-[36px] text-right pr-1 py-1">
           {[...yTicks].reverse().map(t => <span key={t}>{fmtTick(t)}</span>)}
         </div>
         {/* Y-axis title */}
-        <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[9px] text-[#444] whitespace-nowrap">Views</div>
+        <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[10px] text-[#666] font-medium whitespace-nowrap">Views</div>
 
         <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full bg-[#0a0a0a] rounded-lg" style={{ aspectRatio: '16 / 9' }}
           onMouseLeave={() => setHovered(null)}>
@@ -309,8 +310,10 @@ function ChannelScatter({ channels }: {
           })}
 
           {/* Quadrant hint */}
-          <text x="2" y="5" fill="#2a2a2a" fontSize="2.2">High views, few subs</text>
-          <text x={chartW - 2} y="5" fill="#2a2a2a" fontSize="2.2" textAnchor="end">Big players</text>
+          <text x="3" y="6" fill="#444" fontSize="3" fontWeight="600">High views, few subs</text>
+          <text x={chartW - 3} y="6" fill="#444" fontSize="3" fontWeight="600" textAnchor="end">Big players</text>
+          <text x="3" y={chartH - 2} fill="#333" fontSize="2.5">Newcomers</text>
+          <text x={chartW - 3} y={chartH - 2} fill="#333" fontSize="2.5" textAnchor="end">High subs, low views</text>
 
           {/* Dots */}
           {channels.map((c, i) => {
@@ -323,31 +326,47 @@ function ChannelScatter({ channels }: {
                 fill={getColor(c)} opacity={isH ? 1 : 0.7}
                 stroke={isH ? '#fff' : 'none'} strokeWidth={isH ? 0.3 : 0}
                 className="cursor-pointer"
-                onMouseEnter={() => setHovered(i)} />
+                onMouseEnter={() => setHovered(i)}
+                onClick={() => {
+                  if (c.channelId) window.open(`https://www.youtube.com/channel/${c.channelId}`, '_blank');
+                  else window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(c.name)}`, '_blank');
+                }} />
             );
           })}
         </svg>
 
         {/* X-axis labels */}
-        <div className="flex justify-between mt-1.5 text-[9px] text-[#666] font-mono">
+        <div className="flex justify-between mt-1.5 text-[10px] text-[#888] font-mono">
           {xTicks.map(t => <span key={t}>{fmtTick(t)}</span>)}
         </div>
-        <div className="text-center text-[9px] text-[#444] mt-0.5">Subscribers →</div>
+        <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
       </div>
 
       {/* Hover tooltip */}
-      {hovered !== null && channels[hovered] && (
-        <div className="mt-2 bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
-          <span className="text-xs text-white font-medium">{channels[hovered].name}</span>
-          <div className="flex gap-4 mt-1 text-[10px] text-[#888]">
-            <span>{fmtYT(channels[hovered].subs)} subs</span>
-            <span>{fmtYT(channels[hovered].views)} views</span>
-            <span>{channels[hovered].videos} videos</span>
-            <span>Score: {channels[hovered].avgScore}</span>
-            {channels[hovered].ageDays !== null && <span>{channels[hovered].ageDays! < 365 ? `${channels[hovered].ageDays}d old` : `${(channels[hovered].ageDays! / 365).toFixed(1)}yr old`}</span>}
+      {hovered !== null && channels[hovered] && (() => {
+        const ch = channels[hovered];
+        const ytUrl = ch.channelId
+          ? `https://www.youtube.com/channel/${ch.channelId}`
+          : `https://www.youtube.com/results?search_query=${encodeURIComponent(ch.name)}`;
+        return (
+          <div className="mt-2 bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2 flex items-center justify-between">
+            <div>
+              <span className="text-xs text-white font-medium">{ch.name}</span>
+              <div className="flex gap-4 mt-1 text-[10px] text-[#888]">
+                <span>{fmtYT(ch.subs)} subs</span>
+                <span>{fmtYT(ch.views)} views</span>
+                <span>{ch.videos} videos</span>
+                <span>Score: {ch.avgScore}</span>
+                {ch.ageDays !== null && <span>{ch.ageDays! < 365 ? `${ch.ageDays}d old` : `${(ch.ageDays! / 365).toFixed(1)}yr old`}</span>}
+              </div>
+            </div>
+            <a href={ytUrl} target="_blank" rel="noopener noreferrer"
+              className="text-[10px] bg-red-600/20 text-red-400 border border-red-600/30 px-2.5 py-1 rounded-lg hover:bg-red-600/30 transition flex-shrink-0 ml-3">
+              Open Channel
+            </a>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
