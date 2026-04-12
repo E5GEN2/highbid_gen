@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { useNiche } from '@/components/NicheProvider';
 import NicheTimeline from '@/components/NicheTimeline';
@@ -214,6 +214,13 @@ function ChannelScatter({ channels }: {
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  // Pan & zoom state
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
   const logSafe = (n: number) => Math.log10(Math.max(n, 1));
 
@@ -225,6 +232,50 @@ function ChannelScatter({ channels }: {
   const maxLogViews = viewsVals.length > 0 ? Math.max(...viewsVals) : 7;
   const rangeX = maxLogSubs - minLogSubs || 1;
   const rangeY = maxLogViews - minLogViews || 1;
+
+  // Compute viewBox from pan + zoom
+  const vbW = 100 / zoom;
+  const vbH = 100 / zoom;
+  const vbX = pan.x;
+  const vbY = pan.y;
+  const viewBox = `${vbX} ${vbY} ${vbW} ${vbH}`;
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const newZoom = Math.max(1, Math.min(zoom * delta, 20));
+    // Zoom toward mouse position
+    if (svgRef.current) {
+      const rect = svgRef.current.getBoundingClientRect();
+      const mx = ((e.clientX - rect.left) / rect.width) * vbW + vbX;
+      const my = ((e.clientY - rect.top) / rect.height) * vbH + vbY;
+      const newVbW = 100 / newZoom;
+      const newVbH = 100 / newZoom;
+      setPan({
+        x: mx - (mx - vbX) * (newVbW / vbW),
+        y: my - (my - vbY) * (newVbH / vbH),
+      });
+    }
+    setZoom(newZoom);
+  }, [zoom, vbW, vbH, vbX, vbY]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    setDragging(true);
+    dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+  }, [pan]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragging || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const dx = ((e.clientX - dragStart.current.x) / rect.width) * vbW;
+    const dy = ((e.clientY - dragStart.current.y) / rect.height) * vbH;
+    setPan({ x: dragStart.current.panX - dx, y: dragStart.current.panY - dy });
+  }, [dragging, vbW, vbH]);
+
+  const handleMouseUp = useCallback(() => { setDragging(false); }, []);
+
+  const resetView = () => { setPan({ x: 0, y: 0 }); setZoom(1); };
 
   const getColor = (c: typeof channels[0]) => {
     if (colorBy === 'age') {
@@ -261,6 +312,15 @@ function ChannelScatter({ channels }: {
             className={`px-2.5 py-1 rounded-md text-[10px] transition ${colorBy === 'score' ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#888]'}`}>
             Color: Score
           </button>
+          {zoom > 1 && (
+            <button onClick={resetView}
+              className="px-2.5 py-1 rounded-md text-[10px] bg-white/10 text-white hover:bg-white/15 transition ml-1">
+              Reset
+            </button>
+          )}
+          {zoom > 1 && (
+            <span className="text-[10px] text-[#666] ml-1">{zoom.toFixed(1)}x</span>
+          )}
         </div>
       </div>
 
@@ -291,8 +351,12 @@ function ChannelScatter({ channels }: {
           </div>
           <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[10px] text-[#666] font-medium whitespace-nowrap">Views</div>
 
-          <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full bg-[#0a0a0a] rounded-lg" style={{ aspectRatio: '4 / 3' }}
-            onMouseLeave={() => setHovered(null)}>
+          <svg ref={svgRef} viewBox={viewBox} className="w-full bg-[#0a0a0a] rounded-lg select-none" style={{ aspectRatio: '4 / 3', cursor: dragging ? 'grabbing' : 'grab' }}
+            onWheel={handleWheel}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={() => { setHovered(null); handleMouseUp(); }}>
             {yTicks.map(t => {
               const y = chartH - ((logSafe(t) - minLogViews) / rangeY) * chartH;
               return <line key={`y${t}`} x1="0" y1={y} x2={chartW} y2={y} stroke="#1a1a1a" strokeWidth="0.15" />;
