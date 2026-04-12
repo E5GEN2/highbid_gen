@@ -296,11 +296,22 @@ function ChannelScatter({ channels }: {
             return <line key={`x${t}`} x1={x} y1="0" x2={x} y2={chartH} stroke="#1a1a1a" strokeWidth="0.15" />;
           })}
 
-          {/* Quadrant hint */}
-          <text x="3" y="6" fill="#444" fontSize="3" fontWeight="600">High views, few subs</text>
-          <text x={chartW - 3} y="6" fill="#444" fontSize="3" fontWeight="600" textAnchor="end">Big players</text>
-          <text x="3" y={chartH - 2} fill="#333" fontSize="2.5">Newcomers</text>
-          <text x={chartW - 3} y={chartH - 2} fill="#333" fontSize="2.5" textAnchor="end">High subs, low views</text>
+          {/* Quadrant dividers */}
+          <line x1={chartW / 2} y1="0" x2={chartW / 2} y2={chartH} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
+          <line x1="0" y1={chartH / 2} x2={chartW} y2={chartH / 2} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
+
+          {/* Quadrant labels */}
+          <rect x="1" y="1" width="24" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+          <text x="3" y="4.5" fill="#888" fontSize="2.5" fontWeight="600">High views, few subs</text>
+
+          <rect x={chartW - 15} y="1" width="14" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+          <text x={chartW - 2} y="4.5" fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">Big players</text>
+
+          <rect x="1" y={chartH - 6} width="12" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+          <text x="3" y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600">Newcomers</text>
+
+          <rect x={chartW - 20} y={chartH - 6} width="19" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+          <text x={chartW - 2} y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">High subs, low views</text>
 
           {/* Dots */}
           {channels.map((c, i) => {
