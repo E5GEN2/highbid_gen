@@ -416,9 +416,9 @@ function ChannelScatter({ channels }: {
         </div>
 
         {/* Right panel — two fixed sections */}
-        <div className="w-72 flex-shrink-0 hidden lg:flex lg:flex-col">
-          {/* Section 1: Video Card (fixed area) */}
-          <div className="flex-1 min-h-0">
+        <div className="w-72 flex-shrink-0 hidden lg:block">
+          {/* Section 1: Video Card */}
+          <div>
             {(() => {
               const activeIdx = hovered ?? selected;
               if (activeIdx === null || !filteredChannels[activeIdx]) {
