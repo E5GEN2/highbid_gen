@@ -415,7 +415,7 @@ function ChannelScatter({ channels }: {
         </div>
 
         {/* Video card — right side, same markup as video grid cards */}
-        <div className="w-72 flex-shrink-0 hidden lg:block">
+        <div className="w-72 flex-shrink-0 hidden lg:flex lg:flex-col gap-3">
           {hovered !== null && filteredChannels[hovered] ? (() => {
             const ch = filteredChannels[hovered];
             const timeAgo = (dateStr: string) => {
@@ -487,12 +487,13 @@ function ChannelScatter({ channels }: {
             </div>
           )}
 
-          {/* Filter checkbox below card */}
-          <div className="mt-2 bg-[#141414] border border-[#1f1f1f] rounded-lg px-3 py-2.5">
+          {/* Filters — bottom of right panel */}
+          <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3 mt-auto">
+            <div className="text-[10px] text-[#666] uppercase tracking-wider mb-2">Filters</div>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); }}
                 className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
-              <span className="text-[10px] text-[#888]">Best video per channel only</span>
+              <span className="text-xs text-[#888]">Best video per channel only</span>
             </label>
           </div>
         </div>
