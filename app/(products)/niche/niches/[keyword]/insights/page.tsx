@@ -36,25 +36,12 @@ export default function NicheInsights() {
       .then(r => r.json()).then(d => setSaturation(d)).catch(() => {});
     fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=0&sort=views&minScore=${filter.minScore}`)
       .then(r => r.json()).then(d => { if (d.stats) setChannelStats(d.stats); }).catch(() => {});
-    // Single fast API call for both distributions (SQL-bucketed, no large data transfer)
+    // Single fast API call for distributions + scatter (all server-side SQL, no limit caps)
     fetch(`/api/niche-spy/distribution?keyword=${encodeURIComponent(keyword)}&minScore=${filter.minScore}`)
       .then(r => r.json()).then(d => {
         if (d.subsDist) setSubsDist(d.subsDist);
         if (d.viewsDist) setViewsDist(d.viewsDist);
-      }).catch(() => {});
-    // Fetch channels for scatter plot (subs vs views)
-    fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=2000&sort=views&minScore=${filter.minScore}`)
-      .then(r => r.json()).then(d => {
-        if (!d.channels) return;
-        setScatterChannels(d.channels.filter((c: { subscribers: number; totalViews: number }) => c.subscribers > 0 || c.totalViews > 0).map((c: { channelName: string; subscribers: number; totalViews: number; videoCount: number; avgScore: number; channelAgeDays: number | null; channelId: string | null }) => ({
-          name: c.channelName,
-          subs: c.subscribers || 0,
-          views: c.totalViews || 0,
-          videos: c.videoCount || 0,
-          avgScore: c.avgScore || 0,
-          ageDays: c.channelAgeDays,
-          channelId: c.channelId || null,
-        })));
+        if (d.scatter) setScatterChannels(d.scatter);
       }).catch(() => {});
   }, [keyword, filter.minScore]);
 

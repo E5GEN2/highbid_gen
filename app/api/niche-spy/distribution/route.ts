@@ -59,5 +59,36 @@ export async function GET(req: NextRequest) {
     return { label, count: parseInt(row?.count || '0'), color: viewsColors[i] };
   });
 
-  return NextResponse.json({ subsDist, viewsDist });
+  // Channel scatter data — subs vs views, ALL channels, no limit
+  const scatterRes = await pool.query(`
+    SELECT
+      channel_name,
+      MAX(channel_id) as channel_id,
+      MAX(subscriber_count) as subs,
+      SUM(view_count) as total_views,
+      COUNT(*) as video_count,
+      ROUND(AVG(score)) as avg_score,
+      MAX(channel_created_at) as channel_created_at
+    FROM niche_spy_videos
+    WHERE keyword = $1 AND score >= $2 AND channel_name IS NOT NULL
+    GROUP BY channel_name
+    HAVING MAX(subscriber_count) > 0 OR SUM(view_count) > 0
+    ORDER BY SUM(view_count) DESC
+  `, [keyword, minScore]);
+
+  const scatter = scatterRes.rows.map(r => {
+    const createdAt = r.channel_created_at ? new Date(r.channel_created_at) : null;
+    const ageDays = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) : null;
+    return {
+      name: r.channel_name,
+      channelId: r.channel_id || null,
+      subs: parseInt(r.subs) || 0,
+      views: parseInt(r.total_views) || 0,
+      videos: parseInt(r.video_count) || 0,
+      avgScore: parseInt(r.avg_score) || 0,
+      ageDays,
+    };
+  });
+
+  return NextResponse.json({ subsDist, viewsDist, scatter });
 }
