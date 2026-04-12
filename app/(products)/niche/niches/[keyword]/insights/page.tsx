@@ -213,6 +213,7 @@ function ChannelScatter({ channels }: {
   }>;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
   const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
   const [onePerChannel, setOnePerChannel] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -397,14 +398,14 @@ function ChannelScatter({ channels }: {
               if (c.subs <= 0 && c.views <= 0) return null;
               const x = ((logSafe(c.subs) - minLogSubs) / rangeX) * chartW;
               const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
-              const isH = hovered === i;
+              const isH = hovered === i || selected === i;
               return (
                 <circle key={i} cx={x} cy={y} r={isH ? 1 : 0.6}
                   fill={getColor(c)} opacity={isH ? 1 : 0.45}
                   stroke={isH ? '#fff' : 'none'} strokeWidth={isH ? 0.2 : 0}
                   className="cursor-pointer"
                   onMouseEnter={() => setHovered(i)}
-                  onClick={() => { if (c.videoUrl) window.open(c.videoUrl, '_blank'); }} />
+                  onClick={() => setSelected(selected === i ? null : i)} />
               );
             })}
           </svg>
@@ -416,8 +417,10 @@ function ChannelScatter({ channels }: {
 
         {/* Video card — right side, same markup as video grid cards */}
         <div className="w-72 flex-shrink-0 hidden lg:flex lg:flex-col gap-3">
-          {hovered !== null && filteredChannels[hovered] ? (() => {
-            const ch = filteredChannels[hovered];
+          {(() => {
+            const activeIdx = hovered ?? selected;
+            if (activeIdx === null || !filteredChannels[activeIdx]) return null;
+            const ch = filteredChannels[activeIdx];
             const timeAgo = (dateStr: string) => {
               const d = new Date(dateStr);
               const diffMs = Date.now() - d.getTime();
@@ -481,9 +484,10 @@ function ChannelScatter({ channels }: {
                 </div>
               </div>
             );
-          })() : (
-            <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl h-full flex items-center justify-center p-6">
-              <p className="text-[#444] text-xs text-center">Hover over a dot to see the video</p>
+          })()}
+          {(hovered ?? selected) === null && (
+            <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl flex-1 flex items-center justify-center p-6">
+              <p className="text-[#444] text-xs text-center">Hover or click a dot to see the video</p>
             </div>
           )}
 
@@ -491,7 +495,7 @@ function ChannelScatter({ channels }: {
           <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3 mt-auto">
             <div className="text-[10px] text-[#666] uppercase tracking-wider mb-2">Filters</div>
             <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); }}
+              <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
                 className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
               <span className="text-xs text-[#888]">Best video per channel only</span>
             </label>
