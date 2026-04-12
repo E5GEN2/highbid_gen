@@ -415,98 +415,86 @@ function ChannelScatter({ channels }: {
           <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
         </div>
 
-        {/* Video card — right side, same markup as video grid cards */}
-        <div className="w-72 flex-shrink-0 hidden lg:flex lg:flex-col gap-3">
-          {(() => {
-            const activeIdx = hovered ?? selected;
-            if (activeIdx === null || !filteredChannels[activeIdx]) return null;
-            const ch = filteredChannels[activeIdx];
-            const timeAgo = (dateStr: string) => {
-              const d = new Date(dateStr);
-              const diffMs = Date.now() - d.getTime();
-              const days = Math.floor(diffMs / 86400000);
-              if (days < 1) return 'Just now';
-              if (days < 7) return `${days} days ago`;
-              if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
-              return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-            };
-            return (
-              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition">
-                {/* Thumbnail */}
-                <div className="relative aspect-video bg-[#0a0a0a]">
-                  {ch.thumbnail ? (
-                    <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer">
-                      <img src={ch.thumbnail} alt="" className="w-full h-full object-cover" />
-                    </a>
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[#333]">
-                      <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                    </div>
-                  )}
-                  <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
-                    ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
-                  }`}>
-                    ⚡ {ch.avgScore}
+        {/* Right panel — two fixed sections */}
+        <div className="w-72 flex-shrink-0 hidden lg:flex lg:flex-col">
+          {/* Section 1: Video Card (fixed area) */}
+          <div className="flex-1 min-h-0">
+            {(() => {
+              const activeIdx = hovered ?? selected;
+              if (activeIdx === null || !filteredChannels[activeIdx]) {
+                return (
+                  <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl h-full flex items-center justify-center p-6">
+                    <p className="text-[#444] text-xs text-center">Hover or click a dot<br />to see the video</p>
                   </div>
-                </div>
-
-                <div className="p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    {ch.keyword && (
-                      <span className="text-xs bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5">
-                        {ch.keyword}
-                      </span>
+                );
+              }
+              const ch = filteredChannels[activeIdx];
+              const timeAgo = (dateStr: string) => {
+                const d = new Date(dateStr);
+                const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+                if (days < 1) return 'Just now';
+                if (days < 7) return `${days} days ago`;
+                if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+              };
+              return (
+                <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
+                  <div className="relative aspect-video bg-[#0a0a0a]">
+                    {ch.thumbnail ? (
+                      <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer">
+                        <img src={ch.thumbnail} alt="" className="w-full h-full object-cover" />
+                      </a>
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[#333]">
+                        <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                    )}
+                    <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
+                      ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
+                    }`}>⚡ {ch.avgScore}</div>
+                  </div>
+                  <div className="p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      {ch.keyword && (
+                        <span className="text-xs bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5">{ch.keyword}</span>
+                      )}
+                    </div>
+                    <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{ch.videoTitle || ch.name}</h3>
+                    <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
+                      <span className="text-green-400 font-medium">{fmtYT(ch.views)} views</span>
+                      <span>· {ch.name}</span>
+                      {(ch.postedAt || ch.postedDate) && <span>· {ch.postedAt ? timeAgo(ch.postedAt) : ch.postedDate}</span>}
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
+                      {ch.likeCount > 0 && <span>👍 {fmtYT(ch.likeCount)}</span>}
+                      {ch.commentCount > 0 && <span>💬 {fmtYT(ch.commentCount)}</span>}
+                      {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subs</span>}
+                      {ch.ageDays !== null && (() => {
+                        if (ch.ageDays! < 30) return <span className="text-orange-400">📅 {ch.ageDays}d old</span>;
+                        if (ch.ageDays! < 365) return <span>📅 {Math.floor(ch.ageDays! / 30)}mo old</span>;
+                        return <span>📅 {(ch.ageDays! / 365).toFixed(1)}yr old</span>;
+                      })()}
+                    </div>
+                    {ch.videoUrl && (
+                      <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate block">{ch.videoUrl}</a>
                     )}
                   </div>
-                  <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{ch.videoTitle || ch.name}</h3>
-                  <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
-                    <span className="text-green-400 font-medium">{fmtYT(ch.views)} views</span>
-                    <span>· {ch.name}</span>
-                    {(ch.postedAt || ch.postedDate) && <span>· {ch.postedAt ? timeAgo(ch.postedAt) : ch.postedDate}</span>}
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
-                    {ch.likeCount > 0 && <span>👍 {fmtYT(ch.likeCount)}</span>}
-                    {ch.commentCount > 0 && <span>💬 {fmtYT(ch.commentCount)}</span>}
-                    {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subscribers</span>}
-                    {ch.ageDays !== null && (() => {
-                      if (ch.ageDays! < 30) return <span className="text-orange-400">📅 {ch.ageDays}d old</span>;
-                      if (ch.ageDays! < 365) return <span>📅 {Math.floor(ch.ageDays! / 30)}mo old</span>;
-                      return <span>📅 {(ch.ageDays! / 365).toFixed(1)}yr old</span>;
-                    })()}
-                  </div>
-                  {ch.videoUrl && (
-                    <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate block">
-                      {ch.videoUrl}
-                    </a>
-                  )}
-                  {/* Filters inside card */}
-                  <div className="border-t border-[#1f1f1f] mt-3 pt-2">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
-                        className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
-                      <span className="text-[10px] text-[#888]">Best video per channel only</span>
-                    </label>
-                  </div>
                 </div>
-              </div>
-            );
-          })()}
-          {(hovered ?? selected) === null && (
-            <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl flex-1 flex flex-col justify-between p-6">
-              <div className="flex-1 flex items-center justify-center">
-                <p className="text-[#444] text-xs text-center">Hover or click a dot to see the video</p>
-              </div>
-              <div className="border-t border-[#1f1f1f] pt-3 mt-3">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
-                    className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
-                  <span className="text-[10px] text-[#888]">Best video per channel only</span>
-                </label>
-              </div>
-            </div>
-          )}
+              );
+            })()}
+          </div>
+
+          {/* Section 2: Filters (always at bottom, never moves) */}
+          <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3 mt-3">
+            <div className="text-[10px] text-[#666] uppercase tracking-wider mb-2.5">Filters</div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
+                className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
+              <span className="text-xs text-[#888]">Best video per channel only</span>
+            </label>
+          </div>
         </div>
       </div>
     </div>
