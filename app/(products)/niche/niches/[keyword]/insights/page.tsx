@@ -281,134 +281,125 @@ function ChannelScatter({ channels }: {
         )}
       </div>
 
-      {/* Chart */}
-      <div className="relative" style={{ paddingLeft: 40, paddingBottom: 28 }}>
-        {/* Y-axis labels */}
-        <div className="absolute left-0 top-0 bottom-[28px] flex flex-col justify-between text-[10px] text-[#888] font-mono w-[36px] text-right pr-1 py-1">
-          {[...yTicks].reverse().map(t => <span key={t}>{fmtTick(t)}</span>)}
-        </div>
-        {/* Y-axis title */}
-        <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[10px] text-[#666] font-medium whitespace-nowrap">Views</div>
-
-        <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full bg-[#0a0a0a] rounded-lg" style={{ aspectRatio: '16 / 9' }}
-          onMouseLeave={() => setHovered(null)}>
-          {/* Grid */}
-          {yTicks.map(t => {
-            const y = chartH - ((logSafe(t) - minLogViews) / rangeY) * chartH;
-            return <line key={`y${t}`} x1="0" y1={y} x2={chartW} y2={y} stroke="#1a1a1a" strokeWidth="0.15" />;
-          })}
-          {xTicks.map(t => {
-            const x = ((logSafe(t) - minLogSubs) / rangeX) * chartW;
-            return <line key={`x${t}`} x1={x} y1="0" x2={x} y2={chartH} stroke="#1a1a1a" strokeWidth="0.15" />;
-          })}
-
-          {/* Quadrant dividers */}
-          <line x1={chartW / 2} y1="0" x2={chartW / 2} y2={chartH} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
-          <line x1="0" y1={chartH / 2} x2={chartW} y2={chartH / 2} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
-
-          {/* Quadrant labels */}
-          <rect x="1" y="1" width="24" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
-          <text x="3" y="4.5" fill="#888" fontSize="2.5" fontWeight="600">High views, few subs</text>
-
-          <rect x={chartW - 15} y="1" width="14" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
-          <text x={chartW - 2} y="4.5" fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">Big players</text>
-
-          <rect x="1" y={chartH - 6} width="12" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
-          <text x="3" y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600">Newcomers</text>
-
-          <rect x={chartW - 20} y={chartH - 6} width="19" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
-          <text x={chartW - 2} y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">High subs, low views</text>
-
-          {/* Dots */}
-          {channels.map((c, i) => {
-            if (c.subs <= 0 && c.views <= 0) return null;
-            const x = ((logSafe(c.subs) - minLogSubs) / rangeX) * chartW;
-            const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
-            const isH = hovered === i;
-            return (
-              <circle key={i} cx={x} cy={y} r={isH ? 1.8 : 0.6}
-                fill={getColor(c)} opacity={isH ? 1 : 0.45}
-                stroke={isH ? '#fff' : 'none'} strokeWidth={isH ? 0.2 : 0}
-                className="cursor-pointer"
-                onMouseEnter={() => setHovered(i)}
-                onClick={() => {
-                  setHovered(i);
-                  if (c.videoUrl) window.open(c.videoUrl, '_blank');
-                  else if (c.channelId) window.open(`https://www.youtube.com/channel/${c.channelId}`, '_blank');
-                }} />
-            );
-          })}
-        </svg>
-
-        {/* X-axis labels */}
-        <div className="flex justify-between mt-1.5 text-[10px] text-[#888] font-mono">
-          {xTicks.map(t => <span key={t}>{fmtTick(t)}</span>)}
-        </div>
-        <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
-      </div>
-
-      {/* Selected video card */}
-      {hovered !== null && channels[hovered] && (() => {
-        const ch = channels[hovered];
-        const timeAgo = (dateStr: string) => {
-          const d = new Date(dateStr);
-          const diffMs = Date.now() - d.getTime();
-          const days = Math.floor(diffMs / 86400000);
-          if (days < 1) return 'Today';
-          if (days < 7) return `${days} days ago`;
-          if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
-          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        };
-        return (
-          <div className="mt-3 bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl overflow-hidden flex">
-            {/* Thumbnail */}
-            {ch.thumbnail && (
-              <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer"
-                className="flex-shrink-0 w-48 aspect-video bg-[#111] relative">
-                <img src={ch.thumbnail} alt="" className="w-full h-full object-cover" />
-                <div className={`absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                  ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
-                }`}>⚡ {ch.avgScore}</div>
-              </a>
-            )}
-            {/* Info */}
-            <div className="flex-1 p-3 min-w-0">
-              {ch.keyword && (
-                <span className="inline-block text-[10px] bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5 mb-1.5">{ch.keyword}</span>
-              )}
-              <h4 className="text-sm font-medium text-white line-clamp-2 mb-1.5">
-                {ch.videoTitle || ch.name}
-              </h4>
-              <div className="flex items-center gap-2 text-[10px] text-[#888] mb-1">
-                <span className="text-green-400 font-medium">{fmtYT(ch.views)} views</span>
-                <span>· {ch.name}</span>
-                {(ch.postedAt || ch.postedDate) && <span>· {ch.postedAt ? timeAgo(ch.postedAt) : ch.postedDate}</span>}
-              </div>
-              <div className="flex items-center gap-3 text-[10px] text-[#666]">
-                {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subs</span>}
-                {ch.likeCount > 0 && <span>👍 {fmtYT(ch.likeCount)}</span>}
-                {ch.commentCount > 0 && <span>💬 {fmtYT(ch.commentCount)}</span>}
-                {ch.ageDays !== null && <span>📅 {ch.ageDays! < 365 ? `${ch.ageDays}d old` : `${(ch.ageDays! / 365).toFixed(1)}yr`}</span>}
-              </div>
-            </div>
-            {/* Actions */}
-            <div className="flex flex-col gap-1.5 p-3 flex-shrink-0">
-              {ch.videoUrl && (
-                <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer"
-                  className="text-[10px] bg-red-600/20 text-red-400 border border-red-600/30 px-2.5 py-1.5 rounded-lg hover:bg-red-600/30 transition text-center">
-                  Open Video
-                </a>
-              )}
-              {ch.channelId && (
-                <a href={`https://www.youtube.com/channel/${ch.channelId}`} target="_blank" rel="noopener noreferrer"
-                  className="text-[10px] bg-white/5 text-[#888] border border-[#333] px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition text-center">
-                  Channel
-                </a>
-              )}
-            </div>
+      {/* Chart + Video Card side by side */}
+      <div className="flex gap-4">
+        {/* Scatter chart — left side */}
+        <div className="flex-1 min-w-0 relative" style={{ paddingLeft: 40, paddingBottom: 28 }}>
+          {/* Y-axis labels */}
+          <div className="absolute left-0 top-0 bottom-[28px] flex flex-col justify-between text-[10px] text-[#888] font-mono w-[36px] text-right pr-1 py-1">
+            {[...yTicks].reverse().map(t => <span key={t}>{fmtTick(t)}</span>)}
           </div>
-        );
-      })()}
+          <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[10px] text-[#666] font-medium whitespace-nowrap">Views</div>
+
+          <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full bg-[#0a0a0a] rounded-lg" style={{ aspectRatio: '4 / 3' }}
+            onMouseLeave={() => setHovered(null)}>
+            {yTicks.map(t => {
+              const y = chartH - ((logSafe(t) - minLogViews) / rangeY) * chartH;
+              return <line key={`y${t}`} x1="0" y1={y} x2={chartW} y2={y} stroke="#1a1a1a" strokeWidth="0.15" />;
+            })}
+            {xTicks.map(t => {
+              const x = ((logSafe(t) - minLogSubs) / rangeX) * chartW;
+              return <line key={`x${t}`} x1={x} y1="0" x2={x} y2={chartH} stroke="#1a1a1a" strokeWidth="0.15" />;
+            })}
+            <line x1={chartW / 2} y1="0" x2={chartW / 2} y2={chartH} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
+            <line x1="0" y1={chartH / 2} x2={chartW} y2={chartH / 2} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
+            <rect x="1" y="1" width="24" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+            <text x="3" y="4.5" fill="#888" fontSize="2.5" fontWeight="600">High views, few subs</text>
+            <rect x={chartW - 15} y="1" width="14" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+            <text x={chartW - 2} y="4.5" fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">Big players</text>
+            <rect x="1" y={chartH - 6} width="12" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+            <text x="3" y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600">Newcomers</text>
+            <rect x={chartW - 20} y={chartH - 6} width="19" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
+            <text x={chartW - 2} y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">High subs, low views</text>
+            {channels.map((c, i) => {
+              if (c.subs <= 0 && c.views <= 0) return null;
+              const x = ((logSafe(c.subs) - minLogSubs) / rangeX) * chartW;
+              const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
+              const isH = hovered === i;
+              return (
+                <circle key={i} cx={x} cy={y} r={isH ? 1.8 : 0.6}
+                  fill={getColor(c)} opacity={isH ? 1 : 0.45}
+                  stroke={isH ? '#fff' : 'none'} strokeWidth={isH ? 0.2 : 0}
+                  className="cursor-pointer"
+                  onMouseEnter={() => setHovered(i)}
+                  onClick={() => { if (c.videoUrl) window.open(c.videoUrl, '_blank'); }} />
+              );
+            })}
+          </svg>
+          <div className="flex justify-between mt-1.5 text-[10px] text-[#888] font-mono">
+            {xTicks.map(t => <span key={t}>{fmtTick(t)}</span>)}
+          </div>
+          <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
+        </div>
+
+        {/* Video card — right side, same height as chart */}
+        <div className="w-72 flex-shrink-0 hidden lg:block">
+          {hovered !== null && channels[hovered] ? (() => {
+            const ch = channels[hovered];
+            const timeAgo = (dateStr: string) => {
+              const d = new Date(dateStr);
+              const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+              if (days < 1) return 'Today';
+              if (days < 7) return `${days}d ago`;
+              if (days < 30) return `${Math.floor(days / 7)}w ago`;
+              return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            };
+            return (
+              <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl overflow-hidden h-full flex flex-col">
+                {/* Thumbnail */}
+                {ch.thumbnail ? (
+                  <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer" className="block relative">
+                    <img src={ch.thumbnail} alt="" className="w-full aspect-video object-cover" />
+                    <div className={`absolute top-2 right-2 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                      ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
+                    }`}>⚡ {ch.avgScore}</div>
+                  </a>
+                ) : (
+                  <div className="w-full aspect-video bg-[#111] flex items-center justify-center text-[#333] text-3xl">🎬</div>
+                )}
+
+                {/* Info */}
+                <div className="p-3 flex-1 flex flex-col">
+                  {ch.keyword && (
+                    <span className="inline-block text-[10px] bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5 mb-2 self-start">{ch.keyword}</span>
+                  )}
+                  <h4 className="text-sm font-medium text-white line-clamp-2 mb-2">{ch.videoTitle || ch.name}</h4>
+                  <div className="text-[10px] text-[#888] mb-1.5">
+                    <span className="text-green-400 font-medium">{fmtYT(ch.views)} views</span>
+                    <span> · {ch.name}</span>
+                    {(ch.postedAt || ch.postedDate) && <span> · {ch.postedAt ? timeAgo(ch.postedAt) : ch.postedDate}</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[10px] text-[#666] mb-3">
+                    {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subs</span>}
+                    {ch.likeCount > 0 && <span>👍 {fmtYT(ch.likeCount)}</span>}
+                    {ch.commentCount > 0 && <span>💬 {fmtYT(ch.commentCount)}</span>}
+                    {ch.ageDays !== null && <span>📅 {ch.ageDays! < 365 ? `${ch.ageDays}d` : `${(ch.ageDays! / 365).toFixed(1)}yr`}</span>}
+                  </div>
+
+                  <div className="mt-auto flex flex-col gap-1.5">
+                    {ch.videoUrl && (
+                      <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-xs bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 transition text-center font-medium">
+                        Open Video
+                      </a>
+                    )}
+                    {ch.channelId && (
+                      <a href={`https://www.youtube.com/channel/${ch.channelId}`} target="_blank" rel="noopener noreferrer"
+                        className="text-xs bg-white/5 text-[#888] border border-[#333] px-3 py-2 rounded-lg hover:bg-white/10 transition text-center">
+                        View Channel
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })() : (
+            <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl h-full flex items-center justify-center p-6">
+              <p className="text-[#444] text-xs text-center">Hover over a dot to see the video</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
