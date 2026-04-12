@@ -417,8 +417,8 @@ function ChannelScatter({ channels }: {
 
         {/* Right panel — two fixed sections */}
         <div className="w-72 flex-shrink-0 hidden lg:block">
-          {/* Section 1: Video Card */}
-          <div>
+          {/* Section 1: Video Card — fixed height so filters don't bounce */}
+          <div className="h-[420px] overflow-hidden">
             {(() => {
               const activeIdx = hovered ?? selected;
               if (activeIdx === null || !filteredChannels[activeIdx]) {
