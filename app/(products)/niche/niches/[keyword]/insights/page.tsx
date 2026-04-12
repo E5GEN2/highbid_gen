@@ -481,25 +481,32 @@ function ChannelScatter({ channels }: {
                       {ch.videoUrl}
                     </a>
                   )}
+                  {/* Filters inside card */}
+                  <div className="border-t border-[#1f1f1f] mt-3 pt-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
+                        className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
+                      <span className="text-[10px] text-[#888]">Best video per channel only</span>
+                    </label>
+                  </div>
                 </div>
               </div>
             );
           })()}
           {(hovered ?? selected) === null && (
-            <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl flex-1 flex items-center justify-center p-6">
-              <p className="text-[#444] text-xs text-center">Hover or click a dot to see the video</p>
+            <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl flex-1 flex flex-col justify-between p-6">
+              <div className="flex-1 flex items-center justify-center">
+                <p className="text-[#444] text-xs text-center">Hover or click a dot to see the video</p>
+              </div>
+              <div className="border-t border-[#1f1f1f] pt-3 mt-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
+                    className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
+                  <span className="text-[10px] text-[#888]">Best video per channel only</span>
+                </label>
+              </div>
             </div>
           )}
-
-          {/* Filters — bottom of right panel */}
-          <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3 mt-auto">
-            <div className="text-[10px] text-[#666] uppercase tracking-wider mb-2">Filters</div>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
-                className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
-              <span className="text-xs text-[#888]">Best video per channel only</span>
-            </label>
-          </div>
         </div>
       </div>
     </div>
