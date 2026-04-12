@@ -29,7 +29,20 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents'>('general');
+
+  // Agents tab state
+  const [agentsData, setAgentsData] = useState<{
+    totalActive: number;
+    byKeyword: Array<{ keyword: string; active: number; taskIds: string[] }>;
+    tasks: Array<{ id: string; keyword: string; startedAt: string | null }>;
+  } | null>(null);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsAutoRefresh, setAgentsAutoRefresh] = useState(true);
+  const [agentsDeployKeyword, setAgentsDeployKeyword] = useState('');
+  const [agentsDeployThreads, setAgentsDeployThreads] = useState(2);
+  const [agentsDeployNumVideos, setAgentsDeployNumVideos] = useState(20);
+  const [agentsDeployMsg, setAgentsDeployMsg] = useState<string | null>(null);
 
   // Admin tokens state
   const [adminTokens, setAdminTokens] = useState<Array<{ id: string; name: string; tokenPreview: string; lastUsedAt: string | null; createdAt: string }>>([]);
@@ -485,6 +498,13 @@ export default function AdminPage() {
           <button onClick={() => { setAdminSection('tokens'); fetch('/api/admin/admin-tokens').then(r => r.json()).then(d => setAdminTokens(d.tokens || [])).catch(() => {}); }}
             className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'tokens' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Admin Tokens
+          </button>
+          <button onClick={() => { setAdminSection('agents'); setAgentsLoading(true); fetch('/api/admin/agents').then(r => r.json()).then(d => { setAgentsData(d); setAgentsLoading(false); }).catch(() => setAgentsLoading(false)); }}
+            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'agents' ? 'bg-green-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Agents
+            {agentsData && agentsData.totalActive > 0 && (
+              <span className="ml-1.5 bg-green-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">{agentsData.totalActive}</span>
+            )}
           </button>
         </div>
 
@@ -1769,7 +1789,207 @@ export default function AdminPage() {
           </div>
         </div>
         </div>
+
+        {/* Agents Tab */}
+        <div style={{ display: adminSection === 'agents' ? 'block' : 'none' }}>
+        <AgentsTab
+          data={agentsData}
+          loading={agentsLoading}
+          autoRefresh={agentsAutoRefresh}
+          setAutoRefresh={setAgentsAutoRefresh}
+          deployKeyword={agentsDeployKeyword}
+          setDeployKeyword={setAgentsDeployKeyword}
+          deployThreads={agentsDeployThreads}
+          setDeployThreads={setAgentsDeployThreads}
+          deployNumVideos={agentsDeployNumVideos}
+          setDeployNumVideos={setAgentsDeployNumVideos}
+          deployMsg={agentsDeployMsg}
+          setDeployMsg={setAgentsDeployMsg}
+          onRefresh={() => {
+            setAgentsLoading(true);
+            fetch('/api/admin/agents').then(r => r.json()).then(d => { setAgentsData(d); setAgentsLoading(false); }).catch(() => setAgentsLoading(false));
+          }}
+          active={adminSection === 'agents'}
+        />
+        </div>
       </div>
+    </div>
+  );
+}
+
+function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deployKeyword, setDeployKeyword, deployThreads, setDeployThreads, deployNumVideos, setDeployNumVideos, deployMsg, setDeployMsg, onRefresh, active }: {
+  data: { totalActive: number; byKeyword: Array<{ keyword: string; active: number; taskIds: string[] }>; tasks: Array<{ id: string; keyword: string; startedAt: string | null }> } | null;
+  loading: boolean;
+  autoRefresh: boolean;
+  setAutoRefresh: (v: boolean) => void;
+  deployKeyword: string;
+  setDeployKeyword: (v: string) => void;
+  deployThreads: number;
+  setDeployThreads: (v: number) => void;
+  deployNumVideos: number;
+  setDeployNumVideos: (v: number) => void;
+  deployMsg: string | null;
+  setDeployMsg: (v: string | null) => void;
+  onRefresh: () => void;
+  active: boolean;
+}) {
+  // Auto-refresh polling
+  useEffect(() => {
+    if (!active || !autoRefresh) return;
+    const interval = setInterval(onRefresh, 5000);
+    return () => clearInterval(interval);
+  }, [active, autoRefresh, onRefresh]);
+
+  const deployAgents = async () => {
+    if (!deployKeyword.trim()) return;
+    setDeployMsg(null);
+    try {
+      const res = await fetch('/api/admin/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: deployKeyword.trim(), threads: deployThreads, numVideos: deployNumVideos }),
+      });
+      const d = await res.json();
+      if (d.ok) {
+        setDeployMsg(`Deployed ${d.deployed} agents for "${d.keyword}"`);
+        setTimeout(onRefresh, 2000);
+      } else {
+        setDeployMsg(`Error: ${d.error}`);
+      }
+    } catch (err) {
+      setDeployMsg(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+    }
+    setTimeout(() => setDeployMsg(null), 5000);
+  };
+
+  const addThread = async (keyword: string) => {
+    try {
+      const res = await fetch('/api/admin/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword, threads: 1, numVideos: deployNumVideos }),
+      });
+      const d = await res.json();
+      if (d.ok) setTimeout(onRefresh, 2000);
+    } catch { /* ok */ }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-bold text-white">Agent Monitor</h2>
+            <p className="text-gray-400 text-sm">Track and control xgodo data collection agents</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`text-2xl font-bold ${data && data.totalActive > 0 ? 'text-green-400' : 'text-gray-500'}`}>
+              {loading ? '...' : data?.totalActive ?? 0}
+            </span>
+            <span className="text-sm text-gray-400">running</span>
+            <label className="flex items-center gap-2 ml-4 cursor-pointer">
+              <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)}
+                className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-green-600 focus:ring-green-500" />
+              <span className="text-xs text-gray-400">Auto-refresh</span>
+            </label>
+            <button onClick={onRefresh} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {/* Per-keyword thread cards */}
+        {data && data.byKeyword.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {data.byKeyword.map(kw => (
+              <div key={kw.keyword} className="bg-gray-900/60 border border-gray-700 rounded-xl p-4 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-white">{kw.keyword}</div>
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <span className="text-2xl font-bold text-green-400">{kw.active}</span>
+                    <span className="text-xs text-gray-500">threads</span>
+                  </div>
+                </div>
+                <button onClick={() => addThread(kw.keyword)}
+                  className="w-8 h-8 bg-green-600 hover:bg-green-700 text-white rounded-lg flex items-center justify-center text-lg font-bold transition"
+                  title="Add 1 thread"
+                >+</button>
+              </div>
+            ))}
+          </div>
+        ) : !loading ? (
+          <div className="text-center py-8 text-gray-500">
+            <div className="text-4xl mb-2">🤖</div>
+            No active agents. Deploy some below.
+          </div>
+        ) : (
+          <div className="text-center py-8">
+            <div className="w-6 h-6 border-2 border-green-400 border-t-transparent rounded-full animate-spin mx-auto" />
+          </div>
+        )}
+      </div>
+
+      {/* Deploy Agents */}
+      <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+        <h3 className="text-sm font-bold text-white mb-3">Deploy Agents</h3>
+        <div className="flex items-end gap-3 flex-wrap">
+          <div className="flex-1 min-w-[200px]">
+            <label className="block text-xs text-gray-500 mb-1">Keyword</label>
+            <input type="text" value={deployKeyword} onChange={e => setDeployKeyword(e.target.value)}
+              placeholder="e.g. youtube automation"
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-green-500" />
+          </div>
+          <div className="w-24">
+            <label className="block text-xs text-gray-500 mb-1">Threads</label>
+            <input type="number" min={1} max={20} value={deployThreads} onChange={e => setDeployThreads(parseInt(e.target.value) || 1)}
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+          </div>
+          <div className="w-28">
+            <label className="block text-xs text-gray-500 mb-1">Videos/task</label>
+            <input type="number" min={1} max={100} value={deployNumVideos} onChange={e => setDeployNumVideos(parseInt(e.target.value) || 20)}
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+          </div>
+          <button onClick={deployAgents}
+            className="px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition">
+            Deploy
+          </button>
+        </div>
+        {deployMsg && (
+          <div className={`mt-3 text-sm ${deployMsg.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>
+            {deployMsg}
+          </div>
+        )}
+      </div>
+
+      {/* Active Tasks Table */}
+      {data && data.tasks.length > 0 && (
+        <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+          <h3 className="text-sm font-bold text-white mb-3">Active Tasks ({data.tasks.length})</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-700 text-left">
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Task ID</th>
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Keyword</th>
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Started</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700/50">
+                {data.tasks.map(t => (
+                  <tr key={t.id} className="hover:bg-gray-700/20">
+                    <td className="px-3 py-2 text-gray-400 font-mono text-xs">{t.id.slice(-8)}</td>
+                    <td className="px-3 py-2 text-white">{t.keyword}</td>
+                    <td className="px-3 py-2 text-gray-400">
+                      {t.startedAt ? new Date(t.startedAt).toLocaleString() : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
