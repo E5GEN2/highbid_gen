@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { useNiche } from '@/components/NicheProvider';
 import NicheTimeline from '@/components/NicheTimeline';
@@ -214,6 +214,7 @@ function ChannelScatter({ channels }: {
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
+  const [onePerChannel, setOnePerChannel] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
 
   // Pan & zoom state
@@ -289,6 +290,17 @@ function ChannelScatter({ channels }: {
     return '#ef4444';
   };
 
+  // Filter: 1 per channel (max views) or all
+  const filteredChannels = useMemo(() => {
+    if (!onePerChannel) return channels;
+    const best = new Map<string, number>();
+    channels.forEach((c, i) => {
+      const prev = best.get(c.name);
+      if (prev === undefined || c.views > channels[prev].views) best.set(c.name, i);
+    });
+    return [...best.values()].sort((a, b) => a - b).map(i => channels[i]);
+  }, [channels, onePerChannel]);
+
   const xTicks = [1, 100, 1000, 10000, 100000, 1000000].filter(v => logSafe(v) >= minLogSubs - 0.3 && logSafe(v) <= maxLogSubs + 0.3);
   const yTicks = [100, 1000, 10000, 100000, 1000000, 10000000].filter(v => logSafe(v) >= minLogViews - 0.3 && logSafe(v) <= maxLogViews + 0.3);
   const fmtTick = (n: number) => n >= 1000000 ? `${n / 1000000}M` : n >= 1000 ? `${n / 1000}K` : String(n);
@@ -301,7 +313,7 @@ function ChannelScatter({ channels }: {
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="text-sm font-medium text-white">Channel Landscape</h3>
-          <p className="text-[10px] text-[#666]">{channels.length} videos — channel subs vs video views (log scale)</p>
+          <p className="text-[10px] text-[#666]">{filteredChannels.length} {onePerChannel ? 'channels' : 'videos'} — channel subs vs video views (log scale)</p>
         </div>
         <div className="flex gap-1">
           <button onClick={() => setColorBy('age')}
@@ -381,7 +393,7 @@ function ChannelScatter({ channels }: {
             <text x="3" y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600">Newcomers</text>
             <rect x={chartW - 20} y={chartH - 6} width="19" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
             <text x={chartW - 2} y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">High subs, low views</text>
-            {channels.map((c, i) => {
+            {filteredChannels.map((c, i) => {
               if (c.subs <= 0 && c.views <= 0) return null;
               const x = ((logSafe(c.subs) - minLogSubs) / rangeX) * chartW;
               const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
@@ -404,8 +416,8 @@ function ChannelScatter({ channels }: {
 
         {/* Video card — right side, same markup as video grid cards */}
         <div className="w-72 flex-shrink-0 hidden lg:block">
-          {hovered !== null && channels[hovered] ? (() => {
-            const ch = channels[hovered];
+          {hovered !== null && filteredChannels[hovered] ? (() => {
+            const ch = filteredChannels[hovered];
             const timeAgo = (dateStr: string) => {
               const d = new Date(dateStr);
               const diffMs = Date.now() - d.getTime();
@@ -474,6 +486,15 @@ function ChannelScatter({ channels }: {
               <p className="text-[#444] text-xs text-center">Hover over a dot to see the video</p>
             </div>
           )}
+
+          {/* Filter checkbox below card */}
+          <div className="mt-2 bg-[#141414] border border-[#1f1f1f] rounded-lg px-3 py-2.5">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); }}
+                className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
+              <span className="text-[10px] text-[#888]">Best video per channel only</span>
+            </label>
+          </div>
         </div>
       </div>
     </div>
