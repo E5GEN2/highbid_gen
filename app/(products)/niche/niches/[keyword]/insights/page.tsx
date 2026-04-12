@@ -333,7 +333,7 @@ function ChannelScatter({ channels }: {
               if (newZ <= 1) setPan({ x: 0, y: 0 });
             }}
               className="w-6 h-6 rounded-md text-sm bg-white/10 text-white hover:bg-white/15 transition flex items-center justify-center">−</button>
-            {zoom > 1 && (
+            {(zoom > 1 || pan.x !== 0 || pan.y !== 0) && (
               <button onClick={resetView}
                 className="px-2 py-0.5 rounded-md text-[10px] bg-white/10 text-white hover:bg-white/15 transition ml-0.5">
                 Reset
