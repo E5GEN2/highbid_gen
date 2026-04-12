@@ -245,13 +245,17 @@ function NicheVideosInner() {
     setTimeout(() => { setSyncing(false); setSyncProgress(null); }, 5000);
   };
 
+  // Store ALL similar results, client-side filter by minScore dropdown
+  const [allSimilarVideos, setAllSimilarVideos] = useState<NicheVideo[]>([]);
+
   const fetchSimilar = async (videoId: number, title: string) => {
     setSimilarSource({ id: videoId, title });
     setSimilarLoading(true);
     try {
-      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=200&minSimilarity=${similarMinScore}`);
+      // Fetch all results with 0 threshold — filter client-side via dropdown
+      const res = await fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=500&minSimilarity=0`);
       const data = await res.json();
-      setSimilarVideos((data.similar || []).map((v: Record<string, unknown>) => ({
+      const mapped = (data.similar || []).map((v: Record<string, unknown>) => ({
         id: v.id as number, keyword: v.keyword as string, url: v.url as string, title: v.title as string,
         view_count: v.viewCount as number, channel_name: v.channelName as string,
         posted_date: v.postedDate as string, posted_at: v.postedAt as string,
@@ -260,10 +264,19 @@ function NicheVideosInner() {
         top_comment: v.topComment as string, thumbnail: v.thumbnail as string,
         fetched_at: '', channel_created_at: '', embedded_at: null,
         _similarity: v.similarity as number,
-      })));
+      }));
+      setAllSimilarVideos(mapped);
+      setSimilarVideos(mapped.filter((v: NicheVideo) => (v._similarity || 0) >= similarMinScore));
     } catch (err) { console.error('Similar fetch error:', err); }
     setSimilarLoading(false);
   };
+
+  // Re-filter when minScore changes (instant, no API call)
+  useEffect(() => {
+    if (allSimilarVideos.length > 0) {
+      setSimilarVideos(allSimilarVideos.filter(v => (v._similarity || 0) >= similarMinScore));
+    }
+  }, [similarMinScore, allSimilarVideos]);
 
   const timeAgo = (dateStr: string) => {
     const d = new Date(dateStr);
@@ -691,7 +704,7 @@ function NicheVideosInner() {
 
       {/* Similar Videos Modal */}
       {similarSource && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-start justify-center pt-10 px-4 overflow-y-auto" onClick={() => { setSimilarSource(null); setSimilarVideos([]); }}>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-start justify-center pt-10 px-4 overflow-y-auto" onClick={() => { setSimilarSource(null); setSimilarVideos([]); setAllSimilarVideos([]); }}>
           <div className="bg-[#111] border border-[#1f1f1f] rounded-2xl w-full max-w-6xl mb-10" onClick={e => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-[#1f1f1f] flex items-center justify-between">
               <div>
@@ -700,7 +713,7 @@ function NicheVideosInner() {
                   <span className="text-xs text-[#888]">{similarVideos.length} results</span>
                   <label className="text-xs text-[#888]">Min match:</label>
                   <select value={similarMinScore}
-                    onChange={e => { setSimilarMinScore(parseFloat(e.target.value)); if (similarSource) fetchSimilar(similarSource.id, similarSource.title); }}
+                    onChange={e => setSimilarMinScore(parseFloat(e.target.value))}
                     className="bg-[#141414] border border-[#1f1f1f] text-white text-xs rounded px-2 py-0.5">
                     <option value={0}>All</option>
                     <option value={0.5}>50%+</option>
@@ -712,7 +725,7 @@ function NicheVideosInner() {
                   </select>
                 </div>
               </div>
-              <button onClick={() => { setSimilarSource(null); setSimilarVideos([]); }} className="text-[#888] hover:text-white">
+              <button onClick={() => { setSimilarSource(null); setSimilarVideos([]); setAllSimilarVideos([]); }} className="text-[#888] hover:text-white">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
