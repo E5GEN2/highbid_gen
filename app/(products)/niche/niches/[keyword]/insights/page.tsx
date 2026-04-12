@@ -312,15 +312,22 @@ function ChannelScatter({ channels }: {
             className={`px-2.5 py-1 rounded-md text-[10px] transition ${colorBy === 'score' ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#888]'}`}>
             Color: Score
           </button>
-          {zoom > 1 && (
-            <button onClick={resetView}
-              className="px-2.5 py-1 rounded-md text-[10px] bg-white/10 text-white hover:bg-white/15 transition ml-1">
-              Reset
-            </button>
-          )}
-          {zoom > 1 && (
-            <span className="text-[10px] text-[#666] ml-1">{zoom.toFixed(1)}x</span>
-          )}
+          <div className="flex items-center gap-0.5 ml-2">
+            <button onClick={() => { setZoom(z => Math.min(z * 1.4, 20)); }}
+              className="w-6 h-6 rounded-md text-sm bg-white/10 text-white hover:bg-white/15 transition flex items-center justify-center">+</button>
+            <button onClick={() => {
+              const newZ = Math.max(zoom / 1.4, 1);
+              setZoom(newZ);
+              if (newZ <= 1) setPan({ x: 0, y: 0 });
+            }}
+              className="w-6 h-6 rounded-md text-sm bg-white/10 text-white hover:bg-white/15 transition flex items-center justify-center">−</button>
+            {zoom > 1 && (
+              <button onClick={resetView}
+                className="px-2 py-0.5 rounded-md text-[10px] bg-white/10 text-white hover:bg-white/15 transition ml-0.5">
+                Reset
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -352,7 +359,6 @@ function ChannelScatter({ channels }: {
           <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[10px] text-[#666] font-medium whitespace-nowrap">Views</div>
 
           <svg ref={svgRef} viewBox={viewBox} className="w-full bg-[#0a0a0a] rounded-lg select-none" style={{ aspectRatio: '4 / 3', cursor: dragging ? 'grabbing' : 'grab' }}
-            onWheel={handleWheel}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
