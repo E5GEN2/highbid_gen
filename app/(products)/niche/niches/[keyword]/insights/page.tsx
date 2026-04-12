@@ -250,7 +250,7 @@ function ChannelScatter({ channels }: {
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="text-sm font-medium text-white">Channel Landscape</h3>
-          <p className="text-[10px] text-[#666]">{channels.length} channels — subscribers vs total views (log scale)</p>
+          <p className="text-[10px] text-[#666]">{channels.length} videos — channel subs vs video views (log scale)</p>
         </div>
         <div className="flex gap-1">
           <button onClick={() => setColorBy('age')}

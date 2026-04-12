@@ -59,34 +59,17 @@ export async function GET(req: NextRequest) {
     return { label, count: parseInt(row?.count || '0'), color: viewsColors[i] };
   });
 
-  // Channel scatter data — subs vs views + best video per channel
+  // Video scatter data — 1 dot per video, X = channel subs, Y = video views
   const scatterRes = await pool.query(`
-    SELECT DISTINCT ON (v.channel_name)
-      v.channel_name,
-      v.channel_id,
-      v.subscriber_count as subs,
-      v.view_count,
-      v.score,
-      v.channel_created_at,
-      v.url as video_url,
-      v.title as video_title,
-      v.like_count,
-      v.comment_count,
-      v.posted_at,
-      v.posted_date,
-      v.keyword,
-      agg.total_views,
-      agg.video_count
-    FROM niche_spy_videos v
-    JOIN (
-      SELECT channel_name, SUM(view_count) as total_views, COUNT(*) as video_count
-      FROM niche_spy_videos
-      WHERE keyword = $1 AND score >= $2 AND channel_name IS NOT NULL
-      GROUP BY channel_name
-      HAVING MAX(subscriber_count) > 0 OR SUM(view_count) > 0
-    ) agg ON agg.channel_name = v.channel_name
-    WHERE v.keyword = $1 AND v.score >= $2
-    ORDER BY v.channel_name, v.score DESC, v.view_count DESC
+    SELECT
+      channel_name, channel_id, subscriber_count as subs,
+      view_count, score, channel_created_at,
+      url as video_url, title as video_title,
+      like_count, comment_count, posted_at, posted_date, keyword
+    FROM niche_spy_videos
+    WHERE keyword = $1 AND score >= $2
+      AND (subscriber_count > 0 OR view_count > 0)
+    ORDER BY view_count DESC NULLS LAST
   `, [keyword, minScore]);
 
   const scatter = scatterRes.rows.map(r => {
@@ -98,8 +81,8 @@ export async function GET(req: NextRequest) {
       name: r.channel_name,
       channelId: r.channel_id || null,
       subs: parseInt(r.subs) || 0,
-      views: parseInt(r.total_views) || 0,
-      videos: parseInt(r.video_count) || 0,
+      views: parseInt(r.view_count) || 0,
+      videos: 1,
       avgScore: parseInt(r.score) || 0,
       ageDays,
       videoUrl: r.video_url || null,
