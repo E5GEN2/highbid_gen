@@ -387,7 +387,7 @@ function ChannelScatter({ channels }: {
               const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
               const isH = hovered === i;
               return (
-                <circle key={i} cx={x} cy={y} r={isH ? 1.8 : 0.6}
+                <circle key={i} cx={x} cy={y} r={isH ? 1 : 0.6}
                   fill={getColor(c)} opacity={isH ? 1 : 0.45}
                   stroke={isH ? '#fff' : 'none'} strokeWidth={isH ? 0.2 : 0}
                   className="cursor-pointer"
