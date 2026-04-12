@@ -20,15 +20,38 @@ export default function NicheInsights() {
     newAvgSubs: number; estAvgSubs: number;
   } | null>(null);
 
+  // Subscriber distribution buckets
+  const [subsDist, setSubsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
+
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
 
-  // Fetch saturation + channel stats
+  // Fetch saturation + channel stats + subscriber distribution
   useEffect(() => {
     fetch(`/api/niche-spy/saturation?keyword=${encodeURIComponent(keyword)}`)
       .then(r => r.json()).then(d => setSaturation(d)).catch(() => {});
     fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=0&sort=views&minScore=${filter.minScore}`)
       .then(r => r.json()).then(d => { if (d.stats) setChannelStats(d.stats); }).catch(() => {});
-  }, [keyword]);
+    // Fetch all channels to build subscriber distribution
+    fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=5000&sort=subs&minScore=${filter.minScore}`)
+      .then(r => r.json()).then(d => {
+        if (!d.channels) return;
+        const buckets = [
+          { label: '0', min: 0, max: 1, count: 0, color: '#444' },
+          { label: '1-1K', min: 1, max: 1000, count: 0, color: '#666' },
+          { label: '1K-10K', min: 1000, max: 10000, count: 0, color: '#3b82f6' },
+          { label: '10K-100K', min: 10000, max: 100000, count: 0, color: '#8b5cf6' },
+          { label: '100K-1M', min: 100000, max: 1000000, count: 0, color: '#f59e0b' },
+          { label: '1M+', min: 1000000, max: Infinity, count: 0, color: '#ef4444' },
+        ];
+        for (const ch of d.channels) {
+          const subs = ch.subscribers || 0;
+          for (const b of buckets) {
+            if (subs >= b.min && subs < b.max) { b.count++; break; }
+          }
+        }
+        setSubsDist(buckets.map(b => ({ label: b.label, count: b.count, color: b.color })));
+      }).catch(() => {});
+  }, [keyword, filter.minScore]);
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto space-y-6">
@@ -78,6 +101,41 @@ export default function NicheInsights() {
           </div>
         </div>
       )}
+
+      {/* Subscriber Distribution Chart */}
+      {subsDist.length > 0 && subsDist.some(b => b.count > 0) && (() => {
+        const maxCount = Math.max(...subsDist.map(b => b.count));
+        const total = subsDist.reduce((s, b) => s + b.count, 0);
+        return (
+          <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-5 py-4">
+            <h3 className="text-sm font-medium text-white mb-1">Subscriber Distribution</h3>
+            <p className="text-[10px] text-[#666] mb-4">{total} channels across {subsDist.filter(b => b.count > 0).length} tiers</p>
+            <div className="space-y-2.5">
+              {subsDist.map(bucket => {
+                const pct = maxCount > 0 ? (bucket.count / maxCount) * 100 : 0;
+                const sharePct = total > 0 ? Math.round((bucket.count / total) * 100) : 0;
+                return (
+                  <div key={bucket.label} className="flex items-center gap-3">
+                    <div className="w-20 text-right text-xs text-[#888] font-mono flex-shrink-0">{bucket.label}</div>
+                    <div className="flex-1 h-7 bg-[#0a0a0a] rounded-lg overflow-hidden relative">
+                      <div
+                        className="h-full rounded-lg transition-all duration-500"
+                        style={{ width: `${Math.max(pct, bucket.count > 0 ? 2 : 0)}%`, backgroundColor: bucket.color }}
+                      />
+                      {bucket.count > 0 && (
+                        <span className="absolute inset-y-0 flex items-center text-xs font-medium text-white" style={{ left: `${Math.min(Math.max(pct, 3), 95)}%`, paddingLeft: '8px' }}>
+                          {bucket.count}
+                        </span>
+                      )}
+                    </div>
+                    <div className="w-10 text-right text-xs text-[#666] flex-shrink-0">{sharePct}%</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* New vs Established Channels */}
       {channelStats && (
