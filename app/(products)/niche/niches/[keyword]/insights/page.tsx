@@ -49,7 +49,14 @@ export default function NicheInsights() {
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto space-y-6">
-      {/* Distribution Charts — side by side, FIRST */}
+      {/* Channel Landscape scatter — TOP */}
+      {distLoading ? (
+        <SkeletonCard title="Channel Landscape" height={300} />
+      ) : scatterDots.length > 0 ? (
+        <ChannelScatter dots={scatterDots} />
+      ) : null}
+
+      {/* Distribution Charts — side by side, below scatter */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {distLoading ? (
           <>
@@ -63,13 +70,6 @@ export default function NicheInsights() {
           </>
         )}
       </div>
-
-      {/* Channel Landscape scatter */}
-      {distLoading ? (
-        <SkeletonCard title="Channel Landscape" height={300} />
-      ) : scatterDots.length > 0 ? (
-        <ChannelScatter dots={scatterDots} />
-      ) : null}
 
       {/* Timeline */}
       <NicheTimeline
