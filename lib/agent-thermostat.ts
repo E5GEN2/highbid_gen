@@ -54,8 +54,10 @@ async function runCheck() {
     const data = await res.json();
     const tasks = data.job_tasks || [];
 
-    // Count running per keyword
+    // Count running per keyword + track task durations
     const running: Record<string, number> = {};
+    const seenTaskIds = new Set<string>();
+
     for (const t of tasks) {
       let planned: Record<string, unknown> = {};
       if (typeof t.planned_task === 'string') {
@@ -63,9 +65,27 @@ async function runCheck() {
       } else if (t.planned_task && typeof t.planned_task === 'object') {
         planned = t.planned_task;
       }
+      const taskId = String(t._id || t.job_task_id || '');
       const kw = String(planned.keyword || 'unknown');
+      const workerName = String(t.worker_name || '');
       running[kw] = (running[kw] || 0) + 1;
+
+      if (taskId) {
+        seenTaskIds.add(taskId);
+        // Upsert: first_seen stays, last_seen updates
+        await pool.query(`
+          INSERT INTO agent_task_log (task_id, keyword, first_seen_at, last_seen_at, status, worker_name)
+          VALUES ($1, $2, NOW(), NOW(), 'running', $3)
+          ON CONFLICT (task_id) DO UPDATE SET last_seen_at = NOW(), status = 'running', worker_name = $3
+        `, [taskId, kw, workerName]).catch(() => {});
+      }
     }
+
+    // Mark tasks no longer running as completed
+    await pool.query(`
+      UPDATE agent_task_log SET status = 'completed'
+      WHERE status = 'running' AND last_seen_at < NOW() - INTERVAL '90 seconds'
+    `).catch(() => {});
 
     // Process each target
     for (const target of targetsRes.rows) {

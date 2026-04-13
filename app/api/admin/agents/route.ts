@@ -101,10 +101,39 @@ export async function GET(req: NextRequest) {
 
     const keywordList = Object.values(byKeyword).sort((a, b) => b.active - a.active);
 
+    // Fetch duration data from task log
+    const taskIds = taskList.map(t => t.id).filter(Boolean);
+    const durationMap: Record<string, { firstSeen: string; duration: number }> = {};
+    if (taskIds.length > 0) {
+      const logRes = await pool.query(
+        "SELECT task_id, first_seen_at, EXTRACT(EPOCH FROM (NOW() - first_seen_at))::integer as duration_sec FROM agent_task_log WHERE task_id = ANY($1)",
+        [taskIds]
+      );
+      for (const r of logRes.rows) {
+        durationMap[r.task_id] = { firstSeen: r.first_seen_at, duration: r.duration_sec };
+      }
+    }
+
+    // Also fetch recently completed tasks (last 1 hour)
+    const recentRes = await pool.query(
+      "SELECT task_id, keyword, first_seen_at, last_seen_at, status, worker_name, EXTRACT(EPOCH FROM (last_seen_at - first_seen_at))::integer as duration_sec FROM agent_task_log WHERE status = 'completed' AND last_seen_at > NOW() - INTERVAL '1 hour' ORDER BY last_seen_at DESC LIMIT 50"
+    );
+
     return NextResponse.json({
       totalActive: taskList.length,
       byKeyword: keywordList,
-      tasks: taskList,
+      tasks: taskList.map(t => ({
+        ...t,
+        duration: durationMap[t.id]?.duration || null,
+        firstSeen: durationMap[t.id]?.firstSeen || null,
+      })),
+      recentCompleted: recentRes.rows.map(r => ({
+        id: r.task_id,
+        keyword: r.keyword,
+        duration: r.duration_sec,
+        completedAt: r.last_seen_at,
+        workerName: r.worker_name,
+      })),
     });
   } catch (err) {
     console.error('[agents] Monitor error:', err);

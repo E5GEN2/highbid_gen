@@ -595,6 +595,20 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_cluster ON niche_cluster_assignments(cluster_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_video ON niche_cluster_assignments(video_id)`).catch(() => {});
 
+    // Agent task tracking — first-seen/last-seen per xgodo task
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_task_log (
+        task_id TEXT PRIMARY KEY,
+        keyword TEXT NOT NULL,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status TEXT DEFAULT 'running',
+        worker_name TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_atl_keyword ON agent_task_log(keyword)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_atl_status ON agent_task_log(status)`).catch(() => {});
+
     // Agent thread targets for the thermostat
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_thread_targets (

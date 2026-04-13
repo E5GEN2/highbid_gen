@@ -2048,19 +2048,56 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
                 <tr className="border-b border-gray-700 text-left">
                   <th className="px-3 py-2 text-xs text-gray-500 uppercase">Task ID</th>
                   <th className="px-3 py-2 text-xs text-gray-500 uppercase">Keyword</th>
-                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Started</th>
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Running</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700/50">
-                {data.tasks.map(t => (
-                  <tr key={t.id} className="hover:bg-gray-700/20">
-                    <td className="px-3 py-2 text-gray-400 font-mono text-xs">{t.id.slice(-8)}</td>
-                    <td className="px-3 py-2 text-white">{t.keyword}</td>
-                    <td className="px-3 py-2 text-gray-400">
-                      {t.startedAt ? new Date(t.startedAt).toLocaleString() : '—'}
-                    </td>
-                  </tr>
-                ))}
+                {data.tasks.map((t: Record<string, unknown>) => {
+                  const dur = t.duration as number | null;
+                  const fmtDur = dur != null
+                    ? dur < 60 ? `${dur}s` : dur < 3600 ? `${Math.floor(dur / 60)}m ${dur % 60}s` : `${Math.floor(dur / 3600)}h ${Math.floor((dur % 3600) / 60)}m`
+                    : '—';
+                  return (
+                    <tr key={t.id as string} className="hover:bg-gray-700/20">
+                      <td className="px-3 py-2 text-gray-400 font-mono text-xs">{(t.id as string).slice(-8)}</td>
+                      <td className="px-3 py-2 text-white">{t.keyword as string}</td>
+                      <td className="px-3 py-2 text-green-400 font-mono text-xs">{fmtDur}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Recently Completed Tasks */}
+      {data && (data as Record<string, unknown>).recentCompleted && ((data as Record<string, unknown>).recentCompleted as Array<Record<string, unknown>>).length > 0 && (
+        <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+          <h3 className="text-sm font-bold text-white mb-3">Recently Completed</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-700 text-left">
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Task ID</th>
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Keyword</th>
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Duration</th>
+                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Completed</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700/50">
+                {((data as Record<string, unknown>).recentCompleted as Array<Record<string, unknown>>).map((t) => {
+                  const dur = t.duration as number;
+                  const fmtDur = dur < 60 ? `${dur}s` : dur < 3600 ? `${Math.floor(dur / 60)}m ${dur % 60}s` : `${Math.floor(dur / 3600)}h ${Math.floor((dur % 3600) / 60)}m`;
+                  return (
+                    <tr key={t.id as string} className="hover:bg-gray-700/20">
+                      <td className="px-3 py-2 text-gray-400 font-mono text-xs">{(t.id as string).slice(-8)}</td>
+                      <td className="px-3 py-2 text-white">{t.keyword as string}</td>
+                      <td className="px-3 py-2 text-gray-300 font-mono text-xs">{fmtDur}</td>
+                      <td className="px-3 py-2 text-gray-500 text-xs">{new Date(t.completedAt as string).toLocaleTimeString()}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
