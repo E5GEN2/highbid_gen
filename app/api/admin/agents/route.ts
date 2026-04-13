@@ -25,6 +25,7 @@ export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
 
   try {
+    const pool = await getPool();
     const config = await getConfig();
     const token = getToken(config);
     if (!token) return NextResponse.json({ error: 'xgodo token not configured' }, { status: 500 });
