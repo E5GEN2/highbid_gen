@@ -335,12 +335,13 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
 
   const logSafe = (n: number) => Math.log10(Math.max(n, 1));
 
-  const subsVals = dots.filter(c => c.s > 0).map(c => logSafe(c.s));
-  const viewsVals = dots.filter(c => c.v > 0).map(c => logSafe(c.v));
-  const minLogSubs = subsVals.length > 0 ? Math.min(...subsVals) : 0;
-  const maxLogSubs = subsVals.length > 0 ? Math.max(...subsVals) : 6;
-  const minLogViews = viewsVals.length > 0 ? Math.min(...viewsVals) : 0;
-  const maxLogViews = viewsVals.length > 0 ? Math.max(...viewsVals) : 7;
+  // Include ALL dots in range calculation (including subs=0 which maps to log10(1)=0)
+  const allLogSubs = dots.map(d => logSafe(d.s));
+  const allLogViews = dots.map(d => logSafe(d.v));
+  const minLogSubs = allLogSubs.length > 0 ? Math.min(...allLogSubs) : 0;
+  const maxLogSubs = allLogSubs.length > 0 ? Math.max(...allLogSubs) : 6;
+  const minLogViews = allLogViews.length > 0 ? Math.min(...allLogViews) : 0;
+  const maxLogViews = allLogViews.length > 0 ? Math.max(...allLogViews) : 7;
   const rangeX = maxLogSubs - minLogSubs || 1;
   const rangeY = maxLogViews - minLogViews || 1;
 
@@ -505,8 +506,8 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
             <text x={chartW - 2} y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">High subs, low views</text>
             {filteredDots.map((d, i) => {
               if (d.s <= 0 && d.v <= 0) return null;
-              const x = ((logSafe(d.s) - minLogSubs) / rangeX) * chartW;
-              const y = chartH - ((logSafe(d.v) - minLogViews) / rangeY) * chartH;
+              const x = Math.max(0, Math.min(chartW, ((logSafe(d.s) - minLogSubs) / rangeX) * chartW));
+              const y = Math.max(0, Math.min(chartH, chartH - ((logSafe(d.v) - minLogViews) / rangeY) * chartH));
               const isH = hovered === i || selected === i;
               return (
                 <circle key={i} cx={x} cy={y} r={isH ? 1 : 0.6}

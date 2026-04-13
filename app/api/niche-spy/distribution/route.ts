@@ -49,14 +49,21 @@ export async function GET(req: NextRequest) {
       GROUP BY bucket
     `, [keyword, minScore]),
 
-    // Scatter — LIGHTWEIGHT: only fields needed for dot positioning + color
+    // Scatter — LIGHTWEIGHT: use MAX subs per channel (not per-video, which can be 0 if not enriched)
     pool.query(`
-      SELECT id, channel_name as ch, subscriber_count as subs, view_count as views, score,
-             channel_created_at, embedded_at IS NOT NULL as has_embedding
-      FROM niche_spy_videos
-      WHERE keyword = $1 AND score >= $2
-        AND (subscriber_count > 0 OR view_count > 0)
-      ORDER BY view_count DESC NULLS LAST
+      SELECT v.id, v.channel_name as ch, COALESCE(cs.max_subs, v.subscriber_count, 0) as subs,
+             v.view_count as views, v.score, v.channel_created_at,
+             v.embedded_at IS NOT NULL as has_embedding
+      FROM niche_spy_videos v
+      LEFT JOIN (
+        SELECT channel_name, MAX(subscriber_count) as max_subs
+        FROM niche_spy_videos
+        WHERE keyword = $1 AND score >= $2
+        GROUP BY channel_name
+      ) cs ON cs.channel_name = v.channel_name
+      WHERE v.keyword = $1 AND v.score >= $2
+        AND (COALESCE(cs.max_subs, v.subscriber_count, 0) > 0 OR v.view_count > 0)
+      ORDER BY v.view_count DESC NULLS LAST
     `, [keyword, minScore]),
   ]);
 
