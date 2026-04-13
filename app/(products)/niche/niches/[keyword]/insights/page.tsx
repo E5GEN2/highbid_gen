@@ -277,15 +277,15 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
       .catch(() => fetchingRef.current.delete(id));
   }, [videoCache]);
 
-  // Trigger detail fetch when hovered/selected changes
+  // Trigger detail fetch when hovered/selected changes — use filteredDots not dots!
   useEffect(() => {
     const idx = hovered ?? selected;
-    if (idx !== null && dots[idx]) {
-      fetchVideoDetail(dots[idx].id);
+    if (idx !== null && filteredDots[idx]) {
+      fetchVideoDetail(filteredDots[idx].id);
     } else {
       setActiveVideo(null);
     }
-  }, [hovered, selected, dots, fetchVideoDetail]);
+  }, [hovered, selected, filteredDots, fetchVideoDetail]);
 
   // Similar modal state
   const [similarSource, setSimilarSource] = useState<{ id: number; title: string } | null>(null);
