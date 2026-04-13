@@ -56,16 +56,36 @@ export async function GET(req: NextRequest) {
       id: string;
       keyword: string;
       startedAt: string | null;
+      workerName: string | null;
     }
 
     const taskList: TaskInfo[] = tasks.map((t: Record<string, unknown>) => {
-      const planned = (t.planned_task || {}) as Record<string, unknown>;
-      const proof = (t.job_proof || {}) as Record<string, unknown>;
-      const keyword = (planned.keyword || proof.keyword || proof.searchQuery || proof.search_query || 'unknown') as string;
+      // planned_task can be a JSON string or an object
+      let planned: Record<string, unknown> = {};
+      if (typeof t.planned_task === 'string') {
+        try { planned = JSON.parse(t.planned_task); } catch { /* not JSON */ }
+      } else if (t.planned_task && typeof t.planned_task === 'object') {
+        planned = t.planned_task as Record<string, unknown>;
+      }
+
+      let proof: Record<string, unknown> = {};
+      if (typeof t.job_proof === 'string') {
+        try { proof = JSON.parse(t.job_proof); } catch { /* not JSON */ }
+      } else if (t.job_proof && typeof t.job_proof === 'object') {
+        proof = t.job_proof as Record<string, unknown>;
+      }
+
+      const keyword = (
+        planned.keyword || planned.search_query || planned.searchQuery ||
+        proof.keyword || proof.searchQuery || proof.search_query ||
+        'unknown'
+      ) as string;
+
       return {
         id: (t._id || t.job_task_id || '') as string,
         keyword,
         startedAt: (t.created_at || t.started_at || null) as string | null,
+        workerName: (t.worker_name || null) as string | null,
       };
     });
 
