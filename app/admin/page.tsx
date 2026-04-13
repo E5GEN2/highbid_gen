@@ -39,9 +39,10 @@ export default function AdminPage() {
   } | null>(null);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [agentsAutoRefresh, setAgentsAutoRefresh] = useState(true);
-  const [agentsDeployKeyword, setAgentsDeployKeyword] = useState('');
-  const [agentsDeployThreads, setAgentsDeployThreads] = useState(2);
-  const [agentsDeployNumVideos, setAgentsDeployNumVideos] = useState(20);
+  const [agentsDeploy, setAgentsDeploy] = useState({
+    keyword: '', threads: 2, apiKey: '', loopNumber: 30,
+    maxSearchResults: 50, maxSuggestedResults: 50, rofeAPIKey: '',
+  });
   const [agentsDeployMsg, setAgentsDeployMsg] = useState<string | null>(null);
 
   // Admin tokens state
@@ -1797,12 +1798,8 @@ export default function AdminPage() {
           loading={agentsLoading}
           autoRefresh={agentsAutoRefresh}
           setAutoRefresh={setAgentsAutoRefresh}
-          deployKeyword={agentsDeployKeyword}
-          setDeployKeyword={setAgentsDeployKeyword}
-          deployThreads={agentsDeployThreads}
-          setDeployThreads={setAgentsDeployThreads}
-          deployNumVideos={agentsDeployNumVideos}
-          setDeployNumVideos={setAgentsDeployNumVideos}
+          deploy={agentsDeploy}
+          setDeploy={setAgentsDeploy}
           deployMsg={agentsDeployMsg}
           setDeployMsg={setAgentsDeployMsg}
           onRefresh={() => {
@@ -1817,22 +1814,40 @@ export default function AdminPage() {
   );
 }
 
-function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deployKeyword, setDeployKeyword, deployThreads, setDeployThreads, deployNumVideos, setDeployNumVideos, deployMsg, setDeployMsg, onRefresh, active }: {
+interface DeployConfig {
+  keyword: string; threads: number; apiKey: string; loopNumber: number;
+  maxSearchResults: number; maxSuggestedResults: number; rofeAPIKey: string;
+}
+
+function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDeploy, deployMsg, setDeployMsg, onRefresh, active }: {
   data: { totalActive: number; byKeyword: Array<{ keyword: string; active: number; taskIds: string[] }>; tasks: Array<{ id: string; keyword: string; startedAt: string | null }> } | null;
   loading: boolean;
   autoRefresh: boolean;
   setAutoRefresh: (v: boolean) => void;
-  deployKeyword: string;
-  setDeployKeyword: (v: string) => void;
-  deployThreads: number;
-  setDeployThreads: (v: number) => void;
-  deployNumVideos: number;
-  setDeployNumVideos: (v: number) => void;
+  deploy: DeployConfig;
+  setDeploy: React.Dispatch<React.SetStateAction<DeployConfig>>;
   deployMsg: string | null;
   setDeployMsg: (v: string | null) => void;
   onRefresh: () => void;
   active: boolean;
 }) {
+  // Load defaults from admin config on first render
+  useEffect(() => {
+    if (!active) return;
+    fetch('/api/admin/config').then(r => r.json()).then(d => {
+      if (d.config) {
+        setDeploy(prev => ({
+          ...prev,
+          apiKey: prev.apiKey || d.config.agent_api_key || '',
+          rofeAPIKey: prev.rofeAPIKey || d.config.agent_rofe_api_key || '',
+          loopNumber: parseInt(d.config.agent_loop_number) || prev.loopNumber,
+          maxSearchResults: parseInt(d.config.agent_max_search_results) || prev.maxSearchResults,
+          maxSuggestedResults: parseInt(d.config.agent_max_suggested_results) || prev.maxSuggestedResults,
+        }));
+      }
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
   // Auto-refresh polling
   useEffect(() => {
     if (!active || !autoRefresh) return;
@@ -1841,13 +1856,33 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deployKeyword, 
   }, [active, autoRefresh, onRefresh]);
 
   const deployAgents = async () => {
-    if (!deployKeyword.trim()) return;
+    if (!deploy.keyword.trim()) return;
     setDeployMsg(null);
     try {
+      // Save defaults to admin config
+      fetch('/api/admin/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: {
+          agent_api_key: deploy.apiKey,
+          agent_rofe_api_key: deploy.rofeAPIKey,
+          agent_loop_number: String(deploy.loopNumber),
+          agent_max_search_results: String(deploy.maxSearchResults),
+          agent_max_suggested_results: String(deploy.maxSuggestedResults),
+        }}),
+      }).catch(() => {});
+
       const res = await fetch('/api/admin/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword: deployKeyword.trim(), threads: deployThreads, numVideos: deployNumVideos }),
+        body: JSON.stringify({
+          keyword: deploy.keyword.trim(),
+          threads: deploy.threads,
+          apiKey: deploy.apiKey,
+          loopNumber: deploy.loopNumber,
+          maxSearchResultsBeforeFallback: deploy.maxSearchResults,
+          maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
+          rofeAPIKey: deploy.rofeAPIKey,
+        }),
       });
       const d = await res.json();
       if (d.ok) {
@@ -1867,7 +1902,13 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deployKeyword, 
       const res = await fetch('/api/admin/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword, threads: 1, numVideos: deployNumVideos }),
+        body: JSON.stringify({
+          keyword, threads: 1,
+          apiKey: deploy.apiKey, loopNumber: deploy.loopNumber,
+          maxSearchResultsBeforeFallback: deploy.maxSearchResults,
+          maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
+          rofeAPIKey: deploy.rofeAPIKey,
+        }),
       });
       const d = await res.json();
       if (d.ok) setTimeout(onRefresh, 2000);
@@ -1933,25 +1974,57 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deployKeyword, 
       {/* Deploy Agents */}
       <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
         <h3 className="text-sm font-bold text-white mb-3">Deploy Agents</h3>
-        <div className="flex items-end gap-3 flex-wrap">
-          <div className="flex-1 min-w-[200px]">
+
+        {/* Row 1: Keyword + Threads */}
+        <div className="flex items-end gap-3 mb-3">
+          <div className="flex-1">
             <label className="block text-xs text-gray-500 mb-1">Keyword</label>
-            <input type="text" value={deployKeyword} onChange={e => setDeployKeyword(e.target.value)}
+            <input type="text" value={deploy.keyword} onChange={e => setDeploy(p => ({ ...p, keyword: e.target.value }))}
               placeholder="e.g. youtube automation"
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-green-500" />
           </div>
           <div className="w-24">
             <label className="block text-xs text-gray-500 mb-1">Threads</label>
-            <input type="number" min={1} max={20} value={deployThreads} onChange={e => setDeployThreads(parseInt(e.target.value) || 1)}
+            <input type="number" min={1} max={20} value={deploy.threads} onChange={e => setDeploy(p => ({ ...p, threads: parseInt(e.target.value) || 1 }))}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
           </div>
+        </div>
+
+        {/* Row 2: API Key */}
+        <div className="mb-3">
+          <label className="block text-xs text-gray-500 mb-1">API Key</label>
+          <input type="password" value={deploy.apiKey} onChange={e => setDeploy(p => ({ ...p, apiKey: e.target.value }))}
+            placeholder="sk_live_..."
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-green-500 font-mono" />
+        </div>
+
+        {/* Row 3: rofeAPIKey */}
+        <div className="mb-3">
+          <label className="block text-xs text-gray-500 mb-1">rofe API Key</label>
+          <input type="password" value={deploy.rofeAPIKey} onChange={e => setDeploy(p => ({ ...p, rofeAPIKey: e.target.value }))}
+            placeholder="hba_..."
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-green-500 font-mono" />
+        </div>
+
+        {/* Row 4: Loop Number + Max Search + Max Suggested */}
+        <div className="flex items-end gap-3 mb-4">
           <div className="w-28">
-            <label className="block text-xs text-gray-500 mb-1">Videos/task</label>
-            <input type="number" min={1} max={100} value={deployNumVideos} onChange={e => setDeployNumVideos(parseInt(e.target.value) || 20)}
+            <label className="block text-xs text-gray-500 mb-1">Loop Number</label>
+            <input type="number" min={1} max={100} value={deploy.loopNumber} onChange={e => setDeploy(p => ({ ...p, loopNumber: parseInt(e.target.value) || 30 }))}
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+          </div>
+          <div className="w-36">
+            <label className="block text-xs text-gray-500 mb-1">Max Search Results</label>
+            <input type="number" min={1} max={200} value={deploy.maxSearchResults} onChange={e => setDeploy(p => ({ ...p, maxSearchResults: parseInt(e.target.value) || 50 }))}
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+          </div>
+          <div className="w-36">
+            <label className="block text-xs text-gray-500 mb-1">Max Suggested Results</label>
+            <input type="number" min={1} max={200} value={deploy.maxSuggestedResults} onChange={e => setDeploy(p => ({ ...p, maxSuggestedResults: parseInt(e.target.value) || 50 }))}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
           </div>
           <button onClick={deployAgents}
-            className="px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition">
+            className="px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition ml-auto">
             Deploy
           </button>
         </div>

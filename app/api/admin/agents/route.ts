@@ -121,7 +121,10 @@ export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
 
   try {
-    const { keyword, threads = 1, numVideos = 20, fetchChannelAge = true, youtubeApiKey } = await req.json();
+    const body = await req.json();
+    const { keyword, threads = 1, apiKey, loopNumber = 30,
+            maxSearchResultsBeforeFallback = 50, maxSuggestedResultsBeforeFallback = 50,
+            rofeAPIKey } = body;
 
     if (!keyword) return NextResponse.json({ error: 'keyword required' }, { status: 400 });
     if (threads < 1 || threads > 20) return NextResponse.json({ error: 'threads must be 1-20' }, { status: 400 });
@@ -130,15 +133,15 @@ export async function POST(req: NextRequest) {
     const token = getToken(config);
     if (!token) return NextResponse.json({ error: 'xgodo token not configured' }, { status: 500 });
 
-    // Build task input — keyword goes into the task params
+    // Build task input matching xgodo planned task format
     const taskInput: Record<string, unknown> = {
       keyword,
-      num_videos: numVideos,
-      fetch_channel_age: fetchChannelAge,
+      apiKey: apiKey || config.agent_api_key || '',
+      loopNumber: loopNumber,
+      maxSearchResultsBeforeFallback: maxSearchResultsBeforeFallback,
+      maxSuggestedResultsBeforeFallback: maxSuggestedResultsBeforeFallback,
+      rofeAPIKey: rofeAPIKey || config.agent_rofe_api_key || '',
     };
-    if (fetchChannelAge) {
-      taskInput.youtube_api_key = youtubeApiKey || config.niche_yt_api_keys?.split(',')[0]?.trim() || config.youtube_api_key || '';
-    }
 
     const inputStr = JSON.stringify(taskInput);
     const inputs = Array.from({ length: threads }, () => inputStr);
