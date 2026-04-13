@@ -2071,38 +2071,8 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
         </div>
       )}
 
-      {/* Recently Completed Tasks */}
-      {data && (data as Record<string, unknown>).recentCompleted && ((data as Record<string, unknown>).recentCompleted as Array<Record<string, unknown>>).length > 0 && (
-        <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
-          <h3 className="text-sm font-bold text-white mb-3">Recently Completed</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-700 text-left">
-                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Task ID</th>
-                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Keyword</th>
-                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Duration</th>
-                  <th className="px-3 py-2 text-xs text-gray-500 uppercase">Completed</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-700/50">
-                {((data as Record<string, unknown>).recentCompleted as Array<Record<string, unknown>>).map((t) => {
-                  const dur = t.duration as number;
-                  const fmtDur = dur < 60 ? `${dur}s` : dur < 3600 ? `${Math.floor(dur / 60)}m ${dur % 60}s` : `${Math.floor(dur / 3600)}h ${Math.floor((dur % 3600) / 60)}m`;
-                  return (
-                    <tr key={t.id as string} className="hover:bg-gray-700/20">
-                      <td className="px-3 py-2 text-gray-400 font-mono text-xs">{(t.id as string).slice(-8)}</td>
-                      <td className="px-3 py-2 text-white">{t.keyword as string}</td>
-                      <td className="px-3 py-2 text-gray-300 font-mono text-xs">{fmtDur}</td>
-                      <td className="px-3 py-2 text-gray-500 text-xs">{new Date(t.completedAt as string).toLocaleTimeString()}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {/* Task History Log */}
+      <AgentLog />
     </div>
   );
 }
@@ -2206,6 +2176,120 @@ function ThreadTargets() {
       <div className="mt-4 text-[10px] text-gray-600">
         Thermostat: <code className="text-gray-500">GET /api/cron/agents</code> — call every 30-60s via cron.
       </div>
+    </div>
+  );
+}
+
+/** Browsable task history log */
+function AgentLog() {
+  const [logData, setLogData] = useState<{
+    tasks: Array<{ id: string; keyword: string; status: string; workerName: string; firstSeen: string; lastSeen: string; duration: number }>;
+    total: number; page: number; totalPages: number;
+    stats: { running: number; completed: number; total: number; avgDuration: number; maxDuration: number; minDuration: number };
+  } | null>(null);
+  const [page, setPage] = useState(1);
+  const [statusFilter, setStatusFilter] = useState('');
+
+  const fetchLog = useCallback(() => {
+    const params = new URLSearchParams({ page: String(page), limit: '30' });
+    if (statusFilter) params.set('status', statusFilter);
+    fetch(`/api/admin/agents/log?${params}`).then(r => r.json()).then(d => setLogData(d)).catch(() => {});
+  }, [page, statusFilter]);
+
+  useEffect(() => { fetchLog(); }, [fetchLog]);
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    const interval = setInterval(fetchLog, 30000);
+    return () => clearInterval(interval);
+  }, [fetchLog]);
+
+  const fmtDur = (s: number) => {
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  };
+
+  const fmtTime = (iso: string) => {
+    const d = new Date(iso);
+    const now = new Date();
+    const diffH = (now.getTime() - d.getTime()) / 3600000;
+    if (diffH < 24) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  if (!logData) return null;
+
+  return (
+    <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-bold text-white">Task History</h3>
+        <div className="flex items-center gap-3 text-xs">
+          {logData.stats.total > 0 && (
+            <div className="flex items-center gap-3 text-gray-500">
+              <span>Avg: <span className="text-gray-300">{fmtDur(logData.stats.avgDuration)}</span></span>
+              <span>Min: <span className="text-gray-300">{fmtDur(logData.stats.minDuration)}</span></span>
+              <span>Max: <span className="text-gray-300">{fmtDur(logData.stats.maxDuration)}</span></span>
+              <span className="text-green-400">{logData.stats.running} running</span>
+              <span>{logData.stats.completed} completed</span>
+            </div>
+          )}
+          <div className="flex gap-1">
+            {['', 'running', 'completed'].map(s => (
+              <button key={s} onClick={() => { setStatusFilter(s); setPage(1); }}
+                className={`px-2 py-0.5 rounded text-[10px] ${statusFilter === s ? 'bg-white/15 text-white' : 'text-gray-600 hover:text-gray-400'}`}>
+                {s || 'All'}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-700 text-left">
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Task ID</th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Keyword</th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Status</th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Duration</th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Started</th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Ended</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-700/50">
+            {logData.tasks.map(t => (
+              <tr key={t.id} className="hover:bg-gray-700/20">
+                <td className="px-3 py-2 text-gray-400 font-mono text-xs">{t.id.slice(-8)}</td>
+                <td className="px-3 py-2 text-white text-xs">{t.keyword}</td>
+                <td className="px-3 py-2">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${t.status === 'running' ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-400'}`}>
+                    {t.status}
+                  </span>
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  <span className={t.status === 'running' ? 'text-green-400' : 'text-gray-300'}>{fmtDur(t.duration)}</span>
+                </td>
+                <td className="px-3 py-2 text-gray-500 text-xs">{fmtTime(t.firstSeen)}</td>
+                <td className="px-3 py-2 text-gray-500 text-xs">{t.status === 'completed' ? fmtTime(t.lastSeen) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {logData.totalPages > 1 && (
+        <div className="flex items-center justify-between mt-3">
+          <span className="text-xs text-gray-500">{logData.total} tasks · Page {logData.page}/{logData.totalPages}</span>
+          <div className="flex gap-1">
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}
+              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded text-xs">Prev</button>
+            <button onClick={() => setPage(p => Math.min(logData.totalPages, p + 1))} disabled={page >= logData.totalPages}
+              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded text-xs">Next</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
