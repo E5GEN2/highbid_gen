@@ -254,6 +254,7 @@ interface ScatterVideo {
 function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [onePerChannel, setOnePerChannel] = useState(false);
 
   // On-demand video detail cache
   const [videoCache, setVideoCache] = useState<Record<number, ScatterVideo>>({});
@@ -276,6 +277,17 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
       })
       .catch(() => fetchingRef.current.delete(id));
   }, [videoCache]);
+
+  // Filter: 1 per channel (max views) or all — must be before the detail fetch useEffect
+  const filteredDots = useMemo(() => {
+    if (!onePerChannel) return dots;
+    const best = new Map<string, number>();
+    dots.forEach((d, i) => {
+      const prev = best.get(d.ch);
+      if (prev === undefined || d.v > dots[prev].v) best.set(d.ch, i);
+    });
+    return [...best.values()].sort((a, b) => a - b).map(i => dots[i]);
+  }, [dots, onePerChannel]);
 
   // Trigger detail fetch when hovered/selected changes — use filteredDots not dots!
   useEffect(() => {
@@ -324,7 +336,6 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
     }
   }, [similarMinScore, allSimilarVideos]);
   const [colorBy, setColorBy] = useState<'age' | 'score'>('score');
-  const [onePerChannel, setOnePerChannel] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
 
   // Pan & zoom state
@@ -400,17 +411,6 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
     if (d.sc >= 50) return '#eab308';
     return '#ef4444';
   };
-
-  // Filter: 1 per channel (max views) or all
-  const filteredDots = useMemo(() => {
-    if (!onePerChannel) return dots;
-    const best = new Map<string, number>();
-    dots.forEach((d, i) => {
-      const prev = best.get(d.ch);
-      if (prev === undefined || d.v > dots[prev].v) best.set(d.ch, i);
-    });
-    return [...best.values()].sort((a, b) => a - b).map(i => dots[i]);
-  }, [dots, onePerChannel]);
 
   const xTicks = [1, 100, 1000, 10000, 100000, 1000000].filter(v => logSafe(v) >= minLogSubs - 0.3 && logSafe(v) <= maxLogSubs + 0.3);
   const yTicks = [100, 1000, 10000, 100000, 1000000, 10000000].filter(v => logSafe(v) >= minLogViews - 0.3 && logSafe(v) <= maxLogViews + 0.3);
