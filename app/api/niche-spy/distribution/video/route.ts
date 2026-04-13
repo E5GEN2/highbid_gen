@@ -11,18 +11,10 @@ export async function GET(req: NextRequest) {
 
   const pool = await getPool();
   const res = await pool.query(`
-    SELECT v.id, v.channel_name, v.channel_id,
-           COALESCE(cs.max_subs, v.subscriber_count, 0) as subscriber_count,
-           v.view_count, v.score, v.channel_created_at, v.url, v.title,
-           v.like_count, v.comment_count, v.posted_at, v.posted_date,
-           v.keyword, v.embedded_at, v.top_comment
-    FROM niche_spy_videos v
-    LEFT JOIN (
-      SELECT channel_name, MAX(subscriber_count) as max_subs
-      FROM niche_spy_videos WHERE channel_name = (SELECT channel_name FROM niche_spy_videos WHERE id = $1)
-      GROUP BY channel_name
-    ) cs ON cs.channel_name = v.channel_name
-    WHERE v.id = $1
+    SELECT id, channel_name, channel_id, subscriber_count, view_count, score,
+           channel_created_at, url, title, like_count, comment_count,
+           posted_at, posted_date, keyword, embedded_at, top_comment
+    FROM niche_spy_videos WHERE id = $1
   `, [id]);
 
   if (res.rows.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
