@@ -476,8 +476,11 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
         {/* Scatter chart — left side */}
         <div className="flex-1 min-w-0 relative" style={{ paddingLeft: 40, paddingBottom: 28 }}>
           {/* Y-axis labels */}
-          <div className="absolute left-0 top-0 bottom-[28px] flex flex-col justify-between text-[10px] text-[#888] font-mono w-[36px] text-right pr-1 py-1">
-            {[...yTicks].reverse().map(t => <span key={t}>{fmtTick(t)}</span>)}
+          <div className="absolute left-0 top-0 bottom-[28px] w-[36px]">
+            {yTicks.map(t => {
+              const pct = ((logSafe(t) - minLogViews) / rangeY) * 100;
+              return <span key={t} className="absolute text-[10px] text-[#888] font-mono right-1 translate-y-1/2" style={{ bottom: `${pct}%` }}>{fmtTick(t)}</span>;
+            })}
           </div>
           <div className="absolute left-[-2px] top-1/2 -translate-y-1/2 -rotate-90 text-[10px] text-[#666] font-medium whitespace-nowrap">Views</div>
 
@@ -519,8 +522,11 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
               );
             })}
           </svg>
-          <div className="flex justify-between mt-1.5 text-[10px] text-[#888] font-mono">
-            {xTicks.map(t => <span key={t}>{fmtTick(t)}</span>)}
+          <div className="relative mt-1.5" style={{ height: 14 }}>
+            {xTicks.map(t => {
+              const pct = ((logSafe(t) - minLogSubs) / rangeX) * 100;
+              return <span key={t} className="absolute text-[10px] text-[#888] font-mono -translate-x-1/2" style={{ left: `${pct}%` }}>{fmtTick(t)}</span>;
+            })}
           </div>
           <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
         </div>
