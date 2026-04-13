@@ -17,10 +17,12 @@ export default function NichesGrid() {
   }>>([]);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('videos');
+  const [kwLoading, setKwLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ message: string; done?: boolean } | null>(null);
 
   const fetchKeywords = useCallback(async () => {
+    setKwLoading(true);
     try {
       const params = new URLSearchParams({ sort, limit: '200' });
       if (search) params.set('search', search);
@@ -28,6 +30,7 @@ export default function NichesGrid() {
       const data = await res.json();
       setKeywordCards(data.keywords);
     } catch (err) { console.error('Keyword fetch error:', err); }
+    setKwLoading(false);
   }, [search, sort]);
 
   useEffect(() => { fetchKeywords(); }, [fetchKeywords]);
@@ -135,6 +138,21 @@ export default function NichesGrid() {
 
       {/* Keyword cards grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        {kwLoading && keywordCards.length === 0 && Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 animate-pulse">
+            <div className="flex items-start justify-between mb-3">
+              <div className="h-5 w-32 bg-[#1f1f1f] rounded" />
+              <div className="h-6 w-12 bg-[#1f1f1f] rounded-lg" />
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {[1,2,3].map(j => <div key={j}><div className="h-5 w-10 bg-[#1f1f1f] rounded mb-1" /><div className="h-2.5 w-12 bg-[#1a1a1a] rounded" /></div>)}
+            </div>
+            <div className="flex gap-2">
+              <div className="h-2.5 w-14 bg-[#1f1f1f] rounded" />
+              <div className="h-2.5 w-16 bg-[#1f1f1f] rounded" />
+            </div>
+          </div>
+        ))}
         {keywordCards.map(kw => (
           <button
             key={kw.keyword}

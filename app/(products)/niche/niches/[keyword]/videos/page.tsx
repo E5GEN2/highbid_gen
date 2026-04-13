@@ -609,8 +609,26 @@ function NicheVideosInner() {
 
       {/* Video grid */}
       {loading && videos.length === 0 ? (
-        <div className="flex items-center justify-center py-20">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-amber-500" />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 9 }).map((_, i) => (
+            <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden animate-pulse">
+              <div className="aspect-video bg-[#1a1a1a]" />
+              <div className="p-3 space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="h-4 w-24 bg-[#1f1f1f] rounded-full" />
+                  <div className="h-4 w-14 bg-[#1f1f1f] rounded-full ml-auto" />
+                </div>
+                <div className="h-4 w-full bg-[#1f1f1f] rounded" />
+                <div className="h-4 w-3/4 bg-[#1f1f1f] rounded" />
+                <div className="flex gap-3">
+                  <div className="h-3 w-16 bg-[#1f1f1f] rounded" />
+                  <div className="h-3 w-20 bg-[#1f1f1f] rounded" />
+                  <div className="h-3 w-12 bg-[#1f1f1f] rounded" />
+                </div>
+                <div className="h-3 w-48 bg-[#1f1f1f] rounded" />
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <>
