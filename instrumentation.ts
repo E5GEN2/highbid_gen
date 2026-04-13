@@ -115,6 +115,10 @@ export async function register() {
     // Initial check after 30s startup delay
     setTimeout(runAll, 30 * 1000);
 
+    // Start the agent thermostat (maintains thread targets per keyword)
+    const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
+    ensureThermostatRunning();
+
     // Cleanup on process exit
     process.on('beforeExit', () => {
       if (timer) clearInterval(timer);
