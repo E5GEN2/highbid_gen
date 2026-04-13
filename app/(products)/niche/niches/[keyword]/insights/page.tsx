@@ -24,12 +24,9 @@ export default function NicheInsights() {
   const [subsDist, setSubsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
   const [viewsDist, setViewsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
 
-  // Channel scatter data (subs vs views + video info)
-  const [scatterChannels, setScatterChannels] = useState<Array<{
-    id: number; name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
-    videoUrl: string | null; videoTitle: string | null; thumbnail: string | null;
-    likeCount: number; commentCount: number; postedAt: string | null; postedDate: string | null; keyword: string | null;
-    embeddedAt: string | null; topComment: string | null;
+  // Scatter: lightweight dot data (loaded with distribution)
+  const [scatterDots, setScatterDots] = useState<Array<{
+    id: number; ch: string; s: number; v: number; sc: number; a: number | null; e: boolean;
   }>>([]);
 
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
@@ -44,14 +41,14 @@ export default function NicheInsights() {
       .then(r => r.json()).then(d => {
         if (d.subsDist) setSubsDist(d.subsDist);
         if (d.viewsDist) setViewsDist(d.viewsDist);
-        if (d.scatter) setScatterChannels(d.scatter);
+        if (d.scatter) setScatterDots(d.scatter);
       }).catch(() => {});
   }, [keyword, filter.minScore]);
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto space-y-6">
       {/* Channel Landscape — top of page */}
-      {scatterChannels.length > 0 && <ChannelScatter channels={scatterChannels} />}
+      {scatterDots.length > 0 && <ChannelScatter dots={scatterDots} />}
 
       {/* Timeline */}
       <NicheTimeline
@@ -206,18 +203,56 @@ function DistChart({ title, unit, buckets }: {
 }
 
 /** Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale */
+// Lightweight dot from distribution API
+interface ScatterDot {
+  id: number; ch: string; s: number; v: number; sc: number; a: number | null; e: boolean;
+}
+
+// Full video detail (fetched on demand)
 interface ScatterVideo {
-  id: number; name: string; subs: number; views: number; videos: number; avgScore: number; ageDays: number | null; channelId: string | null;
+  id: number; name: string; subs: number; views: number; avgScore: number; ageDays: number | null; channelId: string | null;
   videoUrl: string | null; videoTitle: string | null; thumbnail: string | null;
   likeCount: number; commentCount: number; postedAt: string | null; postedDate: string | null; keyword: string | null;
   embeddedAt: string | null; topComment: string | null;
 }
 
-function ChannelScatter({ channels }: { channels: ScatterVideo[] }) {
+function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
 
-  // Similar modal state (same pattern as videos page)
+  // On-demand video detail cache
+  const [videoCache, setVideoCache] = useState<Record<number, ScatterVideo>>({});
+  const [activeVideo, setActiveVideo] = useState<ScatterVideo | null>(null);
+  const fetchingRef = useRef<Set<number>>(new Set());
+
+  // Fetch full video data on hover/click (with cache)
+  const fetchVideoDetail = useCallback((id: number) => {
+    if (videoCache[id]) { setActiveVideo(videoCache[id]); return; }
+    if (fetchingRef.current.has(id)) return;
+    fetchingRef.current.add(id);
+    fetch(`/api/niche-spy/distribution/video?id=${id}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.id) {
+          setVideoCache(prev => ({ ...prev, [id]: d }));
+          setActiveVideo(d);
+        }
+        fetchingRef.current.delete(id);
+      })
+      .catch(() => fetchingRef.current.delete(id));
+  }, [videoCache]);
+
+  // Trigger detail fetch when hovered/selected changes
+  useEffect(() => {
+    const idx = hovered ?? selected;
+    if (idx !== null && dots[idx]) {
+      fetchVideoDetail(dots[idx].id);
+    } else {
+      setActiveVideo(null);
+    }
+  }, [hovered, selected, dots, fetchVideoDetail]);
+
+  // Similar modal state
   const [similarSource, setSimilarSource] = useState<{ id: number; title: string } | null>(null);
   const [allSimilarVideos, setAllSimilarVideos] = useState<Array<{ id: number; title: string; url: string; view_count: number; channel_name: string; score: number; subscriber_count: number; like_count: number; posted_at: string; posted_date: string; thumbnail: string; keyword: string; _similarity: number }>>([]);
   const [similarVideos, setSimilarVideos] = useState<typeof allSimilarVideos>([]);
@@ -265,8 +300,8 @@ function ChannelScatter({ channels }: { channels: ScatterVideo[] }) {
 
   const logSafe = (n: number) => Math.log10(Math.max(n, 1));
 
-  const subsVals = channels.filter(c => c.subs > 0).map(c => logSafe(c.subs));
-  const viewsVals = channels.filter(c => c.views > 0).map(c => logSafe(c.views));
+  const subsVals = dots.filter(c => c.s > 0).map(c => logSafe(c.s));
+  const viewsVals = dots.filter(c => c.v > 0).map(c => logSafe(c.v));
   const minLogSubs = subsVals.length > 0 ? Math.min(...subsVals) : 0;
   const maxLogSubs = subsVals.length > 0 ? Math.max(...subsVals) : 6;
   const minLogViews = viewsVals.length > 0 ? Math.min(...viewsVals) : 0;
@@ -318,28 +353,28 @@ function ChannelScatter({ channels }: { channels: ScatterVideo[] }) {
 
   const resetView = () => { setPan({ x: 0, y: 0 }); setZoom(1); };
 
-  const getColor = (c: typeof channels[0]) => {
+  const getColor = (d: ScatterDot) => {
     if (colorBy === 'age') {
-      if (c.ageDays === null) return '#555';
-      if (c.ageDays < 30) return '#f97316';
-      if (c.ageDays < 180) return '#22c55e';
+      if (d.a === null) return '#555';
+      if (d.a < 30) return '#f97316';
+      if (d.a < 180) return '#22c55e';
       return '#6b7280';
     }
-    if (c.avgScore >= 80) return '#22c55e';
-    if (c.avgScore >= 50) return '#eab308';
+    if (d.sc >= 80) return '#22c55e';
+    if (d.sc >= 50) return '#eab308';
     return '#ef4444';
   };
 
   // Filter: 1 per channel (max views) or all
-  const filteredChannels = useMemo(() => {
-    if (!onePerChannel) return channels;
+  const filteredDots = useMemo(() => {
+    if (!onePerChannel) return dots;
     const best = new Map<string, number>();
-    channels.forEach((c, i) => {
-      const prev = best.get(c.name);
-      if (prev === undefined || c.views > channels[prev].views) best.set(c.name, i);
+    dots.forEach((d, i) => {
+      const prev = best.get(d.ch);
+      if (prev === undefined || d.v > dots[prev].v) best.set(d.ch, i);
     });
-    return [...best.values()].sort((a, b) => a - b).map(i => channels[i]);
-  }, [channels, onePerChannel]);
+    return [...best.values()].sort((a, b) => a - b).map(i => dots[i]);
+  }, [dots, onePerChannel]);
 
   const xTicks = [1, 100, 1000, 10000, 100000, 1000000].filter(v => logSafe(v) >= minLogSubs - 0.3 && logSafe(v) <= maxLogSubs + 0.3);
   const yTicks = [100, 1000, 10000, 100000, 1000000, 10000000].filter(v => logSafe(v) >= minLogViews - 0.3 && logSafe(v) <= maxLogViews + 0.3);
@@ -353,7 +388,7 @@ function ChannelScatter({ channels }: { channels: ScatterVideo[] }) {
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="text-sm font-medium text-white">Channel Landscape</h3>
-          <p className="text-[10px] text-[#666]">{filteredChannels.length} {onePerChannel ? 'channels' : 'videos'} — channel subs vs video views (log scale)</p>
+          <p className="text-[10px] text-[#666]">{filteredDots.length} videos — channel subs vs video views (log scale)</p>
         </div>
         <div className="flex gap-1">
           <button onClick={() => setColorBy('age')}
@@ -433,14 +468,14 @@ function ChannelScatter({ channels }: { channels: ScatterVideo[] }) {
             <text x="3" y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600">Newcomers</text>
             <rect x={chartW - 20} y={chartH - 6} width="19" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
             <text x={chartW - 2} y={chartH - 2.5} fill="#888" fontSize="2.5" fontWeight="600" textAnchor="end">High subs, low views</text>
-            {filteredChannels.map((c, i) => {
-              if (c.subs <= 0 && c.views <= 0) return null;
-              const x = ((logSafe(c.subs) - minLogSubs) / rangeX) * chartW;
-              const y = chartH - ((logSafe(c.views) - minLogViews) / rangeY) * chartH;
+            {filteredDots.map((d, i) => {
+              if (d.s <= 0 && d.v <= 0) return null;
+              const x = ((logSafe(d.s) - minLogSubs) / rangeX) * chartW;
+              const y = chartH - ((logSafe(d.v) - minLogViews) / rangeY) * chartH;
               const isH = hovered === i || selected === i;
               return (
                 <circle key={i} cx={x} cy={y} r={isH ? 1 : 0.6}
-                  fill={getColor(c)} opacity={isH ? 1 : 0.45}
+                  fill={getColor(d)} opacity={isH ? 1 : 0.45}
                   stroke={isH ? '#fff' : 'none'} strokeWidth={isH ? 0.2 : 0}
                   className="cursor-pointer"
                   onMouseEnter={() => setHovered(i)}
@@ -459,15 +494,14 @@ function ChannelScatter({ channels }: { channels: ScatterVideo[] }) {
           {/* Section 1: Video Card — fixed height so filters don't bounce */}
           <div className="h-[420px] overflow-hidden">
             {(() => {
-              const activeIdx = hovered ?? selected;
-              if (activeIdx === null || !filteredChannels[activeIdx]) {
+              const ch = activeVideo;
+              if (!ch) {
                 return (
                   <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl h-full flex items-center justify-center p-6">
-                    <p className="text-[#444] text-xs text-center">Hover or click a dot<br />to see the video</p>
+                    <p className="text-[#444] text-xs text-center">{(hovered ?? selected) !== null ? 'Loading...' : 'Hover or click a dot\nto see the video'}</p>
                   </div>
                 );
               }
-              const ch = filteredChannels[activeIdx];
               const timeAgo = (dateStr: string) => {
                 const d = new Date(dateStr);
                 const days = Math.floor((Date.now() - d.getTime()) / 86400000);
