@@ -2035,6 +2035,9 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
         )}
       </div>
 
+      {/* Thread Targets (Thermostat) */}
+      <ThreadTargets />
+
       {/* Active Tasks Table */}
       {data && data.tasks.length > 0 && (
         <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
@@ -2063,6 +2066,109 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Thread target manager — set how many threads to maintain per keyword */
+function ThreadTargets() {
+  const [targets, setTargets] = useState<Array<{
+    id: number; keyword: string; target_threads: number; active_threads: number;
+    enabled: boolean; last_deployed_at: string | null; last_checked_at: string | null;
+  }>>([]);
+  const [newKeyword, setNewKeyword] = useState('');
+  const [newTarget, setNewTarget] = useState(6);
+
+  const fetchTargets = useCallback(() => {
+    fetch('/api/admin/agents/targets').then(r => r.json()).then(d => {
+      if (d.targets) setTargets(d.targets);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => { fetchTargets(); }, [fetchTargets]);
+
+  useEffect(() => {
+    const interval = setInterval(fetchTargets, 10000);
+    return () => clearInterval(interval);
+  }, [fetchTargets]);
+
+  const updateTarget = async (keyword: string, targetThreads: number, enabled: boolean) => {
+    await fetch('/api/admin/agents/targets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword, targetThreads, enabled }),
+    });
+    fetchTargets();
+  };
+
+  const removeTarget = async (keyword: string) => {
+    await fetch('/api/admin/agents/targets', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword }),
+    });
+    fetchTargets();
+  };
+
+  const addTarget = async () => {
+    if (!newKeyword.trim()) return;
+    await updateTarget(newKeyword.trim(), newTarget, true);
+    setNewKeyword('');
+  };
+
+  return (
+    <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+      <h3 className="text-sm font-bold text-white mb-1">Thread Targets</h3>
+      <p className="text-xs text-gray-500 mb-4">Maintain exact thread count per keyword. Thermostat auto-deploys when threads drop below target (60s cooldown).</p>
+
+      {targets.length > 0 && (
+        <div className="space-y-2 mb-4">
+          {targets.map(t => (
+            <div key={t.id} className="flex items-center gap-3 bg-gray-900/60 border border-gray-700 rounded-lg px-4 py-3">
+              <button onClick={() => updateTarget(t.keyword, t.target_threads, !t.enabled)}
+                className={`w-3 h-3 rounded-full flex-shrink-0 ${t.enabled ? 'bg-green-500' : 'bg-gray-600'}`}
+                title={t.enabled ? 'Click to pause' : 'Click to enable'} />
+              <span className="text-sm text-white font-medium flex-1">{t.keyword}</span>
+              <div className="flex items-center gap-1.5">
+                <span className={`text-lg font-bold ${t.active_threads >= t.target_threads ? 'text-green-400' : 'text-yellow-400'}`}>
+                  {t.active_threads}
+                </span>
+                <span className="text-xs text-gray-500">/</span>
+                <input type="number" min={0} max={20} value={t.target_threads}
+                  onChange={e => updateTarget(t.keyword, parseInt(e.target.value) || 0, t.enabled)}
+                  className="w-14 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-white text-sm text-center focus:outline-none focus:border-green-500" />
+              </div>
+              {t.last_deployed_at && (
+                <span className="text-[10px] text-gray-600">
+                  deployed {Math.round((Date.now() - new Date(t.last_deployed_at).getTime()) / 1000)}s ago
+                </span>
+              )}
+              <button onClick={() => removeTarget(t.keyword)} className="text-red-400 hover:text-red-300 text-xs">Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-end gap-3">
+        <div className="flex-1">
+          <label className="block text-xs text-gray-500 mb-1">Keyword</label>
+          <input type="text" value={newKeyword} onChange={e => setNewKeyword(e.target.value)}
+            placeholder="e.g. youtube automation"
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-green-500"
+            onKeyDown={e => e.key === 'Enter' && addTarget()} />
+        </div>
+        <div className="w-20">
+          <label className="block text-xs text-gray-500 mb-1">Threads</label>
+          <input type="number" min={1} max={20} value={newTarget} onChange={e => setNewTarget(parseInt(e.target.value) || 6)}
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+        </div>
+        <button onClick={addTarget}
+          className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition">
+          Add Target
+        </button>
+      </div>
+
+      <div className="mt-4 text-[10px] text-gray-600">
+        Thermostat: <code className="text-gray-500">GET /api/cron/agents</code> — call every 30-60s via cron.
+      </div>
     </div>
   );
 }

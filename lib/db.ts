@@ -595,6 +595,20 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_cluster ON niche_cluster_assignments(cluster_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_video ON niche_cluster_assignments(video_id)`).catch(() => {});
 
+    // Agent thread targets for the thermostat
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_thread_targets (
+        id SERIAL PRIMARY KEY,
+        keyword TEXT NOT NULL UNIQUE,
+        target_threads INTEGER NOT NULL DEFAULT 0,
+        last_deployed_at TIMESTAMPTZ,
+        last_checked_at TIMESTAMPTZ,
+        active_threads INTEGER DEFAULT 0,
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
