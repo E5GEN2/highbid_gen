@@ -23,6 +23,7 @@ export default function NicheInsights() {
   // Distribution data (from fast SQL-bucketed API)
   const [subsDist, setSubsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
   const [viewsDist, setViewsDist] = useState<Array<{ label: string; count: number; color: string }>>([]);
+  const [distLoading, setDistLoading] = useState(true);
 
   // Scatter: lightweight dot data (loaded with distribution)
   const [scatterDots, setScatterDots] = useState<Array<{
@@ -37,18 +38,38 @@ export default function NicheInsights() {
     fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=0&sort=views&minScore=${filter.minScore}`)
       .then(r => r.json()).then(d => { if (d.stats) setChannelStats(d.stats); }).catch(() => {});
     // Single fast API call for distributions + scatter (all server-side SQL, no limit caps)
+    setDistLoading(true);
     fetch(`/api/niche-spy/distribution?keyword=${encodeURIComponent(keyword)}&minScore=${filter.minScore}`)
       .then(r => r.json()).then(d => {
         if (d.subsDist) setSubsDist(d.subsDist);
         if (d.viewsDist) setViewsDist(d.viewsDist);
         if (d.scatter) setScatterDots(d.scatter);
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => setDistLoading(false));
   }, [keyword, filter.minScore]);
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto space-y-6">
-      {/* Channel Landscape — top of page */}
-      {scatterDots.length > 0 && <ChannelScatter dots={scatterDots} />}
+      {/* Distribution Charts — side by side, FIRST */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {distLoading ? (
+          <>
+            <SkeletonCard title="Subscriber Distribution" />
+            <SkeletonCard title="Views Distribution" />
+          </>
+        ) : (
+          <>
+            {subsDist.some(b => b.count > 0) && <DistChart title="Subscriber Distribution" unit="channels" buckets={subsDist} />}
+            {viewsDist.some(b => b.count > 0) && <DistChart title="Views Distribution" unit="videos" buckets={viewsDist} />}
+          </>
+        )}
+      </div>
+
+      {/* Channel Landscape scatter */}
+      {distLoading ? (
+        <SkeletonCard title="Channel Landscape" height={300} />
+      ) : scatterDots.length > 0 ? (
+        <ChannelScatter dots={scatterDots} />
+      ) : null}
 
       {/* Timeline */}
       <NicheTimeline
@@ -97,16 +118,6 @@ export default function NicheInsights() {
         </div>
       )}
 
-      {/* Distribution Charts — side by side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {subsDist.length > 0 && subsDist.some(b => b.count > 0) && (
-          <DistChart title="Subscriber Distribution" unit="channels" buckets={subsDist} />
-        )}
-        {viewsDist.length > 0 && viewsDist.some(b => b.count > 0) && (
-          <DistChart title="Views Distribution" unit="videos" buckets={viewsDist} />
-        )}
-      </div>
-
       {/* New vs Established Channels */}
       {channelStats && (
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-5 py-4">
@@ -141,6 +152,30 @@ export default function NicheInsights() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Loading skeleton placeholder */
+function SkeletonCard({ title, height = 130 }: { title: string; height?: number }) {
+  return (
+    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-5 py-4 animate-pulse">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-sm font-medium text-white">{title}</h3>
+          <div className="h-3 w-24 bg-[#1f1f1f] rounded mt-1" />
+        </div>
+      </div>
+      <div className="flex items-end gap-1" style={{ height }}>
+        {[35, 55, 80, 65, 40, 20].map((h, i) => (
+          <div key={i} className="flex-1 flex items-end">
+            <div className="w-full rounded-t-sm bg-[#1f1f1f]" style={{ height: `${h}%` }} />
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between mt-2">
+        {[1,2,3,4,5,6].map(i => <div key={i} className="h-2 w-8 bg-[#1f1f1f] rounded" />)}
+      </div>
     </div>
   );
 }
