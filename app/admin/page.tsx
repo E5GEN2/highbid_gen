@@ -29,7 +29,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection'>('general');
 
   // Agents tab state
   const [agentsData, setAgentsData] = useState<{
@@ -495,6 +495,10 @@ export default function AdminPage() {
           <button onClick={() => setAdminSection('enrich')}
             className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'enrich' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Enrich Data
+          </button>
+          <button onClick={() => setAdminSection('datacollection')}
+            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'datacollection' ? 'bg-cyan-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Data Collection
           </button>
           <button onClick={() => { setAdminSection('tokens'); fetch('/api/admin/admin-tokens').then(r => r.json()).then(d => setAdminTokens(d.tokens || [])).catch(() => {}); }}
             className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'tokens' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
@@ -1791,6 +1795,11 @@ export default function AdminPage() {
         </div>
         </div>
 
+        {/* Data Collection Tab */}
+        <div style={{ display: adminSection === 'datacollection' ? 'block' : 'none' }}>
+          <DataCollection />
+        </div>
+
         {/* Agents Tab */}
         <div style={{ display: adminSection === 'agents' ? 'block' : 'none' }}>
         <AgentsTab
@@ -2034,9 +2043,6 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
           </div>
         )}
       </div>
-
-      {/* Data Collection — Sync + Enrich */}
-      <DataCollection />
 
       {/* Thread Targets (Thermostat) */}
       <ThreadTargets />
