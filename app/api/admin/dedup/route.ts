@@ -37,17 +37,31 @@ export async function POST(req: NextRequest) {
   }
 
   // Step 2: Delete duplicates
-  await pool.query('DELETE FROM niche_spy_videos WHERE id = ANY($1)', [toDelete]);
+  if (toDelete.length > 0) {
+    await pool.query('DELETE FROM niche_spy_videos WHERE id = ANY($1)', [toDelete]);
+  }
 
-  // Step 3: Normalize remaining URLs (strip query params)
-  await pool.query(`
+  // Step 3: Remove invalid URLs (search pages, non-video links)
+  const invalidRes = await pool.query(`
+    DELETE FROM niche_spy_videos
+    WHERE url IS NOT NULL
+      AND url !~ '(?:youtu\\.be/|[?&]v=|/shorts/|/embed/)[a-zA-Z0-9_-]{11}'
+    RETURNING id
+  `);
+  const invalidDeleted = invalidRes.rowCount || 0;
+
+  // Step 4: Normalize remaining URLs (strip query params)
+  const normalizedRes = await pool.query(`
     UPDATE niche_spy_videos
     SET url = 'https://youtu.be/' || SUBSTRING(url FROM '(?:youtu\\.be/|[?&]v=|/shorts/)([a-zA-Z0-9_-]{11})')
     WHERE url LIKE '%?%' AND url ~ '(?:youtu\\.be/|[?&]v=|/shorts/)[a-zA-Z0-9_-]{11}'
   `);
+  const normalized = normalizedRes.rowCount || 0;
 
   return NextResponse.json({
-    deleted: toDelete.length,
-    message: `Removed ${toDelete.length} duplicate videos (kept highest score per video ID). Normalized remaining URLs.`,
+    duplicatesDeleted: toDelete.length,
+    invalidUrlsDeleted: invalidDeleted,
+    urlsNormalized: normalized,
+    message: `Removed ${toDelete.length} duplicates + ${invalidDeleted} invalid URLs. Normalized ${normalized} URLs.`,
   });
 }
