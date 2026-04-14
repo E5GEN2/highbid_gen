@@ -51,9 +51,9 @@ export async function GET(req: NextRequest) {
       COUNT(*) FILTER (WHERE status = 'running') as running,
       COUNT(*) FILTER (WHERE status = 'completed') as completed,
       COUNT(*) as total,
-      ROUND(AVG(EXTRACT(EPOCH FROM (last_seen_at - first_seen_at))) FILTER (WHERE status = 'completed'))::integer as avg_duration,
-      MAX(EXTRACT(EPOCH FROM (last_seen_at - first_seen_at)))::integer FILTER (WHERE status = 'completed') as max_duration,
-      MIN(EXTRACT(EPOCH FROM (last_seen_at - first_seen_at)))::integer FILTER (WHERE status = 'completed' AND EXTRACT(EPOCH FROM (last_seen_at - first_seen_at)) > 10) as min_duration
+      ROUND(AVG(EXTRACT(EPOCH FROM (last_seen_at - first_seen_at))) FILTER (WHERE status = 'completed')) as avg_duration,
+      ROUND(MAX(EXTRACT(EPOCH FROM (last_seen_at - first_seen_at))) FILTER (WHERE status = 'completed')) as max_duration,
+      ROUND(MIN(EXTRACT(EPOCH FROM (last_seen_at - first_seen_at))) FILTER (WHERE status = 'completed' AND EXTRACT(EPOCH FROM (last_seen_at - first_seen_at)) > 10)) as min_duration
     FROM agent_task_log
     ${keyword ? 'WHERE keyword = $1' : ''}
   `, keyword ? [keyword] : []);
