@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -2298,55 +2298,83 @@ function AgentLog() {
 }
 
 
-/** Data Collection controls — Sync from xgodo + Enrich via YouTube API */
+/** Data Collection controls — console-style log output */
 function DataCollection() {
   const [syncing, setSyncing] = useState(false);
-  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [enriching, setEnriching] = useState(false);
-  const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
+  const [logs, setLogs] = useState<Array<{ time: string; type: 'info' | 'success' | 'error' | 'data'; msg: string }>>([]);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const log = (type: 'info' | 'success' | 'error' | 'data', msg: string) => {
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLogs(prev => [...prev, { time, type, msg }]);
+    setTimeout(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' }), 50);
+  };
 
   const runSync = async () => {
     setSyncing(true);
-    setSyncMsg('Fetching tasks from xgodo...');
+    log('info', '[sync] Starting — fetching completed tasks from xgodo...');
     let totalInserted = 0, totalUpdated = 0, batches = 0;
     try {
       while (true) {
         const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
         const data = await res.json();
-        if (data.error) { setSyncMsg(`Error: ${data.error}`); break; }
+        if (data.error) { log('error', `[sync] Error: ${data.error}`); break; }
         batches++;
         totalInserted += data.videosInserted || 0;
         totalUpdated += data.videosUpdated || 0;
+
+        log('data', `[sync] Batch ${batches}: ${data.tasksProcessed || 0} tasks processed, +${data.videosInserted || 0} new, ${data.videosUpdated || 0} updated`);
+
+        if (data.keywordBreakdown) {
+          for (const k of data.keywordBreakdown) {
+            log('data', `[sync]   └ ${k.keyword}: +${k.new} new / ${k.total} total`);
+          }
+        }
+        if (data.saturation) {
+          for (const s of data.saturation.slice(0, 5)) {
+            log('data', `[sync]   └ saturation ${s.keyword}: run=${s.runSatPct}% +${s.A} new`);
+          }
+        }
+        if (data.totalLocal) log('info', `[sync] DB total: ${data.totalLocal} videos, ${data.totalKeywords || '?'} keywords`);
+
         if (data.status === 'idle' || data.tasksProcessed === 0) {
-          setSyncMsg(totalInserted > 0
-            ? `Done! +${totalInserted} new, ${totalUpdated} updated across ${batches} batches. ${data.totalLocal || 0} total videos.`
-            : 'All caught up — no new tasks.');
+          log('success', `[sync] Complete — +${totalInserted} new, ${totalUpdated} updated across ${batches} batches`);
           break;
         }
-        setSyncMsg(`Batch ${batches}: ${data.tasksProcessed} tasks → +${data.videosInserted} new, ${data.videosUpdated} updated`);
-        if (data.tasksProcessed < 100) break;
+        if (data.tasksProcessed < 100) {
+          log('success', `[sync] Complete (partial batch) — +${totalInserted} new, ${totalUpdated} updated`);
+          break;
+        }
         await new Promise(r => setTimeout(r, 500));
       }
     } catch (err) {
-      setSyncMsg(`Error: ${err instanceof Error ? err.message : 'Sync failed'}`);
+      log('error', `[sync] Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
     setSyncing(false);
   };
 
   const runEnrich = async () => {
     setEnriching(true);
-    setEnrichMsg('Checking...');
+    log('info', '[enrich] Checking how many videos need enrichment...');
     let totalV = 0, totalC = 0, totalErr = 0, round = 0;
     try {
       const checkRes = await fetch('/api/niche-spy/enrich');
       const checkData = await checkRes.json();
       const needed = parseInt(checkData.need_enrichment) || 0;
-      if (needed === 0) { setEnrichMsg('All videos already enriched.'); setEnriching(false); return; }
+      if (needed === 0) {
+        log('success', '[enrich] All videos already enriched.');
+        setEnriching(false);
+        return;
+      }
       const rounds = Math.ceil(needed / 200);
-      setEnrichMsg(`${needed} videos need enrichment (~${rounds} rounds)...`);
+      log('info', `[enrich] ${needed} videos need enrichment (~${rounds} rounds of 200)`);
+
       while (true) {
         round++;
-        setEnrichMsg(`Round ${round}/${rounds}: enriching... (${totalV}/${needed})`);
+        const pct = needed > 0 ? Math.round((totalV / needed) * 100) : 0;
+        log('info', `[enrich] Round ${round}/${rounds} starting... (${pct}% done, ${needed - totalV} remaining)`);
+
         const res = await fetch('/api/niche-spy/enrich', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2366,53 +2394,89 @@ function DataCollection() {
               if (!line.startsWith('data: ')) continue;
               try {
                 const d = JSON.parse(line.slice(6));
-                if (d.step === 'complete') { rv = d.enrichedVideos || 0; rc = d.enrichedChannels || 0; totalErr += d.errors || 0; }
+                if (d.step === 'videos' && d.done) {
+                  rv = d.enriched || 0;
+                  log('data', `[enrich]   └ videos: ${rv} enriched`);
+                } else if (d.step === 'videos' && d.error) {
+                  log('error', `[enrich]   └ video error: ${d.error}`);
+                } else if (d.step === 'channels' && !d.done && !d.error) {
+                  log('data', `[enrich]   └ fetching subscriber counts...`);
+                } else if (d.step === 'channels' && d.done) {
+                  rc = d.enriched || 0;
+                  log('data', `[enrich]   └ channels: ${rc} subscriber counts fetched`);
+                } else if (d.step === 'channels' && d.error) {
+                  log('error', `[enrich]   └ channel error: ${d.error}`);
+                } else if (d.step === 'complete') {
+                  rv = d.enrichedVideos || 0;
+                  rc = d.enrichedChannels || 0;
+                  totalErr += d.errors || 0;
+                  log('success', `[enrich] Round ${round} done: ${rv} videos, ${rc} channels${d.errors ? `, ${d.errors} errors` : ''}`);
+                }
               } catch { /* skip */ }
             }
           }
         }
         totalV += rv; totalC += rc;
-        if (rv === 0) break;
+        if (rv === 0) {
+          log('info', '[enrich] No more videos to enrich in this round');
+          break;
+        }
         await new Promise(r => setTimeout(r, 500));
       }
-      setEnrichMsg(`Done! ${totalV} videos, ${totalC} channels enriched across ${round} rounds.${totalErr ? ` ${totalErr} errors.` : ''}`);
+      log('success', `[enrich] All done! ${totalV} videos, ${totalC} channels enriched across ${round} rounds${totalErr ? `, ${totalErr} errors` : ''}`);
     } catch (err) {
-      setEnrichMsg(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+      log('error', `[enrich] Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
     setEnriching(false);
   };
 
+  const typeColors: Record<string, string> = {
+    info: 'text-blue-300',
+    success: 'text-green-400',
+    error: 'text-red-400',
+    data: 'text-gray-400',
+  };
+
   return (
     <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
-      <h3 className="text-sm font-bold text-white mb-1">Data Collection</h3>
-      <p className="text-xs text-gray-500 mb-4">Pull completed task data from xgodo and enrich with YouTube API.</p>
-
-      <div className="flex gap-3 mb-3">
-        <button onClick={runSync} disabled={syncing}
-          className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
-          {syncing ? 'Syncing...' : 'Sync from xgodo'}
-        </button>
-        <button onClick={runEnrich} disabled={enriching}
-          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
-          {enriching ? 'Enriching...' : 'Enrich Data'}
-        </button>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-sm font-bold text-white">Data Collection</h3>
+          <p className="text-xs text-gray-500">Pull completed task data from xgodo and enrich with YouTube API.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={runSync} disabled={syncing || enriching}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
+            {syncing ? 'Syncing...' : 'Sync'}
+          </button>
+          <button onClick={runEnrich} disabled={enriching || syncing}
+            className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
+            {enriching ? 'Enriching...' : 'Enrich'}
+          </button>
+          {logs.length > 0 && (
+            <button onClick={() => setLogs([])}
+              className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-xs transition">
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
-      {syncMsg && (
-        <div className={`border rounded-lg px-4 py-2.5 mb-2 ${syncMsg.startsWith('Error') ? 'bg-red-900/20 border-red-600/40' : syncMsg.startsWith('Done') ? 'bg-green-900/20 border-green-600/40' : 'bg-blue-900/20 border-blue-600/40'}`}>
-          <div className="flex items-center gap-2">
-            {syncing && <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
-            <span className="text-sm text-blue-200">{syncMsg}</span>
-          </div>
-        </div>
-      )}
-
-      {enrichMsg && (
-        <div className={`border rounded-lg px-4 py-2.5 ${enrichMsg.startsWith('Error') ? 'bg-red-900/20 border-red-600/40' : enrichMsg.startsWith('Done') || enrichMsg.startsWith('All') ? 'bg-green-900/20 border-green-600/40' : 'bg-purple-900/20 border-purple-600/40'}`}>
-          <div className="flex items-center gap-2">
-            {enriching && <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
-            <span className="text-sm text-purple-200">{enrichMsg}</span>
-          </div>
+      {/* Console log */}
+      {logs.length > 0 && (
+        <div ref={logRef} className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg p-3 font-mono text-xs max-h-72 overflow-y-auto space-y-0.5">
+          {logs.map((l, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-[#555] flex-shrink-0">{l.time}</span>
+              <span className={typeColors[l.type] || 'text-gray-400'}>{l.msg}</span>
+            </div>
+          ))}
+          {(syncing || enriching) && (
+            <div className="flex items-center gap-2 mt-1">
+              <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <span className="text-blue-300">Processing...</span>
+            </div>
+          )}
         </div>
       )}
     </div>
