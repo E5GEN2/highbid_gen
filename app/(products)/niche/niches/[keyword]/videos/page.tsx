@@ -35,19 +35,6 @@ function NicheVideosInner() {
   const [stats, setStats] = useState<{ total_videos: string; total_keywords: string; total_channels: string; avg_score: string } | null>(null);
   const [keywords, setKeywords] = useState<Array<{ keyword: string; cnt: string }>>([]);
 
-  // Enrich state
-  const [enriching, setEnriching] = useState(false);
-  const [enrichResult, setEnrichResult] = useState<{ message: string; enriched: number; errors: number } | null>(null);
-
-  // Sync state
-  const [syncing, setSyncing] = useState(false);
-  const [syncProgress, setSyncProgress] = useState<{
-    message: string; batches: number; totalInserted: number; totalUpdated: number;
-    totalLocal: number; totalKeywords: number;
-    keywordBreakdown?: Array<{ keyword: string; total: number; new: number }>;
-    saturation?: Array<{ keyword: string; runSatPct: number; globalSatPct: number; A: number; B: number }>;
-    done?: boolean;
-  } | null>(null);
 
   // Similar modal state
   const [similarSource, setSimilarSource] = useState<{ id: number; title: string } | null>(null);
@@ -135,116 +122,6 @@ function NicheVideosInner() {
 
   useEffect(() => { fetchVideos(0); }, [fetchVideos]);
 
-  // Enrich Data — SSE streaming
-  const enrichData = async () => {
-    setEnriching(true);
-    setEnrichResult(null);
-    let totalEnrichedV = 0, totalEnrichedC = 0, totalErrors = 0, round = 0;
-    try {
-      const checkRes = await fetch(`/api/niche-spy/enrich?keyword=${encodeURIComponent(keyword)}`);
-      const checkData = await checkRes.json();
-      const totalNeeded = parseInt(checkData.need_enrichment) || 0;
-      const totalRounds = Math.ceil(totalNeeded / 200);
-      if (totalNeeded === 0) {
-        setEnrichResult({ message: 'All videos already enriched.', enriched: 0, errors: 0 });
-        setEnriching(false);
-        setTimeout(() => setEnrichResult(null), 3000);
-        return;
-      }
-      setEnrichResult({ message: `${totalNeeded.toLocaleString()} videos need enrichment (~${totalRounds} rounds)...`, enriched: 0, errors: 0 });
-      while (true) {
-        round++;
-        const remaining = totalNeeded - totalEnrichedV;
-        const pct = totalNeeded > 0 ? Math.round((totalEnrichedV / totalNeeded) * 100) : 0;
-        setEnrichResult({ message: `Round ${round}/${totalRounds}: enriching... (${pct}%, ${remaining.toLocaleString()} remaining)`, enriched: totalEnrichedV, errors: totalErrors });
-        const res = await fetch('/api/niche-spy/enrich', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword, limit: 200 }),
-        });
-        const reader = res.body?.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        let roundVideos = 0, roundChannels = 0;
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-            const lines = buf.split('\n');
-            buf = lines.pop() || '';
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue;
-              try {
-                const d = JSON.parse(line.slice(6));
-                if (d.step === 'videos' && !d.done && !d.error) {
-                  const rpct = totalNeeded > 0 ? Math.round(((totalEnrichedV + (d.batch || 0) * 50) / totalNeeded) * 100) : 0;
-                  setEnrichResult({ message: `Round ${round}/${totalRounds}: video stats... (${rpct}%)`, enriched: totalEnrichedV, errors: totalErrors });
-                } else if (d.step === 'videos' && d.done) {
-                  roundVideos = d.enriched || 0;
-                } else if (d.step === 'channels' && !d.done && !d.error) {
-                  setEnrichResult({ message: `Round ${round}/${totalRounds}: fetching subscriber counts...`, enriched: totalEnrichedV + roundVideos, errors: totalErrors });
-                } else if (d.step === 'complete') {
-                  roundVideos = d.enrichedVideos || 0;
-                  roundChannels = d.enrichedChannels || 0;
-                  totalErrors += d.errors || 0;
-                }
-              } catch { /* skip */ }
-            }
-          }
-        }
-        totalEnrichedV += roundVideos;
-        totalEnrichedC += roundChannels;
-        if (roundVideos === 0) break;
-        await new Promise(r => setTimeout(r, 500));
-      }
-      setEnrichResult({ message: `All done! ${totalEnrichedV} videos, ${totalEnrichedC} channels enriched across ${round} rounds.`, enriched: totalEnrichedV, errors: totalErrors });
-      fetchVideos(0);
-    } catch (err) {
-      setEnrichResult({ message: `Error: ${err instanceof Error ? err.message : 'Failed'}`, enriched: totalEnrichedV, errors: totalErrors + 1 });
-    }
-    setEnriching(false);
-    setTimeout(() => setEnrichResult(null), 8000);
-  };
-
-  // Sync/Refresh
-  const syncData = async () => {
-    setSyncing(true);
-    setSyncProgress({ message: 'Fetching tasks from xgodo...', batches: 0, totalInserted: 0, totalUpdated: 0, totalLocal: 0, totalKeywords: 0 });
-    let totalInserted = 0, totalUpdated = 0, batches = 0;
-    try {
-      while (true) {
-        const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
-        const data = await res.json();
-        if (data.error) { setSyncProgress(prev => prev ? { ...prev, message: `Error: ${data.error}` } : null); break; }
-        batches++;
-        totalInserted += data.videosInserted || 0;
-        totalUpdated += data.videosUpdated || 0;
-        if (data.status === 'idle' || data.tasksProcessed === 0) {
-          setSyncProgress({
-            message: totalInserted > 0 ? `Done! ${totalInserted} new, ${totalUpdated} updated across ${batches} batches.` : 'All caught up — no new tasks.',
-            batches, totalInserted, totalUpdated,
-            totalLocal: data.totalLocal || 0, totalKeywords: data.totalKeywords || 0,
-            keywordBreakdown: data.keywordBreakdown, saturation: data.saturation, done: true,
-          });
-          break;
-        }
-        setSyncProgress({
-          message: `Batch ${batches}: ${data.tasksProcessed} tasks → ${data.videosInserted} new, ${data.videosUpdated} updated`,
-          batches, totalInserted, totalUpdated,
-          totalLocal: data.totalLocal || 0, totalKeywords: data.totalKeywords || 0,
-          keywordBreakdown: data.keywordBreakdown,
-        });
-        if (data.tasksProcessed < 100) break;
-        await new Promise(r => setTimeout(r, 500));
-      }
-      fetchVideos(0);
-    } catch (err) {
-      setSyncProgress(prev => prev ? { ...prev, message: `Error: ${err instanceof Error ? err.message : 'Sync failed'}` } : null);
-    }
-    setTimeout(() => { setSyncing(false); setSyncProgress(null); }, 5000);
-  };
-
   // Store ALL similar results, client-side filter by minScore dropdown
   const [allSimilarVideos, setAllSimilarVideos] = useState<NicheVideo[]>([]);
 
@@ -297,97 +174,14 @@ function NicheVideosInner() {
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto">
-      {/* Stats header with Enrich + Refresh */}
+      {/* Stats header */}
       <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-6 py-4 mb-4">
         <div className="flex items-center justify-between mb-3">
           <div>
             <span className="text-2xl font-bold text-white">{stats ? parseInt(stats.total_videos).toLocaleString() : '...'}</span>
             <span className="text-[#888] ml-2">stored videos</span>
           </div>
-          <div className="flex gap-2">
-            <button onClick={enrichData} disabled={enriching}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-[#333] text-white rounded-lg text-sm font-medium transition">
-              {enriching ? 'Enriching...' : 'Enrich Data'}
-            </button>
-            <button onClick={syncData} disabled={syncing}
-              className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-[#333] text-white rounded-lg text-sm font-medium transition">
-              {syncing ? 'Syncing...' : 'Refresh'}
-            </button>
-          </div>
         </div>
-
-        {/* Enrich progress */}
-        {enrichResult && (
-          <div className={`border rounded-lg px-4 py-2.5 mb-3 ${enrichResult.errors ? 'bg-yellow-900/20 border-yellow-600/40' : 'bg-purple-900/20 border-purple-600/40'}`}>
-            <div className="flex items-center gap-2">
-              {enriching ? (
-                <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-              ) : (
-                <svg className="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              )}
-              <span className="text-sm text-purple-200">{enrichResult.message}</span>
-            </div>
-          </div>
-        )}
-
-        {/* Sync progress with keyword breakdown + saturation */}
-        {syncProgress && (
-          <div className={`border rounded-lg px-4 py-3 mb-3 ${syncProgress.done ? 'bg-green-900/20 border-green-600/40' : 'bg-blue-900/20 border-blue-600/40'}`}>
-            <div className="flex items-center gap-3">
-              {syncing && !syncProgress.done && (
-                <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-              )}
-              {(syncProgress.done || !syncing) && (
-                <svg className="w-5 h-5 text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-blue-200 font-medium">{syncProgress.message}</p>
-                {syncProgress.batches > 0 && (
-                  <div className="flex items-center gap-4 mt-1.5 text-xs text-[#888] flex-wrap">
-                    <span className="text-green-400">+{syncProgress.totalInserted} new</span>
-                    <span className="text-yellow-400">{syncProgress.totalUpdated} updated</span>
-                    <span>{syncProgress.totalLocal.toLocaleString()} total</span>
-                    <span>{syncProgress.totalKeywords} keywords</span>
-                  </div>
-                )}
-                {syncProgress.keywordBreakdown && syncProgress.keywordBreakdown.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {syncProgress.keywordBreakdown.slice(0, 8).map(k => (
-                      <span key={k.keyword} className="text-[10px] bg-[#1a1a1a] text-[#ccc] px-2 py-0.5 rounded-full">
-                        {k.keyword} <span className="text-green-400">+{k.new}</span>/{k.total}
-                      </span>
-                    ))}
-                    {syncProgress.keywordBreakdown.length > 8 && (
-                      <span className="text-[10px] text-[#666]">+{syncProgress.keywordBreakdown.length - 8} more</span>
-                    )}
-                  </div>
-                )}
-                {syncProgress.saturation && syncProgress.saturation.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    <span className="text-[10px] text-[#666] uppercase tracking-wider">Saturation</span>
-                    {syncProgress.saturation.slice(0, 6).map(s => (
-                      <div key={s.keyword} className="flex items-center gap-2">
-                        <span className="text-[10px] text-[#888] w-28 truncate">{s.keyword}</span>
-                        <div className="flex-1 h-1.5 bg-[#1f1f1f] rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${s.runSatPct >= 90 ? 'bg-red-500' : s.runSatPct >= 60 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                            style={{ width: `${Math.min(s.runSatPct, 100)}%` }} />
-                        </div>
-                        <span className={`text-[10px] font-mono w-10 text-right ${s.runSatPct >= 90 ? 'text-red-400' : s.runSatPct >= 60 ? 'text-yellow-400' : 'text-green-400'}`}>
-                          {s.runSatPct}%
-                        </span>
-                        <span className="text-[10px] text-[#666]">+{s.A} new</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Keyword filter dropdown */}
         <div className="flex items-center gap-4 flex-wrap">

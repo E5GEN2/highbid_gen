@@ -2035,6 +2035,9 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
         )}
       </div>
 
+      {/* Data Collection — Sync + Enrich */}
+      <DataCollection />
+
       {/* Thread Targets (Thermostat) */}
       <ThreadTargets />
 
@@ -2287,6 +2290,128 @@ function AgentLog() {
               className="px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded text-xs">Prev</button>
             <button onClick={() => setPage(p => Math.min(logData.totalPages, p + 1))} disabled={page >= logData.totalPages}
               className="px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded text-xs">Next</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/** Data Collection controls — Sync from xgodo + Enrich via YouTube API */
+function DataCollection() {
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
+
+  const runSync = async () => {
+    setSyncing(true);
+    setSyncMsg('Fetching tasks from xgodo...');
+    let totalInserted = 0, totalUpdated = 0, batches = 0;
+    try {
+      while (true) {
+        const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
+        const data = await res.json();
+        if (data.error) { setSyncMsg(`Error: ${data.error}`); break; }
+        batches++;
+        totalInserted += data.videosInserted || 0;
+        totalUpdated += data.videosUpdated || 0;
+        if (data.status === 'idle' || data.tasksProcessed === 0) {
+          setSyncMsg(totalInserted > 0
+            ? `Done! +${totalInserted} new, ${totalUpdated} updated across ${batches} batches. ${data.totalLocal || 0} total videos.`
+            : 'All caught up — no new tasks.');
+          break;
+        }
+        setSyncMsg(`Batch ${batches}: ${data.tasksProcessed} tasks → +${data.videosInserted} new, ${data.videosUpdated} updated`);
+        if (data.tasksProcessed < 100) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch (err) {
+      setSyncMsg(`Error: ${err instanceof Error ? err.message : 'Sync failed'}`);
+    }
+    setSyncing(false);
+  };
+
+  const runEnrich = async () => {
+    setEnriching(true);
+    setEnrichMsg('Checking...');
+    let totalV = 0, totalC = 0, totalErr = 0, round = 0;
+    try {
+      const checkRes = await fetch('/api/niche-spy/enrich');
+      const checkData = await checkRes.json();
+      const needed = parseInt(checkData.need_enrichment) || 0;
+      if (needed === 0) { setEnrichMsg('All videos already enriched.'); setEnriching(false); return; }
+      const rounds = Math.ceil(needed / 200);
+      setEnrichMsg(`${needed} videos need enrichment (~${rounds} rounds)...`);
+      while (true) {
+        round++;
+        setEnrichMsg(`Round ${round}/${rounds}: enriching... (${totalV}/${needed})`);
+        const res = await fetch('/api/niche-spy/enrich', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: 200 }),
+        });
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        let buf = '', rv = 0, rc = 0;
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const d = JSON.parse(line.slice(6));
+                if (d.step === 'complete') { rv = d.enrichedVideos || 0; rc = d.enrichedChannels || 0; totalErr += d.errors || 0; }
+              } catch { /* skip */ }
+            }
+          }
+        }
+        totalV += rv; totalC += rc;
+        if (rv === 0) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      setEnrichMsg(`Done! ${totalV} videos, ${totalC} channels enriched across ${round} rounds.${totalErr ? ` ${totalErr} errors.` : ''}`);
+    } catch (err) {
+      setEnrichMsg(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+    }
+    setEnriching(false);
+  };
+
+  return (
+    <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+      <h3 className="text-sm font-bold text-white mb-1">Data Collection</h3>
+      <p className="text-xs text-gray-500 mb-4">Pull completed task data from xgodo and enrich with YouTube API.</p>
+
+      <div className="flex gap-3 mb-3">
+        <button onClick={runSync} disabled={syncing}
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
+          {syncing ? 'Syncing...' : 'Sync from xgodo'}
+        </button>
+        <button onClick={runEnrich} disabled={enriching}
+          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
+          {enriching ? 'Enriching...' : 'Enrich Data'}
+        </button>
+      </div>
+
+      {syncMsg && (
+        <div className={`border rounded-lg px-4 py-2.5 mb-2 ${syncMsg.startsWith('Error') ? 'bg-red-900/20 border-red-600/40' : syncMsg.startsWith('Done') ? 'bg-green-900/20 border-green-600/40' : 'bg-blue-900/20 border-blue-600/40'}`}>
+          <div className="flex items-center gap-2">
+            {syncing && <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
+            <span className="text-sm text-blue-200">{syncMsg}</span>
+          </div>
+        </div>
+      )}
+
+      {enrichMsg && (
+        <div className={`border rounded-lg px-4 py-2.5 ${enrichMsg.startsWith('Error') ? 'bg-red-900/20 border-red-600/40' : enrichMsg.startsWith('Done') || enrichMsg.startsWith('All') ? 'bg-green-900/20 border-green-600/40' : 'bg-purple-900/20 border-purple-600/40'}`}>
+          <div className="flex items-center gap-2">
+            {enriching && <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
+            <span className="text-sm text-purple-200">{enrichMsg}</span>
           </div>
         </div>
       )}

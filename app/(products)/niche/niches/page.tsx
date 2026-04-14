@@ -18,8 +18,6 @@ export default function NichesGrid() {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('videos');
   const [kwLoading, setKwLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [syncProgress, setSyncProgress] = useState<{ message: string; done?: boolean } | null>(null);
 
   const fetchKeywords = useCallback(async () => {
     setKwLoading(true);
@@ -34,37 +32,6 @@ export default function NichesGrid() {
   }, [search, sort]);
 
   useEffect(() => { fetchKeywords(); }, [fetchKeywords]);
-
-  const syncNicheData = async () => {
-    setSyncing(true);
-    setSyncProgress({ message: 'Fetching tasks from xgodo...' });
-    let totalInserted = 0, totalUpdated = 0, batches = 0;
-    try {
-      while (true) {
-        const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
-        const data = await res.json();
-        if (data.error) { setSyncProgress({ message: `Error: ${data.error}` }); break; }
-        batches++;
-        totalInserted += data.videosInserted || 0;
-        totalUpdated += data.videosUpdated || 0;
-        if (data.status === 'idle' || data.tasksProcessed === 0) {
-          setSyncProgress({
-            message: totalInserted > 0 ? `Done! ${totalInserted} new, ${totalUpdated} updated across ${batches} batches.` : 'All caught up — no new tasks.',
-            done: true,
-          });
-          break;
-        }
-        setSyncProgress({ message: `Batch ${batches}: ${data.tasksProcessed} tasks → ${data.videosInserted} new, ${data.videosUpdated} updated` });
-        if (data.tasksProcessed < 100) break;
-        await new Promise(r => setTimeout(r, 500));
-      }
-      fetchKeywords();
-    } catch (err) {
-      console.error('Niche sync error:', err);
-      setSyncProgress({ message: `Error: ${err instanceof Error ? err.message : 'Sync failed'}` });
-    }
-    setTimeout(() => { setSyncing(false); setSyncProgress(null); }, 5000);
-  };
 
   const selectKeyword = (kw: string) => {
     setSelectedKeyword(kw);
@@ -116,18 +83,7 @@ export default function NichesGrid() {
             </button>
           ))}
         </div>
-        <button onClick={syncNicheData} disabled={syncing}
-          className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-[#333] text-white rounded-xl text-sm font-medium transition">
-          {syncing ? 'Syncing...' : 'Sync'}
-        </button>
       </div>
-
-      {/* Sync progress */}
-      {syncProgress && (
-        <div className={`border rounded-xl px-4 py-3 mb-6 ${syncProgress.done ? 'bg-green-900/20 border-green-600/40' : 'bg-blue-900/20 border-blue-600/40'}`}>
-          <p className="text-sm text-blue-200">{syncProgress.message}</p>
-        </div>
-      )}
 
       {/* Results count */}
       {keywordCards.length > 0 && (
