@@ -32,10 +32,6 @@ export async function POST(req: NextRequest) {
 
   const toDelete = dupsRes.rows.map(r => r.id);
 
-  if (toDelete.length === 0) {
-    return NextResponse.json({ deleted: 0, message: 'No duplicates found' });
-  }
-
   // Step 2: Delete duplicates
   if (toDelete.length > 0) {
     await pool.query('DELETE FROM niche_spy_videos WHERE id = ANY($1)', [toDelete]);
