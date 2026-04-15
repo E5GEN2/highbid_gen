@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
@@ -144,9 +144,16 @@ function parseTask(task: Record<string, unknown>): { videos: ParsedVideo[]; keyw
  * Pull tasks from xgodo API, parse videos, upsert to local DB, confirm tasks.
  * Returns progress report.
  */
-export async function POST() {
+export async function POST(req: NextRequest) {
   const pool = await getPool();
   const now = new Date();
+
+  // Accept optional batch size from request body
+  let batchLimit = 100;
+  try {
+    const body = await req.json();
+    if (body.limit && body.limit >= 1 && body.limit <= 100) batchLimit = body.limit;
+  } catch { /* no body or invalid JSON — use default */ }
 
   const xgodoToken = await getXgodoToken();
   if (!xgodoToken) {
@@ -163,7 +170,7 @@ export async function POST() {
       },
       body: JSON.stringify({
         job_id: NICHE_SPY_JOB_ID,
-        limit: 100,
+        limit: batchLimit,
         status: 'processing',
       }),
     });

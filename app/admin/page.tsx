@@ -2308,68 +2308,104 @@ function AgentLog() {
 function DataCollection() {
   const [syncing, setSyncing] = useState(false);
   const [enriching, setEnriching] = useState(false);
-  const [logs, setLogs] = useState<Array<{ time: string; type: 'info' | 'success' | 'error' | 'data'; msg: string }>>([]);
+  const [logs, setLogs] = useState<Array<{ time: string; type: 'info' | 'success' | 'error' | 'data' | 'tick'; msg: string }>>([]);
   const logRef = useRef<HTMLDivElement>(null);
+  const [batchSize, setBatchSize] = useState(25);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tickStartRef = useRef(0);
 
-  const log = (type: 'info' | 'success' | 'error' | 'data', msg: string) => {
+  const log = (type: 'info' | 'success' | 'error' | 'data' | 'tick', msg: string) => {
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setLogs(prev => [...prev, { time, type, msg }]);
     setTimeout(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' }), 50);
   };
 
+  const startTick = (label: string) => {
+    stopTick();
+    tickStartRef.current = Date.now();
+    tickRef.current = setInterval(() => {
+      const elapsed = Math.round((Date.now() - tickStartRef.current) / 1000);
+      setLogs(prev => {
+        const last = prev[prev.length - 1];
+        if (last?.type === 'tick') return [...prev.slice(0, -1), { ...last, msg: `${label} (${elapsed}s)` }];
+        return [...prev, { time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }), type: 'tick' as const, msg: `${label} (${elapsed}s)` }];
+      });
+    }, 1000);
+  };
+
+  const stopTick = () => {
+    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+    setLogs(prev => prev.filter(l => l.type !== 'tick'));
+  };
+
   const runSync = async () => {
     setSyncing(true);
-    log('info', '[sync] Starting — fetching completed tasks from xgodo...');
-    let totalInserted = 0, totalUpdated = 0, batches = 0;
+    log('info', `[sync] Starting — batch size: ${batchSize} tasks per request`);
+    let totalInserted = 0, totalUpdated = 0, batches = 0, totalTasks = 0;
+    const syncStart = Date.now();
     try {
       while (true) {
-        const res = await fetch('/api/niche-spy/sync', { method: 'POST' });
-        const data = await res.json();
-        if (data.error) { log('error', `[sync] Error: ${data.error}`); break; }
         batches++;
+        startTick(`[sync] ⏳ Fetching batch ${batches} from xgodo...`);
+        const res = await fetch('/api/niche-spy/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: batchSize }),
+        });
+        stopTick();
+        const data = await res.json();
+        if (data.error) { log('error', `[sync] ✗ Error: ${data.error}`); break; }
+
         totalInserted += data.videosInserted || 0;
         totalUpdated += data.videosUpdated || 0;
+        totalTasks += data.tasksProcessed || 0;
 
-        log('data', `[sync] Batch ${batches}: ${data.tasksProcessed || 0} tasks processed, +${data.videosInserted || 0} new, ${data.videosUpdated || 0} updated`);
+        log('data', `[sync] Batch ${batches}: ${data.tasksProcessed || 0} tasks → +${data.videosInserted || 0} new, ${data.videosUpdated || 0} updated, ${data.tasksConfirmed || 0} confirmed`);
 
         if (data.keywordBreakdown) {
           for (const k of data.keywordBreakdown) {
-            log('data', `[sync]   └ ${k.keyword}: +${k.new} new / ${k.total} total`);
+            log('data', `[sync]   ├ ${k.keyword}: +${k.new} new / ${k.total} total`);
           }
         }
         if (data.saturation) {
           for (const s of data.saturation.slice(0, 5)) {
-            log('data', `[sync]   └ saturation ${s.keyword}: run=${s.runSatPct}% +${s.A} new`);
+            log('data', `[sync]   ├ sat ${s.keyword}: run=${s.runSatPct}% global=${s.globalSatPct}% +${s.A} new`);
           }
         }
-        if (data.totalLocal) log('info', `[sync] DB total: ${data.totalLocal} videos, ${data.totalKeywords || '?'} keywords`);
+        if (data.totalLocal) log('info', `[sync]   └ DB: ${data.totalLocal.toLocaleString()} videos, ${data.totalKeywords || '?'} keywords`);
 
         if (data.status === 'idle' || data.tasksProcessed === 0) {
-          log('success', `[sync] Complete — +${totalInserted} new, ${totalUpdated} updated across ${batches} batches`);
+          const elapsed = ((Date.now() - syncStart) / 1000).toFixed(1);
+          log('success', `[sync] ✓ Done in ${elapsed}s — ${totalTasks} tasks, +${totalInserted} new, ${totalUpdated} updated across ${batches} batches`);
           break;
         }
-        if (data.tasksProcessed < 100) {
-          log('success', `[sync] Complete (partial batch) — +${totalInserted} new, ${totalUpdated} updated`);
+        if (data.tasksProcessed < batchSize) {
+          const elapsed = ((Date.now() - syncStart) / 1000).toFixed(1);
+          log('success', `[sync] ✓ Done in ${elapsed}s (partial) — ${totalTasks} tasks, +${totalInserted} new, ${totalUpdated} updated`);
           break;
         }
-        await new Promise(r => setTimeout(r, 500));
+        log('info', `[sync] Running total: +${totalInserted} new, ${totalUpdated} updated from ${totalTasks} tasks...`);
+        await new Promise(r => setTimeout(r, 300));
       }
     } catch (err) {
-      log('error', `[sync] Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      stopTick();
+      log('error', `[sync] ✗ Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
     setSyncing(false);
   };
 
   const runEnrich = async () => {
     setEnriching(true);
-    log('info', '[enrich] Checking how many videos need enrichment...');
+    startTick('[enrich] ⏳ Checking enrichment needs...');
     let totalV = 0, totalC = 0, totalErr = 0, round = 0;
+    const enrichStart = Date.now();
     try {
       const checkRes = await fetch('/api/niche-spy/enrich');
+      stopTick();
       const checkData = await checkRes.json();
       const needed = parseInt(checkData.need_enrichment) || 0;
       if (needed === 0) {
-        log('success', '[enrich] All videos already enriched.');
+        log('success', '[enrich] ✓ All videos already enriched.');
         setEnriching(false);
         return;
       }
@@ -2380,6 +2416,7 @@ function DataCollection() {
         round++;
         const pct = needed > 0 ? Math.round((totalV / needed) * 100) : 0;
         log('info', `[enrich] Round ${round}/${rounds} starting... (${pct}% done, ${needed - totalV} remaining)`);
+        startTick(`[enrich] ⏳ Round ${round}/${rounds} processing...`);
 
         const res = await fetch('/api/niche-spy/enrich', {
           method: 'POST',
@@ -2401,22 +2438,29 @@ function DataCollection() {
               try {
                 const d = JSON.parse(line.slice(6));
                 if (d.step === 'videos' && d.done) {
+                  stopTick();
                   rv = d.enriched || 0;
-                  log('data', `[enrich]   └ videos: ${rv} enriched`);
+                  log('data', `[enrich]   ├ videos: ${rv} enriched`);
+                } else if (d.step === 'videos' && !d.done && !d.error && d.batch != null) {
+                  stopTick();
+                  log('data', `[enrich]   ├ batch ${d.batch}: processing...`);
+                  startTick(`[enrich] ⏳ Video batch ${(d.batch || 0) + 1}...`);
                 } else if (d.step === 'videos' && d.error) {
                   log('error', `[enrich]   └ video error: ${d.error}`);
                 } else if (d.step === 'channels' && !d.done && !d.error) {
-                  log('data', `[enrich]   └ fetching subscriber counts...`);
+                  startTick('[enrich] ⏳ Fetching subscriber counts...');
                 } else if (d.step === 'channels' && d.done) {
+                  stopTick();
                   rc = d.enriched || 0;
-                  log('data', `[enrich]   └ channels: ${rc} subscriber counts fetched`);
+                  log('data', `[enrich]   ├ channels: ${rc} subscriber counts fetched`);
                 } else if (d.step === 'channels' && d.error) {
                   log('error', `[enrich]   └ channel error: ${d.error}`);
                 } else if (d.step === 'complete') {
+                  stopTick();
                   rv = d.enrichedVideos || 0;
                   rc = d.enrichedChannels || 0;
                   totalErr += d.errors || 0;
-                  log('success', `[enrich] Round ${round} done: ${rv} videos, ${rc} channels${d.errors ? `, ${d.errors} errors` : ''}`);
+                  log('success', `[enrich] ✓ Round ${round}: ${rv} videos, ${rc} channels${d.errors ? `, ${d.errors} errors` : ''}`);
                 }
               } catch { /* skip */ }
             }
@@ -2424,14 +2468,16 @@ function DataCollection() {
         }
         totalV += rv; totalC += rc;
         if (rv === 0) {
-          log('info', '[enrich] No more videos to enrich in this round');
+          log('info', '[enrich] No more videos to enrich');
           break;
         }
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 300));
       }
-      log('success', `[enrich] All done! ${totalV} videos, ${totalC} channels enriched across ${round} rounds${totalErr ? `, ${totalErr} errors` : ''}`);
+      const elapsed = ((Date.now() - enrichStart) / 1000).toFixed(1);
+      log('success', `[enrich] ✓ All done in ${elapsed}s — ${totalV} videos, ${totalC} channels across ${round} rounds${totalErr ? `, ${totalErr} errors` : ''}`);
     } catch (err) {
-      log('error', `[enrich] Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      stopTick();
+      log('error', `[enrich] ✗ Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
     setEnriching(false);
   };
@@ -2441,6 +2487,7 @@ function DataCollection() {
     success: 'text-green-400',
     error: 'text-red-400',
     data: 'text-gray-400',
+    tick: 'text-yellow-300 animate-pulse',
   };
 
   return (
@@ -2450,7 +2497,7 @@ function DataCollection() {
           <h3 className="text-sm font-bold text-white">Data Collection</h3>
           <p className="text-xs text-gray-500">Pull completed task data from xgodo and enrich with YouTube API.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <button onClick={runSync} disabled={syncing || enriching}
             className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
             {syncing ? 'Syncing...' : 'Sync'}
@@ -2459,9 +2506,19 @@ function DataCollection() {
             className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg text-sm font-medium transition">
             {enriching ? 'Enriching...' : 'Enrich'}
           </button>
+          <div className="flex items-center gap-1.5 ml-2">
+            <label className="text-[10px] text-gray-500">Batch:</label>
+            <select value={batchSize} onChange={e => setBatchSize(parseInt(e.target.value))}
+              className="bg-gray-800 border border-gray-700 text-white text-xs rounded px-2 py-1">
+              <option value={10}>10</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
           {logs.length > 0 && (
             <button onClick={() => setLogs([])}
-              className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-xs transition">
+              className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-xs transition ml-auto">
               Clear
             </button>
           )}
@@ -2477,12 +2534,6 @@ function DataCollection() {
               <span className={typeColors[l.type] || 'text-gray-400'}>{l.msg}</span>
             </div>
           ))}
-          {(syncing || enriching) && (
-            <div className="flex items-center gap-2 mt-1">
-              <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-              <span className="text-blue-300">Processing...</span>
-            </div>
-          )}
         </div>
       )}
     </div>
