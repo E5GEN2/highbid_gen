@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { getProxy, getProxyStats } from '@/lib/xgodo-proxy';
+import { ytFetchViaProxy } from '@/lib/yt-proxy-fetch';
 
 /**
  * POST /api/niche-spy/enrich
@@ -91,17 +92,21 @@ export async function POST(req: NextRequest) {
 
           try {
             const ytUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${batch.join(',')}&key=${getYtKey()}`;
-            const ytRes = await fetch(ytUrl, { signal: AbortSignal.timeout(30000) });
+            const ytRes = await ytFetchViaProxy(ytUrl);
 
             if (!ytRes.ok) {
-              const errText = await ytRes.text();
-              send({ step: 'videos', error: `YT API ${ytRes.status}: ${errText.substring(0, 80)}` });
+              send({ step: 'videos', error: `YT API ${ytRes.status}: ${(ytRes.error || '').substring(0, 80)}`, proxy: ytRes.proxyUsed });
               errors++;
               continue;
             }
 
-            const ytData = await ytRes.json();
-            for (const item of ytData.items || []) {
+            interface YtVideoItem {
+              id: string;
+              snippet?: { title?: string; channelTitle?: string; publishedAt?: string; channelId?: string; thumbnails?: { high?: { url?: string }; medium?: { url?: string } } };
+              statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
+            }
+            const ytData = ytRes.data as { items?: YtVideoItem[] } | null;
+            for (const item of ytData?.items || []) {
               const dbEntry = videoMap.get(item.id);
               if (!dbEntry) continue;
 
@@ -132,9 +137,9 @@ export async function POST(req: NextRequest) {
                   snippet.title || '',
                   snippet.channelTitle || '',
                   publishedAt,
-                  parseInt(stats.viewCount) || 0,
-                  parseInt(stats.likeCount) || 0,
-                  parseInt(stats.commentCount) || 0,
+                  parseInt(stats.viewCount || '0') || 0,
+                  parseInt(stats.likeCount || '0') || 0,
+                  parseInt(stats.commentCount || '0') || 0,
                   snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || '',
                   dbEntry.dbId,
                   channelId || null,
@@ -166,16 +171,21 @@ export async function POST(req: NextRequest) {
 
             try {
               const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${batch.join(',')}&key=${getYtKey()}`;
-              const chRes = await fetch(chUrl, { signal: AbortSignal.timeout(30000) });
+              const chRes = await ytFetchViaProxy(chUrl);
 
               if (!chRes.ok) {
-                send({ step: 'channels', error: `YT API ${chRes.status}` });
+                send({ step: 'channels', error: `YT API ${chRes.status}: ${(chRes.error || '').substring(0, 80)}`, proxy: chRes.proxyUsed });
                 continue;
               }
 
-              const chData = await chRes.json();
-              for (const ch of chData.items || []) {
-                const subCount = parseInt(ch.statistics?.subscriberCount) || 0;
+              interface YtChannelItem {
+                id: string;
+                snippet?: { publishedAt?: string; thumbnails?: { default?: { url?: string }; medium?: { url?: string } } };
+                statistics?: { subscriberCount?: string };
+              }
+              const chData = chRes.data as { items?: YtChannelItem[] } | null;
+              for (const ch of chData?.items || []) {
+                const subCount = parseInt(ch.statistics?.subscriberCount || '0') || 0;
                 const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
                 const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
 
