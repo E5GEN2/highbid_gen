@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
     // Scatter — LIGHTWEIGHT: only videos with both subs AND views data
     pool.query(`
       SELECT id, channel_name as ch, subscriber_count as subs, view_count as views, score,
-             channel_created_at, embedded_at IS NOT NULL as has_embedding
+             channel_created_at, posted_at, embedded_at IS NOT NULL as has_embedding
       FROM niche_spy_videos
       WHERE keyword = $1 AND score >= $2
         AND subscriber_count > 0 AND view_count > 0
@@ -80,13 +80,16 @@ export async function GET(req: NextRequest) {
   const scatter = scatterRes.rows.map(r => {
     const createdAt = r.channel_created_at ? new Date(r.channel_created_at) : null;
     const ageDays = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) : null;
+    const postedAt = r.posted_at ? new Date(r.posted_at) : null;
+    const videoAgeDays = postedAt ? Math.floor((Date.now() - postedAt.getTime()) / 86400000) : null;
     return {
       id: r.id,
       ch: r.ch || '',                 // channel name (for per-channel filter)
-      s: parseInt(r.subs) || 0,      // subs
+      s: parseInt(r.subs) || 0,       // subs
       v: parseInt(r.views) || 0,      // views
       sc: parseInt(r.score) || 0,     // score
-      a: ageDays,                     // ageDays (null if unknown)
+      a: ageDays,                     // channel age days (null if unknown)
+      va: videoAgeDays,               // video upload age days (null if unknown)
       e: r.has_embedding || false,    // has embedding
     };
   });

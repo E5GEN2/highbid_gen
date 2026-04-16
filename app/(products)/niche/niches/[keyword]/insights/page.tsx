@@ -27,7 +27,7 @@ export default function NicheInsights() {
 
   // Scatter: lightweight dot data (loaded with distribution)
   const [scatterDots, setScatterDots] = useState<Array<{
-    id: number; ch: string; s: number; v: number; sc: number; a: number | null; e: boolean;
+    id: number; ch: string; s: number; v: number; sc: number; a: number | null; va: number | null; e: boolean;
   }>>([]);
 
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
@@ -240,7 +240,7 @@ function DistChart({ title, unit, buckets }: {
 /** Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale */
 // Lightweight dot from distribution API
 interface ScatterDot {
-  id: number; ch: string; s: number; v: number; sc: number; a: number | null; e: boolean;
+  id: number; ch: string; s: number; v: number; sc: number; a: number | null; va: number | null; e: boolean;
 }
 
 // Full video detail (fetched on demand)
@@ -255,6 +255,22 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [onePerChannel, setOnePerChannel] = useState(false);
+
+  // Range filters (empty string = no filter)
+  const [minViews, setMinViews] = useState('');
+  const [maxViews, setMaxViews] = useState('');
+  const [minSubs, setMinSubs] = useState('');
+  const [maxSubs, setMaxSubs] = useState('');
+  const [minChAge, setMinChAge] = useState('');   // channel age days
+  const [maxChAge, setMaxChAge] = useState('');
+  const [minVidAge, setMinVidAge] = useState(''); // video upload age days
+  const [maxVidAge, setMaxVidAge] = useState('');
+
+  const parseNum = (s: string): number | null => {
+    if (!s) return null;
+    const n = parseFloat(s);
+    return isNaN(n) ? null : n;
+  };
 
   // On-demand video detail cache
   const [videoCache, setVideoCache] = useState<Record<number, ScatterVideo>>({});
@@ -278,16 +294,35 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
       .catch(() => fetchingRef.current.delete(id));
   }, [videoCache]);
 
-  // Filter: 1 per channel (max views) or all — must be before the detail fetch useEffect
+  // Apply range filters first (views, subs, channel age, video age), then optionally best-per-channel
   const filteredDots = useMemo(() => {
-    if (!onePerChannel) return dots;
-    const best = new Map<string, number>();
-    dots.forEach((d, i) => {
-      const prev = best.get(d.ch);
-      if (prev === undefined || d.v > dots[prev].v) best.set(d.ch, i);
+    const minV = parseNum(minViews), maxV = parseNum(maxViews);
+    const minS = parseNum(minSubs), maxS = parseNum(maxSubs);
+    const minA = parseNum(minChAge), maxA = parseNum(maxChAge);
+    const minVA = parseNum(minVidAge), maxVA = parseNum(maxVidAge);
+
+    const ranged = dots.filter(d => {
+      if (minV !== null && d.v < minV) return false;
+      if (maxV !== null && d.v > maxV) return false;
+      if (minS !== null && d.s < minS) return false;
+      if (maxS !== null && d.s > maxS) return false;
+      // Channel age — if filter set but dot has no age, exclude
+      if (minA !== null && (d.a === null || d.a < minA)) return false;
+      if (maxA !== null && (d.a === null || d.a > maxA)) return false;
+      // Video age — same logic
+      if (minVA !== null && (d.va === null || d.va < minVA)) return false;
+      if (maxVA !== null && (d.va === null || d.va > maxVA)) return false;
+      return true;
     });
-    return [...best.values()].sort((a, b) => a - b).map(i => dots[i]);
-  }, [dots, onePerChannel]);
+
+    if (!onePerChannel) return ranged;
+    const best = new Map<string, number>();
+    ranged.forEach((d, i) => {
+      const prev = best.get(d.ch);
+      if (prev === undefined || d.v > ranged[prev].v) best.set(d.ch, i);
+    });
+    return [...best.values()].sort((a, b) => a - b).map(i => ranged[i]);
+  }, [dots, onePerChannel, minViews, maxViews, minSubs, maxSubs, minChAge, maxChAge, minVidAge, maxVidAge]);
 
   // Trigger detail fetch when hovered/selected changes — use filteredDots not dots!
   useEffect(() => {
@@ -614,12 +649,56 @@ function ChannelScatter({ dots }: { dots: ScatterDot[] }) {
 
           {/* Section 2: Filters (always at bottom, never moves) */}
           <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3 mt-3">
-            <div className="text-[10px] text-[#666] uppercase tracking-wider mb-2.5">Filters</div>
-            <label className="flex items-center gap-2 cursor-pointer">
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="text-[10px] text-[#666] uppercase tracking-wider">Filters</div>
+              {(minViews || maxViews || minSubs || maxSubs || minChAge || maxChAge || minVidAge || maxVidAge) && (
+                <button
+                  onClick={() => {
+                    setMinViews(''); setMaxViews('');
+                    setMinSubs(''); setMaxSubs('');
+                    setMinChAge(''); setMaxChAge('');
+                    setMinVidAge(''); setMaxVidAge('');
+                    setHovered(null); setSelected(null);
+                  }}
+                  className="text-[9px] text-[#888] hover:text-white uppercase tracking-wider"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer mb-3">
               <input type="checkbox" checked={onePerChannel} onChange={e => { setOnePerChannel(e.target.checked); setHovered(null); setSelected(null); }}
                 className="w-3.5 h-3.5 rounded bg-[#1f1f1f] border-[#333] text-amber-500 focus:ring-amber-500" />
               <span className="text-xs text-[#888]">Best video per channel only</span>
             </label>
+
+            {/* Range filter rows */}
+            {([
+              { label: 'Video views', min: minViews, max: maxViews, setMin: setMinViews, setMax: setMaxViews, ph: ['0', '∞'] },
+              { label: 'Subscribers', min: minSubs, max: maxSubs, setMin: setMinSubs, setMax: setMaxSubs, ph: ['0', '∞'] },
+              { label: 'Channel age (days)', min: minChAge, max: maxChAge, setMin: setMinChAge, setMax: setMaxChAge, ph: ['0', '∞'] },
+              { label: 'Video age (days)', min: minVidAge, max: maxVidAge, setMin: setMinVidAge, setMax: setMaxVidAge, ph: ['0', '∞'] },
+            ] as const).map(row => (
+              <div key={row.label} className="mb-2 last:mb-0">
+                <div className="text-[10px] text-[#888] mb-1">{row.label}</div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number" min="0" inputMode="numeric"
+                    value={row.min} onChange={e => { row.setMin(e.target.value); setHovered(null); setSelected(null); }}
+                    placeholder={row.ph[0]}
+                    className="w-full min-w-0 bg-[#0a0a0a] border border-[#1f1f1f] rounded px-2 py-1 text-xs text-white placeholder-[#555] focus:outline-none focus:border-amber-500"
+                  />
+                  <span className="text-[#555] text-xs">–</span>
+                  <input
+                    type="number" min="0" inputMode="numeric"
+                    value={row.max} onChange={e => { row.setMax(e.target.value); setHovered(null); setSelected(null); }}
+                    placeholder={row.ph[1]}
+                    className="w-full min-w-0 bg-[#0a0a0a] border border-[#1f1f1f] rounded px-2 py-1 text-xs text-white placeholder-[#555] focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
