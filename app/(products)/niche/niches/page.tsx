@@ -154,7 +154,9 @@ export default function NichesGrid() {
               )}
             </div>
 
-            {/* Opportunity indicators — 4 compact pills with hover tooltips */}
+            {/* Opportunity indicators — 4 compact pills with hover tooltips.
+                When not enough data (<10 high-score videos), render dimmed placeholder
+                pills so every card has the same height and the missing data is legible. */}
             {kw.opportunity ? (
               <div className="grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t border-[#1f1f1f]">
                 <IndicatorPill
@@ -223,7 +225,26 @@ export default function NichesGrid() {
                   }
                 />
               </div>
-            ) : null}
+            ) : (
+              // Not enough data yet — render dimmed placeholder pills to keep
+              // card height consistent across the grid.
+              <div className="grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t border-[#1f1f1f]">
+                {(['OPP', 'TOP', 'NEW', 'CEIL'] as const).map(label => (
+                  <IndicatorPill
+                    key={label}
+                    label={label}
+                    value="—"
+                    band="empty"
+                    tooltip={
+                      <>
+                        <div className="font-semibold text-white mb-1">Not enough data yet</div>
+                        <div>Opportunity indicators need at least 10 high-score videos (score ≥ 80) in the niche to produce a reliable signal. Keep collecting and they&apos;ll populate automatically.</div>
+                      </>
+                    }
+                  />
+                ))}
+              </div>
+            )}
           </button>
         ))}
       </div>
@@ -237,13 +258,14 @@ function IndicatorPill({
 }: {
   label: string;
   value: string;
-  band: 'green' | 'yellow' | 'red';
+  band: 'green' | 'yellow' | 'red' | 'empty';
   tooltip: React.ReactNode;
 }) {
   const colors = {
     green: 'text-green-400 bg-green-500/10 border-green-500/20',
     yellow: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20',
     red: 'text-red-400 bg-red-500/10 border-red-500/20',
+    empty: 'text-[#555] bg-[#1a1a1a]/40 border-[#1f1f1f] border-dashed',
   };
   return (
     <div
