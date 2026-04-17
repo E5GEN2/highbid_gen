@@ -4,6 +4,7 @@ import React, { useState, useCallback, useEffect, useMemo, Suspense } from 'reac
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useNiche } from '@/components/NicheProvider';
 import { useSimilarModal } from '@/components/SimilarModal';
+import { IndicatorPillsRow, IndicatorPillsEmpty } from '@/components/IndicatorPill';
 import { fmtYT } from '@/lib/format';
 
 interface NicheVideo {
@@ -76,6 +77,14 @@ function NicheVideosInner() {
       id: number; clusterIndex: number; label: string | null; autoLabel: string | null; aiLabel: string | null;
       videoCount: number; avgScore: number | null; avgViews: number | null; totalViews: number | null;
       topChannels: string[]; representativeVideoId: number | null;
+      // Enriched by GET /api/niche-spy/clusters — identical shape to niche cards
+      channelCount?: number;
+      highScoreCount?: number;
+      newChannelCount?: number;
+      opportunity?: {
+        sample: number; nos: number; nosDisplay: number;
+        topLeftPct: number; newcomerRate: number; lowSubCeiling: number;
+      } | null;
     }>;
   }>({ run: null, clusters: [] });
   const [clusterName, setClusterName] = useState<string | null>(null);
@@ -253,49 +262,67 @@ function NicheVideosInner() {
                 </button>
               </div>
 
-              {/* Sub-niche cards grid */}
+              {/* Sub-niche cards grid — mirrors the Niches grid card layout */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {clusterRun.clusters.map(c => (
-                  <button
-                    key={c.id}
-                    onClick={() => {
-                      setViewMode('videos');
-                      router.push(`/niche/niches/${encodeURIComponent(keyword)}/videos?cluster=${c.id}`);
-                    }}
-                    className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 text-left hover:border-amber-500/60 transition group"
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <h3 className="text-sm font-bold text-white group-hover:text-amber-400 transition leading-tight line-clamp-2">
-                        {c.label || c.autoLabel || `Cluster ${c.clusterIndex}`}
-                      </h3>
-                      <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full flex-shrink-0 ml-2">
-                        ai-clustered
-                      </span>
-                    </div>
-                    {c.avgScore !== null && (
-                      <span className={`inline-block text-xs px-2 py-0.5 rounded-lg font-bold mb-2 ${
-                        c.avgScore >= 80 ? 'bg-green-500/20 text-green-400' :
-                        c.avgScore >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
-                        'bg-red-500/20 text-red-400'
-                      }`}>⚡ {Math.round(c.avgScore)}</span>
-                    )}
-                    <div className="grid grid-cols-2 gap-2 mb-2">
-                      <div>
-                        <div className="text-lg font-bold text-white">{c.videoCount}</div>
-                        <div className="text-[10px] text-[#666]">videos</div>
+                {clusterRun.clusters.map(c => {
+                  const label = c.label || c.autoLabel || `Cluster ${c.clusterIndex}`;
+                  const avgScoreRounded = c.avgScore !== null ? Math.round(c.avgScore) : 0;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => {
+                        setViewMode('videos');
+                        router.push(`/niche/niches/${encodeURIComponent(keyword)}/videos?cluster=${c.id}`);
+                      }}
+                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 text-left hover:border-amber-500/60 transition group"
+                    >
+                      {/* Title row + ai-clustered badge + score badge */}
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <h3 className="text-base font-bold text-white group-hover:text-amber-400 transition leading-tight line-clamp-2">{label}</h3>
+                          <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full flex-shrink-0">ai-clustered</span>
+                        </div>
+                        {c.avgScore !== null && (
+                          <span className={`text-xs px-2 py-1 rounded-lg font-bold ${
+                            avgScoreRounded >= 80 ? 'bg-green-500/20 text-green-400' :
+                            avgScoreRounded >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-red-500/20 text-red-400'
+                          }`}>⚡ {avgScoreRounded}</span>
+                        )}
                       </div>
-                      <div>
-                        <div className="text-lg font-bold text-green-400">{c.avgViews ? fmtYT(c.avgViews) : '—'}</div>
-                        <div className="text-[10px] text-[#666]">avg views</div>
+
+                      {/* 3-column stats — videos / channels / total views */}
+                      <div className="grid grid-cols-3 gap-2 mb-3">
+                        <div>
+                          <div className="text-lg font-bold text-white">{c.videoCount}</div>
+                          <div className="text-xs text-[#666]">videos</div>
+                        </div>
+                        <div>
+                          <div className="text-lg font-bold text-blue-400">{c.channelCount ?? '—'}</div>
+                          <div className="text-xs text-[#666]">channels</div>
+                        </div>
+                        <div>
+                          <div className="text-lg font-bold text-green-400">{c.totalViews ? fmtYT(c.totalViews) : (c.avgViews ? fmtYT(c.avgViews) : '—')}</div>
+                          <div className="text-xs text-[#666]">{c.totalViews ? 'views' : 'avg views'}</div>
+                        </div>
                       </div>
-                    </div>
-                    {c.topChannels.length > 0 && (
-                      <div className="text-[10px] text-[#666] line-clamp-1">
-                        {c.topChannels.slice(0, 3).join(' · ')}
+
+                      {/* Meta line — new ch / high score (no saturation for clusters) */}
+                      <div className="flex items-center gap-2 text-xs text-[#666]">
+                        {(c.newChannelCount ?? 0) > 0 && <span className="text-orange-400">{c.newChannelCount} new ch</span>}
+                        {(c.highScoreCount ?? 0) > 0 && <span>{c.highScoreCount} high score</span>}
+                        {c.topChannels.length > 0 && (
+                          <span className="truncate min-w-0 flex-1">
+                            {c.topChannels.slice(0, 2).join(' · ')}
+                          </span>
+                        )}
                       </div>
-                    )}
-                  </button>
-                ))}
+
+                      {/* Opportunity pills — identical to the niches grid */}
+                      {c.opportunity ? <IndicatorPillsRow opportunity={c.opportunity} /> : <IndicatorPillsEmpty />}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Noise count */}

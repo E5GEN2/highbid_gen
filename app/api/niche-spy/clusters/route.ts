@@ -6,6 +6,10 @@ import { isAdmin } from '@/lib/admin-auth';
 /**
  * GET /api/niche-spy/clusters?keyword=X
  * Returns latest cluster run + cluster data for a keyword.
+ *
+ * Each cluster is enriched with the same channel + opportunity stats shown on
+ * niche cards (channelCount, highScoreCount, newChannelCount, opportunity.*)
+ * so the sub-niche cards can render identically to keyword cards.
  */
 export async function GET(req: NextRequest) {
   const keyword = req.nextUrl.searchParams.get('keyword');
@@ -14,7 +18,98 @@ export async function GET(req: NextRequest) {
   const result = await getLatestClusterRun(keyword);
   if (!result) return NextResponse.json({ run: null, clusters: [] });
 
-  return NextResponse.json(result);
+  // If there's no completed run there are no clusters to enrich
+  if (result.clusters.length === 0 || !result.run) return NextResponse.json(result);
+
+  const pool = await getPool();
+  const runId = result.run.id;
+
+  // Compute per-cluster stats in a single query: channel count + score bucket counts
+  // + opportunity stats (NOS / top-left / newcomer / ceiling), exactly like the
+  // keywords endpoint does per keyword. Scoped to this run's cluster_id set.
+  const statsRes = await pool.query(`
+    WITH all_videos AS (
+      SELECT a.cluster_id, v.channel_name, v.score, v.channel_created_at
+      FROM niche_cluster_assignments a
+      JOIN niche_spy_videos v ON v.id = a.video_id
+      WHERE a.run_id = $1
+    ),
+    counts AS (
+      SELECT cluster_id,
+             COUNT(DISTINCT channel_name) AS channel_count,
+             COUNT(*) FILTER (WHERE score >= 80) AS high_score_count,
+             COUNT(DISTINCT channel_name) FILTER (WHERE channel_created_at > NOW() - INTERVAL '180 days') AS new_channel_count
+      FROM all_videos
+      GROUP BY cluster_id
+    ),
+    scored AS (
+      SELECT a.cluster_id, v.view_count AS v, v.subscriber_count AS s, v.channel_created_at AS c,
+             LOG(v.view_count::numeric) / LOG(GREATEST(v.subscriber_count, 10)::numeric) AS ratio
+      FROM niche_cluster_assignments a
+      JOIN niche_spy_videos v ON v.id = a.video_id
+      WHERE a.run_id = $1
+        AND v.score >= 80 AND v.view_count > 0 AND v.subscriber_count > 0
+    ),
+    agg AS (
+      SELECT cluster_id,
+             COUNT(*) AS sample,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY ratio) AS nos,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY v) AS med_v,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY s) AS med_s,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY v)
+               FILTER (WHERE c IS NOT NULL AND c > NOW() - INTERVAL '180 days') AS new_med_v,
+             percentile_cont(0.9) WITHIN GROUP (ORDER BY v)
+               FILTER (WHERE s < 10000) AS low_sub_ceiling
+      FROM scored
+      GROUP BY cluster_id
+    ),
+    tl AS (
+      SELECT s.cluster_id,
+             COUNT(*) FILTER (WHERE s.v > a.med_v AND s.s < a.med_s)::float
+               / NULLIF(COUNT(*), 0) * 100 AS top_left_pct
+      FROM scored s JOIN agg a USING (cluster_id)
+      GROUP BY s.cluster_id
+    )
+    SELECT c.cluster_id, c.channel_count, c.high_score_count, c.new_channel_count,
+           a.sample, a.nos, a.med_v, a.new_med_v, a.low_sub_ceiling, t.top_left_pct
+    FROM counts c
+    LEFT JOIN agg a USING (cluster_id)
+    LEFT JOIN tl t USING (cluster_id)
+  `, [runId]);
+
+  const statsByCluster = new Map<number, Record<string, unknown>>();
+  for (const row of statsRes.rows) {
+    statsByCluster.set(row.cluster_id, row);
+  }
+
+  const enrichedClusters = result.clusters.map(c => {
+    const stats = statsByCluster.get(c.id);
+    if (!stats) return { ...c, channelCount: 0, highScoreCount: 0, newChannelCount: 0, opportunity: null };
+
+    const sample = parseInt(stats.sample as string) || 0;
+    const nos = parseFloat(stats.nos as string) || 0;
+    const medV = parseFloat(stats.med_v as string) || 0;
+    const newMedV = parseFloat(stats.new_med_v as string) || 0;
+    const nosDisplay = Math.round(Math.max(0, Math.min(100, ((nos - 0.5) / 2.0) * 100)));
+
+    // Need >=10 high-score videos for indicators to be meaningful (same rule as niches)
+    const opportunity = sample >= 10 ? {
+      sample, nos, nosDisplay,
+      topLeftPct: Math.round(parseFloat(stats.top_left_pct as string) || 0),
+      newcomerRate: medV > 0 ? Math.round((newMedV / medV) * 100) : 0,
+      lowSubCeiling: Math.round(parseFloat(stats.low_sub_ceiling as string) || 0),
+    } : null;
+
+    return {
+      ...c,
+      channelCount: parseInt(stats.channel_count as string) || 0,
+      highScoreCount: parseInt(stats.high_score_count as string) || 0,
+      newChannelCount: parseInt(stats.new_channel_count as string) || 0,
+      opportunity,
+    };
+  });
+
+  return NextResponse.json({ run: result.run, clusters: enrichedClusters });
 }
 
 /**

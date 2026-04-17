@@ -59,6 +59,7 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [onePerChannel, setOnePerChannel] = useState(false);
+  const [refreshingIds, setRefreshingIds] = useState<Set<number>>(new Set());
 
   const [minViews, setMinViews] = useState('');
   const [maxViews, setMaxViews] = useState('');
@@ -102,6 +103,33 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
       })
       .catch(() => fetchingRef.current.delete(id));
   }, [videoCache, videoLookup]);
+
+  // Re-fetch a video's YouTube data via our proxied enrichment pipeline, then
+  // pull the matching detail shape and swap it into the scatter's card cache
+  // so the card updates in place without reloading the whole scatter.
+  const refreshVideo = useCallback(async (id: number) => {
+    setRefreshingIds(prev => new Set(prev).add(id));
+    try {
+      const res = await fetch('/api/niche-spy/enrich-one', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoId: id }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        // Fetch the detail shape our card renders (same endpoint fetchVideoDetail uses)
+        const detail = await fetch(`/api/niche-spy/distribution/video?id=${id}`).then(r => r.json()).catch(() => null);
+        if (detail?.id) {
+          setVideoCache(prev => ({ ...prev, [id]: detail }));
+          setActiveVideo(detail);
+        }
+      }
+    } catch (err) {
+      console.error('Scatter refresh error:', err);
+    } finally {
+      setRefreshingIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+    }
+  }, []);
 
   const filteredDots = useMemo(() => {
     const minV = parseNum(minViews), maxV = parseNum(maxViews);
@@ -343,6 +371,18 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
                     <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
                       ch.avgScore >= 80 ? 'bg-green-500 text-white' : ch.avgScore >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
                     }`}>⚡ {ch.avgScore}</div>
+
+                    {/* Refresh button — re-fetches this video's YouTube data via our proxy pipeline */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); refreshVideo(ch.id); }}
+                      disabled={refreshingIds.has(ch.id)}
+                      title="Refresh data from YouTube"
+                      className="absolute top-2 left-2 w-7 h-7 rounded-full bg-black/60 hover:bg-black/80 disabled:bg-black/40 backdrop-blur-sm flex items-center justify-center text-white/80 hover:text-white transition group/refresh"
+                    >
+                      <svg className={`w-3.5 h-3.5 ${refreshingIds.has(ch.id) ? 'animate-spin' : 'group-hover/refresh:rotate-90 transition-transform'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    </button>
                   </div>
                   <div className="p-3">
                     <div className="flex items-center justify-between mb-2">
