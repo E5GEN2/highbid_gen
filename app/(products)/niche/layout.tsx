@@ -5,15 +5,21 @@ import ProductSidebar, { NavItem } from '@/components/ProductSidebar';
 import TopBar from '@/components/TopBar';
 import { NicheProvider, useNiche } from '@/components/NicheProvider';
 import { SimilarModalProvider } from '@/components/SimilarModal';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 
 function NicheLayoutInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { selectedKeyword } = useNiche();
 
   // Similar route → show Similar + Videos/Insights tabs under Niches
   const similarMatch = pathname.match(/^\/niche\/similar\/([^/]+)/);
   const similarVideoId = similarMatch ? similarMatch[1] : null;
+
+  // Preserve ?cluster=X when switching between Videos/Insights tabs so the
+  // sub-niche filter doesn't get dropped on tab navigation.
+  const clusterParam = searchParams.get('cluster');
+  const clusterQuery = clusterParam ? `?cluster=${clusterParam}` : '';
 
   // Build nav items — "Niches" gets dynamic children when a keyword is selected
   // OR when we're inside a /niche/similar/[id] route
@@ -43,9 +49,9 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
         { label: 'Videos', href: `/niche/similar/${similarVideoId}/videos` },
         { label: 'Insights', href: `/niche/similar/${similarVideoId}/insights` },
       ] : selectedKeyword ? [
-        { label: 'Videos', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/videos` },
+        { label: 'Videos', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/videos${clusterQuery}` },
         { label: 'Channels', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/channels` },
-        { label: 'Insights', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/insights` },
+        { label: 'Insights', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/insights${clusterQuery}` },
       ] : undefined,
     },
   ];

@@ -307,15 +307,11 @@ function NicheVideosInner() {
                         </div>
                       </div>
 
-                      {/* Meta line — new ch / high score (no saturation for clusters) */}
+                      {/* Meta line — new ch / high score (no saturation for clusters;
+                          top channels intentionally omitted, cards were too crowded) */}
                       <div className="flex items-center gap-2 text-xs text-[#666]">
                         {(c.newChannelCount ?? 0) > 0 && <span className="text-orange-400">{c.newChannelCount} new ch</span>}
                         {(c.highScoreCount ?? 0) > 0 && <span>{c.highScoreCount} high score</span>}
-                        {c.topChannels.length > 0 && (
-                          <span className="truncate min-w-0 flex-1">
-                            {c.topChannels.slice(0, 2).join(' · ')}
-                          </span>
-                        )}
                       </div>
 
                       {/* Opportunity pills — identical to the niches grid */}

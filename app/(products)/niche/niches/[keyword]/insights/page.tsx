@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import React, { useState, useEffect, Suspense } from 'react';
+import { useParams, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { useNiche } from '@/components/NicheProvider';
 import NicheTimeline from '@/components/NicheTimeline';
 import { fmtYT } from '@/lib/format';
@@ -10,9 +11,32 @@ import { ChannelScatter, type ScatterDot } from '@/components/ChannelScatter';
 import { DistBars, DistBarsSkeleton, type DistBucket } from '@/components/DistBars';
 
 export default function NicheInsights() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-[50vh]"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-amber-500" /></div>}>
+      <NicheInsightsInner />
+    </Suspense>
+  );
+}
+
+function NicheInsightsInner() {
   const { keyword: rawKeyword } = useParams<{ keyword: string }>();
   const keyword = decodeURIComponent(rawKeyword);
+  const searchParams = useSearchParams();
+  const clusterParam = searchParams.get('cluster');
   const { setSelectedKeyword, filter, setFilter } = useNiche();
+
+  // Cluster label (for the "Sub-niche: X" header when scoped)
+  const [clusterLabel, setClusterLabel] = useState<string | null>(null);
+  useEffect(() => {
+    if (!clusterParam) { setClusterLabel(null); return; }
+    fetch(`/api/niche-spy/clusters?keyword=${encodeURIComponent(keyword)}`)
+      .then(r => r.json())
+      .then(d => {
+        const c = (d?.clusters || []).find((x: { id: number }) => String(x.id) === clusterParam);
+        if (c) setClusterLabel(c.label || c.autoLabel || `Cluster ${c.clusterIndex}`);
+      })
+      .catch(() => {});
+  }, [clusterParam, keyword]);
 
   const [saturation, setSaturation] = useState<{
     latest?: { runSaturation: number; globalSaturation: number; universeSize: number; knownBefore: number; lastNew: number; lastOverlap: number } | null;
@@ -31,21 +55,50 @@ export default function NicheInsights() {
   useEffect(() => { setSelectedKeyword(keyword); }, [keyword, setSelectedKeyword]);
 
   useEffect(() => {
-    fetch(`/api/niche-spy/saturation?keyword=${encodeURIComponent(keyword)}`)
-      .then(r => r.json()).then(d => setSaturation(d)).catch(() => {});
-    fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=0&sort=views&minScore=${filter.minScore}`)
-      .then(r => r.json()).then(d => { if (d.stats) setChannelStats(d.stats); }).catch(() => {});
+    // Saturation + channel stats are keyword-scoped only — they don't make
+    // sense at the cluster level (saturation is per-run), so skip when filtered.
+    if (!clusterParam) {
+      fetch(`/api/niche-spy/saturation?keyword=${encodeURIComponent(keyword)}`)
+        .then(r => r.json()).then(d => setSaturation(d)).catch(() => {});
+      fetch(`/api/niche-spy/channels?keyword=${encodeURIComponent(keyword)}&limit=0&sort=views&minScore=${filter.minScore}`)
+        .then(r => r.json()).then(d => { if (d.stats) setChannelStats(d.stats); }).catch(() => {});
+    } else {
+      setSaturation(null);
+      setChannelStats(null);
+    }
     setDistLoading(true);
-    fetch(`/api/niche-spy/distribution?keyword=${encodeURIComponent(keyword)}&minScore=${filter.minScore}`)
+    const distUrl = clusterParam
+      ? `/api/niche-spy/distribution?clusterId=${clusterParam}&minScore=${filter.minScore}`
+      : `/api/niche-spy/distribution?keyword=${encodeURIComponent(keyword)}&minScore=${filter.minScore}`;
+    fetch(distUrl)
       .then(r => r.json()).then(d => {
         if (d.subsDist) setSubsDist(d.subsDist);
         if (d.viewsDist) setViewsDist(d.viewsDist);
         if (d.scatter) setScatterDots(d.scatter);
       }).catch(() => {}).finally(() => setDistLoading(false));
-  }, [keyword, filter.minScore]);
+  }, [keyword, filter.minScore, clusterParam]);
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto space-y-6">
+      {/* Cluster scope banner — only when ?cluster=X is active */}
+      {clusterParam && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 flex items-center justify-between flex-wrap gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] text-amber-300/80 uppercase tracking-wider">Sub-niche</div>
+            <div className="text-sm font-bold text-white truncate">{clusterLabel || 'Loading...'}</div>
+          </div>
+          <Link
+            href={`/niche/niches/${encodeURIComponent(keyword)}/insights`}
+            className="text-xs text-amber-300 hover:text-amber-200 flex items-center gap-1 flex-shrink-0"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            Clear sub-niche filter
+          </Link>
+        </div>
+      )}
+
       {/* Opportunity indicators */}
       {distLoading ? (
         <OpportunityIndicatorsSkeleton />
