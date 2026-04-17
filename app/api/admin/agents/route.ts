@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { isAdmin } from '@/lib/admin-auth';
+import { fetchRunningTasks, fetchPlannedTasks, countInFlight } from '@/lib/xgodo-tasks';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
 const NICHE_SPY_JOB_ID = '69a58c4277cb8e2b9f1dddc4';
@@ -30,80 +31,29 @@ export async function GET(req: NextRequest) {
     const token = getToken(config);
     if (!token) return NextResponse.json({ error: 'xgodo token not configured' }, { status: 500 });
 
-    // Fetch running tasks from xgodo
-    const res = await fetch(`${XGODO_API}/jobs/applicants`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        job_id: NICHE_SPY_JOB_ID,
-        status: 'running',
-        limit: 100,
-      }),
-    });
+    // Fetch running + planned in parallel so the UI sees the same in-flight
+    // numbers the thermostat uses to make decisions.
+    const [running, planned] = await Promise.all([
+      fetchRunningTasks(token, NICHE_SPY_JOB_ID),
+      fetchPlannedTasks(token, NICHE_SPY_JOB_ID),
+    ]);
 
-    if (!res.ok) {
-      const text = await res.text();
-      return NextResponse.json({ error: `xgodo API error: ${res.status} ${text}` }, { status: 502 });
-    }
+    const inflight = countInFlight(running, planned);
 
-    const data = await res.json();
-    const tasks = data.job_tasks || [];
-
-    // Extract keyword from each task
-    interface TaskInfo {
-      id: string;
-      keyword: string;
-      startedAt: string | null;
-      workerName: string | null;
-    }
-
-    const taskList: TaskInfo[] = tasks.map((t: Record<string, unknown>) => {
-      // planned_task can be a JSON string or an object
-      let planned: Record<string, unknown> = {};
-      if (typeof t.planned_task === 'string') {
-        try { planned = JSON.parse(t.planned_task); } catch { /* not JSON */ }
-      } else if (t.planned_task && typeof t.planned_task === 'object') {
-        planned = t.planned_task as Record<string, unknown>;
-      }
-
-      let proof: Record<string, unknown> = {};
-      if (typeof t.job_proof === 'string') {
-        try { proof = JSON.parse(t.job_proof); } catch { /* not JSON */ }
-      } else if (t.job_proof && typeof t.job_proof === 'object') {
-        proof = t.job_proof as Record<string, unknown>;
-      }
-
-      const keyword = (
-        planned.keyword || planned.search_query || planned.searchQuery ||
-        proof.keyword || proof.searchQuery || proof.search_query ||
-        'unknown'
-      ) as string;
-
-      return {
-        id: (t._id || t.job_task_id || '') as string,
+    // Build grouped view — running + planned per keyword, sorted by in-flight
+    const byKeyword = Object.entries(inflight)
+      .map(([keyword, rec]) => ({
         keyword,
-        startedAt: (t.created_at || t.started_at || null) as string | null,
-        workerName: (t.worker_name || null) as string | null,
-      };
-    });
+        active: rec.running,    // kept for backward compat with the UI
+        running: rec.running,
+        planned: rec.planned,
+        inFlight: rec.inFlight,
+        taskIds: running.filter(r => r.keyword === keyword).map(r => r.taskId),
+      }))
+      .sort((a, b) => b.inFlight - a.inFlight);
 
-    // Group by keyword
-    const byKeyword: Record<string, { keyword: string; active: number; taskIds: string[] }> = {};
-    for (const task of taskList) {
-      if (!byKeyword[task.keyword]) {
-        byKeyword[task.keyword] = { keyword: task.keyword, active: 0, taskIds: [] };
-      }
-      byKeyword[task.keyword].active++;
-      byKeyword[task.keyword].taskIds.push(task.id);
-    }
-
-    const keywordList = Object.values(byKeyword).sort((a, b) => b.active - a.active);
-
-    // Fetch duration data from task log
-    const taskIds = taskList.map(t => t.id).filter(Boolean);
+    // Fetch duration data for running tasks from task log
+    const taskIds = running.map(r => r.taskId).filter(Boolean);
     const durationMap: Record<string, { firstSeen: string; duration: number }> = {};
     if (taskIds.length > 0) {
       const logRes = await pool.query(
@@ -121,12 +71,23 @@ export async function GET(req: NextRequest) {
     );
 
     return NextResponse.json({
-      totalActive: taskList.length,
-      byKeyword: keywordList,
-      tasks: taskList.map(t => ({
-        ...t,
-        duration: durationMap[t.id]?.duration || null,
-        firstSeen: durationMap[t.id]?.firstSeen || null,
+      totalActive: running.length,         // backward compat
+      totalRunning: running.length,
+      totalPlanned: planned.length,
+      totalInFlight: running.length + planned.length,
+      byKeyword,
+      tasks: running.map(r => ({
+        id: r.taskId,
+        keyword: r.keyword,
+        startedAt: r.startedAt,
+        workerName: r.workerName,
+        duration: durationMap[r.taskId]?.duration || null,
+        firstSeen: durationMap[r.taskId]?.firstSeen || null,
+      })),
+      plannedTasks: planned.map(p => ({
+        id: p.plannedTaskId,
+        keyword: p.keyword,
+        added: p.added,
       })),
       recentCompleted: recentRes.rows.map(r => ({
         id: r.task_id,
