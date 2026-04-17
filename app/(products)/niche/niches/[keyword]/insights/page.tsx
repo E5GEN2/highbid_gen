@@ -862,13 +862,20 @@ function computeIndicators(dots: IndicatorDot[]) {
 }
 
 /** Compact tooltip on hover over the 'i' icon */
-function InfoIcon({ tooltip }: { tooltip: React.ReactNode }) {
+function InfoIcon({ tooltip, align = 'center' }: { tooltip: React.ReactNode; align?: 'left' | 'center' | 'right' }) {
+  // Anchor point of the tooltip relative to the icon — needed to prevent overflow
+  // on the rightmost card (tooltip extends past the page edge if centered).
+  const alignClass = align === 'left'
+    ? 'left-0'
+    : align === 'right'
+      ? 'right-0'
+      : 'left-1/2 -translate-x-1/2';
   return (
     <span className="relative inline-flex items-center group">
       <span className="w-4 h-4 rounded-full bg-[#1f1f1f] hover:bg-[#2a2a2a] text-[#888] hover:text-white text-[10px] flex items-center justify-center cursor-help transition">
         i
       </span>
-      <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-2 w-72 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50">
+      <span className={`pointer-events-none absolute ${alignClass} top-full mt-2 w-72 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50`}>
         {tooltip}
       </span>
     </span>
@@ -877,13 +884,14 @@ function InfoIcon({ tooltip }: { tooltip: React.ReactNode }) {
 
 /** One indicator card */
 function IndicatorCard({
-  label, value, sub, tooltip, accent,
+  label, value, sub, tooltip, accent, tooltipAlign = 'center',
 }: {
   label: string;
   value: string;
   sub: string;
   tooltip: React.ReactNode;
   accent: 'green' | 'yellow' | 'red' | 'neutral';
+  tooltipAlign?: 'left' | 'center' | 'right';
 }) {
   const accentColors = {
     green: 'text-green-400',
@@ -895,7 +903,7 @@ function IndicatorCard({
     <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-4 py-3">
       <div className="flex items-center justify-between mb-1.5">
         <div className="text-[10px] text-[#888] uppercase tracking-wider">{label}</div>
-        <InfoIcon tooltip={tooltip} />
+        <InfoIcon tooltip={tooltip} align={tooltipAlign} />
       </div>
       <div className={`text-2xl font-bold ${accentColors[accent]}`}>{value}</div>
       <div className="text-[10px] text-[#666] mt-1">{sub}</div>
@@ -923,6 +931,7 @@ function OpportunityIndicators({ dots }: { dots: IndicatorDot[] }) {
         value={`${nosDisplay}`}
         sub={`raw NOS: ${nos.toFixed(2)} · ${sampleSize} videos`}
         accent={nosAccent}
+        tooltipAlign="left"
         tooltip={
           <>
             <div className="font-semibold text-white mb-1">How hard is it to get views without many subs?</div>
@@ -940,6 +949,7 @@ function OpportunityIndicators({ dots }: { dots: IndicatorDot[] }) {
         value={`${topLeftPct}%`}
         sub="videos punching above weight"
         accent={topLeftAccent}
+        tooltipAlign="right"
         tooltip={
           <>
             <div className="font-semibold text-white mb-1">% of videos in the &quot;high views, low subs&quot; zone</div>
@@ -957,6 +967,7 @@ function OpportunityIndicators({ dots }: { dots: IndicatorDot[] }) {
         value={`${newcomerRate}%`}
         sub="new vs niche median views"
         accent={newcomerAccent}
+        tooltipAlign="left"
         tooltip={
           <>
             <div className="font-semibold text-white mb-1">Will the algorithm give new channels a chance?</div>
@@ -974,6 +985,7 @@ function OpportunityIndicators({ dots }: { dots: IndicatorDot[] }) {
         value={fmt(lowSubCeiling)}
         sub="p90 views at <10K subs"
         accent={ceilingAccent}
+        tooltipAlign="right"
         tooltip={
           <>
             <div className="font-semibold text-white mb-1">What&apos;s achievable before you have an audience?</div>
