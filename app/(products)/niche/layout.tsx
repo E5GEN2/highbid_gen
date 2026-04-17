@@ -10,7 +10,12 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { selectedKeyword } = useNiche();
 
+  // Similar route → show Similar + Videos/Insights tabs under Niches
+  const similarMatch = pathname.match(/^\/niche\/similar\/([^/]+)/);
+  const similarVideoId = similarMatch ? similarMatch[1] : null;
+
   // Build nav items — "Niches" gets dynamic children when a keyword is selected
+  // OR when we're inside a /niche/similar/[id] route
   const navItems: NavItem[] = [
     {
       label: 'Overview',
@@ -30,8 +35,13 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
         </svg>
       ),
       dynamicChildren: true,
-      activeLabel: selectedKeyword ? decodeURIComponent(selectedKeyword) : undefined,
-      activeChildren: selectedKeyword ? [
+      activeLabel: similarVideoId
+        ? `Similar video`
+        : selectedKeyword ? decodeURIComponent(selectedKeyword) : undefined,
+      activeChildren: similarVideoId ? [
+        { label: 'Videos', href: `/niche/similar/${similarVideoId}/videos` },
+        { label: 'Insights', href: `/niche/similar/${similarVideoId}/insights` },
+      ] : selectedKeyword ? [
         { label: 'Videos', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/videos` },
         { label: 'Channels', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/channels` },
         { label: 'Insights', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/insights` },
@@ -52,6 +62,11 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
       else if (pathname.includes('/channels')) segments.push({ label: 'Channels' });
       else if (pathname.includes('/insights')) segments.push({ label: 'Insights' });
     }
+  } else if (pathname.startsWith('/niche/similar/') && similarVideoId) {
+    segments.push({ label: 'Niches', href: '/niche/niches' });
+    segments.push({ label: 'Similar video', href: `/niche/similar/${similarVideoId}/videos` });
+    if (pathname.includes('/videos')) segments.push({ label: 'Videos' });
+    else if (pathname.includes('/insights')) segments.push({ label: 'Insights' });
   } else {
     segments.push({ label: 'Overview' });
   }
