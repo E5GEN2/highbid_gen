@@ -14,6 +14,10 @@ export default function NichesGrid() {
     totalViews: number; avgViews: number; highScoreCount: number;
     newChannelCount: number; newestVideo: string | null;
     saturation: { globalSaturation: number; runSaturation: number } | null;
+    opportunity: {
+      sample: number; nos: number; nosDisplay: number;
+      topLeftPct: number; newcomerRate: number; lowSubCeiling: number;
+    } | null;
   }>>([]);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('videos');
@@ -149,8 +153,110 @@ export default function NichesGrid() {
                 </span>
               )}
             </div>
+
+            {/* Opportunity indicators — 4 compact pills with hover tooltips */}
+            {kw.opportunity ? (
+              <div className="grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t border-[#1f1f1f]">
+                <IndicatorPill
+                  label="OPP"
+                  value={`${kw.opportunity.nosDisplay}`}
+                  band={kw.opportunity.nos >= 1.3 ? 'green' : kw.opportunity.nos >= 1.0 ? 'yellow' : 'red'}
+                  tooltip={
+                    <>
+                      <div className="font-semibold text-white mb-1">Opportunity Score</div>
+                      <div>Median of <code className="text-amber-400">log(views)/log(subs)</code> across high-score videos. Higher = small creators get pushed.</div>
+                      <div className="mt-1.5 text-[#888]">Raw NOS: {kw.opportunity.nos.toFixed(2)} · {kw.opportunity.sample} videos</div>
+                      <div className="mt-2 space-y-0.5">
+                        <div><span className="text-green-400">≥ 70</span> Low barrier, high reward</div>
+                        <div><span className="text-yellow-400">40–70</span> Normal — views scale with subs</div>
+                        <div><span className="text-red-400">&lt; 40</span> Saturated — big channels win</div>
+                      </div>
+                    </>
+                  }
+                />
+                <IndicatorPill
+                  label="TOP"
+                  value={`${kw.opportunity.topLeftPct}%`}
+                  band={kw.opportunity.topLeftPct >= 30 ? 'green' : kw.opportunity.topLeftPct >= 10 ? 'yellow' : 'red'}
+                  tooltip={
+                    <>
+                      <div className="font-semibold text-white mb-1">Top-Left Density</div>
+                      <div>% of videos with above-median views AND below-median subs — the goldmine quadrant of the scatter.</div>
+                      <div className="mt-2 space-y-0.5">
+                        <div><span className="text-green-400">≥ 30%</span> Lots of underdog wins</div>
+                        <div><span className="text-yellow-400">10–30%</span> Healthy mix</div>
+                        <div><span className="text-red-400">&lt; 10%</span> Views tightly coupled to subs</div>
+                      </div>
+                    </>
+                  }
+                />
+                <IndicatorPill
+                  label="NEW"
+                  value={`${kw.opportunity.newcomerRate}%`}
+                  band={kw.opportunity.newcomerRate >= 80 ? 'green' : kw.opportunity.newcomerRate >= 50 ? 'yellow' : 'red'}
+                  tooltip={
+                    <>
+                      <div className="font-semibold text-white mb-1">Newcomer Success</div>
+                      <div>Median views of channels &lt;6 months old, divided by the niche&apos;s overall median. 100% = newcomers land in the same ballpark as veterans.</div>
+                      <div className="mt-2 space-y-0.5">
+                        <div><span className="text-green-400">≥ 80%</span> Age doesn&apos;t matter</div>
+                        <div><span className="text-yellow-400">50–80%</span> Small established-channel bonus</div>
+                        <div><span className="text-red-400">&lt; 50%</span> Tough for new entrants</div>
+                      </div>
+                    </>
+                  }
+                />
+                <IndicatorPill
+                  label="CEIL"
+                  value={fmtYT(kw.opportunity.lowSubCeiling)}
+                  band={kw.opportunity.lowSubCeiling >= 500000 ? 'green' : kw.opportunity.lowSubCeiling >= 100000 ? 'yellow' : 'red'}
+                  tooltip={
+                    <>
+                      <div className="font-semibold text-white mb-1">Low-Sub Ceiling</div>
+                      <div>p90 of views among videos from channels with &lt;10K subs. Shows what a single video can realistically achieve before you have an audience.</div>
+                      <div className="mt-2 space-y-0.5">
+                        <div><span className="text-green-400">≥ 500K</span> Videos can explode with a tiny channel</div>
+                        <div><span className="text-yellow-400">100K–500K</span> Solid upside per video</div>
+                        <div><span className="text-red-400">&lt; 100K</span> Slow, linear growth</div>
+                      </div>
+                    </>
+                  }
+                />
+              </div>
+            ) : null}
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/** Small indicator pill with hover tooltip. Stops bubble so hovering doesn't trigger card click visuals. */
+function IndicatorPill({
+  label, value, band, tooltip,
+}: {
+  label: string;
+  value: string;
+  band: 'green' | 'yellow' | 'red';
+  tooltip: React.ReactNode;
+}) {
+  const colors = {
+    green: 'text-green-400 bg-green-500/10 border-green-500/20',
+    yellow: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20',
+    red: 'text-red-400 bg-red-500/10 border-red-500/20',
+  };
+  return (
+    <div
+      className="relative group"
+      onClick={(e) => { e.stopPropagation(); }}
+    >
+      <div className={`flex flex-col items-center justify-center rounded-md border px-1.5 py-1 cursor-help ${colors[band]}`}>
+        <div className="text-[8px] uppercase tracking-wider opacity-70">{label}</div>
+        <div className="text-xs font-bold leading-tight">{value}</div>
+      </div>
+      {/* Tooltip */}
+      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50 text-left">
+        {tooltip}
       </div>
     </div>
   );
