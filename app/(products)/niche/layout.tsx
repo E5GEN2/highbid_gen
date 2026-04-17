@@ -98,7 +98,12 @@ export default function NicheLayout({ children }: { children: React.ReactNode })
   return (
     <NicheProvider>
       <SimilarModalProvider>
-        <NicheLayoutInner>{children}</NicheLayoutInner>
+        {/* Suspense boundary required because NicheLayoutInner uses
+            useSearchParams() — without this, Next.js bails out of static
+            generation for every child page. */}
+        <React.Suspense fallback={null}>
+          <NicheLayoutInner>{children}</NicheLayoutInner>
+        </React.Suspense>
       </SimilarModalProvider>
     </NicheProvider>
   );
