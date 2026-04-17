@@ -33,8 +33,8 @@ function NicheVideosInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [offset, setOffset] = useState(0);
-  const [stats, setStats] = useState<{ total_videos: string; total_keywords: string; total_channels: string; avg_score: string } | null>(null);
-  const [keywords, setKeywords] = useState<Array<{ keyword: string; cnt: string }>>([]);
+  // stats + keywords state removed along with the redundant top plaque —
+  // breadcrumbs + sidebar already show the active keyword.
 
 
   // Similar modal state
@@ -135,8 +135,6 @@ function NicheVideosInner() {
       if (off === 0) setVideos(data.videos);
       else setVideos(prev => [...prev, ...data.videos]);
       setTotal(data.total);
-      if (data.keywords) setKeywords(data.keywords);
-      if (data.stats) setStats(data.stats);
       setOffset(off + data.videos.length);
     } catch (err) { console.error('Video fetch error:', err); }
     setLoading(false);
@@ -163,40 +161,6 @@ function NicheVideosInner() {
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto">
-      {/* Stats header */}
-      <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl px-6 py-4 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <span className="text-2xl font-bold text-white">{stats ? parseInt(stats.total_videos).toLocaleString() : '...'}</span>
-            <span className="text-[#888] ml-2">stored videos</span>
-          </div>
-        </div>
-
-        {/* Keyword filter dropdown */}
-        <div className="flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-[#666] uppercase tracking-wider">Keyword</span>
-            <select
-              value={keyword}
-              onChange={e => {
-                const newKw = e.target.value;
-                if (newKw === 'all') {
-                  router.push('/niche/niches');
-                } else {
-                  router.push(`/niche/niches/${encodeURIComponent(newKw)}/videos`);
-                }
-              }}
-              className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none"
-            >
-              <option value="all">All keywords</option>
-              {keywords.map(k => (
-                <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.cnt})</option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </div>
-
       {/* View toggle: All Videos | Sub-niches */}
       <div className="flex items-center gap-2 mb-4">
         <button
