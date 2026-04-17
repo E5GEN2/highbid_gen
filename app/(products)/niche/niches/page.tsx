@@ -247,15 +247,16 @@ function IndicatorPill({
   };
   return (
     <div
-      className="relative group"
+      className="relative group/pill"
       onClick={(e) => { e.stopPropagation(); }}
     >
       <div className={`flex flex-col items-center justify-center rounded-md border px-1.5 py-1 cursor-help ${colors[band]}`}>
         <div className="text-[8px] uppercase tracking-wider opacity-70">{label}</div>
         <div className="text-xs font-bold leading-tight">{value}</div>
       </div>
-      {/* Tooltip */}
-      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50 text-left">
+      {/* Tooltip — uses NAMED group so only this specific pill's hover triggers it,
+          not the outer card button (which also has `group` for title color). */}
+      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/pill:opacity-100 transition-opacity z-50 text-left">
         {tooltip}
       </div>
     </div>
