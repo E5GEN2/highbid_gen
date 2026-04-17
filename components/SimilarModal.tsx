@@ -3,7 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { fmtYT } from '@/lib/format';
-import { OpportunityIndicators } from './OpportunityIndicators';
+import { OpportunityIndicators, computeIndicators } from './OpportunityIndicators';
 import { ChannelScatter, type ScatterDot, type ScatterVideo } from './ChannelScatter';
 import { DistBars, makeSubsBuckets, makeViewsBuckets } from './DistBars';
 
@@ -123,6 +123,18 @@ function SimilarModalBody({
   // Insights are score-filtered so numbers are comparable with the keyword Insights page
   const scored = useMemo(() => filtered.filter(v => (v.score || 0) >= 80), [filtered]);
 
+  // Live opportunity indicators — recompute on every minSimilarity change
+  const indicators = useMemo(() => {
+    const dots = scored.map(v => ({
+      s: v.subscriberCount || 0,
+      v: v.viewCount || 0,
+      a: v.channelCreatedAt
+        ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000)
+        : null,
+    }));
+    return computeIndicators(dots);
+  }, [scored]);
+
   const sortedGrid = useMemo(() => {
     const arr = [...filtered];
     switch (sort) {
@@ -193,24 +205,39 @@ function SimilarModalBody({
           </div>
         </div>
 
-        {/* Tab selector */}
-        <div className="px-6 pt-3 border-b border-[#1f1f1f] flex gap-0">
-          {([
-            { value: 'videos', label: `Videos (${filtered.length})` },
-            { value: 'insights', label: 'Insights' },
-          ] as const).map(t => (
-            <button
-              key={t.value}
-              onClick={() => setTab(t.value)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
-                tab === t.value
-                  ? 'text-white border-amber-500'
-                  : 'text-[#888] border-transparent hover:text-white'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        {/* Tab selector + live opportunity pills */}
+        <div className="px-6 pt-3 border-b border-[#1f1f1f] flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex gap-0">
+            {([
+              { value: 'videos', label: `Videos (${filtered.length})` },
+              { value: 'insights', label: 'Insights' },
+            ] as const).map(t => (
+              <button
+                key={t.value}
+                onClick={() => setTab(t.value)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
+                  tab === t.value
+                    ? 'text-white border-amber-500'
+                    : 'text-[#888] border-transparent hover:text-white'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {!loading && (
+            <div className="pb-2">
+              <ModalIndicatorPills
+                disabled={scored.length < 10}
+                nos={indicators.nos}
+                nosDisplay={indicators.nosDisplay}
+                topLeftPct={indicators.topLeftPct}
+                newcomerRate={indicators.newcomerRate}
+                lowSubCeiling={indicators.lowSubCeiling}
+                sampleSize={scored.length}
+              />
+            </div>
+          )}
         </div>
 
         {/* Body */}
@@ -408,4 +435,109 @@ function formatTimeAgo(dateStr: string): string {
   if (days < 7) return `${days} days ago`;
   if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/* ── Live indicator pills shown next to tab selector ───────────── */
+
+function ModalIndicatorPills({
+  disabled, nos, nosDisplay, topLeftPct, newcomerRate, lowSubCeiling, sampleSize,
+}: {
+  disabled: boolean;
+  nos: number;
+  nosDisplay: number;
+  topLeftPct: number;
+  newcomerRate: number;
+  lowSubCeiling: number;
+  sampleSize: number;
+}) {
+  const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}K` : `${Math.round(n)}`;
+
+  const emptyTooltip = (
+    <>
+      <div className="font-semibold text-white mb-1">Not enough data</div>
+      <div>Need at least 10 high-score videos to compute. Current: {sampleSize}. Lower the min match above to widen the pool.</div>
+    </>
+  );
+
+  const pills = [
+    {
+      label: 'OPP',
+      value: disabled ? '—' : `${nosDisplay}`,
+      band: disabled ? 'empty' : nos >= 1.3 ? 'green' : nos >= 1.0 ? 'yellow' : 'red',
+      tooltip: disabled ? emptyTooltip : (
+        <>
+          <div className="font-semibold text-white mb-1">Opportunity Score</div>
+          <div>Median <code className="text-amber-400">log(views)/log(subs)</code> across score ≥ 80 videos.</div>
+          <div className="mt-1.5 text-[#888]">Raw NOS: {nos.toFixed(2)} · {sampleSize} videos</div>
+        </>
+      ),
+    },
+    {
+      label: 'TOP',
+      value: disabled ? '—' : `${topLeftPct}%`,
+      band: disabled ? 'empty' : topLeftPct >= 30 ? 'green' : topLeftPct >= 10 ? 'yellow' : 'red',
+      tooltip: disabled ? emptyTooltip : (
+        <>
+          <div className="font-semibold text-white mb-1">Top-Left Density</div>
+          <div>% of videos with above-median views AND below-median subs.</div>
+        </>
+      ),
+    },
+    {
+      label: 'NEW',
+      value: disabled ? '—' : `${newcomerRate}%`,
+      band: disabled ? 'empty' : newcomerRate >= 80 ? 'green' : newcomerRate >= 50 ? 'yellow' : 'red',
+      tooltip: disabled ? emptyTooltip : (
+        <>
+          <div className="font-semibold text-white mb-1">Newcomer Success</div>
+          <div>Median views of channels &lt;6mo old, as % of overall median.</div>
+        </>
+      ),
+    },
+    {
+      label: 'CEIL',
+      value: disabled ? '—' : fmt(lowSubCeiling),
+      band: disabled ? 'empty' : lowSubCeiling >= 500000 ? 'green' : lowSubCeiling >= 100000 ? 'yellow' : 'red',
+      tooltip: disabled ? emptyTooltip : (
+        <>
+          <div className="font-semibold text-white mb-1">Low-Sub Ceiling</div>
+          <div>p90 views among channels with &lt;10K subs.</div>
+        </>
+      ),
+    },
+  ] as const;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {pills.map(p => <ModalPill key={p.label} {...p} />)}
+    </div>
+  );
+}
+
+function ModalPill({
+  label, value, band, tooltip,
+}: {
+  label: string;
+  value: string;
+  band: 'green' | 'yellow' | 'red' | 'empty';
+  tooltip: React.ReactNode;
+}) {
+  const colors = {
+    green:  'text-green-400 bg-green-500/10 border-green-500/20',
+    yellow: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20',
+    red:    'text-red-400 bg-red-500/10 border-red-500/20',
+    empty:  'text-[#555] bg-[#1a1a1a]/40 border-[#1f1f1f] border-dashed',
+  };
+  return (
+    <div className="relative group/pill">
+      <div className={`flex flex-col items-center justify-center rounded-md border px-2 py-1 min-w-[54px] cursor-help ${colors[band]}`}>
+        <div className="text-[8px] uppercase tracking-wider opacity-70 leading-none">{label}</div>
+        <div className="text-xs font-bold leading-tight mt-0.5">{value}</div>
+      </div>
+      {/* Anchor tooltip to the right so it never overflows past the modal edge */}
+      <div className="pointer-events-none absolute right-0 top-full mt-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/pill:opacity-100 transition-opacity z-50 text-left">
+        {tooltip}
+      </div>
+    </div>
+  );
 }
