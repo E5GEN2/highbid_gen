@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import Link from 'next/link';
 import { fmtYT } from '@/lib/format';
+import { useSimilarModal } from './SimilarModal';
 
 /**
  * Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale.
@@ -55,6 +55,7 @@ interface Props {
 const logSafe = (n: number) => Math.log10(Math.max(n, 1));
 
 export function ChannelScatter({ dots, videoLookup }: Props) {
+  const { openSimilar } = useSimilarModal();
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [onePerChannel, setOnePerChannel] = useState(false);
@@ -370,13 +371,13 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
                         <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate min-w-0 flex-1">{ch.videoUrl}</a>
                       )}
                       {ch.embeddedAt && (
-                        <Link href={`/niche/similar/${ch.id}`}
+                        <button onClick={() => openSimilar(ch.id)}
                           className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium">
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                           </svg>
                           Similar
-                        </Link>
+                        </button>
                       )}
                     </div>
                   </div>

@@ -4,6 +4,7 @@ import React from 'react';
 import ProductSidebar, { NavItem } from '@/components/ProductSidebar';
 import TopBar from '@/components/TopBar';
 import { NicheProvider, useNiche } from '@/components/NicheProvider';
+import { SimilarModalProvider } from '@/components/SimilarModal';
 import { usePathname } from 'next/navigation';
 
 function NicheLayoutInner({ children }: { children: React.ReactNode }) {
@@ -90,7 +91,9 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
 export default function NicheLayout({ children }: { children: React.ReactNode }) {
   return (
     <NicheProvider>
-      <NicheLayoutInner>{children}</NicheLayoutInner>
+      <SimilarModalProvider>
+        <NicheLayoutInner>{children}</NicheLayoutInner>
+      </SimilarModalProvider>
     </NicheProvider>
   );
 }
