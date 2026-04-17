@@ -14,8 +14,14 @@ import { DistBars, DistBarsSkeleton, makeSubsBuckets, makeViewsBuckets } from '@
 export default function SimilarInsights() {
   const { filtered, loading, error } = useSimilar();
 
+  // Only score ≥ 80 videos feed the insights so the numbers are comparable with
+  // the keyword Insights page (which applies the same filter server-side).
+  // Low-score videos still appear in the Videos tab — this only affects the
+  // opportunity math, scatter, and distributions.
+  const scored = useMemo(() => filtered.filter(v => (v.score || 0) >= 80), [filtered]);
+
   // Build ScatterDot shape from the filtered similar videos
-  const scatterDots: ScatterDot[] = useMemo(() => filtered.map(v => {
+  const scatterDots: ScatterDot[] = useMemo(() => scored.map(v => {
     const chAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
     const vidAge = v.postedAt ? Math.floor((Date.now() - new Date(v.postedAt).getTime()) / 86400000) : null;
     return {
@@ -28,7 +34,7 @@ export default function SimilarInsights() {
       va: vidAge,
       e: true,
     };
-  }), [filtered]);
+  }), [scored]);
 
   const indicatorDots = useMemo(
     () => scatterDots.map(d => ({ s: d.s, v: d.v, a: d.a })),
@@ -37,7 +43,7 @@ export default function SimilarInsights() {
 
   // Synchronous lookup for the scatter's hover card — we already have all the data
   const videoLookup = useCallback((id: number): ScatterVideo | null => {
-    const v = filtered.find(x => x.id === id);
+    const v = scored.find(x => x.id === id);
     if (!v) return null;
     const chAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
     const thumbFallback = (v.url || '').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
@@ -60,22 +66,22 @@ export default function SimilarInsights() {
       embeddedAt: 'yes',
       topComment: v.topComment,
     };
-  }, [filtered]);
+  }, [scored]);
 
   // Unique channels for subs histogram — max subs per channel name
   const subsBuckets = useMemo(() => {
     const byChannel = new Map<string, number>();
-    for (const v of filtered) {
+    for (const v of scored) {
       if (!v.channelName) continue;
       const prev = byChannel.get(v.channelName);
       byChannel.set(v.channelName, Math.max(prev || 0, v.subscriberCount || 0));
     }
     return makeSubsBuckets([...byChannel.values()]);
-  }, [filtered]);
+  }, [scored]);
 
   const viewsBuckets = useMemo(
-    () => makeViewsBuckets(filtered.map(v => v.viewCount || 0)),
-    [filtered]
+    () => makeViewsBuckets(scored.map(v => v.viewCount || 0)),
+    [scored]
   );
 
   if (loading) {
@@ -100,11 +106,13 @@ export default function SimilarInsights() {
     );
   }
 
-  if (filtered.length === 0) {
+  if (scored.length === 0) {
     return (
       <div className="px-8 pb-8 max-w-7xl mx-auto">
         <div className="bg-[#141414] border border-dashed border-[#1f1f1f] rounded-xl px-5 py-8 text-center text-[#666]">
-          No matches at the current threshold. Lower the min match from the header to see insights.
+          {filtered.length === 0
+            ? 'No matches at the current threshold. Lower the min match from the header to see insights.'
+            : `No videos in this cluster have score ≥ 80 yet. Total similar: ${filtered.length}.`}
         </div>
       </div>
     );
@@ -112,11 +120,14 @@ export default function SimilarInsights() {
 
   return (
     <div className="px-8 pb-8 max-w-7xl mx-auto space-y-6">
-      {filtered.length >= 10 ? (
+      <div className="text-[10px] text-[#666] uppercase tracking-wider">
+        Insights computed over {scored.length} of {filtered.length} videos (score ≥ 80)
+      </div>
+      {scored.length >= 10 ? (
         <OpportunityIndicators dots={indicatorDots} />
       ) : (
         <div className="bg-[#141414] border border-dashed border-[#1f1f1f] rounded-xl px-5 py-4 text-[#666] text-sm">
-          Need at least 10 matches to compute opportunity indicators — lower the min match or pick a video with more embedded neighbours.
+          Need at least 10 high-score videos to compute opportunity indicators — lower the min match or pick a video with more embedded neighbours.
         </div>
       )}
 
