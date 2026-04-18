@@ -67,6 +67,9 @@ function NicheVideosInner() {
 
   // Similar videos now live on their own page at /niche/similar/[videoId]
 
+  // Sub-niche sort — defaults to videoCount desc, user can pick any indicator
+  const [subnicheSort, setSubnicheSort] = useState<'videos' | 'views' | 'score' | 'opp' | 'top' | 'new' | 'ceil'>('videos');
+
   // View mode: all videos vs sub-niches
   const searchParams = useSearchParams();
   const clusterParam = searchParams.get('cluster');
@@ -262,9 +265,65 @@ function NicheVideosInner() {
                 </button>
               </div>
 
+              {/* Sort pills — same pattern as Videos grid */}
+              <div className="flex items-center gap-2 mb-3 flex-wrap">
+                {([
+                  { value: 'videos', label: 'Most Videos' },
+                  { value: 'views', label: 'Most Views' },
+                  { value: 'score', label: 'Highest Score' },
+                  { value: 'opp', label: 'Opportunity ↑' },
+                  { value: 'top', label: 'Top-Left ↑' },
+                  { value: 'new', label: 'Newcomer ↑' },
+                  { value: 'ceil', label: 'Ceiling ↑' },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setSubnicheSort(opt.value)}
+                    className={`px-3 py-1 rounded-full text-xs transition ${
+                      subnicheSort === opt.value
+                        ? 'bg-white text-black font-medium'
+                        : 'text-[#888] border border-[#333] hover:border-[#555]'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
               {/* Sub-niche cards grid — mirrors the Niches grid card layout */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {clusterRun.clusters.map(c => {
+                {[...clusterRun.clusters].sort((a, b) => {
+                  // Clusters missing `opportunity` always go last in opportunity-based sorts.
+                  const oa = a.opportunity, ob = b.opportunity;
+                  const missingA = (k: 'opp' | 'top' | 'new' | 'ceil') => !oa;
+                  const missingB = (k: 'opp' | 'top' | 'new' | 'ceil') => !ob;
+                  switch (subnicheSort) {
+                    case 'videos': return b.videoCount - a.videoCount;
+                    case 'views':  return (b.totalViews ?? b.avgViews ?? 0) - (a.totalViews ?? a.avgViews ?? 0);
+                    case 'score':  return (b.avgScore ?? 0) - (a.avgScore ?? 0);
+                    case 'opp':
+                      if (missingA('opp') && missingB('opp')) return 0;
+                      if (missingA('opp')) return 1;
+                      if (missingB('opp')) return -1;
+                      return (ob!.nosDisplay) - (oa!.nosDisplay);
+                    case 'top':
+                      if (missingA('top') && missingB('top')) return 0;
+                      if (missingA('top')) return 1;
+                      if (missingB('top')) return -1;
+                      return (ob!.topLeftPct) - (oa!.topLeftPct);
+                    case 'new':
+                      if (missingA('new') && missingB('new')) return 0;
+                      if (missingA('new')) return 1;
+                      if (missingB('new')) return -1;
+                      return (ob!.newcomerRate) - (oa!.newcomerRate);
+                    case 'ceil':
+                      if (missingA('ceil') && missingB('ceil')) return 0;
+                      if (missingA('ceil')) return 1;
+                      if (missingB('ceil')) return -1;
+                      return (ob!.lowSubCeiling) - (oa!.lowSubCeiling);
+                    default: return 0;
+                  }
+                }).map(c => {
                   const label = c.label || c.autoLabel || `Cluster ${c.clusterIndex}`;
                   const avgScoreRounded = c.avgScore !== null ? Math.round(c.avgScore) : 0;
                   return (
