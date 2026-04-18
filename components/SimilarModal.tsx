@@ -213,20 +213,23 @@ function SimilarModalBody({
               <option value="combined">Both (avg)</option>
             </select>
             <label className="text-xs text-[#888] ml-2">Min match:</label>
-            <select
-              value={minSimilarity}
-              onChange={e => setMinSimilarity(parseFloat(e.target.value))}
-              disabled={loading}
-              className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-amber-500 disabled:opacity-50"
-            >
-              <option value={0}>All</option>
-              <option value={0.5}>50%+</option>
-              <option value={0.6}>60%+</option>
-              <option value={0.7}>70%+</option>
-              <option value={0.8}>80%+</option>
-              <option value={0.9}>90%+</option>
-              <option value={0.95}>95%+</option>
-            </select>
+            <div className="flex items-center bg-[#0a0a0a] border border-[#1f1f1f] rounded focus-within:border-amber-500">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round(minSimilarity * 100)}
+                onChange={e => {
+                  const raw = parseFloat(e.target.value);
+                  const pct = isNaN(raw) ? 0 : Math.max(0, Math.min(100, raw));
+                  setMinSimilarity(pct / 100);
+                }}
+                disabled={loading}
+                className="w-14 bg-transparent text-white text-xs px-2 py-1 focus:outline-none disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+              <span className="text-xs text-[#666] pr-2">%</span>
+            </div>
             <button onClick={onClose} className="text-[#888] hover:text-white ml-1">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
