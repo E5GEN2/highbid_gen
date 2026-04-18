@@ -61,12 +61,21 @@ export function SimilarProvider({ videoId, children }: { videoId: number; childr
   const [minSimilarity, setMinSimilarity] = useState(0.7);
   const [basis, setBasis] = useState<Basis>('');
 
+  // Reset state on videoId change so picker reappears
   useEffect(() => {
-    if (!videoId) return;
+    setBasis('');
+    setAll([]);
+    setSource(null);
+    setError(null);
+    setLoading(false);
+  }, [videoId]);
+
+  // Only fetch after user picks a basis
+  useEffect(() => {
+    if (!videoId || !basis) return;
     setLoading(true);
     setError(null);
-    const qs = new URLSearchParams({ videoId: String(videoId), limit: '500', minSimilarity: '0' });
-    if (basis) qs.set('source', basis);
+    const qs = new URLSearchParams({ videoId: String(videoId), limit: '500', minSimilarity: '0', source: basis });
     fetch(`/api/niche-spy/similar?${qs}`)
       .then(r => r.json())
       .then((d: { source?: SimilarSource; similar?: SimilarVideo[]; error?: string; message?: string }) => {

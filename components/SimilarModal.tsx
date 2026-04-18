@@ -102,20 +102,28 @@ function SimilarModalBody({
   const [tab, setTab] = useState<Tab>('videos');
   const [sort, setSort] = useState<'similarity' | 'views' | 'score' | 'newest' | 'likes'>('similarity');
 
-  // Which embedding space the similarity runs against. Default is admin-configured
-  // (empty string = let the server pick). User can override per-modal session.
+  // Which embedding space the similarity runs against. Empty = user hasn't
+  // picked yet → we show the basis picker instead of fetching.
   type Basis = '' | 'title_v2' | 'thumbnail_v2' | 'combined';
   const [basis, setBasis] = useState<Basis>('');
 
-  // Reset fetch on videoId OR basis change — a different basis gives a totally
-  // different ranking, so we re-request from the server.
+  // Reset state on videoId change so the picker shows for the new video
   useEffect(() => {
+    setBasis('');
+    setAll([]);
+    setSource(null);
+    setError(null);
+    setLoading(false);
+  }, [videoId]);
+
+  // Fetch only once a basis is chosen
+  useEffect(() => {
+    if (!basis) return;
     setLoading(true);
     setError(null);
     setSource(null);
     setAll([]);
-    const qs = new URLSearchParams({ videoId: String(videoId), limit: '500', minSimilarity: '0' });
-    if (basis) qs.set('source', basis);
+    const qs = new URLSearchParams({ videoId: String(videoId), limit: '500', minSimilarity: '0', source: basis });
     fetch(`/api/niche-spy/similar?${qs}`)
       .then(r => r.json())
       .then((d: { source?: SimilarSource; similar?: SimilarVideo[]; error?: string; message?: string }) => {
@@ -195,11 +203,11 @@ function SimilarModalBody({
             <select
               value={basis}
               onChange={e => setBasis(e.target.value as Basis)}
-              disabled={loading}
+              disabled={loading || !basis}
               className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-amber-500 disabled:opacity-50"
               title="Which embedding space to compute similarity against"
             >
-              <option value="">Default (admin)</option>
+              {!basis && <option value="">— pick below —</option>}
               <option value="title_v2">Title</option>
               <option value="thumbnail_v2">Thumbnail</option>
               <option value="combined">Both (avg)</option>
@@ -264,27 +272,33 @@ function SimilarModalBody({
 
         {/* Body */}
         <div className="p-6">
-          {error && (
-            <div className="bg-red-900/20 border border-red-800/40 rounded-xl px-5 py-4 text-red-400">
-              Couldn&apos;t load: {error}
-            </div>
-          )}
+          {!basis ? (
+            <BasisPicker onPick={setBasis} />
+          ) : (
+            <>
+              {error && (
+                <div className="bg-red-900/20 border border-red-800/40 rounded-xl px-5 py-4 text-red-400">
+                  Couldn&apos;t load: {error}
+                </div>
+              )}
 
-          {loading && !error && (
-            <div className="text-center py-12 text-[#888]">Finding similar videos...</div>
-          )}
+              {loading && !error && (
+                <div className="text-center py-12 text-[#888]">Finding similar videos...</div>
+              )}
 
-          {!loading && !error && tab === 'videos' && (
-            <VideosTab
-              sortedGrid={sortedGrid}
-              sort={sort}
-              setSort={setSort}
-              onOpenSimilar={onSwitchVideo}
-            />
-          )}
+              {!loading && !error && tab === 'videos' && (
+                <VideosTab
+                  sortedGrid={sortedGrid}
+                  sort={sort}
+                  setSort={setSort}
+                  onOpenSimilar={onSwitchVideo}
+                />
+              )}
 
-          {!loading && !error && tab === 'insights' && (
-            <InsightsTab scored={scored} filteredCount={filtered.length} />
+              {!loading && !error && tab === 'insights' && (
+                <InsightsTab scored={scored} filteredCount={filtered.length} />
+              )}
+            </>
           )}
         </div>
       </div>
@@ -457,6 +471,65 @@ function formatTimeAgo(dateStr: string): string {
   if (days < 7) return `${days} days ago`;
   if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/* ── Basis picker — shown when the modal first opens ───────────── */
+
+function BasisPicker({ onPick }: { onPick: (b: 'title_v2' | 'thumbnail_v2' | 'combined') => void }) {
+  const cards: Array<{ id: 'title_v2' | 'thumbnail_v2' | 'combined'; label: string; desc: string; icon: React.ReactNode }> = [
+    {
+      id: 'title_v2',
+      label: 'Title',
+      desc: 'Videos whose titles share the most meaning with this one.',
+      icon: (
+        <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h10" />
+        </svg>
+      ),
+    },
+    {
+      id: 'thumbnail_v2',
+      label: 'Thumbnail',
+      desc: 'Videos whose thumbnails look visually similar — same style, colors, composition.',
+      icon: (
+        <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      ),
+    },
+    {
+      id: 'combined',
+      label: 'Both',
+      desc: 'Averages title + thumbnail similarity. Best for finding the closest overall matches.',
+      icon: (
+        <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+      ),
+    },
+  ];
+
+  return (
+    <div className="py-8 px-4">
+      <div className="text-center mb-6">
+        <h4 className="text-sm font-medium text-white mb-1">How should we find similar videos?</h4>
+        <p className="text-xs text-[#666]">Different bases give very different results. Pick one to start — you can switch any time.</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-3xl mx-auto">
+        {cards.map(c => (
+          <button
+            key={c.id}
+            onClick={() => onPick(c.id)}
+            className="bg-[#141414] border border-[#1f1f1f] hover:border-amber-500/60 hover:bg-[#1a1a1a] rounded-xl p-5 text-left transition group"
+          >
+            <div className="text-amber-400 mb-3 group-hover:scale-110 transition-transform inline-block">{c.icon}</div>
+            <div className="text-sm font-semibold text-white mb-1">{c.label}</div>
+            <div className="text-[11px] text-[#888] leading-relaxed">{c.desc}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* ── Live indicator pills shown next to tab selector ───────────── */

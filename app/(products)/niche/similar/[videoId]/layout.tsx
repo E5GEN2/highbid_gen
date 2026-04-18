@@ -20,7 +20,7 @@ export default function SimilarLayout({ children }: { children: React.ReactNode 
   return (
     <SimilarProvider videoId={videoId}>
       <SimilarHeader />
-      {children}
+      <PickerOrChildren>{children}</PickerOrChildren>
     </SimilarProvider>
   );
 }
@@ -89,11 +89,11 @@ function SimilarHeader() {
             <select
               value={basis}
               onChange={e => setBasis(e.target.value as typeof basis)}
-              disabled={loading}
+              disabled={loading || !basis}
               className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-amber-500 disabled:opacity-50"
               title="Which embedding space to compute similarity against"
             >
-              <option value="">Default (admin)</option>
+              {!basis && <option value="">— pick below —</option>}
               <option value="title_v2">Title</option>
               <option value="thumbnail_v2">Thumbnail</option>
               <option value="combined">Both (avg)</option>
@@ -252,6 +252,40 @@ function HeaderPill({
       {/* Anchor tooltip to the right so it never overflows past the page edge */}
       <div className="pointer-events-none absolute right-0 top-full mt-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/pill:opacity-100 transition-opacity z-50 text-left">
         {tooltip}
+      </div>
+    </div>
+  );
+}
+
+/* ── Basis picker — shown when user first lands on the page ──── */
+
+function PickerOrChildren({ children }: { children: React.ReactNode }) {
+  const { basis, setBasis } = useSimilar();
+  if (basis) return <>{children}</>;
+
+  const cards = [
+    { id: 'title_v2' as const, label: 'Title', desc: 'Videos whose titles share the most meaning with this one.' },
+    { id: 'thumbnail_v2' as const, label: 'Thumbnail', desc: 'Videos whose thumbnails look visually similar — same style, colors, composition.' },
+    { id: 'combined' as const, label: 'Both', desc: 'Averages title + thumbnail similarity. Best for finding the closest overall matches.' },
+  ];
+
+  return (
+    <div className="px-8 pb-8 pt-4 max-w-5xl mx-auto">
+      <div className="text-center mb-6">
+        <h4 className="text-sm font-medium text-white mb-1">How should we find similar videos?</h4>
+        <p className="text-xs text-[#666]">Different bases give very different results. Pick one to start — you can switch any time from the header.</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {cards.map(c => (
+          <button
+            key={c.id}
+            onClick={() => setBasis(c.id)}
+            className="bg-[#141414] border border-[#1f1f1f] hover:border-amber-500/60 hover:bg-[#1a1a1a] rounded-xl p-5 text-left transition"
+          >
+            <div className="text-sm font-semibold text-white mb-1">{c.label}</div>
+            <div className="text-[11px] text-[#888] leading-relaxed">{c.desc}</div>
+          </button>
+        ))}
       </div>
     </div>
   );
