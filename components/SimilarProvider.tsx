@@ -30,6 +30,8 @@ export interface SimilarVideo {
 
 export interface SimilarSource { id: number; title: string; keyword: string; }
 
+type Basis = '' | 'title_v2' | 'thumbnail_v2' | 'combined';
+
 interface SimilarContextType {
   videoId: number;
   source: SimilarSource | null;
@@ -37,6 +39,8 @@ interface SimilarContextType {
   filtered: SimilarVideo[];       // all where similarity >= minSimilarity
   minSimilarity: number;
   setMinSimilarity: (v: number) => void;
+  basis: Basis;
+  setBasis: (b: Basis) => void;
   loading: boolean;
   error: string | null;
 }
@@ -55,21 +59,25 @@ export function SimilarProvider({ videoId, children }: { videoId: number; childr
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [minSimilarity, setMinSimilarity] = useState(0.7);
+  const [basis, setBasis] = useState<Basis>('');
 
   useEffect(() => {
     if (!videoId) return;
     setLoading(true);
     setError(null);
-    fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=500&minSimilarity=0`)
+    const qs = new URLSearchParams({ videoId: String(videoId), limit: '500', minSimilarity: '0' });
+    if (basis) qs.set('source', basis);
+    fetch(`/api/niche-spy/similar?${qs}`)
       .then(r => r.json())
-      .then((d: { source?: SimilarSource; similar?: SimilarVideo[]; error?: string }) => {
+      .then((d: { source?: SimilarSource; similar?: SimilarVideo[]; error?: string; message?: string }) => {
         if (d.error) throw new Error(d.error);
         setSource(d.source || null);
         setAll(d.similar || []);
+        if ((d.similar || []).length === 0 && d.message) setError(d.message);
       })
       .catch(err => setError((err as Error).message))
       .finally(() => setLoading(false));
-  }, [videoId]);
+  }, [videoId, basis]);
 
   const filtered = useMemo(
     () => all.filter(v => v.similarity >= minSimilarity),
@@ -77,8 +85,8 @@ export function SimilarProvider({ videoId, children }: { videoId: number; childr
   );
 
   const value = useMemo(() => ({
-    videoId, source, all, filtered, minSimilarity, setMinSimilarity, loading, error,
-  }), [videoId, source, all, filtered, minSimilarity, loading, error]);
+    videoId, source, all, filtered, minSimilarity, setMinSimilarity, basis, setBasis, loading, error,
+  }), [videoId, source, all, filtered, minSimilarity, basis, loading, error]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -28,7 +28,7 @@ export default function SimilarLayout({ children }: { children: React.ReactNode 
 /* ── Sticky header with source title, back button, and min-match selector ── */
 
 function SimilarHeader() {
-  const { source, all, filtered, minSimilarity, setMinSimilarity, loading } = useSimilar();
+  const { source, all, filtered, minSimilarity, setMinSimilarity, basis, setBasis, loading } = useSimilar();
 
   // Live opportunity indicators — score-filtered to 80+ to match Insights tab.
   // Recomputes on every minSimilarity change so the user sees the numbers shift live.
@@ -85,7 +85,20 @@ function SimilarHeader() {
         {/* Right column: min-match on top, live indicator pills below */}
         <div className="flex flex-col items-end gap-2">
           <div className="flex items-center gap-2 flex-wrap">
-            <label className="text-xs text-[#888]">Min match:</label>
+            <label className="text-xs text-[#888]">Based on:</label>
+            <select
+              value={basis}
+              onChange={e => setBasis(e.target.value as typeof basis)}
+              disabled={loading}
+              className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+              title="Which embedding space to compute similarity against"
+            >
+              <option value="">Default (admin)</option>
+              <option value="title_v2">Title</option>
+              <option value="thumbnail_v2">Thumbnail</option>
+              <option value="combined">Both (avg)</option>
+            </select>
+            <label className="text-xs text-[#888] ml-1">Min match:</label>
             <select
               value={minSimilarity}
               onChange={e => setMinSimilarity(parseFloat(e.target.value))}

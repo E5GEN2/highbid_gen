@@ -102,22 +102,31 @@ function SimilarModalBody({
   const [tab, setTab] = useState<Tab>('videos');
   const [sort, setSort] = useState<'similarity' | 'views' | 'score' | 'newest' | 'likes'>('similarity');
 
-  // Reset fetch on videoId change (supports switching to a nested video from the grid)
+  // Which embedding space the similarity runs against. Default is admin-configured
+  // (empty string = let the server pick). User can override per-modal session.
+  type Basis = '' | 'title_v2' | 'thumbnail_v2' | 'combined';
+  const [basis, setBasis] = useState<Basis>('');
+
+  // Reset fetch on videoId OR basis change — a different basis gives a totally
+  // different ranking, so we re-request from the server.
   useEffect(() => {
     setLoading(true);
     setError(null);
     setSource(null);
     setAll([]);
-    fetch(`/api/niche-spy/similar?videoId=${videoId}&limit=500&minSimilarity=0`)
+    const qs = new URLSearchParams({ videoId: String(videoId), limit: '500', minSimilarity: '0' });
+    if (basis) qs.set('source', basis);
+    fetch(`/api/niche-spy/similar?${qs}`)
       .then(r => r.json())
-      .then((d: { source?: SimilarSource; similar?: SimilarVideo[]; error?: string }) => {
+      .then((d: { source?: SimilarSource; similar?: SimilarVideo[]; error?: string; message?: string }) => {
         if (d.error) throw new Error(d.error);
         setSource(d.source || null);
         setAll(d.similar || []);
+        if ((d.similar || []).length === 0 && d.message) setError(d.message);
       })
       .catch(err => setError((err as Error).message))
       .finally(() => setLoading(false));
-  }, [videoId]);
+  }, [videoId, basis]);
 
   const filtered = useMemo(() => all.filter(v => v.similarity >= minSimilarity), [all, minSimilarity]);
   // Insights are score-filtered so numbers are comparable with the keyword Insights page
@@ -182,7 +191,20 @@ function SimilarModalBody({
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <label className="text-xs text-[#888]">Min match:</label>
+            <label className="text-xs text-[#888]">Based on:</label>
+            <select
+              value={basis}
+              onChange={e => setBasis(e.target.value as Basis)}
+              disabled={loading}
+              className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+              title="Which embedding space to compute similarity against"
+            >
+              <option value="">Default (admin)</option>
+              <option value="title_v2">Title</option>
+              <option value="thumbnail_v2">Thumbnail</option>
+              <option value="combined">Both (avg)</option>
+            </select>
+            <label className="text-xs text-[#888] ml-2">Min match:</label>
             <select
               value={minSimilarity}
               onChange={e => setMinSimilarity(parseFloat(e.target.value))}
