@@ -6,6 +6,7 @@ import { fmtYT } from '@/lib/format';
 import { OpportunityIndicators, computeIndicators } from './OpportunityIndicators';
 import { ChannelScatter, type ScatterDot, type ScatterVideo } from './ChannelScatter';
 import { DistBars, makeSubsBuckets, makeViewsBuckets } from './DistBars';
+import { ChannelAgeChip } from './ChannelAgeChip';
 
 /**
  * SimilarModal — summonable pop-up with Videos + Insights tabs.
@@ -35,6 +36,8 @@ interface SimilarVideo {
   thumbnail: string | null;
   keyword: string | null;
   channelCreatedAt: string | null;
+  firstUploadAt?: string | null;
+  dormancyDays?: number | null;
   similarity: number;
 }
 
@@ -142,13 +145,15 @@ function SimilarModalBody({
 
   // Live opportunity indicators — recompute on every minSimilarity change
   const indicators = useMemo(() => {
-    const dots = scored.map(v => ({
-      s: v.subscriberCount || 0,
-      v: v.viewCount || 0,
-      a: v.channelCreatedAt
-        ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000)
-        : null,
-    }));
+    const dots = scored.map(v => {
+      const activeAge = v.firstUploadAt ? Math.floor((Date.now() - new Date(v.firstUploadAt).getTime()) / 86400000) : null;
+      const creationAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+      return {
+        s: v.subscriberCount || 0,
+        v: v.viewCount || 0,
+        a: activeAge ?? creationAge,   // newcomer rate should be against active age
+      };
+    });
     return computeIndicators(dots);
   }, [scored]);
 
@@ -368,12 +373,11 @@ function VideosTab({
                 <div className="flex items-center gap-3 text-xs text-[#666] flex-wrap">
                   {v.likeCount > 0 && <span>👍 {fmtYT(v.likeCount)}</span>}
                   {v.subscriberCount > 0 && <span>👥 {fmtYT(v.subscriberCount)}</span>}
-                  {v.channelCreatedAt && (() => {
-                    const days = Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000);
-                    if (days < 30) return <span className="text-orange-400">📅 {days}d old</span>;
-                    if (days < 365) return <span>📅 {Math.floor(days / 30)}mo old</span>;
-                    return <span>📅 {(days / 365).toFixed(1)}yr old</span>;
-                  })()}
+                  <ChannelAgeChip
+                    createdAt={v.channelCreatedAt}
+                    firstUploadAt={v.firstUploadAt}
+                    dormancyDays={v.dormancyDays}
+                  />
                 </div>
                 <div className="flex items-center justify-between mt-2 gap-2">
                   {v.url && <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 truncate min-w-0 flex-1">{v.url}</a>}
@@ -395,7 +399,8 @@ function VideosTab({
 
 function InsightsTab({ scored, filteredCount }: { scored: SimilarVideo[]; filteredCount: number }) {
   const scatterDots: ScatterDot[] = useMemo(() => scored.map(v => {
-    const chAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const creationAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const activeAge = v.firstUploadAt ? Math.floor((Date.now() - new Date(v.firstUploadAt).getTime()) / 86400000) : null;
     const vidAge = v.postedAt ? Math.floor((Date.now() - new Date(v.postedAt).getTime()) / 86400000) : null;
     return {
       id: v.id,
@@ -403,7 +408,7 @@ function InsightsTab({ scored, filteredCount }: { scored: SimilarVideo[]; filter
       s: v.subscriberCount || 0,
       v: v.viewCount || 0,
       sc: v.score || 0,
-      a: chAge,
+      a: activeAge ?? creationAge,   // active age (first upload) preferred
       va: vidAge,
       e: true,
     };
@@ -414,11 +419,17 @@ function InsightsTab({ scored, filteredCount }: { scored: SimilarVideo[]; filter
   const videoLookup = useCallback((id: number): ScatterVideo | null => {
     const v = scored.find(x => x.id === id);
     if (!v) return null;
-    const chAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const creationAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const activeAge = v.firstUploadAt ? Math.floor((Date.now() - new Date(v.firstUploadAt).getTime()) / 86400000) : null;
     const thumbFallback = (v.url || '').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
     return {
       id: v.id, name: v.channelName || '', subs: v.subscriberCount || 0, views: v.viewCount || 0,
-      avgScore: v.score || 0, ageDays: chAge, channelId: null,
+      avgScore: v.score || 0,
+      ageDays: activeAge ?? creationAge,
+      creationAgeDays: creationAge,
+      firstUploadAt: v.firstUploadAt || null,
+      dormancyDays: v.dormancyDays ?? null,
+      channelId: null,
       videoUrl: v.url || null, videoTitle: v.title || null,
       thumbnail: v.thumbnail || (thumbFallback ? `https://img.youtube.com/vi/${thumbFallback[1]}/hqdefault.jpg` : null),
       likeCount: v.likeCount || 0, commentCount: v.commentCount || 0,

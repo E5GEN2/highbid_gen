@@ -25,6 +25,8 @@ export interface SimilarVideo {
   thumbnail: string | null;
   keyword: string | null;
   channelCreatedAt: string | null;
+  firstUploadAt?: string | null;
+  dormancyDays?: number | null;
   similarity: number;
 }
 

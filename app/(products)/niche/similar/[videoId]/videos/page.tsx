@@ -4,6 +4,7 @@ import React, { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { fmtYT } from '@/lib/format';
 import { useSimilar } from '@/components/SimilarProvider';
+import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 
 /** Similar-cluster Videos tab — grid of matching videos sorted by similarity/views/etc. */
 export default function SimilarVideos() {
@@ -108,12 +109,11 @@ export default function SimilarVideos() {
                 <div className="flex items-center gap-3 text-xs text-[#666] flex-wrap">
                   {v.likeCount > 0 && <span>👍 {fmtYT(v.likeCount)}</span>}
                   {v.subscriberCount > 0 && <span>👥 {fmtYT(v.subscriberCount)}</span>}
-                  {v.channelCreatedAt && (() => {
-                    const days = Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000);
-                    if (days < 30) return <span className="text-orange-400">📅 {days}d old</span>;
-                    if (days < 365) return <span>📅 {Math.floor(days / 30)}mo old</span>;
-                    return <span>📅 {(days / 365).toFixed(1)}yr old</span>;
-                  })()}
+                  <ChannelAgeChip
+                    createdAt={v.channelCreatedAt}
+                    firstUploadAt={v.firstUploadAt}
+                    dormancyDays={v.dormancyDays}
+                  />
                 </div>
                 <div className="flex items-center justify-between mt-2 gap-2">
                   {v.url && <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 truncate min-w-0 flex-1">{v.url}</a>}

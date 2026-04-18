@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useNiche } from '@/components/NicheProvider';
 import { useSimilarModal } from '@/components/SimilarModal';
 import { IndicatorPillsRow, IndicatorPillsEmpty } from '@/components/IndicatorPill';
+import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { fmtYT } from '@/lib/format';
 
 interface NicheVideo {
@@ -13,6 +14,7 @@ interface NicheVideo {
   channel_created_at: string; embedded_at: string | null;
   subscriber_count: number; like_count: number; comment_count: number;
   top_comment: string; thumbnail: string; fetched_at: string;
+  first_upload_at?: string | null; dormancy_days?: number | null;
   _similarity?: number;
 }
 
@@ -547,12 +549,11 @@ function NicheVideosInner() {
                     {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
                     {v.comment_count > 0 && <span>💬 {fmtYT(v.comment_count)}</span>}
                     {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)} subscribers</span>}
-                    {v.channel_created_at && (() => {
-                      const days = Math.floor((Date.now() - new Date(v.channel_created_at).getTime()) / 86400000);
-                      if (days < 30) return <span className="text-orange-400">📅 {days}d old</span>;
-                      if (days < 365) return <span>📅 {Math.floor(days / 30)}mo old</span>;
-                      return <span>📅 {(days / 365).toFixed(1)}yr old</span>;
-                    })()}
+                    <ChannelAgeChip
+                      createdAt={v.channel_created_at}
+                      firstUploadAt={v.first_upload_at}
+                      dormancyDays={v.dormancy_days}
+                    />
                   </div>
                   {v.top_comment && (
                     <p className="text-xs text-[#666] italic line-clamp-2 border-l-2 border-[#333] pl-2 mb-2">

@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { fmtYT } from '@/lib/format';
 import { useSimilarModal } from './SimilarModal';
+import { ChannelAgeChip } from './ChannelAgeChip';
 
 /**
  * Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale.
@@ -33,7 +34,12 @@ export interface ScatterVideo {
   subs: number;
   views: number;
   avgScore: number;
+  /** Active age (days since first_upload), fallback to creation age when not yet detected. */
   ageDays: number | null;
+  /** Raw channel creation age (days) — passed through for the age-chip tooltip. */
+  creationAgeDays?: number | null;
+  firstUploadAt?: string | null;
+  dormancyDays?: number | null;
   channelId: string | null;
   videoUrl: string | null;
   videoTitle: string | null;
@@ -428,11 +434,18 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
                       {ch.likeCount > 0 && <span>👍 {fmtYT(ch.likeCount)}</span>}
                       {ch.commentCount > 0 && <span>💬 {fmtYT(ch.commentCount)}</span>}
                       {ch.subs > 0 && <span>👥 {fmtYT(ch.subs)} subs</span>}
-                      {ch.ageDays !== null && (() => {
-                        if (ch.ageDays! < 30) return <span className="text-orange-400">📅 {ch.ageDays}d old</span>;
-                        if (ch.ageDays! < 365) return <span>📅 {Math.floor(ch.ageDays! / 30)}mo old</span>;
-                        return <span>📅 {(ch.ageDays! / 365).toFixed(1)}yr old</span>;
-                      })()}
+                      <ChannelAgeChip
+                        firstUploadAt={ch.firstUploadAt}
+                        createdAt={
+                          // reconstruct ISO from creationAgeDays if we don't have the raw field
+                          ch.creationAgeDays != null
+                            ? new Date(Date.now() - ch.creationAgeDays * 86_400_000).toISOString()
+                            : (ch.ageDays != null && !ch.firstUploadAt
+                                ? new Date(Date.now() - ch.ageDays * 86_400_000).toISOString()
+                                : undefined)
+                        }
+                        dormancyDays={ch.dormancyDays}
+                      />
                     </div>
                     <div className="flex items-center justify-between mt-2 gap-2">
                       {ch.videoUrl && (

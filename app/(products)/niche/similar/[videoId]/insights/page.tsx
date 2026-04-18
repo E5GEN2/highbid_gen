@@ -22,7 +22,8 @@ export default function SimilarInsights() {
 
   // Build ScatterDot shape from the filtered similar videos
   const scatterDots: ScatterDot[] = useMemo(() => scored.map(v => {
-    const chAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const creationAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const activeAge = v.firstUploadAt ? Math.floor((Date.now() - new Date(v.firstUploadAt).getTime()) / 86400000) : null;
     const vidAge = v.postedAt ? Math.floor((Date.now() - new Date(v.postedAt).getTime()) / 86400000) : null;
     return {
       id: v.id,
@@ -30,7 +31,7 @@ export default function SimilarInsights() {
       s: v.subscriberCount || 0,
       v: v.viewCount || 0,
       sc: v.score || 0,
-      a: chAge,
+      a: activeAge ?? creationAge,          // active age (first upload) preferred
       va: vidAge,
       e: true,
     };
@@ -45,7 +46,8 @@ export default function SimilarInsights() {
   const videoLookup = useCallback((id: number): ScatterVideo | null => {
     const v = scored.find(x => x.id === id);
     if (!v) return null;
-    const chAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const creationAge = v.channelCreatedAt ? Math.floor((Date.now() - new Date(v.channelCreatedAt).getTime()) / 86400000) : null;
+    const activeAge = v.firstUploadAt ? Math.floor((Date.now() - new Date(v.firstUploadAt).getTime()) / 86400000) : null;
     const thumbFallback = (v.url || '').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
     return {
       id: v.id,
@@ -53,7 +55,10 @@ export default function SimilarInsights() {
       subs: v.subscriberCount || 0,
       views: v.viewCount || 0,
       avgScore: v.score || 0,
-      ageDays: chAge,
+      ageDays: activeAge ?? creationAge,
+      creationAgeDays: creationAge,
+      firstUploadAt: v.firstUploadAt || null,
+      dormancyDays: v.dormancyDays ?? null,
       channelId: null,
       videoUrl: v.url || null,
       videoTitle: v.title || null,
