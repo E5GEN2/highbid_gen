@@ -67,26 +67,29 @@ export async function POST(req: NextRequest) {
   );
   const videoCount = Math.min(parseInt(videoCntRes.rows[0].cnt), limit);
 
-  // Count how many CHANNELS need Phase 3 (first-upload walk). Independent of
-  // whether their videos need video-level work — an aged channel might have
-  // fully-enriched videos but still no first_upload_at until Phase 3 runs.
+  // Count how many CHANNELS need any channel-level work (Phase 2 refresh for
+  // missing uploads_playlist_id, missing channel rows, or Phase 3 first-upload
+  // walk). Independent of whether their videos need video-level work.
   const chanParams: (string | number)[] = [];
   let cIdx = 1;
   let kwJoin = '';
   if (keyword && keyword !== 'all') {
-    kwJoin = `JOIN niche_spy_videos v ON v.channel_id = c.channel_id AND v.keyword = $${cIdx++}`;
+    kwJoin = `AND v.keyword = $${cIdx++}`;
     chanParams.push(keyword);
   }
   chanParams.push(limit);
   const chanCntRes = await pool.query(
-    `SELECT COUNT(DISTINCT c.channel_id) as cnt
-     FROM niche_spy_channels c
-     ${kwJoin}
-     WHERE c.uploads_playlist_id IS NOT NULL
-       AND c.first_upload_at IS NULL
-       AND (c.video_count IS NULL OR c.video_count > 0)
-       AND (c.video_count IS NULL OR c.video_count <= 200)
-       AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days')
+    `SELECT COUNT(DISTINCT v.channel_id) as cnt
+     FROM niche_spy_videos v
+     LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+     WHERE v.channel_id IS NOT NULL ${kwJoin}
+       AND (
+         c.channel_id IS NULL
+         OR c.uploads_playlist_id IS NULL
+         OR (c.first_upload_at IS NULL
+             AND (c.video_count IS NULL OR c.video_count <= 200)
+             AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days'))
+       )
      LIMIT $${cIdx}`,
     chanParams
   );
@@ -283,8 +286,39 @@ async function runEnrichJob(
   const videoWorkers = Array.from({ length: Math.min(threads, batches.length) }, (_, i) => videoWorker(i + 1));
   await Promise.all(videoWorkers);
 
-  // --- Phase 2: channel subscriber lookup (same pattern) ---
+  // --- Phase 2: channel metadata refresh ---
+  // Targets = channels touched by Phase 1 (new data) + any channel in our
+  // videos that's missing uploads_playlist_id (old enrich runs that didn't
+  // request contentDetails). Scoped by the keyword filter.
   let enrichedChannels = 0;
+  const extraChanParams: (string | number)[] = [];
+  let eIdx = 1;
+  let extraKwJoin = '';
+  if (keyword && keyword !== 'all') {
+    extraKwJoin = `JOIN niche_spy_videos v ON v.channel_id = c.channel_id AND v.keyword = $${eIdx++}`;
+    extraChanParams.push(keyword);
+  }
+  extraChanParams.push(limit);
+  const missingUploadsRes = await pool.query(
+    `SELECT DISTINCT c.channel_id
+     FROM niche_spy_channels c
+     ${extraKwJoin}
+     WHERE c.uploads_playlist_id IS NULL
+     LIMIT $${eIdx}`,
+    extraChanParams
+  );
+  const extraIds: string[] = missingUploadsRes.rows.map(r => r.channel_id);
+  // Also include channel_ids present on videos but missing from the channels table
+  const missingKwJoin = keyword && keyword !== 'all' ? `AND v.keyword = '${keyword.replace(/'/g, "''")}'` : '';
+  const orphanRes = await pool.query(
+    `SELECT DISTINCT v.channel_id FROM niche_spy_videos v
+     LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+     WHERE v.channel_id IS NOT NULL AND c.channel_id IS NULL ${missingKwJoin}
+     LIMIT ${limit}`
+  );
+  for (const r of orphanRes.rows) extraIds.push(r.channel_id);
+  for (const id of extraIds) channelIds.set(id, channelIds.get(id) || new Set());
+
   const uniqueChannelIds = Array.from(channelIds.keys());
   if (uniqueChannelIds.length > 0 && !(await isCancelled())) {
     const chBatches: Array<{ batchNum: number; ids: string[] }> = [];
@@ -497,14 +531,18 @@ export async function GET(req: NextRequest) {
   const keyword = req.nextUrl.searchParams.get('keyword');
 
   const videoNeedsWork = `(v.enriched_at IS NULL OR v.like_count IS NULL OR v.like_count = 0 OR v.subscriber_count IS NULL OR v.subscriber_count = 0)`;
-  // Channel-level work: Phase 3 runs on channels that have an uploads playlist,
-  // no first_upload_at yet, within the 200-upload skip threshold, and haven't
-  // been checked in 14 days.
-  const channelNeedsWork = `(c.uploads_playlist_id IS NOT NULL
-      AND c.first_upload_at IS NULL
-      AND (c.video_count IS NULL OR c.video_count > 0)
-      AND (c.video_count IS NULL OR c.video_count <= 200)
-      AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days'))`;
+  // Channel-level work — the channel needs some flavour of enrichment if the
+  // video has a channel_id AND either (a) we have no channel row yet,
+  // (b) the row exists but uploads_playlist_id is missing (old rows enriched
+  // before we started requesting contentDetails), or (c) the row has the
+  // playlist but no first_upload_at and is still Phase-3-eligible.
+  const channelNeedsWork = `(v.channel_id IS NOT NULL AND (
+      c.channel_id IS NULL
+      OR c.uploads_playlist_id IS NULL
+      OR (c.first_upload_at IS NULL
+          AND (c.video_count IS NULL OR c.video_count <= 200)
+          AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days'))
+    ))`;
 
   const conds = [`(${videoNeedsWork} OR ${channelNeedsWork})`];
   const params: string[] = [];
