@@ -7,7 +7,11 @@ import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { fmtYT } from '@/lib/format';
 
 interface NicheChannel {
-  channelName: string; videoCount: number; totalViews: number; avgViews: number; maxViews: number;
+  channelName: string;
+  videoCount: number;               // best available: total from enrich, else in-niche count
+  videoCountInNiche: number;        // rows we have in niche_spy_videos for this channel + niche
+  totalVideoCount: number | null;   // YouTube's authoritative total (null if not yet enriched)
+  totalViews: number; avgViews: number; maxViews: number;
   avgScore: number; maxScore: number; subscribers: number; totalLikes: number; totalComments: number;
   channelCreatedAt: string | null; channelAgeDays: number | null;
   latestVideoAt: string | null; earliestVideoAt: string | null;
@@ -208,9 +212,15 @@ export default function NicheChannels() {
                     <div className="text-sm font-bold text-green-400">{fmtYT(ch.totalViews)}</div>
                     <div className="text-[10px] text-[#666]">Total Views</div>
                   </div>
-                  <div className="p-2.5 text-center border-r border-[#1f1f1f]">
-                    <div className="text-sm font-bold text-blue-400">{ch.videoCount}</div>
-                    <div className="text-[10px] text-[#666]">Videos</div>
+                  <div className="p-2.5 text-center border-r border-[#1f1f1f]" title={
+                    ch.totalVideoCount != null
+                      ? `${ch.totalVideoCount} total on YouTube · ${ch.videoCountInNiche} in this niche`
+                      : `${ch.videoCountInNiche} in this niche · channel not yet enriched`
+                  }>
+                    <div className="text-sm font-bold text-blue-400">{fmtYT(ch.videoCount)}</div>
+                    <div className="text-[10px] text-[#666]">
+                      Videos{ch.totalVideoCount == null && <span className="text-[#555]"> (partial)</span>}
+                    </div>
                   </div>
                   <div className="p-2.5 text-center">
                     <div className="text-sm font-bold text-purple-400">{fmtYT(ch.avgViews)}</div>

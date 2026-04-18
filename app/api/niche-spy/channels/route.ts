@@ -63,7 +63,10 @@ export async function GET(req: NextRequest) {
         MIN(c.channel_handle) as channel_handle,
         MIN(c.first_upload_at) as first_upload_at,
         MIN(c.dormancy_days) as dormancy_days,
-        COUNT(*) as video_count,
+        -- video_count_in_niche = rows we've scraped for this channel in this niche
+        -- total_video_count   = YouTube's reported total videoCount (from enrichment)
+        COUNT(*) as video_count_in_niche,
+        MIN(c.video_count) as total_video_count,
         SUM(v.view_count) as total_views,
         ROUND(AVG(v.view_count)) as avg_views,
         MAX(v.view_count) as max_views,
@@ -114,7 +117,13 @@ export async function GET(req: NextRequest) {
       channelHandle: r.channel_handle || null,
       firstUploadAt: r.first_upload_at || null,
       dormancyDays: r.dormancy_days !== null ? parseInt(r.dormancy_days) : null,
-      videoCount: parseInt(r.video_count),
+      // videoCount is the authoritative YouTube total (from Data API enrichment).
+      // Falls back to in-niche count when we haven't enriched the channel yet.
+      videoCount: r.total_video_count !== null
+        ? parseInt(r.total_video_count)
+        : parseInt(r.video_count_in_niche),
+      videoCountInNiche: parseInt(r.video_count_in_niche),
+      totalVideoCount: r.total_video_count !== null ? parseInt(r.total_video_count) : null,
       totalViews: parseInt(r.total_views) || 0,
       avgViews: parseInt(r.avg_views) || 0,
       maxViews: parseInt(r.max_views) || 0,
