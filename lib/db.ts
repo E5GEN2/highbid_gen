@@ -590,6 +590,9 @@ export async function initSchema(): Promise<void> {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ncr_keyword ON niche_cluster_runs(keyword, started_at DESC)`).catch(() => {});
+    // Embedding space this run was clustered on — lets us run multiple runs
+    // per keyword (title/thumbnail/combined) and display the right one
+    await client.query(`ALTER TABLE niche_cluster_runs ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'title_v1'`).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_clusters (

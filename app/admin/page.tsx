@@ -1578,23 +1578,33 @@ export default function AdminPage() {
             <h2 className="text-lg font-bold text-white mb-2">Sub-niche Clustering</h2>
             <p className="text-xs text-gray-500 mb-4">Run HDBSCAN clustering on video embeddings to discover sub-niches within a keyword.</p>
 
-            <div className="flex items-center gap-3 mb-4">
-              <select id="cluster-keyword" className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm flex-1">
+            <div className="flex items-center gap-3 mb-4 flex-wrap">
+              <select id="cluster-keyword" className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm flex-1 min-w-[200px]">
                 {embeddingStats?.keywordCoverage?.map(k => (
                   <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.title_v1.embedded} v1 / {k.title_v2.embedded} v2 / {k.thumbnail_v2.embedded} thumb)</option>
                 ))}
               </select>
+              <select id="cluster-source" defaultValue="title_v1" className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm"
+                title="Embedding space to cluster on — combined concatenates title+thumbnail v2 vectors">
+                <option value="title_v1">Title v1</option>
+                <option value="title_v2">Title v2</option>
+                <option value="thumbnail_v2">Thumbnail v2</option>
+                <option value="combined">Combined (title + thumb)</option>
+              </select>
               <button
                 onClick={async () => {
                   const kw = (document.getElementById('cluster-keyword') as HTMLSelectElement)?.value;
+                  const source = (document.getElementById('cluster-source') as HTMLSelectElement)?.value;
                   if (!kw) return;
                   const res = await fetch('/api/niche-spy/clusters', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keyword: kw }),
+                    body: JSON.stringify({ keyword: kw, source }),
                   });
                   const data = await res.json();
-                  alert(data.ok ? `Clustering started (run #${data.runId}, ${data.embeddedVideos} videos)` : `Error: ${data.error}`);
+                  alert(data.ok
+                    ? `Clustering started (run #${data.runId}, ${data.embeddedVideos} videos, source=${data.source})`
+                    : `Error: ${data.error}`);
                 }}
                 className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-medium"
               >

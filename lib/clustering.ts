@@ -13,12 +13,24 @@ import fs from 'fs';
 const execFileAsync = promisify(execFile);
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 
+export type ClusterSource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined';
+
 interface ClusterParams {
   minClusterSize?: number;
   minSamples?: number;
   umapDims?: number;
   minScore?: number;
+  source?: ClusterSource;   // which embedding space to cluster on (default title_v1)
 }
+
+// Which main-DB column must be non-null for a video to be eligible
+// in each source. Combined requires BOTH v2 columns present.
+const SOURCE_FILTER: Record<ClusterSource, string> = {
+  title_v1:      'title_embedding IS NOT NULL',
+  title_v2:      'title_embedding_v2 IS NOT NULL',
+  thumbnail_v2:  'thumbnail_embedding_v2 IS NOT NULL',
+  combined:      'title_embedding_v2 IS NOT NULL AND thumbnail_embedding_v2 IS NOT NULL',
+};
 
 interface ClusterRun {
   id: number;
@@ -26,6 +38,7 @@ interface ClusterRun {
   status: string;
   algorithm: string;
   params: Record<string, unknown>;
+  source: ClusterSource;
   numClusters: number;
   numNoise: number;
   totalVideos: number;
@@ -60,10 +73,15 @@ export async function runClusteringJob(runId: number, keyword: string, params: C
     const vectorDbUrl = process.env.VECTOR_DB_URL ||
       'postgresql://postgres:rLcWspOFJIPFDMbJSDdNlynLgcnupOfY@gondola.proxy.rlwy.net:10303/railway';
 
-    // Get eligible video IDs (score >= 80 only — below that they're not really in the niche)
+    // Source selects which embedding space to cluster on. Each has its own
+    // main-DB column that must be non-null for the video to qualify.
+    const source: ClusterSource = params.source || 'title_v1';
+    const filter = SOURCE_FILTER[source];
+
+    // Score threshold — below this the video isn't really in the niche
     const minScore = params.minScore || 80;
     const eligibleRes = await pool.query(
-      `SELECT id FROM niche_spy_videos WHERE keyword = $1 AND score >= $2 AND title_embedding IS NOT NULL`,
+      `SELECT id FROM niche_spy_videos WHERE keyword = $1 AND score >= $2 AND ${filter}`,
       [keyword, minScore]
     );
     const eligibleIds = eligibleRes.rows.map((r: { id: number }) => r.id);
@@ -71,10 +89,13 @@ export async function runClusteringJob(runId: number, keyword: string, params: C
     if (eligibleIds.length < 10) {
       await pool.query(
         `UPDATE niche_cluster_runs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
-        [`Only ${eligibleIds.length} videos with score >= ${minScore}. Need at least 10.`, runId]
+        [`Only ${eligibleIds.length} videos with score >= ${minScore} and ${source} embeddings. Need at least 10.`, runId]
       );
       return;
     }
+
+    // Persist the source so we can show which basis a run used in the UI
+    await pool.query(`UPDATE niche_cluster_runs SET source = $1 WHERE id = $2`, [source, runId]).catch(() => {});
 
     // Write input config to temp file
     const tmpFile = path.join(os.tmpdir(), `cluster-${runId}.json`);
@@ -82,6 +103,7 @@ export async function runClusteringJob(runId: number, keyword: string, params: C
       db_url: vectorDbUrl,
       keyword,
       video_ids: eligibleIds,
+      source,
       min_cluster_size: params.minClusterSize || null,
       min_samples: params.minSamples || null,
       umap_dims: params.umapDims || 50,
@@ -264,7 +286,8 @@ export async function getLatestClusterRun(keyword: string): Promise<{ run: Clust
   const r = runRes.rows[0];
   const run: ClusterRun = {
     id: r.id, keyword: r.keyword, status: r.status, algorithm: r.algorithm,
-    params: r.params, numClusters: r.num_clusters, numNoise: r.num_noise,
+    params: r.params, source: (r.source || 'title_v1') as ClusterSource,
+    numClusters: r.num_clusters, numNoise: r.num_noise,
     totalVideos: r.total_videos, errorMessage: r.error_message,
     startedAt: r.started_at, completedAt: r.completed_at,
   };

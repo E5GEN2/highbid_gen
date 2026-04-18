@@ -122,9 +122,11 @@ export async function POST(req: NextRequest) {
 
   const pool = await getPool();
   const body = await req.json();
-  const { keyword, action = 'cluster', minClusterSize, minSamples, umapDims, minScore } = body;
+  const { keyword, action = 'cluster', minClusterSize, minSamples, umapDims, minScore, source: srcRaw } = body;
 
   if (!keyword) return NextResponse.json({ error: 'keyword required' }, { status: 400 });
+  const source: 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined' =
+    srcRaw === 'title_v2' || srcRaw === 'thumbnail_v2' || srcRaw === 'combined' ? srcRaw : 'title_v1';
 
   if (action === 'label') {
     // AI label upgrade for latest run
@@ -158,28 +160,35 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Count embedded videos
+  // Count embedded videos in the selected source — each source has its own column
+  const SOURCE_FILTER: Record<typeof source, string> = {
+    title_v1:     'title_embedding IS NOT NULL',
+    title_v2:     'title_embedding_v2 IS NOT NULL',
+    thumbnail_v2: 'thumbnail_embedding_v2 IS NOT NULL',
+    combined:     'title_embedding_v2 IS NOT NULL AND thumbnail_embedding_v2 IS NOT NULL',
+  };
+  const filter = SOURCE_FILTER[source];
   const countRes = await pool.query(
-    `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE keyword = $1 AND title_embedding IS NOT NULL`,
+    `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE keyword = $1 AND ${filter}`,
     [keyword]
   );
   const embeddedCount = parseInt(countRes.rows[0].cnt);
   if (embeddedCount < 10) {
-    return NextResponse.json({ error: `Only ${embeddedCount} embedded videos. Need at least 10.` }, { status: 400 });
+    return NextResponse.json({ error: `Only ${embeddedCount} videos with ${source} embeddings. Need at least 10.` }, { status: 400 });
   }
 
-  // Create run record
-  const params = { minClusterSize, minSamples, umapDims: umapDims || 50, minScore: minScore || 80 };
+  // Create run record (source is also persisted on the run row by runClusteringJob)
+  const clusterParams = { minClusterSize, minSamples, umapDims: umapDims || 50, minScore: minScore || 80, source };
   const runRes = await pool.query(
-    `INSERT INTO niche_cluster_runs (keyword, params, total_videos) VALUES ($1, $2, $3) RETURNING id`,
-    [keyword, JSON.stringify(params), embeddedCount]
+    `INSERT INTO niche_cluster_runs (keyword, params, total_videos, source) VALUES ($1, $2, $3, $4) RETURNING id`,
+    [keyword, JSON.stringify(clusterParams), embeddedCount, source]
   );
   const runId = runRes.rows[0].id;
 
   // Fire and forget
-  runClusteringJob(runId, keyword, params).catch(err => {
+  runClusteringJob(runId, keyword, clusterParams).catch(err => {
     console.error('[clustering] Job failed:', err);
   });
 
-  return NextResponse.json({ ok: true, status: 'started', runId, embeddedVideos: embeddedCount });
+  return NextResponse.json({ ok: true, status: 'started', runId, embeddedVideos: embeddedCount, source });
 }
