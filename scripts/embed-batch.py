@@ -100,7 +100,18 @@ def main():
             print(json.dumps({'error': f"API {err.get('code', '?')}: {err.get('message', '')[:200]}"}))
             sys.exit(1)
 
-        embeddings = [e['values'] for e in response.get('embeddings', [])]
+        raw_embs = response.get('embeddings')
+        if raw_embs is None:
+            # Log the raw response to stderr so the TS side can surface it
+            print(f"WARN: no embeddings key in response. top keys={list(response.keys())}. body head={json.dumps(response)[:300]}", file=sys.stderr)
+            print(json.dumps({'error': f"No embeddings key. keys={list(response.keys())}"}))
+            sys.exit(1)
+
+        embeddings = [e.get('values', []) for e in raw_embs]
+        # Log diagnostic info to stderr
+        lens = [len(v) for v in embeddings]
+        if any(l == 0 for l in lens):
+            print(f"WARN: some embeddings had zero length. lens={lens}. response head={json.dumps(response)[:300]}", file=sys.stderr)
         print(json.dumps(embeddings))
 
     finally:

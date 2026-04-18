@@ -234,22 +234,27 @@ async function runEmbeddingJob(
       let success = false;
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
         if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
-        // Check cancellation right before each (potentially slow) embed call
-        if (await isCancelled()) {
-          console.log(`[embedding] T${threadId} cancelled mid-batch ${batchNum}`);
-          break;
-        }
+        // (No cancellation check inside the retry loop — the outer while-loop
+        // check runs once per batch and that's enough. Checking here caused
+        // races where the DB lookup threw/returned stale data and we silently
+        // broke the retry without processing or recording an error.)
         try {
           const embedStart = Date.now();
           console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: calling model=${cfg.model} with ${inputs.length} inputs`);
           const embeddings = await batchEmbedInputs(inputs, cfg.model, threadId - 1);
           const embedElapsed = Date.now() - embedStart;
-          console.log(`[embedding] T${threadId} batch ${batchNum}: got ${embeddings.length} embeddings in ${embedElapsed}ms`);
+          const lens = embeddings.map(e => e?.length || 0);
+          console.log(`[embedding] T${threadId} batch ${batchNum}: got ${embeddings.length} embeddings in ${embedElapsed}ms, lengths=[${lens.join(',')}]`);
 
-          // Google sometimes returns 200 with a short/empty embeddings array for
-          // images it couldn't process. Treat that as an error so we retry.
+          // Google sometimes returns 200 with short / empty / zero-length
+          // embeddings for content it couldn't process. Treat any of those as
+          // an error so we retry rather than silently skipping.
           if (embeddings.length < inputs.length) {
             throw new Error(`Short response: got ${embeddings.length} embeddings for ${inputs.length} inputs`);
+          }
+          const badIdx = embeddings.findIndex(e => !e || e.length === 0);
+          if (badIdx !== -1) {
+            throw new Error(`Empty embedding at index ${badIdx} (lengths=[${lens.join(',')}])`);
           }
 
           for (let j = 0; j < items.length; j++) {
@@ -306,16 +311,17 @@ async function runEmbeddingJob(
   const workers = Array.from({ length: Math.min(threads, batches.length) }, (_, i) => worker(i + 1));
   await Promise.all(workers);
 
-  // Only flip to done/partial if the job wasn't cancelled mid-flight. Cancelled
-  // stays cancelled so the UI shows accurately why it stopped early.
+  // Only flip to done/partial if the job wasn't cancelled mid-flight.
+  // 'done' requires at least one successful write; otherwise it's partial so
+  // the UI highlights that nothing actually got embedded.
   await pool.query(
     `UPDATE niche_spy_embedding_jobs
         SET status = CASE WHEN status = 'cancelled' THEN 'cancelled'
-                          WHEN $1 > 0 THEN 'partial'
+                          WHEN $1 > 0 OR $2 = 0 THEN 'partial'
                           ELSE 'done' END,
             processed = $2, errors = $1, completed_at = NOW(), error_message = $3
       WHERE id = $4`,
-    [globalErrors, globalProcessed, `target=${target} · Done: ${globalProcessed} embedded, ${globalErrors} errors, ${threads} threads`, jobId]
+    [globalErrors, globalProcessed, `target=${target} · ${globalProcessed} embedded, ${globalErrors} errors, ${threads} threads`, jobId]
   );
 }
 
