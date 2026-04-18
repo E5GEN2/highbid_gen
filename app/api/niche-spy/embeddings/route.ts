@@ -170,15 +170,24 @@ async function runEmbeddingJob(
   }
   let batchIdx = 0;
 
+  // Async cancellation check — only bail out on EXPLICIT terminal statuses.
+  // A DB hiccup / null row / network blip should NOT kill the worker.
+  async function isCancelled(): Promise<boolean> {
+    try {
+      const r = await pool.query(`SELECT status FROM niche_spy_embedding_jobs WHERE id = $1`, [jobId]);
+      const s = r.rows[0]?.status;
+      return s === 'cancelled' || s === 'error';
+    } catch (err) {
+      console.warn(`[embedding] cancellation check failed, continuing:`, (err as Error).message);
+      return false;
+    }
+  }
+
   async function worker(threadId: number) {
+    console.log(`[embedding] T${threadId} starting — target=${target}, ${batches.length} batches`);
     while (true) {
-      // Cancellation check — the DELETE endpoint sets status='cancelled' in the
-      // DB row; we bail out here so nothing else gets embedded. Without this
-      // the fire-and-forget promise would keep running to completion.
-      const statusRes = await pool.query(`SELECT status FROM niche_spy_embedding_jobs WHERE id = $1`, [jobId]);
-      const currentStatus = statusRes.rows[0]?.status;
-      if (currentStatus !== 'running') {
-        console.log(`[embedding] T${threadId} aborting — job ${jobId} status=${currentStatus}`);
+      if (await isCancelled()) {
+        console.log(`[embedding] T${threadId} aborting — job ${jobId} cancelled`);
         break;
       }
 
@@ -224,8 +233,7 @@ async function runEmbeddingJob(
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
         if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
         // Check cancellation right before each (potentially slow) embed call
-        const cRes = await pool.query(`SELECT status FROM niche_spy_embedding_jobs WHERE id = $1`, [jobId]);
-        if (cRes.rows[0]?.status !== 'running') {
+        if (await isCancelled()) {
           console.log(`[embedding] T${threadId} cancelled mid-batch ${batchNum}`);
           break;
         }

@@ -119,16 +119,21 @@ export async function register() {
     const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
     ensureThermostatRunning();
 
-    // Mark any "running" embedding jobs as orphaned on boot — they're leftovers
-    // from the previous server process and their worker loops no longer exist.
-    // Otherwise they'd permanently block new jobs.
+    // Mark "running" embedding jobs that haven't had progress in >3 minutes as
+    // orphaned. They're leftovers from a previous server process whose worker
+    // loops no longer exist. Fresh jobs are untouched — if we swept ALL running
+    // jobs unconditionally we'd kill the one that just started from the user's
+    // click post-boot.
     try {
       const { getPool } = await import('./lib/db');
       const pool = await getPool();
       const r = await pool.query(
         `UPDATE niche_spy_embedding_jobs
-            SET status = 'error', error_message = 'Orphaned: server restarted before job finished', completed_at = NOW()
-          WHERE status = 'running' RETURNING id`
+            SET status = 'error',
+                error_message = 'Orphaned: server restarted before job finished',
+                completed_at = NOW()
+          WHERE status = 'running' AND started_at < NOW() - INTERVAL '3 minutes'
+          RETURNING id`
       );
       if (r.rowCount && r.rowCount > 0) {
         console.log(`[boot] Marked ${r.rowCount} orphaned embedding job(s) as error`);
