@@ -131,10 +131,36 @@ async function getLegacyModel(): Promise<string> {
 
 // --- Embedding API ---
 
+/**
+ * Get a key-proxy pair for a specific thread, preferring the slot that
+ * corresponds to threadIdx but rotating forward if that slot is currently
+ * banned. Without the ban-aware fallback, a thread pinned to a rate-limited
+ * key would just keep failing while healthy keys sit idle.
+ */
 export async function getPairForThread(threadIdx: number): Promise<KeyProxyPair | null> {
   const allPairs = await buildPairs();
   if (allPairs.length === 0) return null;
-  return allPairs[threadIdx % allPairs.length];
+
+  const now = Date.now();
+  const n = allPairs.length;
+  const start = threadIdx % n;
+
+  // Walk forward from the preferred slot, returning the first non-banned pair
+  for (let i = 0; i < n; i++) {
+    const p = allPairs[(start + i) % n];
+    if (!p.banned || now > p.banExpiry) {
+      if (p.banned && now > p.banExpiry) p.banned = false;
+      return p;
+    }
+  }
+
+  // Everyone banned — return the one whose ban expires soonest so the worker
+  // has the shortest wait before it can try again.
+  let best = allPairs[start];
+  for (const p of allPairs) {
+    if (p.banExpiry < best.banExpiry) best = p;
+  }
+  return best;
 }
 
 export type EmbedInput =
