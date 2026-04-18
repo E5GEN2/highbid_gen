@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { fmtYT } from '@/lib/format';
 import { useSimilar } from '@/components/SimilarProvider';
 import { ChannelAgeChip } from '@/components/ChannelAgeChip';
+import { StarButton } from '@/components/FavouritesProvider';
 
 /** Similar-cluster Videos tab — grid of matching videos sorted by similarity/views/etc. */
 export default function SimilarVideos() {
@@ -117,6 +118,7 @@ export default function SimilarVideos() {
                 </div>
                 <div className="flex items-center justify-between mt-2 gap-2">
                   {v.url && <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 truncate min-w-0 flex-1">{v.url}</a>}
+                  <StarButton videoId={v.id} />
                   <Link href={`/niche/similar/${v.id}`}
                     className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2 py-0.5 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium">
                     Similar

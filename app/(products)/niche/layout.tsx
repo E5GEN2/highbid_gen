@@ -5,6 +5,7 @@ import ProductSidebar, { NavItem } from '@/components/ProductSidebar';
 import TopBar from '@/components/TopBar';
 import { NicheProvider, useNiche } from '@/components/NicheProvider';
 import { SimilarModalProvider } from '@/components/SimilarModal';
+import { FavouritesProvider } from '@/components/FavouritesProvider';
 import { usePathname, useSearchParams } from 'next/navigation';
 
 function NicheLayoutInner({ children }: { children: React.ReactNode }) {
@@ -54,6 +55,16 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
         { label: 'Insights', href: `/niche/niches/${encodeURIComponent(selectedKeyword)}/insights${clusterQuery}` },
       ] : undefined,
     },
+    {
+      label: 'Favourites',
+      href: '/niche/favourites',
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+        </svg>
+      ),
+    },
   ];
 
   // Build breadcrumbs from pathname
@@ -69,6 +80,8 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
       else if (pathname.includes('/channels')) segments.push({ label: 'Channels' });
       else if (pathname.includes('/insights')) segments.push({ label: 'Insights' });
     }
+  } else if (pathname.startsWith('/niche/favourites')) {
+    segments.push({ label: 'Favourites' });
   } else if (pathname.startsWith('/niche/similar/') && similarVideoId) {
     segments.push({ label: 'Niches', href: '/niche/niches' });
     segments.push({ label: 'Similar video', href: `/niche/similar/${similarVideoId}/videos` });
@@ -97,14 +110,16 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
 export default function NicheLayout({ children }: { children: React.ReactNode }) {
   return (
     <NicheProvider>
-      <SimilarModalProvider>
-        {/* Suspense boundary required because NicheLayoutInner uses
-            useSearchParams() — without this, Next.js bails out of static
-            generation for every child page. */}
-        <React.Suspense fallback={null}>
-          <NicheLayoutInner>{children}</NicheLayoutInner>
-        </React.Suspense>
-      </SimilarModalProvider>
+      <FavouritesProvider>
+        <SimilarModalProvider>
+          {/* Suspense boundary required because NicheLayoutInner uses
+              useSearchParams() — without this, Next.js bails out of static
+              generation for every child page. */}
+          <React.Suspense fallback={null}>
+            <NicheLayoutInner>{children}</NicheLayoutInner>
+          </React.Suspense>
+        </SimilarModalProvider>
+      </FavouritesProvider>
     </NicheProvider>
   );
 }

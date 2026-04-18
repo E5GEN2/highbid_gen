@@ -494,6 +494,16 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_first_upload ON niche_spy_channels(first_upload_at)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_last_uploads ON niche_spy_channels(last_uploads_fetched_at NULLS FIRST)`).catch(() => {});
 
+    // Favourites — a single global list (no per-user scoping). One row per
+    // starred video. Deleting a video cascades to remove its favourite.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_spy_favourites (
+        video_id INTEGER PRIMARY KEY REFERENCES niche_spy_videos(id) ON DELETE CASCADE,
+        added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsf_added ON niche_spy_favourites(added_at DESC)`).catch(() => {});
+
     // One-time backfill: copy channel-level data we already collected on the
     // videos table into the new channels table. Idempotent via ON CONFLICT.
     await client.query(`

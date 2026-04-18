@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { fmtYT } from '@/lib/format';
 import { useSimilarModal } from './SimilarModal';
 import { ChannelAgeChip } from './ChannelAgeChip';
+import { StarButton } from './FavouritesProvider';
 
 /**
  * Channel Landscape scatter plot — Subs (X) vs Views (Y), log scale.
@@ -451,6 +452,7 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
                       {ch.videoUrl && (
                         <a href={ch.videoUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate min-w-0 flex-1">{ch.videoUrl}</a>
                       )}
+                      <StarButton videoId={ch.id} />
                       {ch.embeddedAt && (
                         <button onClick={() => openSimilar(ch.id)}
                           className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium">
