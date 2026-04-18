@@ -10,13 +10,8 @@ import React from 'react';
  */
 
 export interface ChannelAgeProps {
-  createdAt?: string | Date | null;    // channel_created_at
+  createdAt?: string | Date | null;     // channel_created_at
   firstUploadAt?: string | Date | null; // first_upload_at (from niche_spy_channels)
-  /** The earliest video date we've ever scraped for this channel. Used as a
-   *  lower bound for first_upload_at when the Phase 3 walk skipped the channel
-   *  (videoCount > 200). Results in a much more accurate "active age" on
-   *  big channels than falling back to creation age. */
-  earliestVideoAt?: string | Date | null;
   dormancyDays?: number | null;         // precomputed dormancy (first_upload - created)
   /** threshold for flagging as aged — default 365 days */
   agedThresholdDays?: number;
@@ -28,23 +23,20 @@ function formatAge(days: number): string {
   return `${(days / 365).toFixed(1)}yr old`;
 }
 
-export function ChannelAgeChip({ createdAt, firstUploadAt, earliestVideoAt, dormancyDays, agedThresholdDays = 365 }: ChannelAgeProps) {
+export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThresholdDays = 365 }: ChannelAgeProps) {
   const created = createdAt ? new Date(createdAt) : null;
   const firstUp = firstUploadAt ? new Date(firstUploadAt) : null;
-  const earliest = earliestVideoAt ? new Date(earliestVideoAt) : null;
 
   // Nothing to show if we don't have any date
-  if (!created && !firstUp && !earliest) return null;
+  if (!created && !firstUp) return null;
 
   // Preference order for "active age":
   //   1. first_upload_at — precise (from Phase 3 uploads walk)
-  //   2. earliest_video_at — conservative lower bound (from our scraped data)
-  //   3. channel_created_at — last resort (may be misleading — rebrand dates etc.)
-  // earliestVideoAt wins over created even if we only have that two,
-  // because "I have a 2024 video from this channel" beats "channel was
-  // reported created 2 weeks ago".
-  const referenceDate = firstUp || earliest || created!;
-  const inferredFromEarliest = !firstUp && !!earliest;
+  //   2. channel_created_at — YouTube's official date
+  // When Phase 3 is skipped (channel too large), we just show the creation
+  // date. Clean and predictable; the ⚠ flag still surfaces aged channels
+  // whenever both dates are present and diverge.
+  const referenceDate = firstUp || created!;
   const ageDays = Math.floor((Date.now() - referenceDate.getTime()) / 86_400_000);
 
   // Derive dormancy if not passed in (and we have both dates)
@@ -56,22 +48,24 @@ export function ChannelAgeChip({ createdAt, firstUploadAt, earliestVideoAt, dorm
 
   const ageStr = formatAge(ageDays);
   const color = ageDays < 30 ? 'text-orange-400' : 'text-[#666]';
-
-  // When we inferred active age from earliestVideoAt (not first_upload_at),
-  // annotate subtly so the user knows it's a "≥ N" estimate.
-  if (!isAged && inferredFromEarliest) {
-    return (
-      <span className="relative group/age inline-flex items-center gap-1">
-        <span className={color}>📅 ≥{ageStr}</span>
-        <span className="pointer-events-none absolute left-0 top-full mt-1 w-60 p-2.5 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50">
-          Lower bound: we&apos;ve tracked a video from this channel {ageStr} ago. True first-upload hasn&apos;t been detected yet (channel is too large for a full walk).
-        </span>
-      </span>
-    );
-  }
+  const creationAgeDaysIfBoth = firstUp && created
+    ? Math.floor((Date.now() - created.getTime()) / 86_400_000)
+    : null;
 
   if (!isAged) {
-    // Ordinary chip — just the active age, no extra badge
+    // Ordinary chip. If we have both first_upload AND creation dates, show a
+    // hover tooltip revealing the creation date alongside the active age.
+    if (creationAgeDaysIfBoth != null) {
+      return (
+        <span className="relative group/age inline-flex items-center">
+          <span className={`${color} cursor-help`}>📅 {ageStr}</span>
+          <span className="pointer-events-none absolute left-0 top-full mt-1 w-56 p-2.5 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50">
+            <div>Active for <span className="text-white">{ageStr}</span> (first upload)</div>
+            <div>Created <span className="text-white">{formatAge(creationAgeDaysIfBoth)}</span></div>
+          </span>
+        </span>
+      );
+    }
     return <span className={color}>📅 {ageStr}</span>;
   }
 

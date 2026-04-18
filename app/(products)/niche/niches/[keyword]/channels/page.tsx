@@ -200,7 +200,6 @@ export default function NicheChannels() {
                     <ChannelAgeChip
                       createdAt={ch.channelCreatedAt}
                       firstUploadAt={ch.firstUploadAt}
-                      earliestVideoAt={ch.earliestVideoAt}
                       dormancyDays={ch.dormancyDays}
                     />
                   </span>
