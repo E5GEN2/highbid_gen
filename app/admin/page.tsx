@@ -68,7 +68,9 @@ export default function AdminPage() {
 
   // Poll embedding progress
   useEffect(() => {
-    if (adminSection !== 'niche') return;
+    // Both Niche Explorer + Enrich tabs render live-updating progress banners,
+    // so poll when either is active.
+    if (adminSection !== 'niche' && adminSection !== 'enrich') return;
     const fetchStats = () => {
       fetch('/api/niche-spy/embeddings').then(r => r.json()).then(setEmbeddingStats).catch(() => {});
       fetch('/api/niche-spy/enrich').then(r => r.json()).then(setNicheEnrichStats).catch(() => {});
