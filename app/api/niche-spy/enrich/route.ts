@@ -1,241 +1,357 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
-import { getProxy, getProxyStats } from '@/lib/xgodo-proxy';
+import { getProxyStats } from '@/lib/xgodo-proxy';
 import { ytFetchViaProxy } from '@/lib/yt-proxy-fetch';
+import { getYtPairForThread, getYtKeyStatus, banYtKey } from '@/lib/yt-keys';
+
+/**
+ * YouTube Data API enrichment — fire-and-forget parallel job.
+ *
+ * Mirrors the embedding pipeline (niche_spy_embedding_jobs): thread-pinned
+ * key+proxy pairs, ban-aware rotation, shared batch queue, detailed progress
+ * fields on the niche_yt_enrich_jobs row that the admin UI polls.
+ */
+
+const DEFAULT_BATCH_SIZE = 50;   // YT videos.list / channels.list cap is 50 IDs
+const DEFAULT_DELAY_MS = 500;
+const MAX_THREADS = 10;
 
 /**
  * POST /api/niche-spy/enrich
- * Fill missing data using YouTube Data API v3 via proxy.
- * Returns SSE stream with progress.
- * Body: { keyword?, limit? }
+ * Body: { keyword?, limit?, batchSize?, threads?, delayMs? }
+ * Starts a background job and returns immediately with the jobId.
  */
 export async function POST(req: NextRequest) {
   const pool = await getPool();
   const body = await req.json().catch(() => ({}));
-  const keyword = body.keyword;
-  const limit = Math.min(parseInt(body.limit) || 200, 500);
+  const keyword: string | null = body.keyword || null;
+  const limit = Math.min(parseInt(body.limit) || 2000, 10000);
+  const batchSize = Math.min(Math.max(parseInt(body.batchSize) || DEFAULT_BATCH_SIZE, 1), 50);
+  const threads = Math.min(Math.max(parseInt(body.threads) || 1, 1), MAX_THREADS);
+  const delayMs = parseInt(body.delayMs) || DEFAULT_DELAY_MS;
 
-  // Get YouTube API keys — try niche_yt_api_keys first, fallback to youtube_api_key
+  // Need at least one YT API key configured
   const multiKeyRes = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_yt_api_keys'");
   const singleKeyRes = await pool.query("SELECT value FROM admin_config WHERE key = 'youtube_api_key'");
-  const ytApiKeys = (multiKeyRes.rows[0]?.value || '').split('\n').map((k: string) => k.trim()).filter((k: string) => k.length > 10);
+  const ytApiKeys = (multiKeyRes.rows[0]?.value || '')
+    .split('\n').map((k: string) => k.trim()).filter((k: string) => k.length > 10);
   if (ytApiKeys.length === 0 && singleKeyRes.rows[0]?.value) ytApiKeys.push(singleKeyRes.rows[0].value);
   if (ytApiKeys.length === 0) {
     return NextResponse.json({ error: 'No YouTube API keys configured. Add them in Admin > Niche Explorer.' }, { status: 500 });
   }
-  let ytKeyIdx = 0;
-  const getYtKey = () => { const k = ytApiKeys[ytKeyIdx % ytApiKeys.length]; ytKeyIdx++; return k; };
 
-  const proxy = await getProxy();
-  const proxyStats = await getProxyStats();
+  // Single-flight: refuse if another enrich job is already running
+  const running = await pool.query(
+    `SELECT id, keyword FROM niche_yt_enrich_jobs WHERE status = 'running' LIMIT 1`
+  );
+  if (running.rows.length > 0) {
+    return NextResponse.json({
+      ok: true, status: 'already-running',
+      jobId: running.rows[0].id,
+      runningKeyword: running.rows[0].keyword,
+    });
+  }
 
-  // Find videos needing enrichment:
-  // - missing subs/likes/comments/date
-  // - OR never enriched (relative dates only, no exact publishedAt)
-  const conditions = [
+  // Count how many rows will actually be enriched so totals are real on job start
+  const conditions: string[] = [
     '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
   ];
   const params: (string | number)[] = [];
   let idx = 1;
-
-  if (keyword && keyword !== 'all') {
-    conditions.push(`keyword = $${idx}`);
-    params.push(keyword);
-    idx++;
+  if (keyword && keyword !== 'all') { conditions.push(`keyword = $${idx++}`); params.push(keyword); }
+  params.push(limit);
+  const cntRes = await pool.query(
+    `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE ${conditions.join(' AND ')} LIMIT $${idx}`,
+    params
+  );
+  const totalNeeded = Math.min(parseInt(cntRes.rows[0].cnt), limit);
+  if (totalNeeded === 0) {
+    return NextResponse.json({ ok: true, status: 'done', message: 'No videos need enrichment' });
   }
 
-  params.push(limit);
+  const totalBatches = Math.ceil(totalNeeded / batchSize);
+  const jobRes = await pool.query(
+    `INSERT INTO niche_yt_enrich_jobs (status, keyword, threads, total_needed, total_batches, error_message)
+     VALUES ('running', $1, $2, $3, $4, $5) RETURNING id`,
+    [keyword, threads, totalNeeded, totalBatches, `threads=${threads} · batch=${batchSize} · starting`]
+  );
+  const jobId = jobRes.rows[0].id;
 
+  // Fire-and-forget — run the job in the background
+  runEnrichJob(jobId, keyword, limit, batchSize, threads, delayMs).catch(async (err) => {
+    await pool.query(
+      `UPDATE niche_yt_enrich_jobs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
+      [(err as Error).message?.substring(0, 500), jobId]
+    );
+  });
+
+  return NextResponse.json({ ok: true, status: 'started', jobId, totalNeeded, totalBatches, threads });
+}
+
+async function runEnrichJob(
+  jobId: number,
+  keyword: string | null,
+  limit: number,
+  batchSize: number,
+  threads: number,
+  delayMs: number,
+) {
+  const pool = await getPool();
+
+  // Load the rows that need enrichment, ordered by score
+  const conditions: string[] = [
+    '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
+  ];
+  const params: (string | number)[] = [];
+  let idx = 1;
+  if (keyword && keyword !== 'all') { conditions.push(`keyword = $${idx++}`); params.push(keyword); }
+  params.push(limit);
   const videosRes = await pool.query(
     `SELECT id, url, channel_name FROM niche_spy_videos
      WHERE ${conditions.join(' AND ')} ORDER BY score DESC NULLS LAST LIMIT $${idx}`,
     params
   );
 
-  if (videosRes.rows.length === 0) {
-    return NextResponse.json({ status: 'done', message: 'No videos need enrichment', enriched: 0, proxyStats });
+  // Extract YT IDs
+  const videoMap = new Map<string, { dbId: number; url: string; channelName: string }>();
+  for (const row of videosRes.rows) {
+    const match = row.url?.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
+    if (match) videoMap.set(match[1], { dbId: row.id, url: row.url, channelName: row.channel_name });
   }
 
-  // SSE stream
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      let closed = false;
-      const send = (data: Record<string, unknown>) => {
-        if (closed) return;
-        try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); }
-        catch { closed = true; }
-      };
+  const allIds = Array.from(videoMap.keys());
+  const totalBatches = Math.ceil(allIds.length / batchSize);
 
-      try {
-        // Extract video IDs
-        const videoMap = new Map<string, { dbId: number; url: string; channelName: string }>();
-        for (const row of videosRes.rows) {
-          const match = row.url?.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
-          if (match) videoMap.set(match[1], { dbId: row.id, url: row.url, channelName: row.channel_name });
+  // Pack into a shared batch queue
+  const batches: Array<{ batchNum: number; ids: string[] }> = [];
+  for (let i = 0; i < allIds.length; i += batchSize) {
+    batches.push({ batchNum: batches.length + 1, ids: allIds.slice(i, i + batchSize) });
+  }
+  let batchIdx = 0;   // shared counter, JS is single-threaded so ++ is atomic
+
+  // Accumulators — updated atomically since we're single-threaded
+  let globalProcessed = 0;
+  let globalErrors = 0;
+  let enrichedVideos = 0;
+  let batchesDone = 0;
+
+  // channelId → Set<dbId> — collected from video responses; used to fill subs
+  const channelIds = new Map<string, Set<number>>();
+
+  async function isCancelled(): Promise<boolean> {
+    try {
+      const r = await pool.query(`SELECT status FROM niche_yt_enrich_jobs WHERE id = $1`, [jobId]);
+      const s = r.rows[0]?.status;
+      return s === 'cancelled' || s === 'error';
+    } catch { return false; }
+  }
+
+  async function logProgress(msg: string) {
+    await pool.query(
+      `UPDATE niche_yt_enrich_jobs
+          SET current_batch = $1, total_batches = $2, processed = $3, errors = $4,
+              enriched_videos = $5, error_message = $6
+        WHERE id = $7`,
+      [batchesDone, totalBatches, globalProcessed, globalErrors, enrichedVideos, msg, jobId]
+    ).catch(() => {});
+  }
+
+  /** One video-list worker: pulls batches from the shared queue, hits YT videos.list. */
+  async function videoWorker(threadId: number) {
+    console.log(`[yt-enrich] T${threadId} starting — ${batches.length} video batches`);
+    while (true) {
+      if (await isCancelled()) { console.log(`[yt-enrich] T${threadId} aborting — cancelled`); break; }
+      const myIdx = batchIdx++;
+      if (myIdx >= batches.length) break;
+      const { batchNum, ids } = batches[myIdx];
+
+      let success = false;
+      for (let attempt = 0; attempt < 3 && !success; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt));
+        const pair = await getYtPairForThread(threadId - 1);
+        if (!pair) { globalErrors++; break; }
+
+        const ytUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${ids.join(',')}&key=${pair.key}`;
+        const t0 = Date.now();
+        const res = await ytFetchViaProxy(ytUrl, pair);
+        const elapsed = Date.now() - t0;
+
+        if (!res.ok) {
+          const errMsg = (res.error || '').substring(0, 160);
+          console.log(`[yt-enrich] T${threadId} batch ${batchNum} attempt ${attempt + 1}: YT ${res.status} ${errMsg}`);
+          // Handle rate-limit & quota categories same way as embedding side
+          const is429 = res.status === 429 || /quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(errMsg);
+          const is403 = res.status === 403;
+          const isProxy = res.status === 0 || /curl exit|Connection refused|Tunnel|socket/i.test(errMsg);
+          if (is429 || is403) banYtKey(pair.key);
+          if (attempt === 2) {
+            globalErrors++;
+            const label = is429 ? 'RATE-LIMITED' : is403 ? 'AUTH DENIED' : isProxy ? 'PROXY ERROR' : 'ERROR';
+            await logProgress(`T${threadId} video batch ${batchNum}: ${label} — YT ${res.status} ${errMsg}`);
+          }
+          continue;
         }
 
-        const allIds = Array.from(videoMap.keys());
-        send({ step: 'start', total: allIds.length, proxy: proxy?.deviceId || 'none' });
+        interface YtVideoItem {
+          id: string;
+          snippet?: { title?: string; channelTitle?: string; publishedAt?: string; channelId?: string;
+            thumbnails?: { high?: { url?: string }; medium?: { url?: string } } };
+          statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
+        }
+        const ytData = res.data as { items?: YtVideoItem[] } | null;
+        const items = ytData?.items || [];
+        let wroteInBatch = 0;
+        for (const item of items) {
+          const dbEntry = videoMap.get(item.id);
+          if (!dbEntry) continue;
+          const snippet = item.snippet || {};
+          const stats = item.statistics || {};
+          const publishedAt = snippet.publishedAt ? new Date(snippet.publishedAt) : null;
+          const channelId = snippet.channelId;
+          if (channelId) {
+            if (!channelIds.has(channelId)) channelIds.set(channelId, new Set());
+            channelIds.get(channelId)!.add(dbEntry.dbId);
+          }
+          await pool.query(
+            `UPDATE niche_spy_videos SET
+              enriched_at = NOW(),
+              title = COALESCE(NULLIF(title, ''), $1),
+              channel_name = COALESCE(NULLIF(channel_name, ''), $2),
+              posted_at = COALESCE($3, posted_at),
+              view_count = CASE WHEN $4 > 0 THEN $4 ELSE view_count END,
+              like_count = CASE WHEN $5 > 0 THEN $5 ELSE like_count END,
+              comment_count = CASE WHEN $6 > 0 THEN $6 ELSE comment_count END,
+              thumbnail = COALESCE(NULLIF(thumbnail, ''), $7),
+              channel_id = COALESCE(channel_id, $9)
+            WHERE id = $8`,
+            [
+              snippet.title || '',
+              snippet.channelTitle || '',
+              publishedAt,
+              parseInt(stats.viewCount || '0') || 0,
+              parseInt(stats.likeCount || '0') || 0,
+              parseInt(stats.commentCount || '0') || 0,
+              snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || '',
+              dbEntry.dbId,
+              channelId || null,
+            ]
+          );
+          enrichedVideos++;
+          wroteInBatch++;
+        }
+        globalProcessed += ids.length;
+        success = true;
+        console.log(`[yt-enrich] T${threadId} batch ${batchNum}: ${wroteInBatch}/${ids.length} items written in ${elapsed}ms`);
+      }
 
-        // Step 1: Fetch video details (views, likes, comments, exact date, channelId)
-        let enrichedVideos = 0;
-        let errors = 0;
-        const channelIds = new Map<string, Set<number>>(); // channelId → Set of DB video IDs
+      batchesDone++;
+      await logProgress(`T${threadId} · ${threads} threads · video batch ${batchesDone}/${totalBatches}`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
 
-        for (let i = 0; i < allIds.length; i += 50) {
-          const batch = allIds.slice(i, i + 50);
-          const batchNum = Math.floor(i / 50) + 1;
-          const totalBatches = Math.ceil(allIds.length / 50);
+  // Launch video workers
+  console.log(`[yt-enrich] job=${jobId} starting ${threads} video workers for ${batches.length} batches`);
+  const videoWorkers = Array.from({ length: Math.min(threads, batches.length) }, (_, i) => videoWorker(i + 1));
+  await Promise.all(videoWorkers);
 
-          send({ step: 'videos', batch: batchNum, total: totalBatches, percent: Math.round((i / allIds.length) * 60) });
+  // --- Phase 2: channel subscriber lookup (same pattern) ---
+  let enrichedChannels = 0;
+  const uniqueChannelIds = Array.from(channelIds.keys());
+  if (uniqueChannelIds.length > 0 && !(await isCancelled())) {
+    const chBatches: Array<{ batchNum: number; ids: string[] }> = [];
+    for (let i = 0; i < uniqueChannelIds.length; i += batchSize) {
+      chBatches.push({ batchNum: chBatches.length + 1, ids: uniqueChannelIds.slice(i, i + batchSize) });
+    }
+    let chBatchIdx = 0;
+    const totalChBatches = chBatches.length;
 
-          try {
-            const ytUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${batch.join(',')}&key=${getYtKey()}`;
-            const ytRes = await ytFetchViaProxy(ytUrl);
+    async function channelWorker(threadId: number) {
+      while (true) {
+        if (await isCancelled()) break;
+        const myIdx = chBatchIdx++;
+        if (myIdx >= chBatches.length) break;
+        const { batchNum, ids } = chBatches[myIdx];
 
-            if (!ytRes.ok) {
-              send({ step: 'videos', error: `YT API ${ytRes.status}: ${(ytRes.error || '').substring(0, 80)}`, proxy: ytRes.proxyUsed });
-              errors++;
-              continue;
+        let success = false;
+        for (let attempt = 0; attempt < 3 && !success; attempt++) {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt));
+          const pair = await getYtPairForThread(threadId - 1);
+          if (!pair) { globalErrors++; break; }
+
+          const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${ids.join(',')}&key=${pair.key}`;
+          const res = await ytFetchViaProxy(chUrl, pair);
+          if (!res.ok) {
+            const errMsg = (res.error || '').substring(0, 160);
+            const is429 = res.status === 429 || /quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(errMsg);
+            const is403 = res.status === 403;
+            if (is429 || is403) banYtKey(pair.key);
+            if (attempt === 2) {
+              globalErrors++;
+              await logProgress(`T${threadId} channel batch ${batchNum}: YT ${res.status} ${errMsg}`);
             }
+            continue;
+          }
 
-            interface YtVideoItem {
-              id: string;
-              snippet?: { title?: string; channelTitle?: string; publishedAt?: string; channelId?: string; thumbnails?: { high?: { url?: string }; medium?: { url?: string } } };
-              statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
-            }
-            const ytData = ytRes.data as { items?: YtVideoItem[] } | null;
-            for (const item of ytData?.items || []) {
-              const dbEntry = videoMap.get(item.id);
-              if (!dbEntry) continue;
-
-              const snippet = item.snippet || {};
-              const stats = item.statistics || {};
-              const publishedAt = snippet.publishedAt ? new Date(snippet.publishedAt) : null;
-              const channelId = snippet.channelId;
-
-              // Track channelId → video DB IDs for subscriber lookup
-              if (channelId) {
-                if (!channelIds.has(channelId)) channelIds.set(channelId, new Set());
-                channelIds.get(channelId)!.add(dbEntry.dbId);
-              }
-
+          interface YtChannelItem {
+            id: string;
+            snippet?: { publishedAt?: string; thumbnails?: { default?: { url?: string }; medium?: { url?: string } } };
+            statistics?: { subscriberCount?: string };
+          }
+          const chData = res.data as { items?: YtChannelItem[] } | null;
+          for (const ch of chData?.items || []) {
+            const subCount = parseInt(ch.statistics?.subscriberCount || '0') || 0;
+            const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
+            const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
+            const videoIds = channelIds.get(ch.id);
+            if (!videoIds) continue;
+            for (const dbId of videoIds) {
               await pool.query(
                 `UPDATE niche_spy_videos SET
-                  enriched_at = NOW(),
-                  title = COALESCE(NULLIF(title, ''), $1),
-                  channel_name = COALESCE(NULLIF(channel_name, ''), $2),
-                  posted_at = COALESCE($3, posted_at),
-                  view_count = CASE WHEN $4 > 0 THEN $4 ELSE view_count END,
-                  like_count = CASE WHEN $5 > 0 THEN $5 ELSE like_count END,
-                  comment_count = CASE WHEN $6 > 0 THEN $6 ELSE comment_count END,
-                  thumbnail = COALESCE(NULLIF(thumbnail, ''), $7),
-                  channel_id = COALESCE(channel_id, $9)
-                WHERE id = $8`,
-                [
-                  snippet.title || '',
-                  snippet.channelTitle || '',
-                  publishedAt,
-                  parseInt(stats.viewCount || '0') || 0,
-                  parseInt(stats.likeCount || '0') || 0,
-                  parseInt(stats.commentCount || '0') || 0,
-                  snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || '',
-                  dbEntry.dbId,
-                  channelId || null,
-                ]
+                  subscriber_count = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
+                  channel_created_at = COALESCE($2, channel_created_at),
+                  channel_avatar = COALESCE(NULLIF($4, ''), channel_avatar)
+                WHERE id = $3`,
+                [subCount, channelCreatedAt, dbId, avatar]
               );
-              enrichedVideos++;
             }
-          } catch (err) {
-            send({ step: 'videos', error: (err as Error).message?.substring(0, 80) });
-            errors++;
+            if (subCount > 0 || channelCreatedAt) enrichedChannels++;
           }
+          success = true;
         }
 
-        send({ step: 'videos', done: true, enriched: enrichedVideos, errors });
-
-        // Step 2: Fetch channel subscriber counts
-        const uniqueChannelIds = Array.from(channelIds.keys());
-        let enrichedChannels = 0;
-
-        if (uniqueChannelIds.length > 0) {
-          send({ step: 'channels', total: uniqueChannelIds.length, percent: 60 });
-
-          for (let i = 0; i < uniqueChannelIds.length; i += 50) {
-            const batch = uniqueChannelIds.slice(i, i + 50);
-            const batchNum = Math.floor(i / 50) + 1;
-            const totalBatches = Math.ceil(uniqueChannelIds.length / 50);
-
-            send({ step: 'channels', batch: batchNum, total: totalBatches, percent: 60 + Math.round((i / uniqueChannelIds.length) * 40) });
-
-            try {
-              const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${batch.join(',')}&key=${getYtKey()}`;
-              const chRes = await ytFetchViaProxy(chUrl);
-
-              if (!chRes.ok) {
-                send({ step: 'channels', error: `YT API ${chRes.status}: ${(chRes.error || '').substring(0, 80)}`, proxy: chRes.proxyUsed });
-                continue;
-              }
-
-              interface YtChannelItem {
-                id: string;
-                snippet?: { publishedAt?: string; thumbnails?: { default?: { url?: string }; medium?: { url?: string } } };
-                statistics?: { subscriberCount?: string };
-              }
-              const chData = chRes.data as { items?: YtChannelItem[] } | null;
-              for (const ch of chData?.items || []) {
-                const subCount = parseInt(ch.statistics?.subscriberCount || '0') || 0;
-                const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
-                const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
-
-                const videoIds = channelIds.get(ch.id);
-                if (!videoIds) continue;
-
-                for (const dbId of videoIds) {
-                  await pool.query(
-                    `UPDATE niche_spy_videos SET
-                      subscriber_count = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
-                      channel_created_at = COALESCE($2, channel_created_at),
-                      channel_avatar = COALESCE(NULLIF($4, ''), channel_avatar)
-                    WHERE id = $3`,
-                    [subCount, channelCreatedAt, dbId, avatar]
-                  );
-                }
-                if (subCount > 0 || channelCreatedAt) enrichedChannels++;
-              }
-            } catch (err) {
-              send({ step: 'channels', error: (err as Error).message?.substring(0, 80) });
-            }
-          }
-
-          send({ step: 'channels', done: true, enriched: enrichedChannels });
-        }
-
-        send({
-          step: 'complete',
-          enrichedVideos,
-          enrichedChannels,
-          errors,
-          proxy: proxy?.deviceId || 'none',
-          proxyStats,
-        });
-      } catch (err) {
-        send({ step: 'error', error: (err as Error).message });
-      } finally {
-        if (!closed) try { controller.close(); } catch { /* */ }
+        await pool.query(
+          `UPDATE niche_yt_enrich_jobs SET enriched_channels = $1, error_message = $2 WHERE id = $3`,
+          [enrichedChannels, `T${threadId} · channel batch ${batchNum}/${totalChBatches}`, jobId]
+        ).catch(() => {});
+        await new Promise(r => setTimeout(r, delayMs));
       }
-    },
-  });
+    }
 
-  return new Response(stream, {
-    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
-  });
+    console.log(`[yt-enrich] job=${jobId} starting ${threads} channel workers for ${chBatches.length} batches`);
+    const chWorkers = Array.from({ length: Math.min(threads, chBatches.length) }, (_, i) => channelWorker(i + 1));
+    await Promise.all(chWorkers);
+  }
+
+  // Final status
+  await pool.query(
+    `UPDATE niche_yt_enrich_jobs
+        SET status = CASE WHEN status = 'cancelled' THEN 'cancelled'
+                          WHEN $1 > 0 THEN 'partial'
+                          ELSE 'done' END,
+            processed = $2, errors = $1,
+            enriched_videos = $3, enriched_channels = $4,
+            completed_at = NOW(),
+            error_message = $5
+      WHERE id = $6`,
+    [globalErrors, globalProcessed, enrichedVideos, enrichedChannels,
+     `Done: ${enrichedVideos} videos, ${enrichedChannels} channels, ${globalErrors} errors, ${threads} threads`, jobId]
+  );
 }
 
 /**
  * GET /api/niche-spy/enrich?keyword=X
- * Check how many videos need enrichment.
+ * Returns counts + current job progress + key + proxy status.
  */
 export async function GET(req: NextRequest) {
   const pool = await getPool();
@@ -245,23 +361,38 @@ export async function GET(req: NextRequest) {
     '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
   ];
   const params: string[] = [];
-  if (keyword && keyword !== 'all') {
-    conditions.push(`keyword = $1`);
-    params.push(keyword);
-  }
+  if (keyword && keyword !== 'all') { conditions.push(`keyword = $1`); params.push(keyword); }
 
-  const res = await pool.query(
-    `SELECT COUNT(*) as need_enrichment,
-            COUNT(*) FILTER (WHERE enriched_at IS NULL) as never_enriched,
-            COUNT(*) FILTER (WHERE like_count IS NULL OR like_count = 0) as missing_likes,
-            COUNT(*) FILTER (WHERE subscriber_count IS NULL OR subscriber_count = 0) as missing_subs,
-            COUNT(*) FILTER (WHERE posted_at IS NULL) as missing_date
-     FROM niche_spy_videos WHERE ${conditions.join(' AND ')}`,
-    params
+  const [statsRes, proxyStats, jobRes, keyStatus] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*) as need_enrichment,
+              COUNT(*) FILTER (WHERE enriched_at IS NULL) as never_enriched,
+              COUNT(*) FILTER (WHERE like_count IS NULL OR like_count = 0) as missing_likes,
+              COUNT(*) FILTER (WHERE subscriber_count IS NULL OR subscriber_count = 0) as missing_subs,
+              COUNT(*) FILTER (WHERE posted_at IS NULL) as missing_date
+       FROM niche_spy_videos WHERE ${conditions.join(' AND ')}`,
+      params
+    ),
+    getProxyStats(),
+    pool.query(`SELECT * FROM niche_yt_enrich_jobs ORDER BY started_at DESC LIMIT 1`),
+    getYtKeyStatus(),
+  ]);
+
+  return NextResponse.json({
+    ...statsRes.rows[0],
+    proxyStats,
+    job: jobRes.rows[0] || null,
+    keys: keyStatus,
+  });
+}
+
+/** DELETE — cancel the currently running enrich job. */
+export async function DELETE() {
+  const pool = await getPool();
+  await pool.query(
+    `UPDATE niche_yt_enrich_jobs SET status = 'cancelled', completed_at = NOW() WHERE status = 'running'`
   );
-
-  const proxyStats = await getProxyStats();
-  return NextResponse.json({ ...res.rows[0], proxyStats });
+  return NextResponse.json({ ok: true });
 }
 
 export const maxDuration = 120;

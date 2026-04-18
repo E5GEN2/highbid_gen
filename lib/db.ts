@@ -468,6 +468,28 @@ export async function initSchema(): Promise<void> {
     // "you clicked Thumbnail but there's already a Title v2 job running".
     await client.query(`ALTER TABLE niche_spy_embedding_jobs ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
 
+    // YT Data API enrichment jobs — mirrors niche_spy_embedding_jobs so the
+    // admin UI can render the same progress treatment for both pipelines.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_yt_enrich_jobs (
+        id SERIAL PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'running',
+        keyword TEXT,
+        threads INTEGER DEFAULT 1,
+        total_needed INTEGER DEFAULT 0,
+        processed INTEGER DEFAULT 0,
+        errors INTEGER DEFAULT 0,
+        current_batch INTEGER DEFAULT 0,
+        total_batches INTEGER DEFAULT 0,
+        enriched_videos INTEGER DEFAULT 0,
+        enriched_channels INTEGER DEFAULT 0,
+        error_message TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nyej_status ON niche_yt_enrich_jobs(status, started_at DESC)`).catch(() => {});
+
     // Embedding job progress (survives page reload)
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_spy_embedding_jobs (

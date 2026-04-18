@@ -111,8 +111,19 @@ export default function AdminPage() {
   const [nicheEnrichStats, setNicheEnrichStats] = useState<{
     need_enrichment: string; never_enriched: string; missing_likes: string; missing_subs: string;
     proxyStats: { total: number; online: number };
+    job: {
+      id: number; status: string; keyword: string | null; threads: number;
+      total_needed: number; processed: number; errors: number;
+      current_batch: number; total_batches: number;
+      enriched_videos: number; enriched_channels: number;
+      error_message: string | null; started_at: string; completed_at: string | null;
+    } | null;
+    keys?: Array<{ key: string; proxy: string; banned: boolean; banExpiresIn: number | null }>;
   } | null>(null);
-  const [nicheEnrichRunning, setNicheEnrichRunning] = useState(false);
+  const [enrichThreads, setEnrichThreads] = useState(2);
+  const [enrichBatchSize, setEnrichBatchSize] = useState(50);
+  const [enrichLimit, setEnrichLimit] = useState(2000);
+  // Legacy/compat — kept so other places that reference nicheThreads still compile
   const [nicheThreads, setNicheThreads] = useState(2);
 
   // Config state
@@ -1725,6 +1736,7 @@ export default function AdminPage() {
 
             {nicheEnrichStats && (
               <div className="space-y-4">
+                {/* Stats grid */}
                 <div className="grid grid-cols-4 gap-3">
                   <div className="bg-gray-900/50 rounded-lg p-3 text-center">
                     <div className="text-2xl font-bold text-yellow-400">{parseInt(nicheEnrichStats.need_enrichment).toLocaleString()}</div>
@@ -1744,28 +1756,148 @@ export default function AdminPage() {
                   </div>
                 </div>
 
-                <div className="flex gap-3 items-center">
+                {/* Current job status (mirrors the embedding job banner) */}
+                {nicheEnrichStats.job && (
+                  <div className={`border rounded-lg px-4 py-3 ${
+                    nicheEnrichStats.job.status === 'running'   ? 'bg-blue-900/20 border-blue-600/40' :
+                    nicheEnrichStats.job.status === 'done'      ? 'bg-green-900/20 border-green-600/40' :
+                    nicheEnrichStats.job.status === 'cancelled' ? 'bg-yellow-900/20 border-yellow-600/40' :
+                    nicheEnrichStats.job.status === 'error'     ? 'bg-red-900/20 border-red-600/40' :
+                    'bg-gray-900/20 border-gray-700'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      {nicheEnrichStats.job.status === 'running' && (
+                        <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                      )}
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-white">
+                            {nicheEnrichStats.job.keyword && (
+                              <span className="inline-block px-2 py-0.5 text-[10px] uppercase tracking-wider rounded mr-2 bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                                {nicheEnrichStats.job.keyword}
+                              </span>
+                            )}
+                            <span className="inline-block px-2 py-0.5 text-[10px] uppercase tracking-wider rounded mr-2 bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              {nicheEnrichStats.job.threads}× threads
+                            </span>
+                            {nicheEnrichStats.job.status === 'running' ? `Batch ${nicheEnrichStats.job.current_batch}/${nicheEnrichStats.job.total_batches}` :
+                             nicheEnrichStats.job.status === 'done' ? 'Complete' :
+                             nicheEnrichStats.job.status === 'cancelled' ? 'Cancelled' :
+                             nicheEnrichStats.job.status === 'error' ? 'Error' :
+                             nicheEnrichStats.job.status}
+                          </span>
+                          <span className="text-xs text-gray-400">
+                            {nicheEnrichStats.job.enriched_videos} videos · {nicheEnrichStats.job.enriched_channels} channels
+                            {nicheEnrichStats.job.errors > 0 && ` · ${nicheEnrichStats.job.errors} errors`}
+                          </span>
+                        </div>
+                        {nicheEnrichStats.job.status === 'running' && nicheEnrichStats.job.total_batches > 0 && (
+                          <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden mt-2">
+                            <div className="h-full bg-blue-500 rounded-full transition-all"
+                              style={{ width: `${(nicheEnrichStats.job.current_batch / nicheEnrichStats.job.total_batches) * 100}%` }} />
+                          </div>
+                        )}
+                        {nicheEnrichStats.job.error_message && (
+                          <p className="text-xs text-yellow-400 mt-1 truncate">{nicheEnrichStats.job.error_message}</p>
+                        )}
+                        <p className="text-[10px] text-gray-500 mt-1">
+                          Started: {new Date(nicheEnrichStats.job.started_at).toLocaleString()}
+                          {nicheEnrichStats.job.completed_at && ` · Completed: ${new Date(nicheEnrichStats.job.completed_at).toLocaleString()}`}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Controls */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Batch</label>
+                    <select value={enrichBatchSize} onChange={e => setEnrichBatchSize(parseInt(e.target.value))}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Limit</label>
+                    <select value={enrichLimit} onChange={e => setEnrichLimit(parseInt(e.target.value))}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                      <option value={100}>100</option>
+                      <option value={500}>500</option>
+                      <option value={1000}>1K</option>
+                      <option value={2000}>2K</option>
+                      <option value={5000}>5K</option>
+                      <option value={10000}>10K</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400">Threads</label>
+                    <select value={enrichThreads} onChange={e => setEnrichThreads(parseInt(e.target.value))}
+                      className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                      <option value={3}>3</option>
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                    </select>
+                  </div>
                   <button
                     onClick={async () => {
-                      setNicheEnrichRunning(true);
-                      try {
-                        const res = await fetch('/api/niche-spy/enrich', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ limit: 500 }),
-                        });
-                        const reader = res.body?.getReader();
-                        if (reader) { while (!(await reader.read()).done) {} }
-                      } catch { /* ignore */ }
-                      setNicheEnrichRunning(false);
+                      const res = await fetch('/api/niche-spy/enrich', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ limit: enrichLimit, batchSize: enrichBatchSize, threads: enrichThreads }),
+                      });
+                      if (!res.ok) {
+                        const d = await res.json().catch(() => ({}));
+                        alert(d.error || d.message || `Failed: ${res.status}`);
+                      }
                     }}
-                    disabled={nicheEnrichRunning}
+                    disabled={nicheEnrichStats.job?.status === 'running'}
                     className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition"
                   >
-                    {nicheEnrichRunning ? 'Enriching...' : 'Enrich Data'}
+                    {nicheEnrichStats.job?.status === 'running' ? 'Running...' : 'Enrich Data'}
                   </button>
-                  <span className="text-xs text-gray-500">Fills views, likes, subs, exact dates, channel age via YT Data API + proxies</span>
+                  {nicheEnrichStats.job?.status === 'running' && (
+                    <button
+                      onClick={async () => { await fetch('/api/niche-spy/enrich', { method: 'DELETE' }); }}
+                      className="px-5 py-2.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-500">Parallel YT Data API enrichment (views, likes, subs, dates, channel age) via proxies</span>
                 </div>
+
+                {/* Key status — per-key ban + proxy pairing */}
+                {nicheEnrichStats.keys && nicheEnrichStats.keys.length > 0 && (
+                  <div className="bg-gray-900/50 rounded-lg p-3">
+                    <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-2">YT API Keys</h4>
+                    <div className="space-y-1.5">
+                      {nicheEnrichStats.keys.map((k, i) => (
+                        <div key={i} className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-gray-300">{k.key}</span>
+                            <span className="text-blue-400 font-mono">→ {k.proxy}</span>
+                          </div>
+                          {k.banned ? (
+                            <span className="text-red-400 flex items-center gap-1">
+                              <span className="w-2 h-2 bg-red-500 rounded-full" />
+                              banned ({k.banExpiresIn}s)
+                            </span>
+                          ) : (
+                            <span className="text-green-400 flex items-center gap-1">
+                              <span className="w-2 h-2 bg-green-500 rounded-full" />
+                              active
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

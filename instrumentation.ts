@@ -138,8 +138,20 @@ export async function register() {
       if (r.rowCount && r.rowCount > 0) {
         console.log(`[boot] Marked ${r.rowCount} orphaned embedding job(s) as error`);
       }
+      // Same treatment for YT enrich jobs
+      const r2 = await pool.query(
+        `UPDATE niche_yt_enrich_jobs
+            SET status = 'error',
+                error_message = 'Orphaned: server restarted before job finished',
+                completed_at = NOW()
+          WHERE status = 'running' AND started_at < NOW() - INTERVAL '3 minutes'
+          RETURNING id`
+      );
+      if (r2.rowCount && r2.rowCount > 0) {
+        console.log(`[boot] Marked ${r2.rowCount} orphaned enrich job(s) as error`);
+      }
     } catch (err) {
-      console.error('[boot] Failed to cleanup orphaned embedding jobs:', (err as Error).message);
+      console.error('[boot] Failed to cleanup orphaned jobs:', (err as Error).message);
     }
 
     // Cleanup on process exit
