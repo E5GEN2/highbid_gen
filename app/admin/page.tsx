@@ -112,6 +112,18 @@ export default function AdminPage() {
   const [nicheYtApiKeys, setNicheYtApiKeys] = useState('');
   const [nicheEnrichStats, setNicheEnrichStats] = useState<{
     need_enrichment: string; never_enriched: string; missing_likes: string; missing_subs: string;
+    // New granular per-data-point breakdown. Each number ticks down live as the
+    // enrichment walks Phase 1 (videos.list), Phase 2 (channels.list), Phase 3
+    // (uploads playlist walk for first_upload_at).
+    videos?: {
+      total: number; neverEnriched: number; missingViews: number; missingLikes: number;
+      missingComments: number; missingPostedAt: number; missingThumbnail: number; missingChannelId: number;
+    };
+    channels?: {
+      total: number; missingRow: number; missingSubs: number; missingCreatedAt: number;
+      missingPlaylistId: number; missingHandle: number; missingVideoCount: number;
+      missingFirstUpload: number; tooBigForWalk: number;
+    };
     proxyStats: { total: number; online: number };
     job: {
       id: number; status: string; keyword: string | null; threads: number;
@@ -1748,25 +1760,72 @@ export default function AdminPage() {
 
             {nicheEnrichStats && (
               <div className="space-y-4">
-                {/* Stats grid */}
-                <div className="grid grid-cols-4 gap-3">
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-yellow-400">{parseInt(nicheEnrichStats.need_enrichment).toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Need Enrichment</div>
+                {/* Per-data-point indicators — each number shows how many rows
+                    still need that specific field enriched. Ticks down live via
+                    the 3s poll in the useEffect above as each phase walks. */}
+                {nicheEnrichStats.videos && nicheEnrichStats.channels && (
+                  <div className="space-y-3">
+                    {/* Videos row — Phase 1 fields */}
+                    <div>
+                      <div className="text-[11px] text-gray-400 mb-1.5 uppercase tracking-wider">
+                        Videos <span className="text-gray-200 normal-case">· {nicheEnrichStats.videos.total.toLocaleString()} total</span>
+                      </div>
+                      <div className="grid grid-cols-4 md:grid-cols-7 gap-2">
+                        {([
+                          ['Never enriched',  nicheEnrichStats.videos.neverEnriched,    'text-orange-400'],
+                          ['Views',           nicheEnrichStats.videos.missingViews,     'text-red-400'],
+                          ['Likes',           nicheEnrichStats.videos.missingLikes,     'text-yellow-400'],
+                          ['Comments',        nicheEnrichStats.videos.missingComments,  'text-yellow-400'],
+                          ['Posted at',       nicheEnrichStats.videos.missingPostedAt,  'text-yellow-400'],
+                          ['Thumbnail',       nicheEnrichStats.videos.missingThumbnail, 'text-yellow-400'],
+                          ['Channel ID',      nicheEnrichStats.videos.missingChannelId, 'text-red-400'],
+                        ] as Array<[string, number, string]>).map(([label, value, color]) => (
+                          <div key={label} className="bg-gray-900/50 rounded-lg p-2 text-center">
+                            <div className={`text-xl font-bold ${value === 0 ? 'text-gray-600' : color}`}>
+                              {value.toLocaleString()}
+                            </div>
+                            <div className="text-[10px] text-gray-500">{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Channels row — Phase 2 + Phase 3 fields */}
+                    <div>
+                      <div className="text-[11px] text-gray-400 mb-1.5 uppercase tracking-wider">
+                        Channels <span className="text-gray-200 normal-case">· {nicheEnrichStats.channels.total.toLocaleString()} total</span>
+                      </div>
+                      <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+                        {([
+                          ['No row',         nicheEnrichStats.channels.missingRow,         'text-red-400'],
+                          ['Subs',           nicheEnrichStats.channels.missingSubs,        'text-red-400'],
+                          ['Created at',     nicheEnrichStats.channels.missingCreatedAt,   'text-yellow-400'],
+                          ['Handle',         nicheEnrichStats.channels.missingHandle,      'text-yellow-400'],
+                          ['Playlist ID',    nicheEnrichStats.channels.missingPlaylistId,  'text-yellow-400'],
+                          ['Video count',    nicheEnrichStats.channels.missingVideoCount,  'text-yellow-400'],
+                          ['First upload',   nicheEnrichStats.channels.missingFirstUpload, 'text-amber-400'],
+                          // tooBigForWalk = channels with >200 videos that we
+                          // intentionally skip in Phase 3. Rendered dim because
+                          // it's not a backlog, just a cap.
+                          ['Too big (>200)', nicheEnrichStats.channels.tooBigForWalk,      'text-gray-500'],
+                        ] as Array<[string, number, string]>).map(([label, value, color]) => (
+                          <div key={label} className="bg-gray-900/50 rounded-lg p-2 text-center">
+                            <div className={`text-xl font-bold ${value === 0 ? 'text-gray-600' : color}`}>
+                              {value.toLocaleString()}
+                            </div>
+                            <div className="text-[10px] text-gray-500">{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Proxies — kept as a small context card */}
+                    <div className="inline-flex items-baseline gap-2 bg-gray-900/50 rounded-lg px-3 py-1.5">
+                      <span className="text-base font-bold text-blue-400">{nicheEnrichStats.proxyStats?.total || 0}</span>
+                      <span className="text-[10px] text-gray-500 uppercase tracking-wider">Proxies</span>
+                    </div>
                   </div>
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-orange-400">{parseInt(nicheEnrichStats.never_enriched).toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Never Enriched</div>
-                  </div>
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-red-400">{parseInt(nicheEnrichStats.missing_subs).toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Missing Subs</div>
-                  </div>
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-blue-400">{nicheEnrichStats.proxyStats?.total || 0}</div>
-                    <div className="text-xs text-gray-500">Proxies</div>
-                  </div>
-                </div>
+                )}
 
                 {/* Current job status (mirrors the embedding job banner) */}
                 {nicheEnrichStats.job && (

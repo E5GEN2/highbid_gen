@@ -530,45 +530,94 @@ export async function GET(req: NextRequest) {
   const pool = await getPool();
   const keyword = req.nextUrl.searchParams.get('keyword');
 
-  const videoNeedsWork = `(v.enriched_at IS NULL OR v.like_count IS NULL OR v.like_count = 0 OR v.subscriber_count IS NULL OR v.subscriber_count = 0)`;
-  // Channel-level work — the channel needs some flavour of enrichment if the
-  // video has a channel_id AND either (a) we have no channel row yet,
-  // (b) the row exists but uploads_playlist_id is missing (old rows enriched
-  // before we started requesting contentDetails), or (c) the row has the
-  // playlist but no first_upload_at and is still Phase-3-eligible.
-  const channelNeedsWork = `(v.channel_id IS NOT NULL AND (
-      c.channel_id IS NULL
-      OR c.uploads_playlist_id IS NULL
-      OR (c.first_upload_at IS NULL
-          AND (c.video_count IS NULL OR c.video_count <= 200)
-          AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days'))
-    ))`;
+  // Optional keyword scope for ALL counts
+  const kwParam: string[] = [];
+  let kwFilter = '';
+  if (keyword && keyword !== 'all') { kwFilter = `AND v.keyword = $1`; kwParam.push(keyword); }
 
-  const conds = [`(${videoNeedsWork} OR ${channelNeedsWork})`];
-  const params: string[] = [];
-  if (keyword && keyword !== 'all') { conds.push(`v.keyword = $1`); params.push(keyword); }
+  // Per-data-point breakdown — one count per field we enrich. Each of these
+  // corresponds to a single column the admin can look at and say "I know what
+  // that means and which Phase fills it in".
+  const videoStatsSql = `
+    SELECT
+      COUNT(*) AS total,
+      COUNT(*) FILTER (WHERE v.enriched_at IS NULL) AS never_enriched,
+      COUNT(*) FILTER (WHERE v.view_count IS NULL OR v.view_count = 0) AS missing_views,
+      COUNT(*) FILTER (WHERE v.like_count IS NULL OR v.like_count = 0) AS missing_likes,
+      COUNT(*) FILTER (WHERE v.comment_count IS NULL OR v.comment_count = 0) AS missing_comments,
+      COUNT(*) FILTER (WHERE v.posted_at IS NULL) AS missing_posted_at,
+      COUNT(*) FILTER (WHERE v.thumbnail IS NULL OR v.thumbnail = '') AS missing_thumbnail,
+      COUNT(*) FILTER (WHERE v.channel_id IS NULL OR v.channel_id = '') AS missing_channel_id
+    FROM niche_spy_videos v
+    WHERE 1=1 ${kwFilter}
+  `;
 
-  const [statsRes, proxyStats, jobRes, keyStatus] = await Promise.all([
-    pool.query(
-      `SELECT
-          COUNT(*) as need_enrichment,
-          COUNT(*) FILTER (WHERE v.enriched_at IS NULL) as never_enriched,
-          COUNT(*) FILTER (WHERE v.like_count IS NULL OR v.like_count = 0) as missing_likes,
-          COUNT(*) FILTER (WHERE v.subscriber_count IS NULL OR v.subscriber_count = 0) as missing_subs,
-          COUNT(*) FILTER (WHERE v.posted_at IS NULL) as missing_date,
-          COUNT(*) FILTER (WHERE ${channelNeedsWork}) as missing_first_upload
-       FROM niche_spy_videos v
-       LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
-       WHERE ${conds.join(' AND ')}`,
-      params
-    ),
+  // Channel-level counts — we count DISTINCT channels touching our videos
+  // (scoped by keyword when given). A channel is "missing X" if the channel
+  // row is absent from niche_spy_channels OR the column is NULL.
+  const channelStatsSql = `
+    WITH ch AS (
+      SELECT DISTINCT v.channel_id AS cid
+      FROM niche_spy_videos v
+      WHERE v.channel_id IS NOT NULL AND v.channel_id != '' ${kwFilter}
+    )
+    SELECT
+      COUNT(*) AS total,
+      COUNT(*) FILTER (WHERE c.channel_id IS NULL) AS missing_row,
+      COUNT(*) FILTER (WHERE c.subscriber_count IS NULL OR c.subscriber_count = 0) AS missing_subs,
+      COUNT(*) FILTER (WHERE c.channel_created_at IS NULL) AS missing_created_at,
+      COUNT(*) FILTER (WHERE c.uploads_playlist_id IS NULL) AS missing_playlist_id,
+      COUNT(*) FILTER (WHERE c.channel_handle IS NULL) AS missing_handle,
+      COUNT(*) FILTER (WHERE c.video_count IS NULL) AS missing_video_count,
+      COUNT(*) FILTER (WHERE c.first_upload_at IS NULL
+                         AND (c.video_count IS NULL OR c.video_count <= 200)
+                         AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days')) AS missing_first_upload,
+      COUNT(*) FILTER (WHERE c.first_upload_at IS NULL AND c.video_count > 200) AS too_big_for_walk
+    FROM ch
+    LEFT JOIN niche_spy_channels c ON c.channel_id = ch.cid
+  `;
+
+  const [vStats, cStats, proxyStats, jobRes, keyStatus] = await Promise.all([
+    pool.query(videoStatsSql, kwParam),
+    pool.query(channelStatsSql, kwParam),
     getProxyStats(),
     pool.query(`SELECT * FROM niche_yt_enrich_jobs ORDER BY started_at DESC LIMIT 1`),
     getYtKeyStatus(),
   ]);
 
+  const v = vStats.rows[0];
+  const c = cStats.rows[0];
+
   return NextResponse.json({
-    ...statsRes.rows[0],
+    // New structured shape
+    videos: {
+      total:            parseInt(v.total),
+      neverEnriched:    parseInt(v.never_enriched),
+      missingViews:     parseInt(v.missing_views),
+      missingLikes:     parseInt(v.missing_likes),
+      missingComments:  parseInt(v.missing_comments),
+      missingPostedAt:  parseInt(v.missing_posted_at),
+      missingThumbnail: parseInt(v.missing_thumbnail),
+      missingChannelId: parseInt(v.missing_channel_id),
+    },
+    channels: {
+      total:             parseInt(c.total),
+      missingRow:        parseInt(c.missing_row),
+      missingSubs:       parseInt(c.missing_subs),
+      missingCreatedAt:  parseInt(c.missing_created_at),
+      missingPlaylistId: parseInt(c.missing_playlist_id),
+      missingHandle:     parseInt(c.missing_handle),
+      missingVideoCount: parseInt(c.missing_video_count),
+      missingFirstUpload: parseInt(c.missing_first_upload),
+      tooBigForWalk:     parseInt(c.too_big_for_walk),
+    },
+    // Back-compat for any caller still reading the flat shape
+    need_enrichment:  parseInt(v.never_enriched) + parseInt(v.missing_likes) + parseInt(c.missing_subs),
+    never_enriched:   parseInt(v.never_enriched),
+    missing_likes:    parseInt(v.missing_likes),
+    missing_subs:     parseInt(c.missing_subs),
+    missing_date:     parseInt(v.missing_posted_at),
+    missing_first_upload: parseInt(c.missing_first_upload),
     proxyStats,
     job: jobRes.rows[0] || null,
     keys: keyStatus,
