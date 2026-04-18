@@ -70,6 +70,16 @@ function NicheVideosInner() {
   // Sub-niche sort — defaults to videoCount desc, user can pick any indicator
   const [subnicheSort, setSubnicheSort] = useState<'videos' | 'views' | 'score' | 'opp' | 'top' | 'new' | 'ceil'>('videos');
 
+  // Local text input for the grid search bar — debounced 300ms into filter.search
+  // so we don't refire the fetch on every keystroke.
+  const [searchInput, setSearchInput] = useState('');
+  useEffect(() => {
+    const h = setTimeout(() => {
+      setFilter(prev => prev.search === searchInput ? prev : { ...prev, search: searchInput });
+    }, 300);
+    return () => clearTimeout(h);
+  }, [searchInput, setFilter]);
+
   // View mode: all videos vs sub-niches
   const searchParams = useSearchParams();
   const clusterParam = searchParams.get('cluster');
@@ -141,6 +151,7 @@ function NicheVideosInner() {
         });
         if (filter.from) params.set('from', filter.from);
         if (filter.to) params.set('to', filter.to);
+        if (filter.search) params.set('q', filter.search);
         url = `/api/niche-spy?${params}`;
       }
       const res = await fetch(url);
@@ -395,6 +406,27 @@ function NicheVideosInner() {
       {(viewMode === 'videos' || clusterParam) && (<>
       {/* Filters */}
       <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 mb-6">
+        {/* Search bar — matches against title + channel name */}
+        <div className="flex items-center gap-2 bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl px-3 py-2 mb-3 focus-within:border-amber-500">
+          <svg className="w-4 h-4 text-[#555] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            placeholder="Search videos by title or channel…"
+            className="flex-1 bg-transparent text-white text-sm placeholder-[#555] focus:outline-none"
+          />
+          {searchInput && (
+            <button onClick={() => setSearchInput('')} className="text-[#666] hover:text-white" title="Clear">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+
         {/* Sort pills */}
         <div className="flex gap-2 flex-wrap mb-3">
           {[

@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
   const offset = parseInt(sp.get('offset') || '0');
   const from = sp.get('from');
   const to = sp.get('to');
+  const q = sp.get('q')?.trim() || '';   // free-text search across title + channel
 
   // Build WHERE
   const conditions: string[] = [];
@@ -47,6 +48,12 @@ export async function GET(req: NextRequest) {
   if (maxScore < 100) {
     conditions.push(`score <= $${idx}`);
     params.push(maxScore);
+    idx++;
+  }
+  if (q) {
+    // ILIKE-match the search term against both title and channel name
+    conditions.push(`(title ILIKE $${idx} OR channel_name ILIKE $${idx})`);
+    params.push(`%${q}%`);
     idx++;
   }
 
