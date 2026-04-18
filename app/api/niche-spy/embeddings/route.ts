@@ -285,14 +285,25 @@ async function runEmbeddingJob(
           if (isGoogleRateLimit || isGoogleAuthDenied) {
             const usedKey = getLastUsedKey();
             banKey(usedKey);
-            continue;
+            console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: rate-limited/auth-denied, banned key`);
+          } else if (isProxyError) {
+            console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: proxy error: ${errMsg.substring(0, 120)}`);
+          } else {
+            console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1} error: ${errMsg.substring(0, 200)}`);
           }
-          if (isProxyError) continue;
+
+          // Always log the final failure to the DB — regardless of error category.
+          // Previous versions `continue`d past this on rate-limit/proxy errors so a
+          // batch that hit 429 on all 3 attempts would silently "succeed" with 0
+          // writes and 0 errors. That's the worst possible outcome — fail loudly.
           if (attempt === 2) {
             globalErrors++;
+            const label = isGoogleRateLimit ? 'ALL KEYS RATE-LIMITED' :
+                          isGoogleAuthDenied ? 'AUTH DENIED (key banned)' :
+                          isProxyError       ? 'PROXY ERROR'            : 'ERROR';
             await pool.query(
               `UPDATE niche_spy_embedding_jobs SET error_message = $1 WHERE id = $2`,
-              [`T${threadId} batch ${batchNum}: ${errMsg.substring(0, 200)}`, jobId]
+              [`T${threadId} batch ${batchNum}: ${label} — ${errMsg.substring(0, 200)}`, jobId]
             );
           }
         }
