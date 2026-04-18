@@ -50,13 +50,20 @@ export default function AdminPage() {
   const [newAdminToken, setNewAdminToken] = useState<string | null>(null);
   const [adminTokenCopied, setAdminTokenCopied] = useState(false);
 
-  // Niche Explorer embedding state
+  // Niche Explorer embedding state — API now reports all 3 targets separately
+  type TargetStats = { totalVideos: number; embedded: number; notEmbedded: number };
   const [embeddingStats, setEmbeddingStats] = useState<{
-    totalVideos: number; embedded: number; notEmbedded: number; apiKeysConfigured: number; model: string;
+    apiKeysConfigured: number; legacyModel: string; similaritySource?: 'title_v1' | 'title_v2' | 'thumbnail_v2';
+    targets: { title_v1: TargetStats; title_v2: TargetStats; thumbnail_v2: TargetStats };
     job: { id: number; status: string; total_needed: number; processed: number; errors: number; current_batch: number; total_batches: number; error_message: string | null; started_at: string; completed_at: string | null } | null;
     keys?: Array<{ key: string; proxy: string; banned: boolean; banExpiresIn: number | null }>;
     proxy?: { total: number; online: number; cached: boolean; cacheAge: number; current: { deviceId: string; networkType: string } | null };
-    keywordCoverage?: Array<{ keyword: string; total: number; embedded: number; pct: number }>;
+    keywordCoverage?: Array<{
+      keyword: string; total: number;
+      title_v1: { embedded: number; pct: number };
+      title_v2: { embedded: number; pct: number };
+      thumbnail_v2: { embedded: number; pct: number };
+    }>;
   } | null>(null);
 
   // Poll embedding progress
@@ -93,6 +100,10 @@ export default function AdminPage() {
   // Niche Explorer config
   const [nicheGoogleApiKeys, setNicheGoogleApiKeys] = useState('');
   const [nicheEmbeddingModel, setNicheEmbeddingModel] = useState('text-embedding-004');
+  // Which embedding space all similarity searches read from.
+  // title_v1 = legacy text (gemini-embedding-001), title_v2 = text (gemini-embedding-2-preview),
+  // thumbnail_v2 = image embedding (gemini-embedding-2-preview).
+  const [nicheSimilaritySource, setNicheSimilaritySource] = useState<'title_v1' | 'title_v2' | 'thumbnail_v2'>('title_v1');
   const [nicheBatchSize, setNicheBatchSize] = useState(50);
   const [nicheLimit, setNicheLimit] = useState(5000);
   const [nichePriorityKeywords, setNichePriorityKeywords] = useState('');
@@ -189,6 +200,9 @@ export default function AdminPage() {
         setNicheSpyToken(data.config.xgodo_niche_spy_token || '');
         setNicheGoogleApiKeys(data.config.niche_google_api_keys || '');
         setNicheEmbeddingModel(data.config.niche_embedding_model || 'text-embedding-004');
+        const src = data.config.niche_similarity_source;
+        if (src === 'title_v2' || src === 'thumbnail_v2') setNicheSimilaritySource(src);
+        else setNicheSimilaritySource('title_v1');
         setNichePriorityKeywords(data.config.niche_priority_keywords || '');
         setNicheYtApiKeys(data.config.niche_yt_api_keys || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
@@ -284,6 +298,7 @@ export default function AdminPage() {
             xgodo_proxy_port: xgodoProxyPort,
             niche_google_api_keys: nicheGoogleApiKeys,
             niche_embedding_model: nicheEmbeddingModel,
+            niche_similarity_source: nicheSimilaritySource,
             niche_priority_keywords: nichePriorityKeywords,
             niche_yt_api_keys: nicheYtApiKeys,
             xgodo_shorts_spy_job_id: xgodoJobId,
@@ -1295,39 +1310,59 @@ export default function AdminPage() {
 
             {embeddingStats && (
               <div className="space-y-4">
-                {/* Stats grid */}
-                <div className="grid grid-cols-4 gap-3">
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-white">{embeddingStats.totalVideos.toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Total Videos</div>
-                  </div>
-                  <div className="bg-green-900/20 border border-green-800/30 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-green-400">{embeddingStats.embedded.toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Embedded</div>
-                  </div>
-                  <div className="bg-yellow-900/20 border border-yellow-800/30 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-yellow-400">{embeddingStats.notEmbedded.toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">Remaining</div>
-                  </div>
-                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-                    <div className="text-2xl font-bold text-blue-400">{embeddingStats.apiKeysConfigured}</div>
-                    <div className="text-xs text-gray-500">API Keys</div>
-                  </div>
+                {/* Per-target stats — 3 cards side-by-side for the three embedding spaces */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {([
+                    { key: 'title_v1',     label: 'Title v1',     subtitle: 'gemini-embedding-001',       accent: 'text-gray-300', border: 'border-gray-700' },
+                    { key: 'title_v2',     label: 'Title v2',     subtitle: 'gemini-embedding-2-preview', accent: 'text-cyan-300', border: 'border-cyan-800/40' },
+                    { key: 'thumbnail_v2', label: 'Thumbnail v2', subtitle: 'gemini-embedding-2-preview (image)', accent: 'text-purple-300', border: 'border-purple-800/40' },
+                  ] as const).map(t => {
+                    const s = embeddingStats.targets[t.key];
+                    const pct = s.totalVideos > 0 ? Math.round((s.embedded / s.totalVideos) * 100) : 0;
+                    const isActiveSource = embeddingStats.similaritySource === t.key;
+                    return (
+                      <div key={t.key} className={`bg-gray-900/50 border ${t.border} rounded-lg p-3 ${isActiveSource ? 'ring-1 ring-amber-500/60' : ''}`}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className={`text-sm font-semibold ${t.accent}`}>{t.label}</div>
+                          {isActiveSource && <span className="text-[9px] uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.5 rounded">active source</span>}
+                        </div>
+                        <div className="text-[10px] text-gray-500 mb-2 truncate">{t.subtitle}</div>
+                        <div className="flex items-end justify-between mb-1">
+                          <div>
+                            <div className="text-2xl font-bold text-white">{s.embedded.toLocaleString()}</div>
+                            <div className="text-[10px] text-gray-500">of {s.totalVideos.toLocaleString()} embedded</div>
+                          </div>
+                          <div className="text-xs text-amber-400 font-mono">{pct}%</div>
+                        </div>
+                        <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <div className="flex items-center justify-between mt-2 text-[10px]">
+                          <span className="text-yellow-400">{s.notEmbedded.toLocaleString()} remaining</span>
+                          <button
+                            onClick={async () => {
+                              await fetch('/api/niche-spy/embeddings', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize, threads: nicheThreads, target: t.key }),
+                              });
+                            }}
+                            disabled={embeddingStats.job?.status === 'running' || s.notEmbedded === 0}
+                            className="px-2.5 py-1 bg-amber-600 text-white font-semibold rounded-md hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs"
+                          >
+                            {embeddingStats.job?.status === 'running' ? 'Running...' : 'Generate'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                {/* Progress bar */}
-                {embeddingStats.totalVideos > 0 && (
-                  <div>
-                    <div className="flex justify-between text-xs text-gray-400 mb-1">
-                      <span>{Math.round((embeddingStats.embedded / embeddingStats.totalVideos) * 100)}% embedded</span>
-                      <span>{embeddingStats.model}</span>
-                    </div>
-                    <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-green-500 rounded-full transition-all duration-500"
-                        style={{ width: `${(embeddingStats.embedded / embeddingStats.totalVideos) * 100}%` }} />
-                    </div>
-                  </div>
-                )}
+                {/* Meta row — api keys + model note */}
+                <div className="flex items-center justify-between text-xs text-gray-400 px-1">
+                  <span>API keys configured: <span className="text-blue-400 font-medium">{embeddingStats.apiKeysConfigured}</span></span>
+                  <span>Legacy model: {embeddingStats.legacyModel}</span>
+                </div>
 
                 {/* Current job status */}
                 {embeddingStats.job && (
@@ -1408,21 +1443,14 @@ export default function AdminPage() {
                       <option value={10}>10</option>
                     </select>
                   </div>
-                  <button
-                    onClick={async () => {
-                      await fetch('/api/niche-spy/embeddings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize, threads: nicheThreads }) });
-                    }}
-                    disabled={embeddingStats.job?.status === 'running'}
-                    className="px-5 py-2.5 bg-amber-600 text-white font-semibold rounded-xl hover:bg-amber-700 disabled:opacity-50 transition"
-                  >
-                    {embeddingStats.job?.status === 'running' ? 'Running...' : 'Generate Embeddings'}
-                  </button>
+                  {/* The per-target "Generate" buttons live inside each target card
+                      above. Only the global Cancel button remains here. */}
                   {embeddingStats.job?.status === 'running' && (
                     <button
                       onClick={async () => { await fetch('/api/niche-spy/embeddings', { method: 'DELETE' }); }}
                       className="px-5 py-2.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition"
                     >
-                      Cancel
+                      Cancel running job
                     </button>
                   )}
                 </div>
@@ -1483,24 +1511,38 @@ export default function AdminPage() {
                   </div>
                 )}
 
-                {/* Per-keyword embedding coverage */}
+                {/* Per-keyword embedding coverage — 3 columns (title v1 / title v2 / thumb v2) */}
                 {embeddingStats.keywordCoverage && embeddingStats.keywordCoverage.length > 0 && (
                   <div className="mt-4 bg-gray-900/50 rounded-lg p-3">
-                    <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Embedding Coverage by Keyword</h4>
-                    <div className="space-y-1.5 max-h-60 overflow-y-auto">
-                      {embeddingStats.keywordCoverage.map(k => (
-                        <div key={k.keyword} className="flex items-center gap-2 text-xs">
-                          <span className="text-gray-400 w-40 truncate">{k.keyword}</span>
-                          <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${k.pct >= 100 ? 'bg-green-500' : k.pct > 0 ? 'bg-amber-500' : 'bg-gray-600'}`}
-                              style={{ width: `${k.pct}%` }} />
+                    <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Coverage by Keyword</h4>
+                    <div className="grid grid-cols-[minmax(140px,1fr)_repeat(3,minmax(120px,1fr))_60px] gap-3 items-center text-[10px] text-gray-500 uppercase tracking-wider pb-1.5 border-b border-gray-800">
+                      <div>Keyword</div>
+                      <div>Title v1</div>
+                      <div>Title v2</div>
+                      <div>Thumb v2</div>
+                      <div className="text-right">Total</div>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto divide-y divide-gray-800/50">
+                      {embeddingStats.keywordCoverage.map(k => {
+                        const cell = (pct: number, embedded: number) => (
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                              <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct > 0 ? 'bg-amber-500' : 'bg-gray-600'}`} style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className={`font-mono w-8 text-right ${pct >= 100 ? 'text-green-400' : pct > 0 ? 'text-amber-400' : 'text-gray-600'}`}>{pct}%</span>
+                            <span className="text-gray-600 text-[9px] w-10 text-right">{embedded}</span>
                           </div>
-                          <span className={`font-mono w-10 text-right ${k.pct >= 100 ? 'text-green-400' : k.pct > 0 ? 'text-amber-400' : 'text-gray-600'}`}>
-                            {k.pct}%
-                          </span>
-                          <span className="text-gray-600 w-16 text-right">{k.embedded}/{k.total}</span>
-                        </div>
-                      ))}
+                        );
+                        return (
+                          <div key={k.keyword} className="grid grid-cols-[minmax(140px,1fr)_repeat(3,minmax(120px,1fr))_60px] gap-3 items-center py-1.5">
+                            <span className="text-gray-300 text-xs truncate">{k.keyword}</span>
+                            {cell(k.title_v1.pct, k.title_v1.embedded)}
+                            {cell(k.title_v2.pct, k.title_v2.embedded)}
+                            {cell(k.thumbnail_v2.pct, k.thumbnail_v2.embedded)}
+                            <span className="text-gray-500 text-[10px] text-right font-mono">{k.total}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1515,8 +1557,8 @@ export default function AdminPage() {
 
             <div className="flex items-center gap-3 mb-4">
               <select id="cluster-keyword" className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm flex-1">
-                {embeddingStats?.keywordCoverage?.map((k: { keyword: string; embedded: number }) => (
-                  <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.embedded} embedded)</option>
+                {embeddingStats?.keywordCoverage?.map(k => (
+                  <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.title_v1.embedded} v1 / {k.title_v2.embedded} v2 / {k.thumbnail_v2.embedded} thumb)</option>
                 ))}
               </select>
               <button
@@ -1564,8 +1606,8 @@ export default function AdminPage() {
                   <div key={k.keyword} className="flex items-center gap-3 text-sm bg-gray-900/30 rounded-lg px-3 py-2">
                     <span className="text-gray-300 flex-1 truncate">{k.keyword}</span>
                     <span className="text-xs text-gray-500 w-16 text-right">{k.total} vids</span>
-                    <span className={`text-xs w-10 text-right ${k.pct >= 100 ? 'text-green-400' : k.pct > 0 ? 'text-amber-400' : 'text-gray-600'}`}>
-                      {k.pct}%
+                    <span className={`text-xs w-10 text-right ${k.title_v1.pct >= 100 ? 'text-green-400' : k.title_v1.pct > 0 ? 'text-amber-400' : 'text-gray-600'}`}>
+                      {k.title_v1.pct}%
                     </span>
                     <button
                       onClick={async () => {
@@ -1607,7 +1649,7 @@ export default function AdminPage() {
                 <p className="text-xs text-gray-500 mt-1">Free Google AI keys for gemini-embedding. One per line, rotated automatically.</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Embedding Model</label>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Legacy Embedding Model (backward compat)</label>
                 <select
                   value={nicheEmbeddingModel}
                   onChange={(e) => setNicheEmbeddingModel(e.target.value)}
@@ -1616,6 +1658,21 @@ export default function AdminPage() {
                   <option value="gemini-embedding-001">gemini-embedding-001 (3072d, stable)</option>
                   <option value="gemini-embedding-2-preview">gemini-embedding-2-preview (3072d, latest)</option>
                 </select>
+                <p className="text-xs text-gray-500 mt-1">Controls the legacy batchEmbed() path. New v2 + thumbnail embeddings use their own fixed models.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Similarity Source</label>
+                <select
+                  value={nicheSimilaritySource}
+                  onChange={(e) => setNicheSimilaritySource(e.target.value as 'title_v1' | 'title_v2' | 'thumbnail_v2')}
+                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
+                >
+                  <option value="title_v1">Title v1 — gemini-embedding-001 (legacy, default)</option>
+                  <option value="title_v2">Title v2 — gemini-embedding-2-preview</option>
+                  <option value="thumbnail_v2">Thumbnail v2 — gemini-embedding-2-preview (image)</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">Controls which embedding space ALL similarity searches read from. Only videos with an embedding in the selected space will appear in similar results.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Priority Keywords (embed first)</label>
