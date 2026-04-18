@@ -25,10 +25,13 @@ interface YtVideoItem {
 interface YtChannelItem {
   id: string;
   snippet?: {
+    title?: string;
     publishedAt?: string;
+    customUrl?: string;
     thumbnails?: { default?: { url?: string }; medium?: { url?: string } };
   };
-  statistics?: { subscriberCount?: string };
+  statistics?: { subscriberCount?: string; videoCount?: string };
+  contentDetails?: { relatedPlaylists?: { uploads?: string } };
 }
 
 export interface EnrichResult {
@@ -126,7 +129,7 @@ export async function enrichSingleVideo(
   let channelCreatedAt: Date | null = null;
 
   if (channelId) {
-    const channelUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${channelId}&key=${ytApiKey}`;
+    const channelUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&id=${channelId}&key=${ytApiKey}`;
     const chRes = await ytFetchViaProxy(channelUrl);
 
     if (chRes.ok) {
@@ -134,9 +137,32 @@ export async function enrichSingleVideo(
       const ch = chData?.items?.[0];
       if (ch) {
         subscriberCount = parseInt(ch.statistics?.subscriberCount || '0') || 0;
+        const videoCount = parseInt(ch.statistics?.videoCount || '0') || 0;
         channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
         const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
+        const channelName = ch.snippet?.title || null;
+        const handle = ch.snippet?.customUrl || null;
+        const uploadsId = ch.contentDetails?.relatedPlaylists?.uploads || null;
 
+        // Upsert into channels table — single source of truth
+        await pool.query(`
+          INSERT INTO niche_spy_channels
+            (channel_id, channel_name, channel_handle, channel_avatar,
+             subscriber_count, channel_created_at, video_count, uploads_playlist_id,
+             last_channel_fetched_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+          ON CONFLICT (channel_id) DO UPDATE SET
+            channel_name   = COALESCE(NULLIF(EXCLUDED.channel_name, ''),   niche_spy_channels.channel_name),
+            channel_handle = COALESCE(NULLIF(EXCLUDED.channel_handle, ''), niche_spy_channels.channel_handle),
+            channel_avatar = COALESCE(NULLIF(EXCLUDED.channel_avatar, ''), niche_spy_channels.channel_avatar),
+            subscriber_count   = CASE WHEN EXCLUDED.subscriber_count > 0 THEN EXCLUDED.subscriber_count ELSE niche_spy_channels.subscriber_count END,
+            channel_created_at = COALESCE(EXCLUDED.channel_created_at,    niche_spy_channels.channel_created_at),
+            video_count        = CASE WHEN EXCLUDED.video_count > 0 THEN EXCLUDED.video_count ELSE niche_spy_channels.video_count END,
+            uploads_playlist_id = COALESCE(EXCLUDED.uploads_playlist_id,  niche_spy_channels.uploads_playlist_id),
+            last_channel_fetched_at = NOW()
+        `, [channelId, channelName, handle, avatar, subscriberCount, channelCreatedAt, videoCount, uploadsId]).catch(() => {});
+
+        // Mirror into video row so existing reads keep working
         await pool.query(
           `UPDATE niche_spy_videos SET
             subscriber_count = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
@@ -147,6 +173,45 @@ export async function enrichSingleVideo(
         );
 
         channelEnriched = subscriberCount > 0 || !!channelCreatedAt;
+
+        // Opportunistically kick off first-upload check for this channel IF we don't
+        // have it yet AND video count looks tractable. We use the SAME API key the
+        // video fetch is using — no need for a key-proxy pair, ytFetchViaProxy will
+        // pick any available proxy.
+        if (uploadsId && videoCount > 0 && videoCount <= 200) {
+          const existingRes = await pool.query(
+            `SELECT first_upload_at FROM niche_spy_channels WHERE channel_id = $1`,
+            [channelId]
+          );
+          if (!existingRes.rows[0]?.first_upload_at) {
+            // Fire-and-forget — don't block the main video enrichment response
+            (async () => {
+              try {
+                const { fetchChannelFirstUpload } = await import('./yt-channel-age');
+                // Build a minimal pair object so fetchChannelFirstUpload accepts it
+                const pair = { key: ytApiKey, proxyUrl: '', proxyDeviceId: 'single', banned: false, banExpiry: 0 };
+                const age = await fetchChannelFirstUpload(
+                  channelCreatedAt?.toISOString() || null,
+                  uploadsId,
+                  videoCount,
+                  pair,
+                  { skipOverVideoCount: 200 },
+                );
+                await pool.query(`
+                  UPDATE niche_spy_channels SET
+                    first_upload_at  = COALESCE($1, first_upload_at),
+                    latest_upload_at = COALESCE($2, latest_upload_at),
+                    dormancy_days    = COALESCE($3, dormancy_days),
+                    last_uploads_fetched_at = NOW(),
+                    error_message    = $4
+                  WHERE channel_id = $5
+                `, [age.firstUploadAt, age.latestUploadAt, age.dormancyDays, age.error || null, channelId]);
+              } catch (err) {
+                console.warn('[enrichSingleVideo] first-upload check failed:', (err as Error).message);
+              }
+            })();
+          }
+        }
       }
     }
   }

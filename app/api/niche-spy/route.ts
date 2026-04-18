@@ -20,53 +20,58 @@ export async function GET(req: NextRequest) {
   const to = sp.get('to');
   const q = sp.get('q')?.trim() || '';   // free-text search across title + channel
 
-  // Build WHERE
-  const conditions: string[] = [];
+  // Build WHERE conditions in two forms — one unqualified (for count/keywords/stats
+  // queries that hit only the videos table), one prefixed with v. for the joined
+  // videos+channels query (needed because channel_name / subscriber_count /
+  // channel_created_at / channel_avatar exist in both tables).
+  const bareConditions: string[] = [];
+  const joinConditions: string[] = [];
   const params: (string | number)[] = [];
   let idx = 1;
+  const pushCond = (bare: string, joined: string) => {
+    bareConditions.push(bare);
+    joinConditions.push(joined);
+  };
 
   if (keyword && keyword !== 'all') {
-    conditions.push(`keyword = $${idx}`);
-    params.push(keyword);
-    idx++;
+    pushCond(`keyword = $${idx}`, `v.keyword = $${idx}`);
+    params.push(keyword); idx++;
   }
   if (from) {
-    conditions.push(`posted_at >= $${idx}`);
-    params.push(from);
-    idx++;
+    pushCond(`posted_at >= $${idx}`, `v.posted_at >= $${idx}`);
+    params.push(from); idx++;
   }
   if (to) {
-    conditions.push(`posted_at <= $${idx}`);
-    params.push(to);
-    idx++;
+    pushCond(`posted_at <= $${idx}`, `v.posted_at <= $${idx}`);
+    params.push(to); idx++;
   }
   if (minScore > 0) {
-    conditions.push(`score >= $${idx}`);
-    params.push(minScore);
-    idx++;
+    pushCond(`score >= $${idx}`, `v.score >= $${idx}`);
+    params.push(minScore); idx++;
   }
   if (maxScore < 100) {
-    conditions.push(`score <= $${idx}`);
-    params.push(maxScore);
-    idx++;
+    pushCond(`score <= $${idx}`, `v.score <= $${idx}`);
+    params.push(maxScore); idx++;
   }
   if (q) {
-    // ILIKE-match the search term against both title and channel name
-    conditions.push(`(title ILIKE $${idx} OR channel_name ILIKE $${idx})`);
-    params.push(`%${q}%`);
-    idx++;
+    pushCond(
+      `(title ILIKE $${idx} OR channel_name ILIKE $${idx})`,
+      `(v.title ILIKE $${idx} OR v.channel_name ILIKE $${idx})`,
+    );
+    params.push(`%${q}%`); idx++;
   }
 
-  const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+  const bareWhere = bareConditions.length > 0 ? 'WHERE ' + bareConditions.join(' AND ') : '';
+  const joinWhere = joinConditions.length > 0 ? 'WHERE ' + joinConditions.join(' AND ') : '';
 
-  // Sort
-  let orderBy: string;
+  // Sort — joined query references v., bare queries (if any used sort, none do) wouldn't
+  let joinOrderBy: string;
   switch (sort) {
-    case 'views': orderBy = 'view_count DESC NULLS LAST'; break;
-    case 'date': orderBy = 'posted_at DESC NULLS LAST'; break;
-    case 'oldest': orderBy = 'posted_at ASC NULLS LAST'; break;
-    case 'likes': orderBy = 'like_count DESC NULLS LAST'; break;
-    default: orderBy = 'score DESC NULLS LAST, view_count DESC NULLS LAST';
+    case 'views':  joinOrderBy = 'v.view_count DESC NULLS LAST'; break;
+    case 'date':   joinOrderBy = 'v.posted_at DESC NULLS LAST'; break;
+    case 'oldest': joinOrderBy = 'v.posted_at ASC NULLS LAST'; break;
+    case 'likes':  joinOrderBy = 'v.like_count DESC NULLS LAST'; break;
+    default:       joinOrderBy = 'v.score DESC NULLS LAST, v.view_count DESC NULLS LAST';
   }
 
   const limitIdx = idx;
@@ -75,15 +80,20 @@ export async function GET(req: NextRequest) {
 
   const [videosRes, countRes, keywordsRes, statsRes] = await Promise.all([
     pool.query(
-      `SELECT id, keyword, url, title, view_count, channel_name, posted_date, posted_at,
-              score, subscriber_count, like_count, comment_count, top_comment, thumbnail, fetched_at, channel_created_at, embedded_at
-       FROM niche_spy_videos ${where}
-       ORDER BY ${orderBy}
+      `SELECT v.id, v.keyword, v.url, v.title, v.view_count, v.channel_name,
+              v.posted_date, v.posted_at, v.score, v.subscriber_count, v.like_count,
+              v.comment_count, v.top_comment, v.thumbnail, v.fetched_at,
+              v.channel_created_at, v.embedded_at,
+              c.first_upload_at, c.dormancy_days
+       FROM niche_spy_videos v
+       LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+       ${joinWhere}
+       ORDER BY ${joinOrderBy}
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
     ),
     pool.query(
-      `SELECT COUNT(*) as cnt FROM niche_spy_videos ${where}`,
+      `SELECT COUNT(*) as cnt FROM niche_spy_videos ${bareWhere}`,
       params.slice(0, -2) // exclude limit/offset
     ),
     pool.query(

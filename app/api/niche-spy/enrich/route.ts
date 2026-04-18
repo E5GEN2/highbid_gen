@@ -3,6 +3,7 @@ import { getPool } from '@/lib/db';
 import { getProxyStats } from '@/lib/xgodo-proxy';
 import { ytFetchViaProxy } from '@/lib/yt-proxy-fetch';
 import { getYtPairForThread, getYtKeyStatus, banYtKey } from '@/lib/yt-keys';
+import { fetchChannelFirstUpload } from '@/lib/yt-channel-age';
 
 /**
  * YouTube Data API enrichment — fire-and-forget parallel job.
@@ -279,7 +280,8 @@ async function runEnrichJob(
           const pair = await getYtPairForThread(threadId - 1);
           if (!pair) { globalErrors++; break; }
 
-          const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${ids.join(',')}&key=${pair.key}`;
+          // Ask YT for contentDetails too — we need uploads playlist id for Phase 3
+          const chUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&id=${ids.join(',')}&key=${pair.key}`;
           const res = await ytFetchViaProxy(chUrl, pair);
           if (!res.ok) {
             const errMsg = (res.error || '').substring(0, 160);
@@ -295,25 +297,54 @@ async function runEnrichJob(
 
           interface YtChannelItem {
             id: string;
-            snippet?: { publishedAt?: string; thumbnails?: { default?: { url?: string }; medium?: { url?: string } } };
-            statistics?: { subscriberCount?: string };
+            snippet?: { title?: string; publishedAt?: string; customUrl?: string;
+              thumbnails?: { default?: { url?: string }; medium?: { url?: string } } };
+            statistics?: { subscriberCount?: string; videoCount?: string };
+            contentDetails?: { relatedPlaylists?: { uploads?: string } };
           }
           const chData = res.data as { items?: YtChannelItem[] } | null;
           for (const ch of chData?.items || []) {
             const subCount = parseInt(ch.statistics?.subscriberCount || '0') || 0;
+            const videoCount = parseInt(ch.statistics?.videoCount || '0') || 0;
             const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
             const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
+            const channelName = ch.snippet?.title || null;
+            const handle = ch.snippet?.customUrl || null;
+            const uploadsId = ch.contentDetails?.relatedPlaylists?.uploads || null;
+
+            // Upsert into the channels table — single source of truth for channel metadata
+            await pool.query(`
+              INSERT INTO niche_spy_channels
+                (channel_id, channel_name, channel_handle, channel_avatar,
+                 subscriber_count, channel_created_at, video_count, uploads_playlist_id,
+                 last_channel_fetched_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+              ON CONFLICT (channel_id) DO UPDATE SET
+                channel_name   = COALESCE(NULLIF(EXCLUDED.channel_name, ''),   niche_spy_channels.channel_name),
+                channel_handle = COALESCE(NULLIF(EXCLUDED.channel_handle, ''), niche_spy_channels.channel_handle),
+                channel_avatar = COALESCE(NULLIF(EXCLUDED.channel_avatar, ''), niche_spy_channels.channel_avatar),
+                subscriber_count   = CASE WHEN EXCLUDED.subscriber_count > 0 THEN EXCLUDED.subscriber_count ELSE niche_spy_channels.subscriber_count END,
+                channel_created_at = COALESCE(EXCLUDED.channel_created_at,    niche_spy_channels.channel_created_at),
+                video_count        = CASE WHEN EXCLUDED.video_count > 0 THEN EXCLUDED.video_count ELSE niche_spy_channels.video_count END,
+                uploads_playlist_id = COALESCE(EXCLUDED.uploads_playlist_id,  niche_spy_channels.uploads_playlist_id),
+                last_channel_fetched_at = NOW()
+            `, [ch.id, channelName, handle, avatar, subCount, channelCreatedAt, videoCount, uploadsId]).catch(err => {
+              console.warn('[yt-enrich] channel upsert failed:', (err as Error).message);
+            });
+
+            // Mirror to videos too, so existing UIs keep working until they migrate to JOIN
             const videoIds = channelIds.get(ch.id);
-            if (!videoIds) continue;
-            for (const dbId of videoIds) {
-              await pool.query(
-                `UPDATE niche_spy_videos SET
-                  subscriber_count = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
-                  channel_created_at = COALESCE($2, channel_created_at),
-                  channel_avatar = COALESCE(NULLIF($4, ''), channel_avatar)
-                WHERE id = $3`,
-                [subCount, channelCreatedAt, dbId, avatar]
-              );
+            if (videoIds) {
+              for (const dbId of videoIds) {
+                await pool.query(
+                  `UPDATE niche_spy_videos SET
+                    subscriber_count   = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
+                    channel_created_at = COALESCE($2, channel_created_at),
+                    channel_avatar     = COALESCE(NULLIF($4, ''), channel_avatar)
+                  WHERE id = $3`,
+                  [subCount, channelCreatedAt, dbId, avatar]
+                );
+              }
             }
             if (subCount > 0 || channelCreatedAt) enrichedChannels++;
           }
@@ -331,6 +362,72 @@ async function runEnrichJob(
     console.log(`[yt-enrich] job=${jobId} starting ${threads} channel workers for ${chBatches.length} batches`);
     const chWorkers = Array.from({ length: Math.min(threads, chBatches.length) }, (_, i) => channelWorker(i + 1));
     await Promise.all(chWorkers);
+  }
+
+  // --- Phase 3: uploads-playlist walk for channels missing first_upload_at ---
+  // Picks any channels in our niche_spy_channels table that touched this job AND
+  // have no first_upload_at yet. Walks their uploads playlists in parallel to find
+  // the real first-upload date. Quota cost is ~ceil(videoCount/50) per channel;
+  // channels with >200 uploads are skipped (almost always legitimate).
+  if (!(await isCancelled())) {
+    const needAgeRes = await pool.query(`
+      SELECT channel_id, channel_created_at, uploads_playlist_id, video_count
+      FROM niche_spy_channels
+      WHERE channel_id = ANY($1::text[])
+        AND first_upload_at IS NULL
+        AND uploads_playlist_id IS NOT NULL
+        AND (video_count IS NULL OR video_count > 0)
+        AND (last_uploads_fetched_at IS NULL OR last_uploads_fetched_at < NOW() - INTERVAL '14 days')
+      ORDER BY video_count ASC NULLS LAST
+    `, [Array.from(channelIds.keys())]);
+    const ageTargets = needAgeRes.rows as Array<{
+      channel_id: string; channel_created_at: string | null;
+      uploads_playlist_id: string; video_count: number | null;
+    }>;
+
+    if (ageTargets.length > 0) {
+      await logProgress(`Phase 3 — checking first-upload for ${ageTargets.length} channels`);
+      let ageIdx = 0;
+
+      async function ageWorker(threadId: number) {
+        while (true) {
+          if (await isCancelled()) break;
+          const myIdx = ageIdx++;
+          if (myIdx >= ageTargets.length) break;
+          const t = ageTargets[myIdx];
+          const pair = await getYtPairForThread(threadId - 1);
+          if (!pair) break;
+          try {
+            const r = await fetchChannelFirstUpload(
+              t.channel_created_at,
+              t.uploads_playlist_id,
+              t.video_count || 0,
+              pair,
+              { skipOverVideoCount: 200 },
+            );
+            await pool.query(`
+              UPDATE niche_spy_channels SET
+                first_upload_at  = COALESCE($1, first_upload_at),
+                latest_upload_at = COALESCE($2, latest_upload_at),
+                dormancy_days    = COALESCE($3, dormancy_days),
+                last_uploads_fetched_at = NOW(),
+                error_message    = $4
+              WHERE channel_id = $5
+            `, [r.firstUploadAt, r.latestUploadAt, r.dormancyDays, r.error || null, t.channel_id]);
+            if (r.error) globalErrors++;
+          } catch (err) {
+            console.warn('[yt-enrich] Phase 3 error:', (err as Error).message);
+            globalErrors++;
+          }
+          // Give other work a chance + stay under rate limits
+          await new Promise(r => setTimeout(r, Math.max(200, delayMs / 2)));
+        }
+      }
+
+      const ageWorkers = Array.from({ length: Math.min(threads, ageTargets.length) }, (_, i) => ageWorker(i + 1));
+      await Promise.all(ageWorkers);
+      await logProgress(`Phase 3 done — checked ${ageTargets.length} channels`);
+    }
   }
 
   // Final status

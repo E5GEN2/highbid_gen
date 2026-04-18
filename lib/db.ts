@@ -468,6 +468,48 @@ export async function initSchema(): Promise<void> {
     // "you clicked Thumbnail but there's already a Title v2 job running".
     await client.query(`ALTER TABLE niche_spy_embedding_jobs ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
 
+    // Channel-level cache. Videos reference channels by channel_id; we store
+    // channel metadata here (instead of duplicating on every video row) so
+    // expensive lookups — subscriber_count, channel_created_at, and especially
+    // first_upload_at (derived from walking the uploads playlist) — are done
+    // once per channel not once per video.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_spy_channels (
+        channel_id TEXT PRIMARY KEY,
+        channel_name TEXT,
+        channel_handle TEXT,
+        channel_avatar TEXT,
+        subscriber_count BIGINT,
+        channel_created_at TIMESTAMPTZ,
+        first_upload_at TIMESTAMPTZ,
+        latest_upload_at TIMESTAMPTZ,
+        video_count INTEGER,
+        uploads_playlist_id TEXT,
+        dormancy_days INTEGER,
+        last_channel_fetched_at TIMESTAMPTZ,
+        last_uploads_fetched_at TIMESTAMPTZ,
+        error_message TEXT
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_first_upload ON niche_spy_channels(first_upload_at)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_last_uploads ON niche_spy_channels(last_uploads_fetched_at NULLS FIRST)`).catch(() => {});
+
+    // One-time backfill: copy channel-level data we already collected on the
+    // videos table into the new channels table. Idempotent via ON CONFLICT.
+    await client.query(`
+      INSERT INTO niche_spy_channels (channel_id, channel_name, channel_avatar,
+        subscriber_count, channel_created_at, last_channel_fetched_at)
+      SELECT DISTINCT ON (channel_id)
+        channel_id, channel_name, channel_avatar,
+        subscriber_count, channel_created_at, enriched_at
+      FROM niche_spy_videos
+      WHERE channel_id IS NOT NULL AND channel_id != ''
+      ORDER BY channel_id, enriched_at DESC NULLS LAST
+      ON CONFLICT (channel_id) DO NOTHING
+    `).catch((err) => {
+      console.warn('[db] channels backfill skipped:', (err as Error).message);
+    });
+
     // YT Data API enrichment jobs — mirrors niche_spy_embedding_jobs so the
     // admin UI can render the same progress treatment for both pipelines.
     await client.query(`

@@ -63,8 +63,10 @@ export async function GET(req: NextRequest) {
 
     pool.query(`
       SELECT niche_spy_videos.id, channel_name as ch, subscriber_count as subs, view_count as views, score,
-             channel_created_at, posted_at, embedded_at IS NOT NULL as has_embedding
+             channel_created_at, posted_at, embedded_at IS NOT NULL as has_embedding,
+             c.first_upload_at, c.dormancy_days
       ${scopeJoin}
+      LEFT JOIN niche_spy_channels c ON c.channel_id = niche_spy_videos.channel_id
       WHERE ${scopeWhere}
         AND subscriber_count > 0 AND view_count > 0
       ORDER BY view_count DESC NULLS LAST
@@ -87,7 +89,12 @@ export async function GET(req: NextRequest) {
 
   const scatter = scatterRes.rows.map(r => {
     const createdAt = r.channel_created_at ? new Date(r.channel_created_at) : null;
-    const ageDays = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) : null;
+    const creationAgeDays = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 86400000) : null;
+    const firstUpload = r.first_upload_at ? new Date(r.first_upload_at) : null;
+    const activeAgeDays = firstUpload ? Math.floor((Date.now() - firstUpload.getTime()) / 86400000) : null;
+    // Prefer active age (first upload) for downstream opportunity/newcomer math.
+    // Fall back to creation age when we haven't yet detected first_upload_at.
+    const ageDays = activeAgeDays ?? creationAgeDays;
     const postedAt = r.posted_at ? new Date(r.posted_at) : null;
     const videoAgeDays = postedAt ? Math.floor((Date.now() - postedAt.getTime()) / 86400000) : null;
     return {
@@ -96,7 +103,9 @@ export async function GET(req: NextRequest) {
       s: parseInt(r.subs) || 0,
       v: parseInt(r.views) || 0,
       sc: parseInt(r.score) || 0,
-      a: ageDays,
+      a: ageDays,                                   // active age (first upload) preferred
+      ca: creationAgeDays,                          // creation age (raw channel_created_at)
+      dm: r.dormancy_days !== null ? parseInt(r.dormancy_days) : null,   // days channel was dormant
       va: videoAgeDays,
       e: r.has_embedding || false,
     };

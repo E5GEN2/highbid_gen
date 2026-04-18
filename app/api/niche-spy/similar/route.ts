@@ -86,10 +86,13 @@ export async function GET(req: NextRequest) {
   const simMap = new Map(similar.map(s => [s.videoId, s.similarity]));
 
   const fullRes = await pool.query(
-    `SELECT id, title, url, view_count, channel_name, posted_at, posted_date, score,
-            subscriber_count, like_count, comment_count, top_comment, thumbnail,
-            keyword, channel_created_at
-     FROM niche_spy_videos WHERE id = ANY($1)`,
+    `SELECT v.id, v.title, v.url, v.view_count, v.channel_name, v.posted_at, v.posted_date, v.score,
+            v.subscriber_count, v.like_count, v.comment_count, v.top_comment, v.thumbnail,
+            v.keyword, v.channel_created_at,
+            c.first_upload_at, c.dormancy_days
+     FROM niche_spy_videos v
+     LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+     WHERE v.id = ANY($1)`,
     [ids]
   );
 
@@ -110,6 +113,8 @@ export async function GET(req: NextRequest) {
       thumbnail: row.thumbnail,
       keyword: row.keyword,
       channelCreatedAt: row.channel_created_at,
+      firstUploadAt: row.first_upload_at,
+      dormancyDays: row.dormancy_days !== null ? parseInt(row.dormancy_days) : null,
       similarity: simMap.get(row.id) || 0,
     }))
     .sort((a, b) => b.similarity - a.similarity);
