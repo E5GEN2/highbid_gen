@@ -3,13 +3,27 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { useNiche } from '@/components/NicheProvider';
+import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { fmtYT } from '@/lib/format';
 
 interface NicheChannel {
   channelName: string; videoCount: number; totalViews: number; avgViews: number; maxViews: number;
   avgScore: number; maxScore: number; subscribers: number; totalLikes: number; totalComments: number;
-  channelCreatedAt: string | null; channelAgeDays: number | null; latestVideoAt: string | null;
-  channelAvatar: string | null; channelId: string | null; keywords: string[];
+  channelCreatedAt: string | null; channelAgeDays: number | null;
+  latestVideoAt: string | null; earliestVideoAt: string | null;
+  channelAvatar: string | null; channelId: string | null; channelHandle: string | null;
+  firstUploadAt: string | null; dormancyDays: number | null;
+  keywords: string[];
+}
+
+/** Build a YouTube channel URL: prefer @handle, fall back to /channel/{id}. */
+function youtubeChannelUrl(ch: { channelHandle: string | null; channelId: string | null }): string | null {
+  if (ch.channelHandle) {
+    const h = ch.channelHandle.startsWith('@') ? ch.channelHandle : `@${ch.channelHandle}`;
+    return `https://www.youtube.com/${h}`;
+  }
+  if (ch.channelId) return `https://www.youtube.com/channel/${ch.channelId}`;
+  return null;
 }
 
 export default function NicheChannels() {
@@ -137,11 +151,20 @@ export default function NicheChannels() {
       ) : (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {channels.map(ch => (
+            {channels.map(ch => {
+              const ytUrl = youtubeChannelUrl(ch);
+              return (
               <div key={ch.channelName} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 hover:border-[#333] transition">
-                {/* Header */}
+                {/* Header — avatar + name are a link to the channel on YouTube.
+                    Uses @handle when we have it, otherwise falls back to /channel/{id}. */}
                 <div className="flex items-start gap-3 mb-3">
-                  <div className="w-10 h-10 rounded-full bg-[#1f1f1f] flex-shrink-0 overflow-hidden">
+                  <a
+                    href={ytUrl || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`w-10 h-10 rounded-full bg-[#1f1f1f] flex-shrink-0 overflow-hidden ${ytUrl ? 'hover:ring-2 hover:ring-red-500/50 transition' : 'pointer-events-none'}`}
+                    aria-label={ytUrl ? `Open ${ch.channelName} on YouTube` : undefined}
+                  >
                     {ch.channelAvatar ? (
                       <img src={ch.channelAvatar} alt="" className="w-full h-full object-cover" loading="lazy" />
                     ) : (
@@ -149,22 +172,34 @@ export default function NicheChannels() {
                         {ch.channelName.charAt(0).toUpperCase()}
                       </div>
                     )}
-                  </div>
+                  </a>
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold text-white truncate">{ch.channelName}</h3>
-                    {ch.subscribers > 0 && <span className="text-xs text-[#888]">{fmtYT(ch.subscribers)} subscribers</span>}
+                    {ytUrl ? (
+                      <a
+                        href={ytUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="group inline-flex items-center gap-1 text-sm font-semibold text-white hover:text-red-400 transition truncate max-w-full"
+                      >
+                        <span className="truncate">{ch.channelName}</span>
+                        <svg className="w-3 h-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </a>
+                    ) : (
+                      <h3 className="text-sm font-semibold text-white truncate">{ch.channelName}</h3>
+                    )}
+                    {ch.subscribers > 0 && <span className="text-xs text-[#888] block">{fmtYT(ch.subscribers)} subscribers</span>}
+                    {ch.channelHandle && <span className="text-[10px] text-[#555] block">{ch.channelHandle.startsWith('@') ? ch.channelHandle : `@${ch.channelHandle}`}</span>}
                   </div>
-                  {ch.channelAgeDays !== null && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${
-                      ch.channelAgeDays < 30 ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30' :
-                      ch.channelAgeDays < 180 ? 'bg-green-500/20 text-green-300 border border-green-500/30' :
-                      'bg-[#1f1f1f] text-[#888]'
-                    }`}>
-                      {ch.channelAgeDays < 30 ? `${ch.channelAgeDays}d` :
-                       ch.channelAgeDays < 365 ? `${Math.floor(ch.channelAgeDays / 30)}mo` :
-                       `${(ch.channelAgeDays / 365).toFixed(1)}yr`}
-                    </span>
-                  )}
+                  <span className="flex-shrink-0 text-xs">
+                    <ChannelAgeChip
+                      createdAt={ch.channelCreatedAt}
+                      firstUploadAt={ch.firstUploadAt}
+                      earliestVideoAt={ch.earliestVideoAt}
+                      dormancyDays={ch.dormancyDays}
+                    />
+                  </span>
                 </div>
 
                 {/* Stats grid — Nexlev style with dividers */}
@@ -203,7 +238,8 @@ export default function NicheChannels() {
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {channels.length < total && (

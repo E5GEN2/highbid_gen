@@ -56,27 +56,32 @@ export async function GET(req: NextRequest) {
   const [channelsRes, countRes, statsRes] = await Promise.all([
     pool.query(`
       SELECT
-        channel_name,
-        MAX(channel_avatar) as channel_avatar,
-        MAX(channel_id) as channel_id,
+        v.channel_name,
+        MAX(v.channel_avatar) as channel_avatar,
+        MAX(v.channel_id) as channel_id,
+        -- Handle + first-upload come from the channels cache, joined by channel_id
+        MIN(c.channel_handle) as channel_handle,
+        MIN(c.first_upload_at) as first_upload_at,
+        MIN(c.dormancy_days) as dormancy_days,
         COUNT(*) as video_count,
-        SUM(view_count) as total_views,
-        ROUND(AVG(view_count)) as avg_views,
-        MAX(view_count) as max_views,
-        ROUND(AVG(score)) as avg_score,
-        MAX(score) as max_score,
-        MAX(subscriber_count) as max_subs,
-        SUM(like_count) as total_likes,
-        SUM(comment_count) as total_comments,
-        MAX(channel_created_at) as channel_created_at,
-        EXTRACT(DAY FROM NOW() - MAX(channel_created_at)) as channel_age_days,
-        MAX(posted_at) as latest_video_at,
-        MIN(posted_at) as earliest_video_at,
-        ARRAY_AGG(DISTINCT keyword) FILTER (WHERE keyword IS NOT NULL) as keywords
-      FROM niche_spy_videos
-      ${where}
-      GROUP BY channel_name
-      ${havingClause}
+        SUM(v.view_count) as total_views,
+        ROUND(AVG(v.view_count)) as avg_views,
+        MAX(v.view_count) as max_views,
+        ROUND(AVG(v.score)) as avg_score,
+        MAX(v.score) as max_score,
+        MAX(v.subscriber_count) as max_subs,
+        SUM(v.like_count) as total_likes,
+        SUM(v.comment_count) as total_comments,
+        MAX(v.channel_created_at) as channel_created_at,
+        EXTRACT(DAY FROM NOW() - MAX(v.channel_created_at)) as channel_age_days,
+        MAX(v.posted_at) as latest_video_at,
+        MIN(v.posted_at) as earliest_video_at,
+        ARRAY_AGG(DISTINCT v.keyword) FILTER (WHERE v.keyword IS NOT NULL) as keywords
+      FROM niche_spy_videos v
+      LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+      ${where.replace(/\bkeyword\b/g, 'v.keyword').replace(/\bscore\b/g, 'v.score').replace(/\bchannel_name\b/g, 'v.channel_name')}
+      GROUP BY v.channel_name
+      ${havingClause.replace(/channel_created_at/g, 'v.channel_created_at')}
       ORDER BY ${orderBy}
       LIMIT $${limitIdx} OFFSET $${offsetIdx}
     `, params),
@@ -106,6 +111,9 @@ export async function GET(req: NextRequest) {
       channelName: r.channel_name,
       channelAvatar: r.channel_avatar || null,
       channelId: r.channel_id || null,
+      channelHandle: r.channel_handle || null,
+      firstUploadAt: r.first_upload_at || null,
+      dormancyDays: r.dormancy_days !== null ? parseInt(r.dormancy_days) : null,
       videoCount: parseInt(r.video_count),
       totalViews: parseInt(r.total_views) || 0,
       avgViews: parseInt(r.avg_views) || 0,
@@ -118,7 +126,7 @@ export async function GET(req: NextRequest) {
       channelCreatedAt: r.channel_created_at,
       channelAgeDays: r.channel_age_days ? Math.round(parseFloat(r.channel_age_days)) : null,
       latestVideoAt: r.latest_video_at,
-      earliestVideoAt: r.earliest_video_at,
+      earliestVideoAt: r.earliest_video_at,    // used as lower-bound fallback for active age
       keywords: r.keywords || [],
     })),
     total: parseInt(countRes.rows[0].cnt),
