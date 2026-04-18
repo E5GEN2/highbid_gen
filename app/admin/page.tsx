@@ -55,7 +55,7 @@ export default function AdminPage() {
   const [embeddingStats, setEmbeddingStats] = useState<{
     apiKeysConfigured: number; legacyModel: string; similaritySource?: 'title_v1' | 'title_v2' | 'thumbnail_v2';
     targets: { title_v1: TargetStats; title_v2: TargetStats; thumbnail_v2: TargetStats };
-    job: { id: number; status: string; total_needed: number; processed: number; errors: number; current_batch: number; total_batches: number; error_message: string | null; started_at: string; completed_at: string | null } | null;
+    job: { id: number; status: string; target?: string | null; total_needed: number; processed: number; errors: number; current_batch: number; total_batches: number; error_message: string | null; started_at: string; completed_at: string | null } | null;
     keys?: Array<{ key: string; proxy: string; banned: boolean; banExpiresIn: number | null }>;
     proxy?: { total: number; online: number; cached: boolean; cacheAge: number; current: { deviceId: string; networkType: string } | null };
     keywordCoverage?: Array<{
@@ -1341,16 +1341,22 @@ export default function AdminPage() {
                           <span className="text-yellow-400">{s.notEmbedded.toLocaleString()} remaining</span>
                           <button
                             onClick={async () => {
-                              await fetch('/api/niche-spy/embeddings', {
+                              const res = await fetch('/api/niche-spy/embeddings', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize, threads: nicheThreads, target: t.key }),
                               });
+                              if (!res.ok) {
+                                const data = await res.json().catch(() => ({}));
+                                alert(data.message || `Failed to start: ${res.status}`);
+                              }
                             }}
-                            disabled={embeddingStats.job?.status === 'running' || s.notEmbedded === 0}
+                            disabled={(embeddingStats.job?.status === 'running' && embeddingStats.job?.target !== t.key) || s.notEmbedded === 0}
                             className="px-2.5 py-1 bg-amber-600 text-white font-semibold rounded-md hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs"
                           >
-                            {embeddingStats.job?.status === 'running' ? 'Running...' : 'Generate'}
+                            {embeddingStats.job?.status === 'running' && embeddingStats.job?.target === t.key ? 'Running...' :
+                             embeddingStats.job?.status === 'running' ? 'Other job running' :
+                             'Generate'}
                           </button>
                         </div>
                       </div>
@@ -1379,8 +1385,12 @@ export default function AdminPage() {
                       <div className="flex-1">
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium text-white">
+                            <span className="inline-block px-2 py-0.5 text-[10px] uppercase tracking-wider rounded mr-2 bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              {embeddingStats.job.target || 'unknown target'}
+                            </span>
                             {embeddingStats.job.status === 'running' ? `Batch ${embeddingStats.job.current_batch}/${embeddingStats.job.total_batches}` :
                              embeddingStats.job.status === 'done' ? 'Complete' :
+                             embeddingStats.job.status === 'cancelled' ? 'Cancelled' :
                              embeddingStats.job.status === 'error' ? 'Error' :
                              embeddingStats.job.status}
                           </span>

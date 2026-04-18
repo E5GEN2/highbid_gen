@@ -33,12 +33,24 @@ export async function POST(req: NextRequest) {
   const target: EmbeddingTarget = isValidTarget(body.target) ? body.target : 'title_v1';
   const cfg = TARGET_CONFIG[target];
 
-  // Check for a running job (single-flight across all targets)
+  // Check for a running job (single-flight across all targets). Surface the
+  // mismatch clearly so the user knows they can't start another target yet.
   const running = await pool.query(
-    `SELECT id, keyword FROM niche_spy_embedding_jobs WHERE status = 'running' LIMIT 1`
+    `SELECT id, keyword, target FROM niche_spy_embedding_jobs WHERE status = 'running' LIMIT 1`
   );
   if (running.rows.length > 0) {
-    return NextResponse.json({ ok: true, status: 'already-running', jobId: running.rows[0].id });
+    const runningTarget = running.rows[0].target || 'unknown';
+    if (runningTarget !== target) {
+      return NextResponse.json({
+        ok: false,
+        status: 'another-target-running',
+        runningTarget,
+        requestedTarget: target,
+        jobId: running.rows[0].id,
+        message: `Another embedding job (${runningTarget}) is already running. Cancel it first or wait for it to finish.`,
+      }, { status: 409 });
+    }
+    return NextResponse.json({ ok: true, status: 'already-running', jobId: running.rows[0].id, target: runningTarget });
   }
 
   // Count how many still need the target embedding. Thumbnails also require a
@@ -68,9 +80,9 @@ export async function POST(req: NextRequest) {
 
   const totalBatches = Math.ceil(totalNeeded / batchSize);
   const jobRes = await pool.query(
-    `INSERT INTO niche_spy_embedding_jobs (status, keyword, total_needed, total_batches, error_message)
-     VALUES ('running', $1, $2, $3, $4) RETURNING id`,
-    [keyword, totalNeeded, totalBatches, `target=${target}`]
+    `INSERT INTO niche_spy_embedding_jobs (status, keyword, total_needed, total_batches, target, error_message)
+     VALUES ('running', $1, $2, $3, $4, $5) RETURNING id`,
+    [keyword, totalNeeded, totalBatches, target, `target=${target}`]
   );
   const jobId = jobRes.rows[0].id;
 
@@ -160,6 +172,16 @@ async function runEmbeddingJob(
 
   async function worker(threadId: number) {
     while (true) {
+      // Cancellation check — the DELETE endpoint sets status='cancelled' in the
+      // DB row; we bail out here so nothing else gets embedded. Without this
+      // the fire-and-forget promise would keep running to completion.
+      const statusRes = await pool.query(`SELECT status FROM niche_spy_embedding_jobs WHERE id = $1`, [jobId]);
+      const currentStatus = statusRes.rows[0]?.status;
+      if (currentStatus !== 'running') {
+        console.log(`[embedding] T${threadId} aborting — job ${jobId} status=${currentStatus}`);
+        break;
+      }
+
       const myIdx = batchIdx++;
       if (myIdx >= batches.length) break;
       const { batchNum, items } = batches[myIdx];
@@ -201,6 +223,12 @@ async function runEmbeddingJob(
       let success = false;
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
         if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
+        // Check cancellation right before each (potentially slow) embed call
+        const cRes = await pool.query(`SELECT status FROM niche_spy_embedding_jobs WHERE id = $1`, [jobId]);
+        if (cRes.rows[0]?.status !== 'running') {
+          console.log(`[embedding] T${threadId} cancelled mid-batch ${batchNum}`);
+          break;
+        }
         try {
           const embeddings = await batchEmbedInputs(inputs, cfg.model, threadId - 1);
           for (let j = 0; j < items.length; j++) {
@@ -257,9 +285,16 @@ async function runEmbeddingJob(
   const workers = Array.from({ length: Math.min(threads, batches.length) }, (_, i) => worker(i + 1));
   await Promise.all(workers);
 
+  // Only flip to done/partial if the job wasn't cancelled mid-flight. Cancelled
+  // stays cancelled so the UI shows accurately why it stopped early.
   await pool.query(
-    `UPDATE niche_spy_embedding_jobs SET status = $1, processed = $2, errors = $3, completed_at = NOW(), error_message = $4 WHERE id = $5`,
-    [globalErrors > 0 ? 'partial' : 'done', globalProcessed, globalErrors, `target=${target} · Done: ${globalProcessed} embedded, ${globalErrors} errors, ${threads} threads`, jobId]
+    `UPDATE niche_spy_embedding_jobs
+        SET status = CASE WHEN status = 'cancelled' THEN 'cancelled'
+                          WHEN $1 > 0 THEN 'partial'
+                          ELSE 'done' END,
+            processed = $2, errors = $1, completed_at = NOW(), error_message = $3
+      WHERE id = $4`,
+    [globalErrors, globalProcessed, `target=${target} · Done: ${globalProcessed} embedded, ${globalErrors} errors, ${threads} threads`, jobId]
   );
 }
 
