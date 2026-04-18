@@ -177,10 +177,18 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
 
   const allLogSubs = dots.map(d => logSafe(d.s));
   const allLogViews = dots.map(d => logSafe(d.v));
-  const minLogSubs = allLogSubs.length > 0 ? Math.min(...allLogSubs) : 0;
-  const maxLogSubs = allLogSubs.length > 0 ? Math.max(...allLogSubs) : 6;
-  const minLogViews = allLogViews.length > 0 ? Math.min(...allLogViews) : 0;
-  const maxLogViews = allLogViews.length > 0 ? Math.max(...allLogViews) : 7;
+  // Snap axis endpoints to whole decades so major tick labels (1, 10, 100,
+  // 1K, 10K, ...) always appear at the expected positions. Without this, an
+  // axis running from e.g. log(300)=2.48 to log(500K)=5.70 hides the 1M
+  // tick and crams the 100K label next to a 500K dot at the right edge.
+  const rawMinSubs = allLogSubs.length > 0 ? Math.min(...allLogSubs) : 0;
+  const rawMaxSubs = allLogSubs.length > 0 ? Math.max(...allLogSubs) : 6;
+  const rawMinViews = allLogViews.length > 0 ? Math.min(...allLogViews) : 0;
+  const rawMaxViews = allLogViews.length > 0 ? Math.max(...allLogViews) : 7;
+  const minLogSubs  = Math.floor(rawMinSubs);
+  const maxLogSubs  = Math.ceil(rawMaxSubs);
+  const minLogViews = Math.floor(rawMinViews);
+  const maxLogViews = Math.ceil(rawMaxViews);
   const rangeX = maxLogSubs - minLogSubs || 1;
   const rangeY = maxLogViews - minLogViews || 1;
 
@@ -233,8 +241,11 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
     return '#ef4444';
   };
 
-  const xTicks = [1, 100, 1000, 10000, 100000, 1000000].filter(v => logSafe(v) >= minLogSubs - 0.3 && logSafe(v) <= maxLogSubs + 0.3);
-  const yTicks = [100, 1000, 10000, 100000, 1000000, 10000000].filter(v => logSafe(v) >= minLogViews - 0.3 && logSafe(v) <= maxLogViews + 0.3);
+  // Axis ticks = every decade whose log lies inside [minLog, maxLog] now that
+  // those bounds are snapped to whole decades. No fudge factor needed.
+  const decadeSeq = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000];
+  const xTicks = decadeSeq.filter(v => logSafe(v) >= minLogSubs && logSafe(v) <= maxLogSubs);
+  const yTicks = decadeSeq.filter(v => logSafe(v) >= minLogViews && logSafe(v) <= maxLogViews);
   const fmtTick = (n: number) => n >= 1000000 ? `${n / 1000000}M` : n >= 1000 ? `${n / 1000}K` : String(n);
 
   const chartW = 100;
