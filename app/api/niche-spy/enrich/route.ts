@@ -53,21 +53,48 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Count how many rows will actually be enriched so totals are real on job start
-  const conditions: string[] = [
+  // Count how many VIDEOS need video-level (Phase 1 + Phase 2) work
+  const videoConds: string[] = [
     '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
   ];
-  const params: (string | number)[] = [];
-  let idx = 1;
-  if (keyword && keyword !== 'all') { conditions.push(`keyword = $${idx++}`); params.push(keyword); }
-  params.push(limit);
-  const cntRes = await pool.query(
-    `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE ${conditions.join(' AND ')} LIMIT $${idx}`,
-    params
+  const videoParams: (string | number)[] = [];
+  let vIdx = 1;
+  if (keyword && keyword !== 'all') { videoConds.push(`keyword = $${vIdx++}`); videoParams.push(keyword); }
+  videoParams.push(limit);
+  const videoCntRes = await pool.query(
+    `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE ${videoConds.join(' AND ')} LIMIT $${vIdx}`,
+    videoParams
   );
-  const totalNeeded = Math.min(parseInt(cntRes.rows[0].cnt), limit);
+  const videoCount = Math.min(parseInt(videoCntRes.rows[0].cnt), limit);
+
+  // Count how many CHANNELS need Phase 3 (first-upload walk). Independent of
+  // whether their videos need video-level work — an aged channel might have
+  // fully-enriched videos but still no first_upload_at until Phase 3 runs.
+  const chanParams: (string | number)[] = [];
+  let cIdx = 1;
+  let kwJoin = '';
+  if (keyword && keyword !== 'all') {
+    kwJoin = `JOIN niche_spy_videos v ON v.channel_id = c.channel_id AND v.keyword = $${cIdx++}`;
+    chanParams.push(keyword);
+  }
+  chanParams.push(limit);
+  const chanCntRes = await pool.query(
+    `SELECT COUNT(DISTINCT c.channel_id) as cnt
+     FROM niche_spy_channels c
+     ${kwJoin}
+     WHERE c.uploads_playlist_id IS NOT NULL
+       AND c.first_upload_at IS NULL
+       AND (c.video_count IS NULL OR c.video_count > 0)
+       AND (c.video_count IS NULL OR c.video_count <= 200)
+       AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days')
+     LIMIT $${cIdx}`,
+    chanParams
+  );
+  const channelCount = Math.min(parseInt(chanCntRes.rows[0].cnt), limit);
+
+  const totalNeeded = videoCount + channelCount;
   if (totalNeeded === 0) {
-    return NextResponse.json({ ok: true, status: 'done', message: 'No videos need enrichment' });
+    return NextResponse.json({ ok: true, status: 'done', message: 'Nothing needs enrichment' });
   }
 
   const totalBatches = Math.ceil(totalNeeded / batchSize);
@@ -365,21 +392,31 @@ async function runEnrichJob(
   }
 
   // --- Phase 3: uploads-playlist walk for channels missing first_upload_at ---
-  // Picks any channels in our niche_spy_channels table that touched this job AND
-  // have no first_upload_at yet. Walks their uploads playlists in parallel to find
-  // the real first-upload date. Quota cost is ~ceil(videoCount/50) per channel;
-  // channels with >200 uploads are skipped (almost always legitimate).
+  // Runs INDEPENDENTLY of Phase 1/2 — picks channels that need the walk whether
+  // or not their videos needed video-level enrichment. Scoped to the keyword
+  // filter when provided. Capped at the job's `limit` so we don't drain quota
+  // on a single run.
   if (!(await isCancelled())) {
+    const ageParams: (string | number)[] = [];
+    let aIdx = 1;
+    let ageKwJoin = '';
+    if (keyword && keyword !== 'all') {
+      ageKwJoin = `JOIN niche_spy_videos v ON v.channel_id = c.channel_id AND v.keyword = $${aIdx++}`;
+      ageParams.push(keyword);
+    }
+    ageParams.push(limit);
     const needAgeRes = await pool.query(`
-      SELECT channel_id, channel_created_at, uploads_playlist_id, video_count
-      FROM niche_spy_channels
-      WHERE channel_id = ANY($1::text[])
-        AND first_upload_at IS NULL
-        AND uploads_playlist_id IS NOT NULL
-        AND (video_count IS NULL OR video_count > 0)
-        AND (last_uploads_fetched_at IS NULL OR last_uploads_fetched_at < NOW() - INTERVAL '14 days')
-      ORDER BY video_count ASC NULLS LAST
-    `, [Array.from(channelIds.keys())]);
+      SELECT DISTINCT c.channel_id, c.channel_created_at, c.uploads_playlist_id, c.video_count
+      FROM niche_spy_channels c
+      ${ageKwJoin}
+      WHERE c.uploads_playlist_id IS NOT NULL
+        AND c.first_upload_at IS NULL
+        AND (c.video_count IS NULL OR c.video_count > 0)
+        AND (c.video_count IS NULL OR c.video_count <= 200)
+        AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days')
+      ORDER BY c.video_count ASC NULLS LAST
+      LIMIT $${aIdx}
+    `, ageParams);
     const ageTargets = needAgeRes.rows as Array<{
       channel_id: string; channel_created_at: string | null;
       uploads_playlist_id: string; video_count: number | null;
@@ -449,25 +486,42 @@ async function runEnrichJob(
 /**
  * GET /api/niche-spy/enrich?keyword=X
  * Returns counts + current job progress + key + proxy status.
+ *
+ * "Need enrichment" counts videos that the enrich job will actually do work on:
+ * either missing video-level data (enriched_at / likes / subs) OR belonging to
+ * a channel that hasn't had its first_upload_at detected yet and is within the
+ * Phase 3 eligibility window.
  */
 export async function GET(req: NextRequest) {
   const pool = await getPool();
   const keyword = req.nextUrl.searchParams.get('keyword');
 
-  const conditions = [
-    '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
-  ];
+  const videoNeedsWork = `(v.enriched_at IS NULL OR v.like_count IS NULL OR v.like_count = 0 OR v.subscriber_count IS NULL OR v.subscriber_count = 0)`;
+  // Channel-level work: Phase 3 runs on channels that have an uploads playlist,
+  // no first_upload_at yet, within the 200-upload skip threshold, and haven't
+  // been checked in 14 days.
+  const channelNeedsWork = `(c.uploads_playlist_id IS NOT NULL
+      AND c.first_upload_at IS NULL
+      AND (c.video_count IS NULL OR c.video_count > 0)
+      AND (c.video_count IS NULL OR c.video_count <= 200)
+      AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days'))`;
+
+  const conds = [`(${videoNeedsWork} OR ${channelNeedsWork})`];
   const params: string[] = [];
-  if (keyword && keyword !== 'all') { conditions.push(`keyword = $1`); params.push(keyword); }
+  if (keyword && keyword !== 'all') { conds.push(`v.keyword = $1`); params.push(keyword); }
 
   const [statsRes, proxyStats, jobRes, keyStatus] = await Promise.all([
     pool.query(
-      `SELECT COUNT(*) as need_enrichment,
-              COUNT(*) FILTER (WHERE enriched_at IS NULL) as never_enriched,
-              COUNT(*) FILTER (WHERE like_count IS NULL OR like_count = 0) as missing_likes,
-              COUNT(*) FILTER (WHERE subscriber_count IS NULL OR subscriber_count = 0) as missing_subs,
-              COUNT(*) FILTER (WHERE posted_at IS NULL) as missing_date
-       FROM niche_spy_videos WHERE ${conditions.join(' AND ')}`,
+      `SELECT
+          COUNT(*) as need_enrichment,
+          COUNT(*) FILTER (WHERE v.enriched_at IS NULL) as never_enriched,
+          COUNT(*) FILTER (WHERE v.like_count IS NULL OR v.like_count = 0) as missing_likes,
+          COUNT(*) FILTER (WHERE v.subscriber_count IS NULL OR v.subscriber_count = 0) as missing_subs,
+          COUNT(*) FILTER (WHERE v.posted_at IS NULL) as missing_date,
+          COUNT(*) FILTER (WHERE ${channelNeedsWork}) as missing_first_upload
+       FROM niche_spy_videos v
+       LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+       WHERE ${conds.join(' AND ')}`,
       params
     ),
     getProxyStats(),
