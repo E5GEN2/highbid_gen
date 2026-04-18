@@ -184,6 +184,20 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
   const rangeX = maxLogSubs - minLogSubs || 1;
   const rangeY = maxLogViews - minLogViews || 1;
 
+  // Real data medians — the quadrant dashed lines are drawn at these so the
+  // visual "top-left / bottom-right" regions actually match the statistical
+  // split the Top-Left Density indicator uses.
+  const median = (arr: number[]) => {
+    if (arr.length === 0) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  };
+  const medSubs = median(dots.map(d => d.s).filter(v => v > 0));
+  const medViews = median(dots.map(d => d.v).filter(v => v > 0));
+  const medianXpct = medSubs > 0 ? ((logSafe(medSubs) - minLogSubs) / rangeX) * 100 : 50;
+  const medianYpct = medViews > 0 ? 100 - ((logSafe(medViews) - minLogViews) / rangeY) * 100 : 50;
+
   const vbW = 100 / zoom;
   const vbH = 100 / zoom;
   const vbX = pan.x;
@@ -300,8 +314,12 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
               const x = ((logSafe(t) - minLogSubs) / rangeX) * chartW;
               return <line key={`x${t}`} x1={x} y1="0" x2={x} y2={chartH} stroke="#1a1a1a" strokeWidth="0.15" />;
             })}
-            <line x1={chartW / 2} y1="0" x2={chartW / 2} y2={chartH} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
-            <line x1="0" y1={chartH / 2} x2={chartW} y2={chartH / 2} stroke="#333" strokeWidth="0.2" strokeDasharray="1.5 1" />
+            {/* Median lines at ACTUAL data medians (log-space) — match the
+                Top-Left Density quadrant the indicator card computes against. */}
+            <line x1={medianXpct} y1="0" x2={medianXpct} y2={chartH} stroke="#444" strokeWidth="0.22" strokeDasharray="1.5 1" />
+            <line x1="0" y1={medianYpct} x2={chartW} y2={medianYpct} stroke="#444" strokeWidth="0.22" strokeDasharray="1.5 1" />
+            {/* Quadrant labels — placed in the corners of the viewport, not at the median
+                (so they remain readable even when the median is near an edge). */}
             <rect x="1" y="1" width="24" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
             <text x="3" y="4.5" fill="#888" fontSize="2.5" fontWeight="600">High views, few subs</text>
             <rect x={chartW - 15} y="1" width="14" height="5" rx="1" fill="#1a1a1a" opacity="0.8" />
