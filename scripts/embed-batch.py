@@ -68,7 +68,9 @@ def main():
         with os.fdopen(fd, 'w') as f:
             f.write(body)
 
-        cmd = ['curl', '-s', '--max-time', '90', '-X', 'POST', url,
+        # --max-time 60 so a single batch can't hang a worker for over a minute;
+        # retries at the TS layer will still catch transient blips.
+        cmd = ['curl', '-s', '--max-time', '60', '-X', 'POST', url,
                '-H', 'Content-Type: application/json',
                '-d', f'@{tmp_path}']
 

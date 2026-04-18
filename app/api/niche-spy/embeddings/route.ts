@@ -198,6 +198,7 @@ async function runEmbeddingJob(
       // Build inputs for this batch — for thumbnails we need to fetch + base64
       let inputs: EmbedInput[] = [];
       let droppedInBatch = 0;
+      const batchStart = Date.now();
       if (target === 'thumbnail_v2') {
         // Fetch thumbnails in parallel
         const pairs = await Promise.all(items.map(async (v) => {
@@ -215,6 +216,7 @@ async function runEmbeddingJob(
         items.length = 0;
         for (const { video } of kept) items.push(video);
         inputs = kept.map(p => p.input!) as EmbedInput[];
+        console.log(`[embedding] T${threadId} batch ${batchNum}: fetched ${kept.length}/${pairs.length} thumbnails in ${Date.now() - batchStart}ms`);
       } else {
         inputs = items.map(v => ({ type: 'text', text: v.title }));
       }
@@ -238,7 +240,18 @@ async function runEmbeddingJob(
           break;
         }
         try {
+          const embedStart = Date.now();
+          console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: calling model=${cfg.model} with ${inputs.length} inputs`);
           const embeddings = await batchEmbedInputs(inputs, cfg.model, threadId - 1);
+          const embedElapsed = Date.now() - embedStart;
+          console.log(`[embedding] T${threadId} batch ${batchNum}: got ${embeddings.length} embeddings in ${embedElapsed}ms`);
+
+          // Google sometimes returns 200 with a short/empty embeddings array for
+          // images it couldn't process. Treat that as an error so we retry.
+          if (embeddings.length < inputs.length) {
+            throw new Error(`Short response: got ${embeddings.length} embeddings for ${inputs.length} inputs`);
+          }
+
           for (let j = 0; j < items.length; j++) {
             if (embeddings[j] && embeddings[j].length > 0) {
               const arrayLiteral = `{${embeddings[j].join(',')}}`;
@@ -253,7 +266,7 @@ async function runEmbeddingJob(
                 items[j].title || '',
                 embeddings[j],
                 target,
-              ).catch(() => {});
+              ).catch((e) => console.warn(`[embedding] upsertVector failed for id=${items[j].id}:`, (e as Error).message));
               globalProcessed++;
             }
           }

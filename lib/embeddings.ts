@@ -168,7 +168,7 @@ export async function batchEmbedInputs(
     const result = await execFileAsync(
       'python3',
       [path.join(SCRIPTS_DIR, 'embed-batch.py'), tmpFile],
-      { timeout: 120000, maxBuffer: 200 * 1024 * 1024 }   // images can make input+output large
+      { timeout: 75000, maxBuffer: 200 * 1024 * 1024 }   // slightly above the curl --max-time 60
     );
     rawOut = result.stdout;
     rawErr = result.stderr;
