@@ -53,10 +53,20 @@ export async function GET(req: NextRequest) {
   const offsetIdx = idx + 1;
   params.push(limit, offset);
 
+  // Group by channel_id when we have it, else fall back to channel_name.
+  // Grouping only on channel_name is wrong: two real YouTube channels can share
+  // a display name (especially generic ones like "Baddie In Business"), or
+  // xgodo can misattribute a video to a name — either case produced cards
+  // where MIN(first_upload_at)=5.3yr but MAX(channel_created_at)=1mo (the two
+  // aggregates were pulling from different underlying channels).
+  // Using COALESCE keeps legacy rows (ingested before we started capturing
+  // channel_id) bucketed by name as a fallback.
+  const groupKey = `COALESCE(v.channel_id, 'name:' || v.channel_name)`;
+
   const [channelsRes, countRes, statsRes] = await Promise.all([
     pool.query(`
       SELECT
-        v.channel_name,
+        MAX(v.channel_name) as channel_name,
         MAX(v.channel_avatar) as channel_avatar,
         MAX(v.channel_id) as channel_id,
         -- Handle + first-upload come from the channels cache, joined by channel_id
@@ -75,15 +85,18 @@ export async function GET(req: NextRequest) {
         MAX(v.subscriber_count) as max_subs,
         SUM(v.like_count) as total_likes,
         SUM(v.comment_count) as total_comments,
-        MAX(v.channel_created_at) as channel_created_at,
-        EXTRACT(DAY FROM NOW() - MAX(v.channel_created_at)) as channel_age_days,
+        -- Prefer the authoritative value from niche_spy_channels (single row
+        -- per channel_id, written by the channels.list enrich pass). Fall back
+        -- to the videos-table mirror only when we don't have a channels row.
+        COALESCE(MIN(c.channel_created_at), MAX(v.channel_created_at)) as channel_created_at,
+        EXTRACT(DAY FROM NOW() - COALESCE(MIN(c.channel_created_at), MAX(v.channel_created_at))) as channel_age_days,
         MAX(v.posted_at) as latest_video_at,
         MIN(v.posted_at) as earliest_video_at,
         ARRAY_AGG(DISTINCT v.keyword) FILTER (WHERE v.keyword IS NOT NULL) as keywords
       FROM niche_spy_videos v
       LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
       ${where.replace(/\bkeyword\b/g, 'v.keyword').replace(/\bscore\b/g, 'v.score').replace(/\bchannel_name\b/g, 'v.channel_name')}
-      GROUP BY v.channel_name
+      GROUP BY ${groupKey}
       ${havingClause.replace(/channel_created_at/g, 'v.channel_created_at')}
       ORDER BY ${orderBy}
       LIMIT $${limitIdx} OFFSET $${offsetIdx}
@@ -91,8 +104,8 @@ export async function GET(req: NextRequest) {
 
     pool.query(`
       SELECT COUNT(*) as cnt FROM (
-        SELECT channel_name FROM niche_spy_videos ${where}
-        GROUP BY channel_name ${havingClause}
+        SELECT ${groupKey} AS k FROM niche_spy_videos v ${where.replace(/\bkeyword\b/g, 'v.keyword').replace(/\bscore\b/g, 'v.score').replace(/\bchannel_name\b/g, 'v.channel_name')}
+        GROUP BY ${groupKey} ${havingClause.replace(/channel_created_at/g, 'v.channel_created_at')}
       ) sub
     `, params.slice(0, -2)),
 

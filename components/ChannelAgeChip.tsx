@@ -23,6 +23,14 @@ function formatAge(days: number): string {
   return `${(days / 365).toFixed(1)}yr old`;
 }
 
+/** Duration-only formatter — no "old" suffix, for use inside tooltip sentences
+ *  like "Created X ago" where "old" would read awkwardly. */
+function formatDuration(days: number): string {
+  if (days < 30) return `${days}d`;
+  if (days < 365) return `${Math.floor(days / 30)}mo`;
+  return `${(days / 365).toFixed(1)}yr`;
+}
+
 export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThresholdDays = 365 }: ChannelAgeProps) {
   const created = createdAt ? new Date(createdAt) : null;
   const firstUp = firstUploadAt ? new Date(firstUploadAt) : null;
@@ -52,16 +60,32 @@ export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThr
     ? Math.floor((Date.now() - created.getTime()) / 86_400_000)
     : null;
 
+  // YouTube's Data API sometimes returns a channel.snippet.publishedAt that's
+  // NEWER than the channel's own earliest upload (seen on reactivated /
+  // migrated / handle-changed channels). That's temporally impossible — a
+  // channel can't exist after its first video. When we detect this, treat the
+  // creation date as unreliable and hide it from the tooltip rather than
+  // rendering nonsense like "Created 1mo ago / Active for 5.3yr".
+  //
+  // Tolerance: first_upload walker sometimes clips a few days off via paging
+  // cursors, so allow a 30-day slack before flagging as inverted.
+  const creationReliable =
+    creationAgeDaysIfBoth == null
+      ? false
+      : creationAgeDaysIfBoth >= ageDays - 30;
+
   if (!isAged) {
-    // Ordinary chip. If we have both first_upload AND creation dates, show a
-    // hover tooltip revealing the creation date alongside the active age.
-    if (creationAgeDaysIfBoth != null) {
+    // Ordinary chip. If we have both first_upload AND creation dates AND they
+    // agree, show a hover tooltip revealing the creation date alongside the
+    // active age. If the creation date is garbage (newer than first upload),
+    // fall through to the bare chip — no misleading tooltip.
+    if (creationAgeDaysIfBoth != null && creationReliable) {
       return (
         <span className="relative group/age inline-flex items-center">
           <span className={`${color} cursor-help`}>📅 {ageStr}</span>
           <span className="pointer-events-none absolute left-0 top-full mt-1 w-56 p-2.5 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50">
             <div>Active for <span className="text-white">{ageStr}</span> (first upload)</div>
-            <div>Created <span className="text-white">{formatAge(creationAgeDaysIfBoth)}</span></div>
+            <div>Created <span className="text-white">{formatDuration(creationAgeDaysIfBoth)} ago</span></div>
           </span>
         </span>
       );
@@ -69,7 +93,10 @@ export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThr
     return <span className={color}>📅 {ageStr}</span>;
   }
 
-  // Aged channel — active age + ⚠ with tooltip explaining the creation gap
+  // Aged channel — active age + ⚠ with tooltip explaining the creation gap.
+  // Only render the "Created" / "Dormant" lines when creation is reliable; an
+  // inverted (created-after-first-upload) pair should never get the aged flag
+  // in the first place, but guard here too.
   const creationAgeDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : null;
   const dormancyHuman = dormancy != null
     ? (dormancy > 365 ? `${(dormancy / 365).toFixed(1)}yr` : `${Math.round(dormancy / 30)}mo`)
@@ -82,10 +109,12 @@ export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThr
       <span className="pointer-events-none absolute left-0 top-full mt-1 w-64 p-2.5 bg-[#0a0a0a] border border-amber-500/40 rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50">
         <div className="font-semibold text-amber-300 mb-1">Aged / reactivated channel</div>
         <div>Active for <span className="text-white">{ageStr}</span> (first upload)</div>
-        {creationAgeDays != null && (
-          <div>Created <span className="text-white">{formatAge(creationAgeDays)}</span></div>
+        {creationAgeDays != null && creationReliable && (
+          <div>Created <span className="text-white">{formatDuration(creationAgeDays)} ago</span></div>
         )}
-        <div className="mt-1 text-[#888]">Dormant for {dormancyHuman} between creation and first upload.</div>
+        {creationReliable && (
+          <div className="mt-1 text-[#888]">Dormant for {dormancyHuman} between creation and first upload.</div>
+        )}
       </span>
     </span>
   );
