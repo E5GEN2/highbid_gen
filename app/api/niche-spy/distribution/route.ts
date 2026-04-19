@@ -61,15 +61,30 @@ export async function GET(req: NextRequest) {
       GROUP BY bucket
     `, scopeParams),
 
+    // Scatter — qualify every column with niche_spy_videos.* (or c.*) because
+    // niche_spy_channels exposes the same column names (channel_name,
+    // subscriber_count, channel_created_at, channel_avatar). Unqualified
+    // references trigger a PostgreSQL "column reference is ambiguous" error
+    // at parse time, the query throws, and the whole endpoint returns 500 —
+    // which is why Opportunity Indicators, Channel Scatter, and Distribution
+    // Bars were blank on the Insights tab.
     pool.query(`
-      SELECT niche_spy_videos.id, channel_name as ch, subscriber_count as subs, view_count as views, score,
-             channel_created_at, posted_at, embedded_at IS NOT NULL as has_embedding,
-             c.first_upload_at, c.dormancy_days
+      SELECT niche_spy_videos.id,
+             niche_spy_videos.channel_name as ch,
+             niche_spy_videos.subscriber_count as subs,
+             niche_spy_videos.view_count as views,
+             niche_spy_videos.score,
+             niche_spy_videos.channel_created_at,
+             niche_spy_videos.posted_at,
+             niche_spy_videos.embedded_at IS NOT NULL as has_embedding,
+             c.first_upload_at,
+             c.dormancy_days
       ${scopeJoin}
       LEFT JOIN niche_spy_channels c ON c.channel_id = niche_spy_videos.channel_id
       WHERE ${scopeWhere}
-        AND subscriber_count > 0 AND view_count > 0
-      ORDER BY view_count DESC NULLS LAST
+        AND niche_spy_videos.subscriber_count > 0
+        AND niche_spy_videos.view_count > 0
+      ORDER BY niche_spy_videos.view_count DESC NULLS LAST
     `, scopeParams),
   ]);
 
