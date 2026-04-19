@@ -34,10 +34,21 @@ export async function GET(req: NextRequest) {
 
   const where = 'WHERE ' + conditions.join(' AND ');
 
-  // Channel age filter (applied in HAVING since it uses aggregate)
+  // Channel age filter — must match the displayed age.
+  // ChannelAgeChip shows first_upload_at when available (Phase-3 walk) and
+  // falls back to channel_created_at, so the filter has to reach into both:
+  //   1. niche_spy_channels.first_upload_at   (preferred — real active age)
+  //   2. niche_spy_channels.channel_created_at (YT channels.list publishedAt)
+  //   3. niche_spy_videos.channel_created_at   (legacy mirror, for rows not yet joined)
+  // Without this, selecting "3mo" would filter by v.channel_created_at only
+  // and leave in channels whose displayed age is years (because the display
+  // reads from c.first_upload_at instead). The filter was checking a
+  // different column than the card was rendering.
+  const effectiveAgeDateSql =
+    `COALESCE(MIN(c.first_upload_at), MIN(c.channel_created_at), MAX(v.channel_created_at))`;
   let havingClause = '';
   if (maxAge) {
-    havingClause = `HAVING MAX(channel_created_at) > NOW() - INTERVAL '${parseInt(maxAge)} days'`;
+    havingClause = `HAVING ${effectiveAgeDateSql} > NOW() - INTERVAL '${parseInt(maxAge)} days'`;
   }
 
   let orderBy: string;
@@ -97,15 +108,22 @@ export async function GET(req: NextRequest) {
       LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
       ${where.replace(/\bkeyword\b/g, 'v.keyword').replace(/\bscore\b/g, 'v.score').replace(/\bchannel_name\b/g, 'v.channel_name')}
       GROUP BY ${groupKey}
-      ${havingClause.replace(/channel_created_at/g, 'v.channel_created_at')}
+      ${havingClause}
       ORDER BY ${orderBy}
       LIMIT $${limitIdx} OFFSET $${offsetIdx}
     `, params),
 
+    // Count query needs the same JOIN so HAVING can reference c.first_upload_at
+    // and c.channel_created_at, and must GROUP BY the same key so the HAVING
+    // aggregate matches the main query's filtering.
     pool.query(`
       SELECT COUNT(*) as cnt FROM (
-        SELECT ${groupKey} AS k FROM niche_spy_videos v ${where.replace(/\bkeyword\b/g, 'v.keyword').replace(/\bscore\b/g, 'v.score').replace(/\bchannel_name\b/g, 'v.channel_name')}
-        GROUP BY ${groupKey} ${havingClause.replace(/channel_created_at/g, 'v.channel_created_at')}
+        SELECT ${groupKey} AS k
+        FROM niche_spy_videos v
+        LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+        ${where.replace(/\bkeyword\b/g, 'v.keyword').replace(/\bscore\b/g, 'v.score').replace(/\bchannel_name\b/g, 'v.channel_name')}
+        GROUP BY ${groupKey}
+        ${havingClause}
       ) sub
     `, params.slice(0, -2)),
 
