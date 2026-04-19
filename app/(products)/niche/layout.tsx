@@ -99,9 +99,16 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
         navItems={navItems}
         backHref="/"
       />
-      <div className="ml-60 flex-1 flex flex-col min-h-screen">
+      {/* min-w-0 is critical: flex items default to min-width: auto, which
+          expands to their content's intrinsic width. Without it, any wide
+          child (card grid, wide table, long unbroken text) pushes this flex
+          child past the viewport, the ml-60 gets "absorbed" by the overflow,
+          and the left side of the content gets clipped behind the fixed
+          sidebar. min-w-0 lets the flex child shrink and forces overflow to
+          be handled inside, not by the page itself. */}
+      <div className="ml-60 flex-1 min-w-0 flex flex-col min-h-screen">
         <TopBar segments={segments} />
-        <div className="flex-1">{children}</div>
+        <div className="flex-1 min-w-0">{children}</div>
       </div>
     </div>
   );
