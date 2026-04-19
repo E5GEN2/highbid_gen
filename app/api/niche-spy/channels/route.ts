@@ -107,7 +107,13 @@ export async function GET(req: NextRequest) {
         -- per channel_id, written by the channels.list enrich pass). Fall back
         -- to the videos-table mirror only when we don't have a channels row.
         COALESCE(MIN(c.channel_created_at), MAX(v.channel_created_at)) as channel_created_at,
-        EXTRACT(DAY FROM NOW() - COALESCE(MIN(c.channel_created_at), MAX(v.channel_created_at))) as channel_age_days,
+        -- channel_age_days is what the "Newest" sort orders by, so it has to
+        -- be derived from the SAME column ChannelAgeChip displays — otherwise
+        -- channels with a recent channel_created_at but old first_upload_at
+        -- (reactivated / handle-migrated) float to the top even though the
+        -- card shows them as years old. Use the effective-age chain:
+        -- first_upload_at → channel_created_at → video mirror.
+        EXTRACT(DAY FROM NOW() - COALESCE(MIN(c.first_upload_at), MIN(c.channel_created_at), MAX(v.channel_created_at))) as channel_age_days,
         MAX(v.posted_at) as latest_video_at,
         MIN(v.posted_at) as earliest_video_at,
         ARRAY_AGG(DISTINCT v.keyword) FILTER (WHERE v.keyword IS NOT NULL) as keywords
