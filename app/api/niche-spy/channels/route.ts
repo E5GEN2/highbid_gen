@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 
+// Force dynamic rendering — filters like maxAge change per-request and must
+// never hit Next.js's fetch/route cache. Without this, edge caches or the
+// data cache can return stale responses when the user switches between age
+// filter chips (30d / 3mo / 6mo / 1yr).
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 /**
  * GET /api/niche-spy/channels
  * Aggregated channel data for a niche.
@@ -127,16 +134,30 @@ export async function GET(req: NextRequest) {
       ) sub
     `, params.slice(0, -2)),
 
+    // Stats box — aggregate per distinct channel (same grouping + same
+    // effective-age derivation as the main query, so the "<30 days" /
+    // "<6 months" / "Established" counts stay consistent with whichever
+    // cards pass the age filter. Using an inner aggregation so each channel
+    // contributes one row with its effective age.
     pool.query(`
+      WITH channel_agg AS (
+        SELECT
+          ${groupKey} AS grp_key,
+          COALESCE(MIN(c.first_upload_at), MIN(c.channel_created_at), MAX(v.channel_created_at)) AS effective_age_at,
+          MAX(v.subscriber_count) AS subs
+        FROM niche_spy_videos v
+        LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+        ${where.replace(/\bkeyword\b/g, 'v.keyword').replace(/\bscore\b/g, 'v.score').replace(/\bchannel_name\b/g, 'v.channel_name')}
+        GROUP BY ${groupKey}
+      )
       SELECT
-        COUNT(DISTINCT channel_name) as total_channels,
-        COUNT(DISTINCT channel_name) FILTER (WHERE channel_created_at > NOW() - INTERVAL '180 days') as new_channels,
-        COUNT(DISTINCT channel_name) FILTER (WHERE channel_created_at > NOW() - INTERVAL '30 days') as very_new_channels,
-        COUNT(DISTINCT channel_name) FILTER (WHERE channel_created_at <= NOW() - INTERVAL '180 days' OR channel_created_at IS NULL) as established_channels,
-        ROUND(AVG(subscriber_count) FILTER (WHERE channel_created_at > NOW() - INTERVAL '180 days'), 0) as new_avg_subs,
-        ROUND(AVG(subscriber_count) FILTER (WHERE channel_created_at <= NOW() - INTERVAL '180 days'), 0) as est_avg_subs
-      FROM niche_spy_videos
-      ${where} AND channel_name IS NOT NULL
+        COUNT(*) as total_channels,
+        COUNT(*) FILTER (WHERE effective_age_at > NOW() - INTERVAL '180 days') as new_channels,
+        COUNT(*) FILTER (WHERE effective_age_at > NOW() - INTERVAL '30 days') as very_new_channels,
+        COUNT(*) FILTER (WHERE effective_age_at <= NOW() - INTERVAL '180 days' OR effective_age_at IS NULL) as established_channels,
+        ROUND(AVG(subs) FILTER (WHERE effective_age_at > NOW() - INTERVAL '180 days'), 0) as new_avg_subs,
+        ROUND(AVG(subs) FILTER (WHERE effective_age_at <= NOW() - INTERVAL '180 days'), 0) as est_avg_subs
+      FROM channel_agg
     `, params.slice(0, -2)),
   ]);
 
