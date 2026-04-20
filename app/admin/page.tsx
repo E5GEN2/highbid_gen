@@ -179,6 +179,17 @@ export default function AdminPage() {
   }
   const [vizardProjects, setVizardProjects] = useState<VizardProjectRow[]>([]);
   const [vizardLoading, setVizardLoading] = useState(false);
+  // Which clip ids currently have their preview expanded. Collapsed rows show
+  // title/score/duration only so 40+ clips don't all preload bytes at once.
+  // A Set makes toggle O(1) and keeps React's diff cheap.
+  const [expandedClipIds, setExpandedClipIds] = useState<Set<number>>(new Set());
+  const toggleClipExpanded = (id: number) => {
+    setExpandedClipIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   // Vizard tab — server-driven polling. Fetch the project list once on tab
   // open, then while ANY project is still processing, ping /tick every 30s
@@ -2342,69 +2353,135 @@ export default function AdminPage() {
                         </button>
                       </div>
 
-                      {/* Clips grid */}
+                      {/* Clips list — compact row per clip, click row to expand
+                          and load the inline player. Default collapsed so 40+
+                          clips don't all preload mp4 bytes at once, which was
+                          timing the browser out earlier. Bulk "Expand all" /
+                          "Collapse all" in the header for power-browsing. */}
                       {project.clips.length > 0 ? (
-                        <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                          {project.clips.map(clip => {
-                            const seconds = clip.durationMs ? Math.round(clip.durationMs / 1000) : null;
-                            const score = clip.viralScore ? parseFloat(clip.viralScore) : null;
-                            const scoreColor = score == null ? 'text-gray-500'
-                              : score >= 8 ? 'text-green-400'
-                              : score >= 6 ? 'text-yellow-400'
-                              : 'text-gray-400';
-                            return (
-                              <div key={clip.id} className="bg-gray-900/80 border border-gray-700 rounded-xl p-3 flex flex-col">
-                                {/* Inline video player. Vizard's CloudFront URL ships with
-                                    `content-disposition: attachment` which blocks some browsers
-                                    from rendering it in a <video> element, and the signature
-                                    would reject any query-param override. We proxy through our
-                                    own route that strips the header and streams the bytes —
-                                    same origin, bytes flow through once, expiry still governed
-                                    by the underlying 7-day signed URL. */}
-                                <video
-                                  src={clip.videoUrl ? `/api/admin/vizard/clips/${clip.id}/video` : undefined}
-                                  controls
-                                  preload="metadata"
-                                  className="w-full aspect-[9/16] bg-black rounded-lg mb-2 object-contain"
-                                />
-                                <div className="flex items-start justify-between gap-2 mb-1">
-                                  <h4 className="text-xs font-semibold text-white line-clamp-2 min-w-0 flex-1" title={clip.title || ''}>
-                                    {clip.title || '(no title)'}
-                                  </h4>
-                                  {score != null && (
-                                    <span className={`text-xs font-mono flex-shrink-0 ${scoreColor}`} title={clip.viralReason || ''}>
-                                      ⚡ {score.toFixed(1)}
+                        <div>
+                          <div className="flex items-center justify-between px-4 pt-3 pb-2 text-[10px] text-gray-500">
+                            <span>Sorted by viral score</span>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => {
+                                  setExpandedClipIds(prev => {
+                                    const next = new Set(prev);
+                                    for (const c of project.clips) next.add(c.id);
+                                    return next;
+                                  });
+                                }}
+                                className="hover:text-gray-200 transition"
+                              >
+                                Expand all
+                              </button>
+                              <span className="text-gray-700">|</span>
+                              <button
+                                onClick={() => {
+                                  setExpandedClipIds(prev => {
+                                    const next = new Set(prev);
+                                    for (const c of project.clips) next.delete(c.id);
+                                    return next;
+                                  });
+                                }}
+                                className="hover:text-gray-200 transition"
+                              >
+                                Collapse all
+                              </button>
+                            </div>
+                          </div>
+                          <div className="divide-y divide-gray-800/70">
+                            {project.clips.map((clip, idx) => {
+                              const seconds = clip.durationMs ? Math.round(clip.durationMs / 1000) : null;
+                              const score = clip.viralScore ? parseFloat(clip.viralScore) : null;
+                              const scoreColor = score == null ? 'text-gray-500'
+                                : score >= 8 ? 'text-green-400'
+                                : score >= 6 ? 'text-yellow-400'
+                                : 'text-gray-400';
+                              const expanded = expandedClipIds.has(clip.id);
+                              return (
+                                <div key={clip.id} className="px-4 py-2.5 hover:bg-gray-900/40 transition">
+                                  {/* Row — clicking anywhere outside the action buttons toggles expand */}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleClipExpanded(clip.id)}
+                                    className="w-full flex items-center gap-3 text-left"
+                                  >
+                                    {/* Rank badge */}
+                                    <span className="text-[10px] font-mono text-gray-600 w-5 flex-shrink-0 text-right">
+                                      {idx + 1}
                                     </span>
+                                    {/* Chevron */}
+                                    <svg className={`w-3.5 h-3.5 text-gray-500 flex-shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                    </svg>
+                                    {/* Title */}
+                                    <span className="text-xs text-white truncate flex-1 min-w-0" title={clip.title || ''}>
+                                      {clip.title || '(no title)'}
+                                    </span>
+                                    {/* Duration */}
+                                    {seconds != null && (
+                                      <span className="text-[10px] text-gray-500 font-mono flex-shrink-0">
+                                        {seconds}s
+                                      </span>
+                                    )}
+                                    {/* Viral score */}
+                                    {score != null && (
+                                      <span className={`text-xs font-mono flex-shrink-0 w-12 text-right ${scoreColor}`} title={clip.viralReason || ''}>
+                                        ⚡ {score.toFixed(1)}
+                                      </span>
+                                    )}
+                                  </button>
+
+                                  {/* Expanded body — player + full transcript + actions */}
+                                  {expanded && (
+                                    <div className="mt-3 pl-11 pr-2">
+                                      <div className="flex flex-col sm:flex-row gap-3">
+                                        {/* 9:16 player — constrained so a 40-clip project
+                                            doesn't push rows to 900px tall when all expanded */}
+                                        <video
+                                          src={clip.videoUrl ? `/api/admin/vizard/clips/${clip.id}/video` : undefined}
+                                          controls
+                                          preload="metadata"
+                                          className="w-full sm:w-[220px] aspect-[9/16] bg-black rounded-lg object-contain flex-shrink-0"
+                                        />
+                                        <div className="flex-1 min-w-0 space-y-2">
+                                          {clip.viralReason && (
+                                            <div>
+                                              <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Why it scores</div>
+                                              <div className="text-xs text-gray-300">{clip.viralReason}</div>
+                                            </div>
+                                          )}
+                                          <div className="flex gap-1.5 flex-wrap">
+                                            {clip.videoUrl && (
+                                              <a
+                                                href={clip.videoUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md transition"
+                                              >
+                                                Download
+                                              </a>
+                                            )}
+                                            {clip.clipEditorUrl && (
+                                              <a
+                                                href={clip.clipEditorUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md transition"
+                                              >
+                                                Edit
+                                              </a>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
                                   )}
                                 </div>
-                                <div className="text-[10px] text-gray-500 mb-2">
-                                  {seconds != null && `${seconds}s`}
-                                </div>
-                                <div className="mt-auto flex gap-1.5 flex-wrap">
-                                  {clip.videoUrl && (
-                                    <a
-                                      href={clip.videoUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md transition"
-                                    >
-                                      Download
-                                    </a>
-                                  )}
-                                  {clip.clipEditorUrl && (
-                                    <a
-                                      href={clip.clipEditorUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md transition"
-                                    >
-                                      Edit
-                                    </a>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
+                              );
+                            })}
+                          </div>
                         </div>
                       ) : (
                         <div className="p-6 text-xs text-gray-500 text-center">
