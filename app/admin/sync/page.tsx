@@ -449,9 +449,9 @@ export default function SyncPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      <div className="max-w-3xl mx-auto px-6 py-10">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6 sm:mb-8 gap-3 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold text-white">Sync Monitor</h1>
             <p className="text-gray-400 text-sm">Feed Spy data sync</p>
@@ -482,7 +482,7 @@ export default function SyncPage() {
             )}
           </div>
           {statsBefore ? (
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div className="bg-gray-800/50 rounded-xl p-4 text-center">
                 <div className="text-2xl font-bold text-purple-400 font-mono">{statsBefore.channels.toLocaleString()}</div>
                 <div className="text-xs text-gray-500 mt-1">Channels</div>
@@ -507,7 +507,7 @@ export default function SyncPage() {
           {statsBefore?.last24h && (
             <div className="mt-4 pt-3 border-t border-gray-800">
               <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Last 24 hours</div>
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="flex items-center gap-2 px-3 py-2 bg-gray-800/30 rounded-lg">
                   <span className="text-lg font-bold text-purple-400 font-mono">{statsBefore.last24h.channels.toLocaleString()}</span>
                   <span className="text-[10px] text-gray-500">channels</span>
@@ -835,7 +835,7 @@ export default function SyncPage() {
                   />
                 </div>
                 {/* Stat cards */}
-                <div className="grid grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="bg-green-900/30 border border-green-800/30 rounded-xl px-3 py-3 text-center">
                     <div className="text-xl font-bold text-green-400 font-mono">{syncProgress.synced ?? 0}</div>
                     <div className="text-[10px] text-green-500/70 uppercase tracking-wider">synced</div>
@@ -932,7 +932,7 @@ export default function SyncPage() {
             {statsAfter && (
               <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
                 <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">After Sync</h2>
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   <div className="bg-gray-800/50 rounded-xl p-4 text-center">
                     <div className="text-2xl font-bold text-purple-400 font-mono">{statsAfter.channels.toLocaleString()}</div>
                     <div className="text-xs text-gray-500 mt-1">Channels</div>

@@ -823,9 +823,9 @@ export default function XPostsPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      <div className="max-w-2xl mx-auto px-4 py-10">
+      <div className="max-w-2xl mx-auto px-4 py-6 sm:py-10">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6 sm:mb-8 gap-3 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold text-white">Daily X Posts</h1>
             <p className="text-gray-400 text-sm">Preview &amp; copy post content</p>
@@ -895,7 +895,7 @@ export default function XPostsPage() {
           </button>
           {filtersOpen && (
             <div className="px-5 pb-5 pt-2 border-t border-gray-800">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">Max channel age (days)</label>
                   <input
@@ -958,7 +958,7 @@ export default function XPostsPage() {
 
         {/* Stats bar */}
         {stats && stats.totalChannels > 0 && (
-          <div className="grid grid-cols-4 gap-3 mb-8">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6 sm:mb-8">
             {[
               { label: 'Channels', value: stats.totalChannels.toString(), color: 'text-purple-400' },
               { label: 'Total Views', value: formatNumber(stats.totalViews), color: 'text-blue-400' },

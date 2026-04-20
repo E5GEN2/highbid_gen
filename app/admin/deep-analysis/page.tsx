@@ -313,9 +313,9 @@ export default function DeepAnalysisPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      <div className="max-w-5xl mx-auto px-6 py-10">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6 sm:mb-8 gap-3 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold text-white">Deep Analysis</h1>
             <p className="text-gray-400 text-sm">AI pipeline: triage &rarr; storyboard &rarr; synthesis &rarr; post generation</p>

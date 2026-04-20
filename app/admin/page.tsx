@@ -510,42 +510,46 @@ export default function AdminPage() {
   // Admin dashboard
   return (
     <div className="min-h-screen bg-gray-950">
-      <div className="max-w-4xl mx-auto px-6 py-10">
+      {/* Container: wider on desktop, reduced padding on phones. max-w-4xl was
+          too narrow — the 6-tab bar + multi-column grids needed more room. */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
         {/* Header */}
-        <div className="flex items-center justify-between mb-10">
-          <div>
-            <h1 className="text-2xl font-bold text-white">Admin Panel</h1>
-            <p className="text-gray-400 text-sm">rofe.ai data operations</p>
+        <div className="flex items-center justify-between mb-6 sm:mb-10 gap-3 flex-wrap">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-bold text-white">Admin Panel</h1>
+            <p className="text-gray-400 text-xs sm:text-sm">rofe.ai data operations</p>
           </div>
-          <a href="/" className="px-4 py-2 bg-gray-800 text-gray-300 rounded-xl hover:bg-gray-700 transition text-sm">
+          <a href="/" className="px-3 sm:px-4 py-2 bg-gray-800 text-gray-300 rounded-xl hover:bg-gray-700 transition text-xs sm:text-sm flex-shrink-0">
             Back to App
           </a>
         </div>
 
-        {/* Admin Section Tabs */}
-        <div className="flex gap-2 mb-8">
+        {/* Admin Section Tabs — flex-wrap so they break to a second row on
+            narrow viewports instead of overflowing off-screen. Slightly
+            smaller tap target on phones via responsive padding. */}
+        <div className="flex flex-wrap gap-2 mb-6 sm:mb-8">
           <button onClick={() => setAdminSection('general')}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'general' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'general' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             General
           </button>
           <button onClick={() => setAdminSection('niche')}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'niche' ? 'bg-amber-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'niche' ? 'bg-amber-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Niche Explorer
           </button>
           <button onClick={() => setAdminSection('enrich')}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'enrich' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'enrich' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Enrich Data
           </button>
           <button onClick={() => setAdminSection('datacollection')}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'datacollection' ? 'bg-cyan-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'datacollection' ? 'bg-cyan-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Data Collection
           </button>
           <button onClick={() => { setAdminSection('tokens'); fetch('/api/admin/admin-tokens').then(r => r.json()).then(d => setAdminTokens(d.tokens || [])).catch(() => {}); }}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'tokens' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'tokens' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Admin Tokens
           </button>
           <button onClick={() => { setAdminSection('agents'); setAgentsLoading(true); fetch('/api/admin/agents').then(r => r.json()).then(d => { setAgentsData(d); setAgentsLoading(false); }).catch(() => setAgentsLoading(false)); }}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition ${adminSection === 'agents' ? 'bg-green-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'agents' ? 'bg-green-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Agents
             {agentsData && agentsData.totalActive > 0 && (
               <span className="ml-1.5 bg-green-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">{agentsData.totalActive}</span>
@@ -602,7 +606,7 @@ export default function AdminPage() {
 
         {/* Stats */}
         {stats && (
-          <div className="grid grid-cols-4 gap-4 mb-10">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-10">
             {[
               { label: 'Videos', value: parseInt(stats.total_videos).toLocaleString(), color: 'text-blue-400' },
               { label: 'Channels', value: parseInt(stats.total_channels).toLocaleString(), color: 'text-purple-400' },
@@ -761,7 +765,7 @@ export default function AdminPage() {
                     <span className="text-3xl font-bold text-white font-mono">{syncProgress.processed}</span>
                     <span className="text-lg text-gray-500 font-mono">/ {syncProgress.total}</span>
                   </div>
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div className="bg-green-900/30 border border-green-800/30 rounded-lg px-2 py-1.5 text-center">
                       <div className="text-base font-bold text-green-400 font-mono">{syncProgress.synced ?? 0}</div>
                       <div className="text-[9px] text-green-500/70 uppercase">synced</div>
@@ -1263,8 +1267,8 @@ export default function AdminPage() {
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
                 <label className="block text-sm font-medium text-gray-300 mb-1">Proxy Host</label>
                 <input
                   type="text"
@@ -1492,7 +1496,7 @@ export default function AdminPage() {
 
                 {/* Key & Proxy Status Table */}
                 {(embeddingStats.keys || embeddingStats.proxy) && (
-                  <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                     {/* API Keys */}
                     {embeddingStats.keys && embeddingStats.keys.length > 0 && (
                       <div className="bg-gray-900/50 rounded-lg p-3">
@@ -1546,9 +1550,12 @@ export default function AdminPage() {
                   </div>
                 )}
 
-                {/* Per-keyword embedding coverage — 3 columns (title v1 / title v2 / thumb v2) */}
+                {/* Per-keyword embedding coverage — 3 columns (title v1 / title v2 / thumb v2).
+                    Fixed grid-template needs ~600px; wrap in overflow-x-auto so narrow
+                    viewports get horizontal scroll instead of clipped content. */}
                 {embeddingStats.keywordCoverage && embeddingStats.keywordCoverage.length > 0 && (
-                  <div className="mt-4 bg-gray-900/50 rounded-lg p-3">
+                  <div className="mt-4 bg-gray-900/50 rounded-lg p-3 overflow-x-auto">
+                    <div className="min-w-[600px]">
                     <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Coverage by Keyword</h4>
                     <div className="grid grid-cols-[minmax(140px,1fr)_repeat(3,minmax(120px,1fr))_60px] gap-3 items-center text-[10px] text-gray-500 uppercase tracking-wider pb-1.5 border-b border-gray-800">
                       <div>Keyword</div>
@@ -1578,6 +1585,7 @@ export default function AdminPage() {
                           </div>
                         );
                       })}
+                    </div>
                     </div>
                   </div>
                 )}
