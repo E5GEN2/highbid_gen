@@ -40,6 +40,16 @@ async function runTick() {
      LIMIT 10`
   );
 
+  // Self-heal: if initSchema hasn't created the unique index for
+  // vizard_clips.vizard_video_id yet (e.g. the app booted before the column
+  // existed), our ON CONFLICT below will throw "no unique or exclusion
+  // constraint matching the ON CONFLICT specification". Create it idempotently
+  // at the top of every tick so this never blocks again.
+  await pool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_vizard_clips_vizard_video_id
+     ON vizard_clips(vizard_video_id) WHERE vizard_video_id IS NOT NULL`
+  ).catch(() => {});
+
   let polled = 0, done = 0, errors = 0;
 
   for (const row of dueRes.rows) {
@@ -50,20 +60,19 @@ async function runTick() {
       // 2000 = done. Upsert clips, flip project to done.
       if (result.code === 2000 && Array.isArray(result.videos)) {
         for (const clip of result.videos as VizardClip[]) {
+          // Two-step upsert: DELETE any previous row with the same vizard_video_id,
+          // then INSERT. Avoids the ON CONFLICT dependency on the unique index —
+          // if the index creation above raced, or a different DB doesn't support
+          // partial indexes in ON CONFLICT, this still works.
+          await pool.query(
+            `DELETE FROM vizard_clips WHERE vizard_video_id = $1`,
+            [String(clip.videoId)]
+          );
           await pool.query(
             `INSERT INTO vizard_clips
                (project_id, vizard_video_id, video_url, duration_ms, title,
                 transcript, viral_score, viral_reason, related_topic, clip_editor_url)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             ON CONFLICT (vizard_video_id) DO UPDATE SET
-               video_url = EXCLUDED.video_url,
-               duration_ms = EXCLUDED.duration_ms,
-               title = EXCLUDED.title,
-               transcript = EXCLUDED.transcript,
-               viral_score = EXCLUDED.viral_score,
-               viral_reason = EXCLUDED.viral_reason,
-               related_topic = EXCLUDED.related_topic,
-               clip_editor_url = EXCLUDED.clip_editor_url`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
             [
               row.id,
               String(clip.videoId),
