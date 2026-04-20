@@ -2354,10 +2354,15 @@ export default function AdminPage() {
                               : 'text-gray-400';
                             return (
                               <div key={clip.id} className="bg-gray-900/80 border border-gray-700 rounded-xl p-3 flex flex-col">
-                                {/* Inline video player — the URL is a direct MP4/webm that
-                                    browsers can play natively. Expires in 7 days. */}
+                                {/* Inline video player. Vizard's CloudFront URL ships with
+                                    `content-disposition: attachment` which blocks some browsers
+                                    from rendering it in a <video> element, and the signature
+                                    would reject any query-param override. We proxy through our
+                                    own route that strips the header and streams the bytes —
+                                    same origin, bytes flow through once, expiry still governed
+                                    by the underlying 7-day signed URL. */}
                                 <video
-                                  src={clip.videoUrl || undefined}
+                                  src={clip.videoUrl ? `/api/admin/vizard/clips/${clip.id}/video` : undefined}
                                   controls
                                   preload="metadata"
                                   className="w-full aspect-[9/16] bg-black rounded-lg mb-2 object-contain"
