@@ -29,7 +29,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard'>('general');
 
   // Agents tab state
   const [agentsData, setAgentsData] = useState<{
@@ -140,6 +140,110 @@ export default function AdminPage() {
   // Legacy/compat — kept so other places that reference nicheThreads still compile
   const [nicheThreads, setNicheThreads] = useState(2);
 
+  // Vizard tab state — API key lives in admin_config (vizard_api_key).
+  // `projects` is the full list returned by GET /api/admin/vizard/projects
+  // (newest first). While any project is processing, a 30s poll fires the
+  // tick route + refetches the list so clip counts update live.
+  const [vizardApiKey, setVizardApiKey] = useState('');
+  const [vizardUrl, setVizardUrl] = useState('');
+  const [vizardPreferLength, setVizardPreferLength] = useState<number[]>([0]);
+  const [vizardLang, setVizardLang] = useState('auto');
+  const [vizardSubmitting, setVizardSubmitting] = useState(false);
+  const [vizardSubmitError, setVizardSubmitError] = useState('');
+  interface VizardClipRow {
+    id: number;
+    vizardVideoId: string | null;
+    videoUrl: string | null;
+    durationMs: number | null;
+    title: string | null;
+    viralScore: string | null;
+    viralReason: string | null;
+    relatedTopic: string | null;
+    clipEditorUrl: string | null;
+  }
+  interface VizardProjectRow {
+    id: number;
+    vizardProjectId: string | null;
+    videoUrl: string;
+    videoType: number;
+    lang: string;
+    preferLength: number[];
+    status: 'pending' | 'processing' | 'done' | 'error';
+    errorMessage: string | null;
+    lastCode: number | null;
+    clipCount: number;
+    createdAt: string;
+    lastPolledAt: string | null;
+    completedAt: string | null;
+    clips: VizardClipRow[];
+  }
+  const [vizardProjects, setVizardProjects] = useState<VizardProjectRow[]>([]);
+  const [vizardLoading, setVizardLoading] = useState(false);
+
+  // Vizard tab — server-driven polling. Fetch the project list once on tab
+  // open, then while ANY project is still processing, ping /tick every 30s
+  // (Vizard's recommended polling cadence) and refetch the list. tick updates
+  // DB rows so the next fetch shows fresh clip counts / statuses.
+  useEffect(() => {
+    if (adminSection !== 'vizard') return;
+    let cancelled = false;
+    const refetch = async () => {
+      try {
+        const r = await fetch('/api/admin/vizard/projects');
+        const d = await r.json();
+        if (!cancelled && d.projects) setVizardProjects(d.projects);
+      } catch { /* swallow — next tick retries */ }
+    };
+    setVizardLoading(true);
+    refetch().finally(() => { if (!cancelled) setVizardLoading(false); });
+
+    const iv = setInterval(async () => {
+      // Only do work if there's something to poll — avoids hammering Vizard
+      // for nothing when every project is already done.
+      const hasActive = vizardProjects.some(p => p.status === 'pending' || p.status === 'processing');
+      if (!hasActive) { await refetch(); return; }
+      try {
+        await fetch('/api/admin/vizard/tick', { method: 'POST' });
+      } catch { /* tick is best-effort; the client refetch still shows whatever landed */ }
+      await refetch();
+    }, 30_000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [adminSection, vizardProjects]);
+
+  const submitVizardUrl = async () => {
+    setVizardSubmitError('');
+    const url = vizardUrl.trim();
+    if (!url) { setVizardSubmitError('Paste a video URL first'); return; }
+    setVizardSubmitting(true);
+    try {
+      const res = await fetch('/api/admin/vizard/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoUrl: url, preferLength: vizardPreferLength, lang: vizardLang }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setVizardSubmitError(data.error || `HTTP ${res.status}`);
+      } else {
+        setVizardUrl('');
+        // Refetch so the new "pending" row appears immediately.
+        const r = await fetch('/api/admin/vizard/projects');
+        const d = await r.json();
+        if (d.projects) setVizardProjects(d.projects);
+      }
+    } catch (err) {
+      setVizardSubmitError(err instanceof Error ? err.message : 'submission failed');
+    } finally {
+      setVizardSubmitting(false);
+    }
+  };
+
+  const deleteVizardProject = async (id: number) => {
+    if (!confirm('Delete this project and its clips? Vizard clips expire in 7 days anyway.')) return;
+    await fetch(`/api/admin/vizard/projects?id=${id}`, { method: 'DELETE' });
+    setVizardProjects(prev => prev.filter(p => p.id !== id));
+  };
+
   // Config state
   const [xgodoToken, setXgodoToken] = useState('');
   const [nicheSpyToken, setNicheSpyToken] = useState('');
@@ -223,6 +327,7 @@ export default function AdminPage() {
       if (data.config) {
         setXgodoToken(data.config.xgodo_api_token || '');
         setNicheSpyToken(data.config.xgodo_niche_spy_token || '');
+        setVizardApiKey(data.config.vizard_api_key || '');
         setNicheGoogleApiKeys(data.config.niche_google_api_keys || '');
         setNicheEmbeddingModel(data.config.niche_embedding_model || 'text-embedding-004');
         const src = data.config.niche_similarity_source;
@@ -319,6 +424,7 @@ export default function AdminPage() {
           config: {
             xgodo_api_token: xgodoToken,
             xgodo_niche_spy_token: nicheSpyToken,
+            vizard_api_key: vizardApiKey,
             xgodo_proxy_host: xgodoProxyHost,
             xgodo_proxy_port: xgodoProxyPort,
             niche_google_api_keys: nicheGoogleApiKeys,
@@ -553,6 +659,15 @@ export default function AdminPage() {
             Agents
             {agentsData && agentsData.totalActive > 0 && (
               <span className="ml-1.5 bg-green-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">{agentsData.totalActive}</span>
+            )}
+          </button>
+          <button onClick={() => setAdminSection('vizard')}
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'vizard' ? 'bg-pink-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Vizard
+            {vizardProjects.some(p => p.status === 'pending' || p.status === 'processing') && (
+              <span className="ml-1.5 bg-pink-500 text-white text-[10px] px-1.5 py-0.5 rounded-full animate-pulse">
+                {vizardProjects.filter(p => p.status === 'pending' || p.status === 'processing').length}
+              </span>
             )}
           </button>
         </div>
@@ -1265,6 +1380,18 @@ export default function AdminPage() {
                 placeholder="xgodo JWT for niche spy job"
                 className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Vizard API Key</label>
+              <input
+                type="password"
+                value={vizardApiKey}
+                onChange={(e) => setVizardApiKey(e.target.value)}
+                placeholder="VIZARDAI_API_KEY from vizard.ai dashboard"
+                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-pink-500 font-mono text-sm"
+              />
+              <p className="mt-1 text-[11px] text-gray-500">Used by the Vizard tab to submit videos for AI clip generation.</p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -2095,6 +2222,200 @@ export default function AdminPage() {
           }}
           active={adminSection === 'agents'}
         />
+        </div>
+
+        {/* Vizard Tab — paste a video URL, get AI-generated clips back.
+            Grid renders one card per clip with viral score, title, duration,
+            and a download link + "Send to xgodo" action (TODO next phase). */}
+        <div style={{ display: adminSection === 'vizard' ? 'block' : 'none' }}>
+          <div className="space-y-6">
+            {/* API-key warning when unset — other fields are pointless without it */}
+            {!vizardApiKey && (
+              <div className="bg-yellow-900/20 border border-yellow-600/40 rounded-2xl p-4 text-sm text-yellow-200">
+                No Vizard API key configured. Add it in the <button onClick={() => setAdminSection('general')} className="underline hover:text-white">General tab</button> under <code className="text-yellow-400">vizard_api_key</code>, then come back.
+              </div>
+            )}
+
+            {/* Submit bar */}
+            <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-5 sm:p-6">
+              <h2 className="text-lg font-bold text-white mb-1">Generate Clips (Vizard.ai)</h2>
+              <p className="text-xs text-gray-500 mb-4">Paste a YouTube / Vimeo / direct mp4 URL. Vizard returns short clips sorted by viral score. Polling runs server-side every 30s.</p>
+              <div className="flex gap-2 flex-col sm:flex-row">
+                <input
+                  type="url"
+                  value={vizardUrl}
+                  onChange={e => setVizardUrl(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !vizardSubmitting) submitVizardUrl(); }}
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  className="flex-1 bg-gray-900 border border-gray-700 text-white text-sm rounded-xl px-3 py-2.5 focus:outline-none focus:border-pink-500"
+                  disabled={vizardSubmitting}
+                />
+                <select
+                  value={vizardPreferLength[0]}
+                  onChange={e => setVizardPreferLength([parseInt(e.target.value)])}
+                  className="bg-gray-900 border border-gray-700 text-white text-sm rounded-xl px-2 py-2.5"
+                  title="Preferred clip length"
+                >
+                  <option value={0}>Auto length</option>
+                  <option value={1}>&lt; 30s</option>
+                  <option value={2}>30–60s</option>
+                  <option value={3}>60–90s</option>
+                  <option value={4}>90s–3min</option>
+                </select>
+                <select
+                  value={vizardLang}
+                  onChange={e => setVizardLang(e.target.value)}
+                  className="bg-gray-900 border border-gray-700 text-white text-sm rounded-xl px-2 py-2.5"
+                  title="Source language"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="en">English</option>
+                  <option value="es">Spanish</option>
+                  <option value="pt">Portuguese</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="ru">Russian</option>
+                </select>
+                <button
+                  onClick={submitVizardUrl}
+                  disabled={vizardSubmitting || !vizardApiKey}
+                  className="px-5 py-2.5 bg-pink-600 hover:bg-pink-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-xl transition whitespace-nowrap"
+                >
+                  {vizardSubmitting ? 'Submitting…' : 'Generate'}
+                </button>
+              </div>
+              {vizardSubmitError && (
+                <p className="mt-2 text-xs text-red-400">{vizardSubmitError}</p>
+              )}
+            </div>
+
+            {/* Projects grid — one card per submitted URL. Each card holds
+                its clips inline so processing state is visible inline. */}
+            {vizardLoading && vizardProjects.length === 0 ? (
+              <div className="text-center text-sm text-gray-500 py-12">Loading projects…</div>
+            ) : vizardProjects.length === 0 ? (
+              <div className="text-center text-sm text-gray-500 py-12">No projects yet. Paste a video URL above to generate clips.</div>
+            ) : (
+              <div className="space-y-4">
+                {vizardProjects.map(project => {
+                  const statusColors: Record<VizardProjectRow['status'], string> = {
+                    pending:    'bg-gray-700 text-gray-300',
+                    processing: 'bg-blue-600 text-white animate-pulse',
+                    done:       'bg-green-600 text-white',
+                    error:      'bg-red-700 text-white',
+                  };
+                  return (
+                    <div key={project.id} className="bg-gray-800/50 rounded-2xl border border-gray-700 overflow-hidden">
+                      {/* Project header */}
+                      <div className="p-4 border-b border-gray-700/70 flex items-start gap-3 flex-wrap">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full ${statusColors[project.status]}`}>
+                              {project.status}
+                            </span>
+                            {project.clipCount > 0 && (
+                              <span className="text-[10px] text-gray-400">{project.clipCount} clips</span>
+                            )}
+                            <span className="text-[10px] text-gray-500">
+                              {new Date(project.createdAt).toLocaleString()}
+                            </span>
+                          </div>
+                          <a
+                            href={project.videoUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-gray-300 hover:text-pink-400 truncate block max-w-full"
+                            title={project.videoUrl}
+                          >
+                            {project.videoUrl}
+                          </a>
+                          {project.errorMessage && (
+                            <p className="mt-1 text-xs text-red-400 break-words">{project.errorMessage}</p>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => deleteVizardProject(project.id)}
+                          className="text-xs text-gray-500 hover:text-red-400 transition flex-shrink-0"
+                          title="Delete project"
+                        >
+                          Delete
+                        </button>
+                      </div>
+
+                      {/* Clips grid */}
+                      {project.clips.length > 0 ? (
+                        <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                          {project.clips.map(clip => {
+                            const seconds = clip.durationMs ? Math.round(clip.durationMs / 1000) : null;
+                            const score = clip.viralScore ? parseFloat(clip.viralScore) : null;
+                            const scoreColor = score == null ? 'text-gray-500'
+                              : score >= 8 ? 'text-green-400'
+                              : score >= 6 ? 'text-yellow-400'
+                              : 'text-gray-400';
+                            return (
+                              <div key={clip.id} className="bg-gray-900/80 border border-gray-700 rounded-xl p-3 flex flex-col">
+                                {/* Inline video player — the URL is a direct MP4/webm that
+                                    browsers can play natively. Expires in 7 days. */}
+                                <video
+                                  src={clip.videoUrl || undefined}
+                                  controls
+                                  preload="metadata"
+                                  className="w-full aspect-[9/16] bg-black rounded-lg mb-2 object-contain"
+                                />
+                                <div className="flex items-start justify-between gap-2 mb-1">
+                                  <h4 className="text-xs font-semibold text-white line-clamp-2 min-w-0 flex-1" title={clip.title || ''}>
+                                    {clip.title || '(no title)'}
+                                  </h4>
+                                  {score != null && (
+                                    <span className={`text-xs font-mono flex-shrink-0 ${scoreColor}`} title={clip.viralReason || ''}>
+                                      ⚡ {score.toFixed(1)}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-gray-500 mb-2">
+                                  {seconds != null && `${seconds}s`}
+                                </div>
+                                <div className="mt-auto flex gap-1.5 flex-wrap">
+                                  {clip.videoUrl && (
+                                    <a
+                                      href={clip.videoUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md transition"
+                                    >
+                                      Download
+                                    </a>
+                                  )}
+                                  {clip.clipEditorUrl && (
+                                    <a
+                                      href={clip.clipEditorUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md transition"
+                                    >
+                                      Edit
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="p-6 text-xs text-gray-500 text-center">
+                          {project.status === 'processing' || project.status === 'pending'
+                            ? 'Waiting for Vizard to generate clips… polls every 30s.'
+                            : project.status === 'error'
+                              ? 'No clips — see error above.'
+                              : 'No clips returned.'}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

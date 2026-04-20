@@ -712,6 +712,63 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // Vizard.ai clip generation — one project per submitted URL, many clips
+    // per project. Polling is server-driven (see app/api/admin/vizard/tick),
+    // so `status` tracks the lifecycle:
+    //   pending    — submitted, Vizard returned 2000 or 1000, waiting for clips
+    //   processing — Vizard returned 1000 on last poll
+    //   done       — clips retrieved (videos array populated)
+    //   error      — Vizard returned 4xxx or our submission failed
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vizard_projects (
+        id SERIAL PRIMARY KEY,
+        vizard_project_id TEXT UNIQUE,   -- nullable: set after create-call returns
+        video_url TEXT NOT NULL,
+        video_type INTEGER NOT NULL,     -- 1=mp4 url, 2=youtube, 3=drive, etc.
+        lang TEXT DEFAULT 'auto',
+        prefer_length INTEGER[] DEFAULT ARRAY[0],
+        status TEXT NOT NULL DEFAULT 'pending',
+        error_message TEXT,
+        last_code INTEGER,               -- last Vizard code seen (2000, 1000, 4xxx)
+        clip_count INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        last_polled_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ
+      )
+    `).catch(() => {});
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_vizard_projects_status ON vizard_projects(status)`
+    ).catch(() => {});
+
+    // One row per clip Vizard produces. Stores the metadata + temporary
+    // videoUrl (valid ~7 days per Vizard's docs). If we later re-host on our
+    // Railway Volume for xgodo handoff, the path goes in local_path.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vizard_clips (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES vizard_projects(id) ON DELETE CASCADE,
+        vizard_video_id TEXT,            -- Vizard's videoId; unique per clip
+        video_url TEXT,                  -- temporary download url (7-day expiry)
+        duration_ms BIGINT,
+        title TEXT,
+        transcript TEXT,
+        viral_score TEXT,                -- Vizard returns as string "0"–"10"
+        viral_reason TEXT,
+        related_topic TEXT,              -- stringified JSON array
+        clip_editor_url TEXT,
+        local_path TEXT,                 -- filled if we re-host to Railway volume
+        xgodo_upload_status TEXT,        -- null | pending | sent | failed
+        xgodo_upload_id TEXT,            -- xgodo's ID once uploaded
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_vizard_clips_project ON vizard_clips(project_id)`
+    ).catch(() => {});
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_vizard_clips_vizard_video_id ON vizard_clips(vizard_video_id) WHERE vizard_video_id IS NOT NULL`
+    ).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
