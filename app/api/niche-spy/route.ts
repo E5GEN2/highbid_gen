@@ -80,10 +80,18 @@ export async function GET(req: NextRequest) {
 
   const [videosRes, countRes, keywordsRes, statsRes] = await Promise.all([
     pool.query(
+      // Three separate embedding timestamps exist in the schema — v1 (legacy,
+      // frozen), title_v2, thumbnail_v2. The old code only returned
+      // embedded_at (= v1), so the Similar button vanished for every video
+      // embedded in v2 spaces. Return all three and let the client decide
+      // which is relevant to the active similarity source.
       `SELECT v.id, v.keyword, v.url, v.title, v.view_count, v.channel_name,
               v.posted_date, v.posted_at, v.score, v.subscriber_count, v.like_count,
               v.comment_count, v.top_comment, v.thumbnail, v.fetched_at,
-              v.channel_created_at, v.embedded_at,
+              v.channel_created_at,
+              v.embedded_at,
+              v.title_embedded_v2_at,
+              v.thumbnail_embedded_v2_at,
               c.first_upload_at, c.dormancy_days
        FROM niche_spy_videos v
        LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
@@ -111,10 +119,20 @@ export async function GET(req: NextRequest) {
     ),
   ]);
 
+  // The active similarity source determines which embedded_at flag the
+  // client should check to decide whether "Similar" is actionable. Pulled
+  // from admin_config; defaults to title_v1 for back-compat.
+  const simSrcRes = await pool.query(
+    "SELECT value FROM admin_config WHERE key = 'niche_similarity_source'"
+  );
+  const similaritySource = (simSrcRes.rows[0]?.value || 'title_v1') as
+    'title_v1' | 'title_v2' | 'thumbnail_v2';
+
   return NextResponse.json({
     videos: videosRes.rows,
     total: parseInt(countRes.rows[0].cnt),
     keywords: keywordsRes.rows,
     stats: statsRes.rows[0],
+    similaritySource,
   });
 }

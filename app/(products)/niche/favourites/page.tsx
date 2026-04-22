@@ -9,10 +9,24 @@ import { StarButton, useFavourites } from '@/components/FavouritesProvider';
 interface FavVideo {
   id: number; keyword: string; url: string; title: string; view_count: number;
   channel_name: string; posted_date: string; posted_at: string; score: number;
-  channel_created_at: string; embedded_at: string | null;
+  channel_created_at: string;
+  // Three separate embedding flags so the Similar button can check the
+  // right one for the active similarity source.
+  embedded_at: string | null;                  // v1 legacy
+  title_embedded_v2_at?: string | null;        // v2 title
+  thumbnail_embedded_v2_at?: string | null;    // v2 thumbnail
   subscriber_count: number; like_count: number; comment_count: number;
   thumbnail: string; first_upload_at?: string | null; dormancy_days?: number | null;
   added_at: string;
+}
+
+type SimilaritySource = 'title_v1' | 'title_v2' | 'thumbnail_v2';
+function favHasSimilarEmbedding(v: FavVideo, source: SimilaritySource): boolean {
+  switch (source) {
+    case 'title_v2':     return !!v.title_embedded_v2_at;
+    case 'thumbnail_v2': return !!v.thumbnail_embedded_v2_at;
+    default:             return !!v.embedded_at;
+  }
 }
 
 export default function FavouritesPage() {
@@ -20,6 +34,7 @@ export default function FavouritesPage() {
   const { count, ids } = useFavourites();
   const [videos, setVideos] = useState<FavVideo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [similaritySource, setSimilaritySource] = useState<SimilaritySource>('title_v1');
 
   // Re-fetch full video rows whenever the global favourites set changes.
   // Using `ids` instead of `count` in the dep so we also refresh on swaps.
@@ -28,7 +43,11 @@ export default function FavouritesPage() {
     setLoading(true);
     fetch('/api/niche-spy/favourites')
       .then(r => r.json())
-      .then(d => { if (!cancelled) setVideos(d.videos || []); })
+      .then(d => {
+        if (cancelled) return;
+        setVideos(d.videos || []);
+        if (d.similaritySource) setSimilaritySource(d.similaritySource);
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -104,7 +123,7 @@ export default function FavouritesPage() {
                   )}
                   <div className="flex items-center gap-1.5 ml-auto">
                     <StarButton videoId={v.id} />
-                    {v.embedded_at && (
+                    {favHasSimilarEmbedding(v, similaritySource) && (
                       <button
                         onClick={() => openSimilar(v.id)}
                         className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium"

@@ -12,11 +12,29 @@ import { fmtYT } from '@/lib/format';
 interface NicheVideo {
   id: number; keyword: string; url: string; title: string; view_count: number;
   channel_name: string; posted_date: string; posted_at: string; score: number;
-  channel_created_at: string; embedded_at: string | null;
+  channel_created_at: string;
+  // Three separate embedding flags — the Similar button gates on the one
+  // that matches the active similarity source (see `similaritySource`).
+  embedded_at: string | null;                // v1 (legacy)
+  title_embedded_v2_at?: string | null;      // v2 title
+  thumbnail_embedded_v2_at?: string | null;  // v2 thumbnail
   subscriber_count: number; like_count: number; comment_count: number;
   top_comment: string; thumbnail: string; fetched_at: string;
   first_upload_at?: string | null; dormancy_days?: number | null;
   _similarity?: number;
+}
+
+type SimilaritySource = 'title_v1' | 'title_v2' | 'thumbnail_v2';
+
+/** Returns true if the video has an embedding in the currently-active
+ *  similarity space, so the Similar button can produce real results. */
+function hasSimilarEmbedding(v: NicheVideo, source: SimilaritySource): boolean {
+  switch (source) {
+    case 'title_v2':     return !!v.title_embedded_v2_at;
+    case 'thumbnail_v2': return !!v.thumbnail_embedded_v2_at;
+    case 'title_v1':
+    default:             return !!v.embedded_at;
+  }
 }
 
 export default function NicheVideos() {
@@ -38,6 +56,10 @@ function NicheVideosInner() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [offset, setOffset] = useState(0);
+  // Active similarity source, pulled from the same API response. Defaults to
+  // title_v1 so the button behaves identically to the old code when the
+  // config key is absent.
+  const [similaritySource, setSimilaritySource] = useState<SimilaritySource>('title_v1');
   // stats + keywords state removed along with the redundant top plaque —
   // breadcrumbs + sidebar already show the active keyword.
 
@@ -163,6 +185,9 @@ function NicheVideosInner() {
       else setVideos(prev => [...prev, ...data.videos]);
       setTotal(data.total);
       setOffset(off + data.videos.length);
+      // API now echoes the active similarity source so the Similar button
+      // can check the right embedded_at column (v1/title_v2/thumbnail_v2).
+      if (data.similaritySource) setSimilaritySource(data.similaritySource);
     } catch (err) { console.error('Video fetch error:', err); }
     setLoading(false);
   }, [keyword, filter, clusterParam]);
@@ -530,7 +555,7 @@ function NicheVideosInner() {
                     )}
                     <div className="flex items-center gap-1.5 ml-auto">
                       <StarButton videoId={v.id} />
-                      {v.embedded_at && (
+                      {hasSimilarEmbedding(v, similaritySource) && (
                         <button
                           onClick={() => openSimilar(v.id)}
                           className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium"
