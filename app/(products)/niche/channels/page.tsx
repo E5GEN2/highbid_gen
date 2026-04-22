@@ -25,7 +25,6 @@ interface DbChannel {
   videoCountInNiche: number;
   totalVideoCount: number | null;
   totalViews: number; avgViews: number; maxViews: number;
-  outlierMultiplier: number | null;   // max_views / avg_views, computed server-side
   avgScore: number; maxScore: number; subscribers: number; totalLikes: number; totalComments: number;
   channelCreatedAt: string | null; channelAgeDays: number | null;
   latestVideoAt: string | null; earliestVideoAt: string | null;
@@ -50,7 +49,7 @@ export default function AllChannels() {
     totalChannels: number; newChannels: number; veryNewChannels: number; establishedChannels: number;
     newAvgSubs: number; estAvgSubs: number;
   } | null>(null);
-  const [sort, setSort] = useState<'views' | 'videos' | 'subs' | 'newest' | 'score' | 'outlier'>('outlier');
+  const [sort, setSort] = useState<'views' | 'videos' | 'subs' | 'newest' | 'score'>('views');
   const [maxAge, setMaxAge] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -110,7 +109,6 @@ export default function AllChannels() {
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex gap-2 flex-wrap flex-1">
             {[
-              { value: 'outlier', label: 'Outlier ratio' },
               { value: 'views', label: 'Total Views' },
               { value: 'videos', label: 'Video Count' },
               { value: 'subs', label: 'Subscribers' },
@@ -241,13 +239,6 @@ export default function AllChannels() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {channels.map(ch => {
               const ytUrl = youtubeChannelUrl(ch);
-              const mult = ch.outlierMultiplier;
-              // Outlier color coding — same thresholds as Nexlev: 10x+ green,
-              // 5x+ yellow, else dim.
-              const multColor = mult == null ? 'text-[#555]'
-                : mult >= 10 ? 'text-green-400'
-                : mult >= 5 ? 'text-yellow-400'
-                : 'text-[#888]';
               return (
                 <div key={`${ch.channelId || ch.channelName}`} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 hover:border-[#333] transition">
                   <div className="flex items-start gap-3 mb-3">
@@ -289,8 +280,7 @@ export default function AllChannels() {
                     </span>
                   </div>
 
-                  {/* Stats with outlier ratio prominent. */}
-                  <div className="grid grid-cols-4 gap-0 mb-3 bg-[#0a0a0a] rounded-lg overflow-hidden">
+                  <div className="grid grid-cols-3 gap-0 mb-3 bg-[#0a0a0a] rounded-lg overflow-hidden">
                     <div className="p-2.5 text-center border-r border-[#1f1f1f]">
                       <div className="text-sm font-bold text-green-400">{fmtYT(ch.totalViews)}</div>
                       <div className="text-[10px] text-[#666]">Total Views</div>
@@ -306,15 +296,9 @@ export default function AllChannels() {
                         Videos{ch.totalVideoCount == null && <span className="text-[#555]"> (partial)</span>}
                       </div>
                     </div>
-                    <div className="p-2.5 text-center border-r border-[#1f1f1f]">
+                    <div className="p-2.5 text-center">
                       <div className="text-sm font-bold text-purple-400">{fmtYT(ch.avgViews)}</div>
                       <div className="text-[10px] text-[#666]">Avg Views</div>
-                    </div>
-                    <div className="p-2.5 text-center" title={mult != null ? `Best video had ${mult.toFixed(1)}x this channel's average views` : 'Not enough data'}>
-                      <div className={`text-sm font-bold ${multColor}`}>
-                        {mult != null ? `${mult.toFixed(1)}×` : '—'}
-                      </div>
-                      <div className="text-[10px] text-[#666]">Outlier</div>
                     </div>
                   </div>
 

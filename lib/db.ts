@@ -493,6 +493,14 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_first_upload ON niche_spy_channels(first_upload_at)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_last_uploads ON niche_spy_channels(last_uploads_fetched_at NULLS FIRST)`).catch(() => {});
+    // Peer-outlier score: channel.avg_views / median(avg_views of channels in
+    // the same subscriber bucket). Computed by a nightly cron over all
+    // enriched channels. Index on score DESC so the outliers page can sort
+    // fast without a full table scan.
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS peer_outlier_score DOUBLE PRECISION`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS peer_outlier_bucket TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS peer_outlier_updated_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_peer_outlier ON niche_spy_channels(peer_outlier_score DESC NULLS LAST)`).catch(() => {});
 
     // Favourites — a single global list (no per-user scoping). One row per
     // starred video. Deleting a video cascades to remove its favourite.

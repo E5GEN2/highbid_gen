@@ -56,6 +56,20 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
       ] : undefined,
     },
     {
+      // Dedicated outliers surface — peer-bucket-scored channels with their
+      // best videos shown as a Nexlev-style grid. Distinct from the all-DB
+      // Videos tab below because it only shows videos where the channel has
+      // a computed peer_outlier_score.
+      label: 'Outliers',
+      href: '/niche/outliers',
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+        </svg>
+      ),
+    },
+    {
       // All-DB videos view (no niche filter). Useful for outlier discovery
       // across the whole corpus — many rows aren't tagged to any niche yet
       // but still have view/subs/score data worth searching.
@@ -112,6 +126,8 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
     segments.push({ label: 'Videos' });
   } else if (pathname.startsWith('/niche/channels')) {
     segments.push({ label: 'Channels' });
+  } else if (pathname.startsWith('/niche/outliers')) {
+    segments.push({ label: 'Outliers' });
   } else if (pathname.startsWith('/niche/similar/') && similarVideoId) {
     segments.push({ label: 'Niches', href: '/niche/niches' });
     segments.push({ label: 'Similar video', href: `/niche/similar/${similarVideoId}/videos` });
