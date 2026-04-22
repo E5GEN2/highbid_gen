@@ -201,6 +201,15 @@ export default function NicheChannels() {
                       createdAt={ch.channelCreatedAt}
                       firstUploadAt={ch.firstUploadAt}
                       dormancyDays={ch.dormancyDays}
+                      // Chip lives at top-right of each card. Default
+                      // tooltip anchor ('left') would grow the 256px
+                      // tooltip past the card's right edge and, on the
+                      // rightmost column, past the viewport — which
+                      // triggers horizontal scroll on <body> and shifts
+                      // the whole page left behind the fixed sidebar.
+                      // Anchor right so the tooltip grows leftward into
+                      // the card itself.
+                      tooltipAlign="right"
                     />
                   </span>
                 </div>

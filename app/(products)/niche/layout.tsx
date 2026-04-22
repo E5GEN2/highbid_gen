@@ -92,7 +92,15 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] flex">
+    // `overflow-x-hidden` on the outermost wrapper is belt-and-braces: if any
+    // descendant (hover tooltip, popover, modal) accidentally extends past
+    // the viewport's right edge, the browser would otherwise enable
+    // horizontal scrolling on <body>. That shifts the page left while the
+    // fixed sidebar stays put, so the leftmost column of content appears to
+    // slide behind the sidebar. Clipping overflow-x here guarantees the
+    // page can never horizontally scroll, regardless of what any nested
+    // absolute-positioned element does.
+    <div className="min-h-screen bg-[#0a0a0a] flex overflow-x-hidden">
       <ProductSidebar
         productName="Niche Finder"
         accentColor="amber"
