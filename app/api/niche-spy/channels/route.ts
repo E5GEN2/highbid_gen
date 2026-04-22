@@ -102,6 +102,10 @@ export async function GET(req: NextRequest) {
     case 'subs': orderBy = 'max_subs DESC NULLS LAST'; break;
     case 'newest': orderBy = 'channel_age_days ASC NULLS LAST'; break;
     case 'score': orderBy = 'avg_score DESC'; break;
+    // Outlier ratio = best video's view count / channel's average view count.
+    // A channel whose best video is 60× its own average is a clear outlier
+    // target. We use a CASE to avoid divide-by-zero and rank nulls last.
+    case 'outlier': orderBy = `CASE WHEN AVG(v.view_count) > 0 THEN MAX(v.view_count)::float / AVG(v.view_count) ELSE 0 END DESC NULLS LAST`; break;
     default: orderBy = 'total_views DESC NULLS LAST';
   }
 
@@ -136,6 +140,12 @@ export async function GET(req: NextRequest) {
         SUM(v.view_count) as total_views,
         ROUND(AVG(v.view_count)) as avg_views,
         MAX(v.view_count) as max_views,
+        -- Channel-internal outlier multiplier: best video vs. channel average.
+        -- CASE guards against divide-by-zero when the channel has only zero-view
+        -- rows. NULL when avg is 0, handled as null on the client.
+        CASE WHEN AVG(v.view_count) > 0
+             THEN ROUND((MAX(v.view_count)::float / AVG(v.view_count))::numeric, 1)
+             ELSE NULL END as outlier_multiplier,
         ROUND(AVG(v.score)) as avg_score,
         MAX(v.score) as max_score,
         MAX(v.subscriber_count) as max_subs,
@@ -223,6 +233,7 @@ export async function GET(req: NextRequest) {
       totalViews: parseInt(r.total_views) || 0,
       avgViews: parseInt(r.avg_views) || 0,
       maxViews: parseInt(r.max_views) || 0,
+      outlierMultiplier: r.outlier_multiplier !== null ? parseFloat(r.outlier_multiplier) : null,
       avgScore: parseInt(r.avg_score) || 0,
       maxScore: parseInt(r.max_score) || 0,
       subscribers: parseInt(r.max_subs) || 0,
