@@ -79,6 +79,10 @@ export default function OutliersPage() {
   const [type, setType] = useState<VideoType>('long');
   const [searchInput, setSearchInput] = useState('');
   const [q, setQ] = useState('');
+  // Recency window — '' = server default (~7mo), 'all' = no filter, else N days.
+  // Matches Nexlev's behaviour of mostly surfacing videos from the last few
+  // months; stale outliers aren't actionable for someone picking a niche today.
+  const [recency, setRecency] = useState<'' | 'all' | '30' | '90' | '180' | '365'>('');
   const [hideSeen, setHideSeen] = useState(false);
   const [seenIds, setSeenIds] = useState<Set<number>>(new Set());
   // Bumping `shuffleSeed` triggers a refetch with a random offset, giving
@@ -182,6 +186,11 @@ export default function OutliersPage() {
       if (preset) params.set('preset', preset);
       if (type)   params.set('type', type);
       if (q)      params.set('q', q);
+      // Recency: '' (default) omits the param so the server applies its
+      // default 210-day window. 'all' sends an empty string which parses
+      // to null server-side → no recency filter. Specific days pass through.
+      if (recency === 'all') params.set('postedWithin', '');
+      else if (recency !== '') params.set('postedWithin', recency);
       const res = await fetch(`/api/niche-spy/outliers?${params}`);
       const data = await res.json();
       const list: OutlierVideo[] = data.videos || [];
@@ -190,7 +199,7 @@ export default function OutliersPage() {
       setTotal(data.total || 0);
     } catch (err) { console.error('Outliers fetch error:', err); }
     setLoading(false);
-  }, [preset, type, q]);
+  }, [preset, type, q, recency]);
 
   useEffect(() => { fetchVideos(0); }, [fetchVideos, shuffleSeed]);
 
@@ -338,7 +347,7 @@ export default function OutliersPage() {
       )}
 
       {/* Preset chip row — horizontally scrollable if narrow */}
-      <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
+      <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
         {presetChips.map(p => (
           <button
             key={p.value || 'all'}
@@ -350,6 +359,31 @@ export default function OutliersPage() {
             }`}
           >
             {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Recency chips — second row. Default '' sends no param → server
+          applies its 8mo window. 'all' sends empty → server disables the
+          filter. Everything else is a literal day count. */}
+      <div className="flex items-center gap-2 mb-6 flex-wrap">
+        <span className="text-[10px] uppercase tracking-wider text-[#666] mr-1">Posted</span>
+        {([
+          { value: '30',  label: 'Last 30 days' },
+          { value: '90',  label: 'Last 3mo' },
+          { value: '180', label: 'Last 6mo' },
+          { value: '',    label: 'Last 8mo (default)' },
+          { value: '365', label: 'Last 1yr' },
+          { value: 'all', label: 'All time' },
+        ] as const).map(opt => (
+          <button key={opt.value || 'default'}
+            onClick={() => setRecency(opt.value as typeof recency)}
+            className={`px-2.5 py-1 rounded-full text-[11px] transition ${
+              recency === opt.value
+                ? 'bg-amber-500 text-black font-medium'
+                : 'text-[#888] border border-[#333] hover:border-[#555]'
+            }`}>
+            {opt.label}
           </button>
         ))}
       </div>

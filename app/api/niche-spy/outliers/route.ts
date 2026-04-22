@@ -47,6 +47,16 @@ export async function GET(req: NextRequest) {
   let maxSubs    = numOrNull(sp.get('maxSubs'));
   let postedWithinDays = numOrNull(sp.get('postedWithin'));
 
+  // Default recency window — outliers that uploaded years ago aren't
+  // actionable; the user wants to see what's breaking out NOW. Matches
+  // Nexlev's behaviour of surfacing videos ~8 months old max.
+  // Explicitly passing `postedWithin` (including the UI "All time" option
+  // which sends it empty) overrides this default.
+  const DEFAULT_RECENCY_DAYS = 240;  // 8 months
+  if (postedWithinDays == null && sp.get('postedWithin') === null) {
+    postedWithinDays = DEFAULT_RECENCY_DAYS;
+  }
+
   // Presets bake in the canonical Nexlev combinations. They OVERRIDE any
   // passed custom bounds so a preset click gives a predictable result.
   switch (preset) {
