@@ -15,6 +15,14 @@ export interface ChannelAgeProps {
   dormancyDays?: number | null;         // precomputed dormancy (first_upload - created)
   /** threshold for flagging as aged — default 365 days */
   agedThresholdDays?: number;
+  /**
+   * Which side of the chip the tooltip should anchor from. Default 'left'
+   * (tooltip grows to the right of the chip). Pass 'right' when the chip
+   * sits inside a narrow right-side panel — otherwise the 224-256px-wide
+   * tooltip will be clipped by the panel's right edge or any ancestor with
+   * overflow:hidden.
+   */
+  tooltipAlign?: 'left' | 'right';
 }
 
 function formatAge(days: number): string {
@@ -31,7 +39,10 @@ function formatDuration(days: number): string {
   return `${(days / 365).toFixed(1)}yr`;
 }
 
-export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThresholdDays = 365 }: ChannelAgeProps) {
+export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThresholdDays = 365, tooltipAlign = 'left' }: ChannelAgeProps) {
+  // Tailwind class switch for anchoring the tooltip. 'left-0' grows right,
+  // 'right-0' grows left. Same width+content, only position differs.
+  const tooltipAnchor = tooltipAlign === 'right' ? 'right-0' : 'left-0';
   const created = createdAt ? new Date(createdAt) : null;
   const firstUp = firstUploadAt ? new Date(firstUploadAt) : null;
 
@@ -83,7 +94,7 @@ export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThr
       return (
         <span className="relative group/age inline-flex items-center">
           <span className={`${color} cursor-help`}>📅 {ageStr}</span>
-          <span className="pointer-events-none absolute left-0 top-full mt-1 w-56 p-2.5 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50">
+          <span className={`pointer-events-none absolute ${tooltipAnchor} top-full mt-1 w-56 p-2.5 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50`}>
             <div>Active for <span className="text-white">{ageStr}</span> (first upload)</div>
             <div>Created <span className="text-white">{formatDuration(creationAgeDaysIfBoth)} ago</span></div>
           </span>
@@ -106,7 +117,7 @@ export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThr
     <span className="relative group/age inline-flex items-center gap-1">
       <span className={color}>📅 {ageStr}</span>
       <span className="text-amber-400 cursor-help" title="Aged channel — see hover">⚠</span>
-      <span className="pointer-events-none absolute left-0 top-full mt-1 w-64 p-2.5 bg-[#0a0a0a] border border-amber-500/40 rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50">
+      <span className={`pointer-events-none absolute ${tooltipAnchor} top-full mt-1 w-64 p-2.5 bg-[#0a0a0a] border border-amber-500/40 rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50`}>
         <div className="font-semibold text-amber-300 mb-1">Aged / reactivated channel</div>
         <div>Active for <span className="text-white">{ageStr}</span> (first upload)</div>
         {creationAgeDays != null && creationReliable && (

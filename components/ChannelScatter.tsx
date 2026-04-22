@@ -370,9 +370,16 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
           <div className="text-center text-[10px] text-[#666] font-medium mt-0.5">Subscribers →</div>
         </div>
 
-        {/* Right panel — video detail + filters */}
+        {/* Right panel — video detail + filters.
+            `overflow-visible` (not hidden) is critical: the ChannelAgeChip
+            renders its hover tooltip as an absolutely-positioned element
+            below the chip, and a clipping ancestor would cut the tooltip
+            off the card. The 420px height constrains the card's layout, it
+            doesn't need to clip children. Any real overflow risk (image /
+            title bleeding out) is handled by `overflow-hidden` on the
+            inner card wrapper at line 394. */}
         <div className="w-72 flex-shrink-0 hidden lg:block">
-          <div className="h-[420px] overflow-hidden">
+          <div className="h-[420px] overflow-visible">
             {(() => {
               const ch = activeVideo;
               if (!ch) {
@@ -391,8 +398,14 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
                 return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
               };
               return (
-                <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
-                  <div className="relative aspect-video bg-[#0a0a0a]">
+                // Card wrapper: NO overflow-hidden — the ChannelAgeChip's
+                // hover tooltip anchors below the chip and would be clipped
+                // otherwise. Rounding/clipping for the thumbnail was moved
+                // onto its own wrapper (rounded-t-xl + overflow-hidden)
+                // which still gives the top corners of the card a clean
+                // rounded look without swallowing descendants' tooltips.
+                <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl">
+                  <div className="relative aspect-video bg-[#0a0a0a] rounded-t-xl overflow-hidden">
                     {ch.thumbnail ? (
                       <a href={ch.videoUrl || '#'} target="_blank" rel="noopener noreferrer">
                         <img src={ch.thumbnail} alt="" className="w-full h-full object-cover" />
@@ -446,6 +459,11 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
                                 : undefined)
                         }
                         dormancyDays={ch.dormancyDays}
+                        // This chip lives in the scatter's right-side panel,
+                        // flush against the viewport edge. Anchor the tooltip
+                        // to the chip's right so it grows leftward (into the
+                        // panel) instead of off-screen.
+                        tooltipAlign="right"
                       />
                     </div>
                     <div className="flex items-center justify-between mt-2 gap-2">
