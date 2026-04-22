@@ -116,7 +116,10 @@ export function ChannelAgeChip({ createdAt, firstUploadAt, dormancyDays, agedThr
   return (
     <span className="relative group/age inline-flex items-center gap-1">
       <span className={color}>📅 {ageStr}</span>
-      <span className="text-amber-400 cursor-help" title="Aged channel — see hover">⚠</span>
+      {/* No native title attribute — we already render our own styled
+          tooltip below. Having both made the browser render the native
+          yellow OS tooltip on top of ours, duplicating the hover hint. */}
+      <span className="text-amber-400 cursor-help">⚠</span>
       <span className={`pointer-events-none absolute ${tooltipAnchor} top-full mt-1 w-64 p-2.5 bg-[#0a0a0a] border border-amber-500/40 rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/age:opacity-100 transition-opacity z-50`}>
         <div className="font-semibold text-amber-300 mb-1">Aged / reactivated channel</div>
         <div>Active for <span className="text-white">{ageStr}</span> (first upload)</div>

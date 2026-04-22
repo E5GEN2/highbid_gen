@@ -221,9 +221,15 @@ export default function ProductSidebar({
         </button>
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar
+          Explicit `left-0 top-0` on a `fixed` element — without these the
+          browser uses the element's "static" position (where it would have
+          been in flow), which for the first flex child is at x=0 but is
+          only _implicitly_ correct. Making it explicit guarantees the
+          sidebar pins to the viewport's left edge, so it can never overlap
+          the `ml-60` content column. */}
       <aside
-        className={`w-60 bg-[#0f0f0f] border-r border-[#1a1a1a] flex flex-col fixed h-full z-50 transition-transform ${
+        className={`w-60 bg-[#0f0f0f] border-r border-[#1a1a1a] flex flex-col fixed left-0 top-0 h-full z-50 transition-transform ${
           collapsible ? (mobileOpen ? 'translate-x-0' : 'max-md:-translate-x-full') : ''
         }`}
       >
