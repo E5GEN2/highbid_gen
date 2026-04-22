@@ -21,8 +21,21 @@ export async function GET(req: NextRequest) {
   const sort = sp.get('sort') || 'views';
   const limit = Math.min(parseInt(sp.get('limit') || '60'), 200);
   const offset = parseInt(sp.get('offset') || '0');
-  const maxAge = sp.get('maxAge'); // filter channels created within N days
+  const maxAge = sp.get('maxAge'); // filter channels created within N days (legacy quick chip)
+  const minAge = sp.get('minAge'); // channels AT LEAST N days old (custom range)
+  const maxAgeCustom = sp.get('maxAgeCustom'); // channels AT MOST N days old (custom range — overrides quick chip)
   const minScore = parseInt(sp.get('minScore') || '0');
+  // Subscriber + total-views range filters. Empty string / missing = no bound.
+  // Parsed as floats so the client can pass "50000" or just defaults.
+  const parseBound = (s: string | null): number | null => {
+    if (s == null || s.trim() === '') return null;
+    const n = Number(s);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const minSubs = parseBound(sp.get('minSubs'));
+  const maxSubs = parseBound(sp.get('maxSubs'));
+  const minViews = parseBound(sp.get('minViews'));
+  const maxViews = parseBound(sp.get('maxViews'));
 
   const conditions: string[] = ['channel_name IS NOT NULL', "channel_name != ''"];
   const params: (string | number)[] = [];
@@ -53,10 +66,35 @@ export async function GET(req: NextRequest) {
   // different column than the card was rendering.
   const effectiveAgeDateSql =
     `COALESCE(MIN(c.first_upload_at), MIN(c.channel_created_at), MAX(v.channel_created_at))`;
-  let havingClause = '';
-  if (maxAge) {
-    havingClause = `HAVING ${effectiveAgeDateSql} > NOW() - INTERVAL '${parseInt(maxAge)} days'`;
+  // Match the same aggregations the SELECT uses so card stats and the
+  // filter agree. max_subs = MAX(v.subscriber_count), total_views = SUM.
+  const subsAggSql = `MAX(v.subscriber_count)`;
+  const totalViewsAggSql = `SUM(v.view_count)`;
+
+  // Build HAVING clauses cumulatively. The existing quick `maxAge` chip is
+  // preserved for back-compat, but the new custom `maxAgeCustom` + `minAge`
+  // take precedence when present (they come from the new filters dropdown
+  // where the user explicitly typed a number).
+  const havingParts: string[] = [];
+  const effectiveMaxAge = maxAgeCustom || maxAge;
+  if (effectiveMaxAge) {
+    const days = parseInt(effectiveMaxAge);
+    if (Number.isFinite(days) && days > 0) {
+      havingParts.push(`${effectiveAgeDateSql} > NOW() - INTERVAL '${days} days'`);
+    }
   }
+  if (minAge) {
+    const days = parseInt(minAge);
+    if (Number.isFinite(days) && days > 0) {
+      // "at least N days old" → the effective age date must be ≤ N days ago.
+      havingParts.push(`${effectiveAgeDateSql} <= NOW() - INTERVAL '${days} days'`);
+    }
+  }
+  if (minSubs != null)  havingParts.push(`${subsAggSql} >= ${Math.floor(minSubs)}`);
+  if (maxSubs != null)  havingParts.push(`${subsAggSql} <= ${Math.floor(maxSubs)}`);
+  if (minViews != null) havingParts.push(`${totalViewsAggSql} >= ${Math.floor(minViews)}`);
+  if (maxViews != null) havingParts.push(`${totalViewsAggSql} <= ${Math.floor(maxViews)}`);
+  const havingClause = havingParts.length > 0 ? `HAVING ${havingParts.join(' AND ')}` : '';
 
   let orderBy: string;
   switch (sort) {
