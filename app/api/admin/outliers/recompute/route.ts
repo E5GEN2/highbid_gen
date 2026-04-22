@@ -37,15 +37,31 @@ async function recompute() {
   const startedAt = Date.now();
 
   // Single statement: compute bucket medians and write back the score.
-  // NULLs get written for channels that have <5 scraped videos (not enough
-  // data for a stable avg) or sit in a bucket with <3 channels (too small
-  // a sample for a reliable median).
+  //
+  // The avg_views we use for scoring comes from one of two sources, in order
+  // of preference:
+  //   1. c.recent_videos_avg_views — unbiased sample pulled via
+  //      playlistItems.list over the channel's last 30 uploads, populated by
+  //      /api/admin/outliers/enrich-channels. This is the correct metric;
+  //      it reflects the channel's actual typical performance.
+  //   2. AVG(v.view_count) over niche_spy_videos — biased toward whatever
+  //      xgodo scraped (usually viral niche hits), but it's what we have
+  //      until enrichment catches up.
+  //
+  // Using COALESCE means enriched channels get an accurate score
+  // immediately; unenriched channels get a rough score that will tighten
+  // up once enrichment is run.
   const result = await pool.query(`
     WITH channel_stats AS (
       SELECT
         c.channel_id,
         c.subscriber_count,
-        AVG(v.view_count)::float AS avg_views,
+        COALESCE(
+          NULLIF(c.recent_videos_avg_views, 0)::float,
+          AVG(v.view_count)::float
+        ) AS avg_views,
+        (c.recent_videos_avg_views IS NOT NULL
+         AND c.recent_videos_avg_views > 0) AS is_unbiased,
         CASE
           WHEN c.subscriber_count IS NULL             THEN NULL
           WHEN c.subscriber_count < 1000              THEN '0-1k'
@@ -58,9 +74,9 @@ async function recompute() {
       FROM niche_spy_channels c
       JOIN niche_spy_videos v ON v.channel_id = c.channel_id
       WHERE c.subscriber_count IS NOT NULL
-      GROUP BY c.channel_id, c.subscriber_count
-      HAVING COUNT(v.id) >= 5   -- need enough videos for a stable avg
-         AND AVG(v.view_count) > 0
+      GROUP BY c.channel_id, c.subscriber_count, c.recent_videos_avg_views
+      HAVING (c.recent_videos_avg_views IS NOT NULL AND c.recent_videos_avg_views > 0)
+          OR (COUNT(v.id) >= 5 AND AVG(v.view_count) > 0)
     ),
     bucket_medians AS (
       SELECT

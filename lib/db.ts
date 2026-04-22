@@ -501,6 +501,16 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS peer_outlier_bucket TEXT`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS peer_outlier_updated_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_peer_outlier ON niche_spy_channels(peer_outlier_score DESC NULLS LAST)`).catch(() => {});
+    // Unbiased view-stats from the channel's OWN recent uploads (walked via
+    // playlistItems.list + videos.list). Required for accurate peer-outlier
+    // scoring — otherwise avg_views is computed over whatever biased subset
+    // xgodo scraped (usually the channel's hits, which inflates the avg).
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS recent_videos_avg_views BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS recent_videos_median_views BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS recent_videos_max_views BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS recent_videos_count INTEGER`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS last_recent_videos_fetched_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_recent_fetched ON niche_spy_channels(last_recent_videos_fetched_at NULLS FIRST)`).catch(() => {});
 
     // Favourites — a single global list (no per-user scoping). One row per
     // starred video. Deleting a video cascades to remove its favourite.

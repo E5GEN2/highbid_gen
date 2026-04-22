@@ -123,24 +123,35 @@ export async function GET(req: NextRequest) {
   const offsetIdx = idx + 1;
   params.push(limit, offset);
 
+  // One card per channel: pick the channel's single best-performing video
+  // (highest view_count among the rows that pass the filters). Nexlev does
+  // the same — the same channel repeating 6 times down the grid is noise.
+  //
+  // DISTINCT ON (c.channel_id) returns the first row per channel after the
+  // ORDER BY, so we sort within each channel by view_count DESC first, then
+  // wrap that in an outer query to re-sort across channels by peer score.
   const [videosRes, countRes] = await Promise.all([
     pool.query(
-      `SELECT
-         v.id, v.url, v.title, v.view_count, v.channel_name, v.posted_at,
-         v.like_count, v.comment_count, v.thumbnail, v.keyword,
-         v.channel_id, v.channel_avatar,
-         c.channel_handle, c.subscriber_count, c.peer_outlier_score,
-         c.peer_outlier_bucket, c.channel_created_at, c.first_upload_at,
-         c.dormancy_days, c.video_count AS channel_video_count
-       FROM niche_spy_videos v
-       JOIN niche_spy_channels c ON c.channel_id = v.channel_id
-       ${where}
-       ORDER BY c.peer_outlier_score DESC NULLS LAST, v.view_count DESC NULLS LAST
+      `WITH ranked AS (
+         SELECT DISTINCT ON (c.channel_id)
+           v.id, v.url, v.title, v.view_count, v.channel_name, v.posted_at,
+           v.like_count, v.comment_count, v.thumbnail, v.keyword,
+           v.channel_id, v.channel_avatar,
+           c.channel_handle, c.subscriber_count, c.peer_outlier_score,
+           c.peer_outlier_bucket, c.channel_created_at, c.first_upload_at,
+           c.dormancy_days, c.video_count AS channel_video_count
+         FROM niche_spy_videos v
+         JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+         ${where}
+         ORDER BY c.channel_id, v.view_count DESC NULLS LAST
+       )
+       SELECT * FROM ranked
+       ORDER BY peer_outlier_score DESC NULLS LAST, view_count DESC NULLS LAST
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
     ),
     pool.query(
-      `SELECT COUNT(*) AS cnt
+      `SELECT COUNT(DISTINCT c.channel_id) AS cnt
        FROM niche_spy_videos v
        JOIN niche_spy_channels c ON c.channel_id = v.channel_id
        ${where}`,
