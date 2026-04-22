@@ -88,79 +88,7 @@ export default function OutliersPage() {
   // Bumping `shuffleSeed` triggers a refetch with a random offset, giving
   // the same effect as Nexlev's "Random" button.
   const [shuffleSeed, setShuffleSeed] = useState(0);
-  // Manual recompute trigger — lets the user kick off a fresh scoring pass
-  // without waiting for the nightly cron. Shows a toast with results.
-  const [recomputing, setRecomputing] = useState(false);
-  const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null);
 
-  // Enrichment stats + batch-run state. Enrichment walks each channel's
-  // actual recent uploads via YouTube Data API to produce an UNBIASED
-  // avg_views baseline — the single most important input to an accurate
-  // peer-outlier score.
-  const [enrichStats, setEnrichStats] = useState<{ total: number; enriched: number; pending: number; stale: number } | null>(null);
-  const [enriching, setEnriching] = useState(false);
-  const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
-
-  const loadEnrichStats = useCallback(async () => {
-    try {
-      const res = await fetch('/api/admin/outliers/enrich-channels');
-      const data = await res.json();
-      setEnrichStats(data);
-    } catch { /* best-effort */ }
-  }, []);
-  useEffect(() => { loadEnrichStats(); }, [loadEnrichStats]);
-
-  const runRecompute = async () => {
-    setRecomputing(true);
-    setRecomputeMsg(null);
-    try {
-      const res = await fetch('/api/admin/outliers/recompute', { method: 'POST' });
-      const data = await res.json();
-      if (data.ok) {
-        setRecomputeMsg(`Scored ${data.channelsScored} channels in ${(data.durationMs / 1000).toFixed(1)}s`);
-        // Re-fetch so the new scores show immediately.
-        setShuffleSeed(s => s + 1);
-      } else {
-        setRecomputeMsg(`Error: ${data.error || 'unknown'}`);
-      }
-    } catch (err) {
-      setRecomputeMsg(`Error: ${err instanceof Error ? err.message : 'network'}`);
-    }
-    setRecomputing(false);
-    setTimeout(() => setRecomputeMsg(null), 6000);
-  };
-
-  const runEnrichBatch = async () => {
-    setEnriching(true);
-    setEnrichMsg(null);
-    let totalProcessed = 0, totalWithStats = 0, totalErrors = 0;
-    // Loop batches of 100 until no more pending. Each batch runs 2 threads
-    // in parallel server-side. Typical throughput ≈ 50 channels/second.
-    try {
-      for (let batchIdx = 0; batchIdx < 20; batchIdx++) {
-        const res = await fetch('/api/admin/outliers/enrich-channels', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ limit: 100, threads: 2, maxVideos: 30 }),
-        });
-        const data = await res.json();
-        if (!data.ok) { setEnrichMsg(`Error: ${data.error || 'unknown'}`); break; }
-        totalProcessed += data.processed;
-        totalWithStats += data.withStats;
-        totalErrors    += data.errors;
-        setEnrichMsg(`Enriching… ${totalProcessed} channels processed (${totalWithStats} with stats, ${totalErrors} errors)`);
-        if (data.processed === 0) break; // nothing pending
-      }
-      setEnrichMsg(`Enrichment done: ${totalProcessed} channels · ${totalWithStats} with stats · ${totalErrors} errors`);
-      // After enrichment, rescore everything so the unbiased avgs take effect.
-      await runRecompute();
-    } catch (err) {
-      setEnrichMsg(`Error: ${err instanceof Error ? err.message : 'network'}`);
-    }
-    setEnriching(false);
-    await loadEnrichStats();
-    setTimeout(() => setEnrichMsg(null), 10_000);
-  };
 
   // Load the set of seen video IDs from localStorage on mount. We persist
   // client-side only — no server-side "seen" state, keeps it simple.
@@ -298,53 +226,11 @@ export default function OutliersPage() {
         </button>
 
         {seenIds.size > 0 && (
-          <button onClick={clearSeen} className="text-xs text-[#666] hover:text-white transition">
+          <button onClick={clearSeen} className="text-xs text-[#666] hover:text-white transition ml-auto">
             Reset seen
           </button>
         )}
-
-        {/* Admin-y escape hatches — normally these run from a nightly cron
-            but exposing them here lets you refresh after a bulk xgodo
-            scrape without waiting. "Enrich channels" walks each channel's
-            actual recent uploads to compute an unbiased avg_views
-            baseline — MUCH more accurate than using only niche-scoped
-            scraped data. Enrichment implicitly re-runs Recompute at the
-            end so scores reflect the new unbiased data. */}
-        <div className="flex items-center gap-3 ml-auto text-xs">
-          {enrichStats && (
-            <span className="text-[#666]" title="Channels with unbiased stats / total enrich-able">
-              <span className="text-[#aaa]">{enrichStats.enriched.toLocaleString()}</span>
-              <span className="text-[#444]"> / </span>
-              <span className="text-[#aaa]">{enrichStats.total.toLocaleString()}</span>
-              <span className="text-[#666]"> enriched</span>
-              {enrichStats.pending > 0 && <span className="text-amber-400"> · {enrichStats.pending.toLocaleString()} pending</span>}
-            </span>
-          )}
-          <button
-            onClick={runEnrichBatch}
-            disabled={enriching || recomputing}
-            title="Walk each channel's recent uploads to get unbiased avg-view stats"
-            className="text-[#888] hover:text-white transition disabled:text-[#333]"
-          >
-            {enriching ? 'Enriching…' : 'Enrich channels'}
-          </button>
-          <span className="text-[#333]">·</span>
-          <button
-            onClick={runRecompute}
-            disabled={recomputing || enriching}
-            title="Recompute peer-outlier scores (can take ~10s)"
-            className="text-[#888] hover:text-white transition disabled:text-[#333]"
-          >
-            {recomputing ? 'Recomputing…' : 'Recompute scores'}
-          </button>
-        </div>
       </div>
-      {(recomputeMsg || enrichMsg) && (
-        <div className="mb-4 px-3 py-2 bg-[#141414] border border-[#2a2a2a] rounded-lg text-xs text-[#ccc] space-y-1">
-          {enrichMsg && <div>{enrichMsg}</div>}
-          {recomputeMsg && <div>{recomputeMsg}</div>}
-        </div>
-      )}
 
       {/* Preset chip row — horizontally scrollable if narrow */}
       <div className="flex gap-2 mb-3 overflow-x-auto pb-1">

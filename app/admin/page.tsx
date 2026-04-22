@@ -74,6 +74,9 @@ export default function AdminPage() {
     const fetchStats = () => {
       fetch('/api/niche-spy/embeddings').then(r => r.json()).then(setEmbeddingStats).catch(() => {});
       fetch('/api/niche-spy/enrich').then(r => r.json()).then(setNicheEnrichStats).catch(() => {});
+      // Outlier enrichment counts — same cadence as the main enrich banner
+      // so the admin sees the pipeline drain live.
+      fetch('/api/admin/outliers/enrich-channels').then(r => r.json()).then(setOutlierStats).catch(() => {});
     };
     fetchStats();
     const iv = setInterval(fetchStats, 3000);
@@ -135,6 +138,80 @@ export default function AdminPage() {
     keys?: Array<{ key: string; proxy: string; banned: boolean; banExpiresIn: number | null }>;
   } | null>(null);
   const [enrichThreads, setEnrichThreads] = useState(2);
+
+  // Outlier pipeline admin state — lives in the Enrich Data tab alongside
+  // the existing bulk enrich controls.
+  //   - outlierStats:  counts of channels enriched / pending for the
+  //     recent-uploads walk. Populated from GET /api/admin/outliers/enrich-channels
+  //   - outlierEnriching / outlierEnrichMsg: batch-run state
+  //   - outlierRecomputing / outlierRecomputeMsg: score-compute state
+  const [outlierStats, setOutlierStats] = useState<{ total: number; enriched: number; pending: number; stale: number } | null>(null);
+  const [outlierEnriching, setOutlierEnriching] = useState(false);
+  const [outlierEnrichMsg, setOutlierEnrichMsg] = useState<string | null>(null);
+  const [outlierRecomputing, setOutlierRecomputing] = useState(false);
+  const [outlierRecomputeMsg, setOutlierRecomputeMsg] = useState<string | null>(null);
+  const [outlierLimit, setOutlierLimit] = useState(200);
+  const [outlierThreads, setOutlierThreads] = useState(2);
+  const [outlierMaxVideos, setOutlierMaxVideos] = useState(30);
+
+  const runOutlierEnrich = async () => {
+    setOutlierEnriching(true);
+    setOutlierEnrichMsg(null);
+    let totalProcessed = 0, totalWithStats = 0, totalErrors = 0;
+    try {
+      // Loop batches of `limit` channels. Stops when the server returns
+      // processed=0 (queue drained) or after 40 batches (safety cap).
+      for (let batchIdx = 0; batchIdx < 40; batchIdx++) {
+        const res = await fetch('/api/admin/outliers/enrich-channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            limit: outlierLimit,
+            threads: outlierThreads,
+            maxVideos: outlierMaxVideos,
+          }),
+        });
+        const data = await res.json();
+        if (!data.ok) { setOutlierEnrichMsg(`Error: ${data.error || 'unknown'}`); break; }
+        totalProcessed += data.processed;
+        totalWithStats += data.withStats;
+        totalErrors    += data.errors;
+        setOutlierEnrichMsg(`Batch ${batchIdx + 1}: ${totalProcessed} processed · ${totalWithStats} with stats · ${totalErrors} errors`);
+        // Refresh stats so the live pending-count ticks down.
+        fetch('/api/admin/outliers/enrich-channels').then(r => r.json()).then(setOutlierStats).catch(() => {});
+        if (data.processed === 0) break;
+      }
+      setOutlierEnrichMsg(`Done: ${totalProcessed} processed · ${totalWithStats} with stats · ${totalErrors} errors`);
+      // Auto-run recompute so the new unbiased avgs take effect immediately.
+      await runOutlierRecompute();
+    } catch (err) {
+      setOutlierEnrichMsg(`Error: ${err instanceof Error ? err.message : 'network'}`);
+    }
+    setOutlierEnriching(false);
+  };
+
+  const runOutlierRecompute = async () => {
+    setOutlierRecomputing(true);
+    setOutlierRecomputeMsg(null);
+    try {
+      const res = await fetch('/api/admin/outliers/recompute', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        const bucketSummary = (data.buckets || [])
+          .map((b: { bucket: string; n: number; maxScore: number | null }) =>
+            `${b.bucket}: ${b.n} (max ${b.maxScore ? b.maxScore.toFixed(1) : '-'}x)`
+          ).join(' · ');
+        setOutlierRecomputeMsg(
+          `Scored ${data.channelsScored} channels in ${(data.durationMs / 1000).toFixed(1)}s — ${bucketSummary}`
+        );
+      } else {
+        setOutlierRecomputeMsg(`Error: ${data.error || 'unknown'}`);
+      }
+    } catch (err) {
+      setOutlierRecomputeMsg(`Error: ${err instanceof Error ? err.message : 'network'}`);
+    }
+    setOutlierRecomputing(false);
+  };
   const [enrichBatchSize, setEnrichBatchSize] = useState(50);
   const [enrichLimit, setEnrichLimit] = useState(2000);
   // Legacy/compat — kept so other places that reference nicheThreads still compile
@@ -2115,6 +2192,98 @@ export default function AdminPage() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Outlier pipeline — Enrich channels + Recompute scores.
+              Sits in the Enrich Data tab because both actions are admin-y
+              data-mutation jobs that share the same YT API quota and proxy
+              infrastructure as the bulk enrich above. Users go to
+              /niche/outliers to CONSUME the scored data, not to trigger it. */}
+          <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+            <h2 className="text-lg font-bold text-white mb-1">Outlier Pipeline</h2>
+            <p className="text-xs text-gray-500 mb-4">
+              Pulls each channel&apos;s recent uploads via playlistItems.list
+              + videos.list for unbiased avg-views, then computes the
+              peer-bucket outlier score per channel. Cost: 2 quota units per
+              channel on enrichment; recompute is DB-only.
+            </p>
+
+            {/* Counts — mirrors the Videos / Channels grid on the main enrich card */}
+            {outlierStats && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                  <div className="text-2xl font-bold text-white">{outlierStats.total.toLocaleString()}</div>
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider">Total enrich-able</div>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                  <div className="text-2xl font-bold text-green-400">{outlierStats.enriched.toLocaleString()}</div>
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider">With stats</div>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                  <div className="text-2xl font-bold text-amber-400">{outlierStats.pending.toLocaleString()}</div>
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider">Pending</div>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                  <div className="text-2xl font-bold text-orange-400">{outlierStats.stale.toLocaleString()}</div>
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider">Stale &gt;7d</div>
+                </div>
+              </div>
+            )}
+
+            {/* Controls */}
+            <div className="flex items-center gap-3 flex-wrap mb-3">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400">Batch</label>
+                <select value={outlierLimit} onChange={e => setOutlierLimit(parseInt(e.target.value))}
+                  className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                  <option value={500}>500</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400">Threads</label>
+                <select value={outlierThreads} onChange={e => setOutlierThreads(parseInt(e.target.value))}
+                  className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={4}>4</option>
+                  <option value={6}>6</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400">Videos / channel</label>
+                <select value={outlierMaxVideos} onChange={e => setOutlierMaxVideos(parseInt(e.target.value))}
+                  className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5">
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={30}>30</option>
+                  <option value={50}>50</option>
+                </select>
+              </div>
+              <button
+                onClick={runOutlierEnrich}
+                disabled={outlierEnriching || outlierRecomputing}
+                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-xl transition"
+              >
+                {outlierEnriching ? 'Enriching…' : 'Enrich channels'}
+              </button>
+              <button
+                onClick={runOutlierRecompute}
+                disabled={outlierEnriching || outlierRecomputing}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-xl transition"
+              >
+                {outlierRecomputing ? 'Recomputing…' : 'Recompute scores'}
+              </button>
+            </div>
+
+            {(outlierEnrichMsg || outlierRecomputeMsg) && (
+              <div className="px-3 py-2 bg-gray-900/50 border border-gray-700 rounded-lg text-xs text-gray-300 space-y-1">
+                {outlierEnrichMsg && <div><span className="text-cyan-400">enrich:</span> {outlierEnrichMsg}</div>}
+                {outlierRecomputeMsg && <div><span className="text-purple-400">recompute:</span> {outlierRecomputeMsg}</div>}
               </div>
             )}
           </div>
