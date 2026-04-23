@@ -151,4 +151,123 @@ export async function getVectorStats(): Promise<{
   return { title_v1: v1, title_v2: v2, thumbnail_v2: th2 };
 }
 
+/**
+ * Compute the "novelty" of a single video in the combined (title_v2 +
+ * thumbnail_v2) embedding space.
+ *
+ * novelty = mean(cosine_distance) over the K nearest neighbors DB-wide,
+ *           averaged across the title_v2 and thumbnail_v2 spaces.
+ *
+ * Intuition: videos whose title AND thumbnail sit in dense clusters have
+ * low novelty (lots of lookalikes). Videos whose title OR thumbnail is
+ * sparse have high novelty — either a new topic or a new visual angle.
+ *
+ * Returns null if the video has no embedding in either space (nothing to
+ * score against). Uses ORDER BY embedding <=> vector (distance ascending)
+ * + LIMIT K so pgvector's index is exercised — a KNN scan, not a full
+ * table scan. Cosine distance is the '<=>' operator output (0 = identical,
+ * 2 = opposite); we keep it as distance (not similarity) so higher =
+ * more novel, which is the more intuitive ordering.
+ *
+ * K is clamped to 1..50 (default 10). K+1 rows are fetched because the
+ * query includes the source video itself as its own 0-distance neighbor,
+ * which we skip.
+ */
+export async function computeCombinedNovelty(
+  videoId: number,
+  options?: { k?: number },
+): Promise<{ novelty: number | null; titleNovelty: number | null; thumbNovelty: number | null }> {
+  const k = Math.max(1, Math.min(50, options?.k ?? 10));
+
+  async function spaceKnn(table: string): Promise<number | null> {
+    const src = await vectorPool.query(
+      `SELECT embedding FROM ${table} WHERE video_id = $1`,
+      [videoId],
+    );
+    if (src.rows.length === 0) return null;
+
+    // Fetch k+1 because the source video itself appears at distance 0.
+    const neighbors = await vectorPool.query(
+      `SELECT video_id, embedding <=> $1::vector AS dist
+       FROM ${table}
+       WHERE video_id != $2
+       ORDER BY embedding <=> $1::vector
+       LIMIT $3`,
+      [src.rows[0].embedding, videoId, k],
+    );
+    if (neighbors.rows.length === 0) return null;
+    const distances = neighbors.rows.map(r => parseFloat(r.dist));
+    return distances.reduce((a, b) => a + b, 0) / distances.length;
+  }
+
+  const [titleN, thumbN] = await Promise.all([
+    spaceKnn(TABLE_BY_SOURCE.title_v2),
+    spaceKnn(TABLE_BY_SOURCE.thumbnail_v2),
+  ]);
+
+  // Average the two space-novelties so a video scores high only if BOTH its
+  // title and its thumbnail are in sparse regions. If one space is missing,
+  // fall back to the other (slightly penalized by 10% so "full-signal"
+  // videos outrank "half-signal" ones in the eventual ranking).
+  let combined: number | null = null;
+  if (titleN != null && thumbN != null) {
+    combined = (titleN + thumbN) / 2;
+  } else if (titleN != null) {
+    combined = titleN * 0.9;
+  } else if (thumbN != null) {
+    combined = thumbN * 0.9;
+  }
+
+  return { novelty: combined, titleNovelty: titleN, thumbNovelty: thumbN };
+}
+
+/**
+ * Batch novelty — returns {video_id: novelty} for every video that has an
+ * embedding in title_v2 or thumbnail_v2. Used by the recompute job.
+ *
+ * Rather than doing N+1 per-video queries (too slow for 15k+ videos), we
+ * pull every embedding once, compute KNN in memory. 3072-dim × ~15k rows
+ * = ~180MB per space. Acceptable for a nightly batch.
+ *
+ * Strategy: loop each video, query pgvector for its K nearest neighbors
+ * in each space. Still 2 × N queries per space but every query hits the
+ * HNSW index so each is O(log N). Much simpler than hand-rolling cosine
+ * in Node, and pgvector is faster at it anyway.
+ */
+export async function recomputeAllNovelty(
+  options?: { k?: number; limit?: number },
+): Promise<{ scored: number; titleCovered: number; thumbCovered: number }> {
+  const k = Math.max(1, Math.min(50, options?.k ?? 10));
+  const limit = options?.limit ?? 50_000;
+
+  // Union of ids that have ANY v2 embedding. If a video is only in v1
+  // (legacy) it can't contribute to combined novelty and is skipped.
+  const idsRes = await vectorPool.query<{ video_id: number }>(
+    `SELECT video_id FROM niche_video_vectors_title_v2
+     UNION
+     SELECT video_id FROM niche_video_vectors_thumb_v2
+     LIMIT $1`,
+    [limit],
+  );
+
+  let scored = 0, titleCovered = 0, thumbCovered = 0;
+  const mainPool = await getPool();
+
+  for (const row of idsRes.rows) {
+    const r = await computeCombinedNovelty(row.video_id, { k });
+    if (r.titleNovelty != null) titleCovered++;
+    if (r.thumbNovelty != null) thumbCovered++;
+    if (r.novelty == null) continue;
+    await mainPool.query(
+      `UPDATE niche_spy_videos
+       SET novelty_score = $1, novelty_updated_at = NOW()
+       WHERE id = $2`,
+      [r.novelty, row.video_id],
+    );
+    scored++;
+  }
+
+  return { scored, titleCovered, thumbCovered };
+}
+
 export { vectorPool };

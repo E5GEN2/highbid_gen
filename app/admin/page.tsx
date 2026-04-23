@@ -29,7 +29,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty'>('general');
 
   // Agents tab state
   const [agentsData, setAgentsData] = useState<{
@@ -153,6 +153,107 @@ export default function AdminPage() {
   const [outlierLimit, setOutlierLimit] = useState(200);
   const [outlierThreads, setOutlierThreads] = useState(2);
   const [outlierMaxVideos, setOutlierMaxVideos] = useState(30);
+
+  // Novelty tab state. This is the "blue ocean" experiment — uses
+  // combined title+thumbnail embeddings to find unique-and-viral videos.
+  // Admin-only while we measure whether the signal is real.
+  interface NoveltyVideo {
+    id: number; url: string; title: string; viewCount: number;
+    channelName: string | null; channelId: string | null;
+    channelHandle: string | null; channelAvatar: string | null;
+    subscriberCount: number | null; postedAt: string | null;
+    likeCount: number; commentCount: number; thumbnail: string | null;
+    keyword: string | null; noveltyScore: number | null;
+    noveltyPercentile: number | null;
+    peerOutlierScore: number | null; peerOutlierBucket: string | null;
+    firstUploadAt: string | null; channelCreatedAt: string | null;
+    dormancyDays: number | null; channelVideoCount: number | null;
+    isShort: boolean;
+  }
+  const [noveltyVideos, setNoveltyVideos] = useState<NoveltyVideo[]>([]);
+  const [noveltyTotal, setNoveltyTotal] = useState(0);
+  const [noveltyLoading, setNoveltyLoading] = useState(false);
+  const [noveltyDist, setNoveltyDist] = useState<{
+    p50: number | null; p90: number | null; p99: number | null;
+    min: number | null; max: number | null; total: number;
+    lastUpdated: string | null;
+  } | null>(null);
+  const [noveltyRecomputing, setNoveltyRecomputing] = useState(false);
+  const [noveltyRecomputeMsg, setNoveltyRecomputeMsg] = useState<string | null>(null);
+
+  // Filters
+  const [noveltyType, setNoveltyType] = useState<'long' | 'short'>('long');
+  const [noveltyMinPct, setNoveltyMinPct] = useState(75);
+  const [noveltyMinViews, setNoveltyMinViews] = useState(10_000);
+  const [noveltyMinOutlier, setNoveltyMinOutlier] = useState(0);
+  const [noveltyPostedWithin, setNoveltyPostedWithin] = useState<'30' | '90' | '180' | '240' | '365' | 'all'>('240');
+  const [noveltyQ, setNoveltyQ] = useState('');
+  const [noveltyQInput, setNoveltyQInput] = useState('');
+
+  // Debounce the text search
+  useEffect(() => {
+    const h = setTimeout(() => setNoveltyQ(noveltyQInput.trim()), 300);
+    return () => clearTimeout(h);
+  }, [noveltyQInput]);
+
+  const fetchNoveltyVideos = useCallback(async () => {
+    setNoveltyLoading(true);
+    try {
+      const params = new URLSearchParams({
+        limit: '60',
+        minNoveltyPct: String(noveltyMinPct),
+        minViews: String(noveltyMinViews),
+        minOutlier: String(noveltyMinOutlier),
+        type: noveltyType,
+      });
+      if (noveltyPostedWithin === 'all') params.set('postedWithin', '');
+      else params.set('postedWithin', noveltyPostedWithin);
+      if (noveltyQ) params.set('q', noveltyQ);
+      const res = await fetch(`/api/admin/novelty/videos?${params}`);
+      const data = await res.json();
+      setNoveltyVideos(data.videos || []);
+      setNoveltyTotal(data.total || 0);
+    } catch (err) { console.error('[novelty] fetch err', err); }
+    setNoveltyLoading(false);
+  }, [noveltyMinPct, noveltyMinViews, noveltyMinOutlier, noveltyType, noveltyPostedWithin, noveltyQ]);
+
+  const fetchNoveltyDist = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/novelty/recompute');
+      const data = await res.json();
+      setNoveltyDist(data.distribution || null);
+    } catch { /* swallow */ }
+  }, []);
+
+  // Refetch whenever the tab is open and any filter changes.
+  useEffect(() => {
+    if (adminSection !== 'novelty') return;
+    fetchNoveltyDist();
+    fetchNoveltyVideos();
+  }, [adminSection, fetchNoveltyVideos, fetchNoveltyDist]);
+
+  const runNoveltyRecompute = async () => {
+    if (!confirm('Recompute novelty scores for every v2-embedded video? Can take a few minutes.')) return;
+    setNoveltyRecomputing(true);
+    setNoveltyRecomputeMsg(null);
+    try {
+      const res = await fetch('/api/admin/novelty/recompute', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        setNoveltyRecomputeMsg(
+          `Scored ${data.scored} in ${(data.durationMs / 1000).toFixed(1)}s · ` +
+          `p50=${data.distribution?.p50?.toFixed(3) ?? '-'} · p90=${data.distribution?.p90?.toFixed(3) ?? '-'} · p99=${data.distribution?.p99?.toFixed(3) ?? '-'}`
+        );
+        setNoveltyDist(data.distribution || null);
+        fetchNoveltyVideos();
+      } else {
+        setNoveltyRecomputeMsg(`Error: ${data.error || 'unknown'}`);
+      }
+    } catch (err) {
+      setNoveltyRecomputeMsg(`Error: ${err instanceof Error ? err.message : 'network'}`);
+    }
+    setNoveltyRecomputing(false);
+  };
 
   const runOutlierEnrich = async () => {
     setOutlierEnriching(true);
@@ -757,6 +858,10 @@ export default function AdminPage() {
                 {vizardProjects.filter(p => p.status === 'pending' || p.status === 'processing').length}
               </span>
             )}
+          </button>
+          <button onClick={() => setAdminSection('novelty')}
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'novelty' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Novelty
           </button>
         </div>
 
@@ -2668,9 +2773,229 @@ export default function AdminPage() {
             )}
           </div>
         </div>
+
+        {/* Novelty Tab — admin-only "blue ocean" viewer.
+            Surfaces videos that are simultaneously (a) unique in the
+            combined title+thumbnail embedding space (few close neighbors),
+            and (b) performing well (peer-outlier score + views). These are
+            potential new-angle formats with proof of demand and no
+            copycat pressure. Gate kept admin-side while we decide if the
+            signal is worth exposing to users. */}
+        <div style={{ display: adminSection === 'novelty' ? 'block' : 'none' }}>
+          <div className="space-y-6">
+            {/* Header card — distribution + recompute */}
+            <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+              <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+                <div>
+                  <h2 className="text-lg font-bold text-white mb-1">Novelty (blue-ocean) scan</h2>
+                  <p className="text-xs text-gray-500 max-w-2xl">
+                    Ranks videos by novelty × peer-outlier × log(views). Novelty = mean
+                    cosine distance to the 10 nearest neighbours across title_v2 +
+                    thumbnail_v2 embeddings. High-novelty+high-performance videos are
+                    potential blue-ocean formats (proof of demand, no copycats yet).
+                  </p>
+                </div>
+                <button
+                  onClick={runNoveltyRecompute}
+                  disabled={noveltyRecomputing}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-xl transition"
+                >
+                  {noveltyRecomputing ? 'Recomputing…' : 'Recompute scores'}
+                </button>
+              </div>
+
+              {noveltyDist && noveltyDist.total > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-white">{noveltyDist.total.toLocaleString()}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">Scored</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-gray-300">{noveltyDist.p50?.toFixed(3) ?? '-'}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">Median (p50)</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-amber-400">{noveltyDist.p90?.toFixed(3) ?? '-'}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">p90</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-green-400">{noveltyDist.p99?.toFixed(3) ?? '-'}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">p99</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                    <div className="text-xs text-gray-400 break-all">
+                      {noveltyDist.lastUpdated ? new Date(noveltyDist.lastUpdated).toLocaleString() : 'never'}
+                    </div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">Last run</div>
+                  </div>
+                </div>
+              )}
+
+              {noveltyRecomputeMsg && (
+                <div className="px-3 py-2 bg-gray-900/50 border border-gray-700 rounded-lg text-xs text-gray-300">
+                  {noveltyRecomputeMsg}
+                </div>
+              )}
+            </div>
+
+            {/* Filters + results */}
+            <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6 space-y-4">
+              {/* Top bar: search + type */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <input
+                  type="text"
+                  value={noveltyQInput}
+                  onChange={e => setNoveltyQInput(e.target.value)}
+                  placeholder="Search titles or channels…"
+                  className="flex-1 min-w-[200px] max-w-md bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                />
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => setNoveltyType('long')}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center transition ${noveltyType === 'long' ? 'bg-red-600 text-white' : 'bg-gray-900 text-gray-400 border border-gray-700 hover:border-gray-500'}`}
+                    title="Long videos"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/></svg>
+                  </button>
+                  <button
+                    onClick={() => setNoveltyType('short')}
+                    className={`w-9 h-9 rounded-lg flex items-center justify-center transition ${noveltyType === 'short' ? 'bg-pink-600 text-white' : 'bg-gray-900 text-gray-400 border border-gray-700 hover:border-gray-500'}`}
+                    title="Shorts"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.77 10.32l-1.2-.5L18 9.06c1.84-1 2.53-3.37 1.54-5.22-.74-1.17-1.79-1.64-2.89-1.64-.61 0-1.24.17-1.83.48L6.14 7c-1.31.62-2.16 1.97-2.14 3.42.12 1.47.97 2.75 2.29 3.37l1.2.5L6 14.94c-1.84 1-2.53 3.37-1.54 5.22.66 1.24 1.95 1.97 3.3 1.97.58 0 1.16-.14 1.7-.43L17.86 17c1.31-.62 2.16-1.97 2.14-3.42-.12-1.47-.97-2.75-2.29-3.37l.06.11z"/></svg>
+                  </button>
+                </div>
+                <span className="text-sm text-gray-400 ml-auto">{noveltyTotal.toLocaleString()} matches</span>
+              </div>
+
+              {/* Filter row */}
+              <div className="flex items-center gap-4 flex-wrap text-xs">
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider">Novelty ≥</span>
+                  <select value={noveltyMinPct} onChange={e => setNoveltyMinPct(parseInt(e.target.value))}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    <option value={50}>top 50%</option>
+                    <option value={75}>top 25%</option>
+                    <option value={90}>top 10%</option>
+                    <option value={95}>top 5%</option>
+                    <option value={99}>top 1%</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider">Min views</span>
+                  <select value={noveltyMinViews} onChange={e => setNoveltyMinViews(parseInt(e.target.value))}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    <option value={0}>any</option>
+                    <option value={10_000}>10k+</option>
+                    <option value={50_000}>50k+</option>
+                    <option value={100_000}>100k+</option>
+                    <option value={500_000}>500k+</option>
+                    <option value={1_000_000}>1M+</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider">Outlier ≥</span>
+                  <select value={noveltyMinOutlier} onChange={e => setNoveltyMinOutlier(parseFloat(e.target.value))}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    <option value={0}>any</option>
+                    <option value={1}>1×</option>
+                    <option value={2}>2×</option>
+                    <option value={5}>5×</option>
+                    <option value={10}>10×</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider">Posted</span>
+                  <select value={noveltyPostedWithin} onChange={e => setNoveltyPostedWithin(e.target.value as typeof noveltyPostedWithin)}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    <option value="30">Last 30d</option>
+                    <option value="90">Last 3mo</option>
+                    <option value="180">Last 6mo</option>
+                    <option value="240">Last 8mo</option>
+                    <option value="365">Last 1yr</option>
+                    <option value="all">All time</option>
+                  </select>
+                </label>
+              </div>
+
+              {/* Grid */}
+              {noveltyLoading && noveltyVideos.length === 0 ? (
+                <div className="text-center text-sm text-gray-500 py-12">Loading…</div>
+              ) : noveltyVideos.length === 0 ? (
+                <div className="text-center text-sm text-gray-500 py-12">
+                  No videos match these filters. Try lowering the novelty percentile or min views.
+                  {noveltyDist && noveltyDist.total === 0 && (
+                    <div className="mt-2 text-gray-600">Novelty scores haven&apos;t been computed yet — click &quot;Recompute scores&quot; above.</div>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {noveltyVideos.map(v => {
+                    const pct = v.noveltyPercentile != null ? Math.round(v.noveltyPercentile * 100) : null;
+                    const outlier = v.peerOutlierScore;
+                    // Outlier badge: same palette as /niche/outliers
+                    const outlierBg = outlier == null ? 'bg-gray-700 text-gray-300'
+                      : outlier >= 20 ? 'bg-purple-600 text-white'
+                      : outlier >= 10 ? 'bg-pink-600 text-white'
+                      : outlier >= 5  ? 'bg-green-600 text-white'
+                      : outlier >= 2  ? 'bg-green-700 text-green-100'
+                      : 'bg-gray-700 text-gray-300';
+                    return (
+                      <div key={v.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden hover:border-gray-700 transition flex flex-col">
+                        <a href={v.url} target="_blank" rel="noopener noreferrer" className="relative block aspect-video bg-black">
+                          {v.thumbnail && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
+                          )}
+                          <div className="absolute top-2 left-2 flex gap-1.5">
+                            {pct != null && (
+                              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-600 text-white"
+                                title={`Top ${100 - pct}% most novel — mean cosine distance to 10 nearest neighbours`}>
+                                Novelty {pct}%
+                              </span>
+                            )}
+                            {outlier != null && (
+                              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${outlierBg}`}
+                                title={`Channel pulls ${outlier.toFixed(1)}× median avg-views of peers in ${v.peerOutlierBucket} bucket`}>
+                                {outlier.toFixed(outlier >= 10 ? 0 : 1)}×
+                              </span>
+                            )}
+                          </div>
+                        </a>
+                        <div className="p-3 flex-1 flex flex-col gap-1.5">
+                          <h3 className="text-sm font-semibold text-white line-clamp-2" title={v.title}>{v.title}</h3>
+                          <div className="text-[11px] text-gray-400 truncate">{v.channelName || '—'}</div>
+                          <div className="flex items-center gap-3 text-[11px] text-gray-400 mt-auto">
+                            <span className="text-green-400 font-medium">{fmtK(v.viewCount)} views</span>
+                            {v.subscriberCount != null && v.subscriberCount > 0 && (
+                              <span className="text-gray-500">{fmtK(v.subscriberCount)} subs</span>
+                            )}
+                            {v.peerOutlierBucket && (
+                              <span className="text-gray-500 ml-auto">{v.peerOutlierBucket}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
+}
+
+// Admin-local fmt helper for compact K/M view counts. Kept inline because
+// there's only one use site — the novelty grid cards.
+function fmtK(n: number | null | undefined): string {
+  if (n == null) return '0';
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
 }
 
 interface DeployConfig {

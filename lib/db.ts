@@ -464,6 +464,13 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS title_embedded_v2_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS thumbnail_embedding_v2 REAL[]`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS thumbnail_embedded_v2_at TIMESTAMPTZ`).catch(() => {});
+    // Novelty: mean K-NN cosine distance in the combined (title_v2 +
+    // thumbnail_v2) space. Populated by /api/admin/novelty/recompute.
+    // Higher = more unique. Used by the admin "Novelty" tab to surface
+    // blue-ocean video angles (unique + viral) before building them out.
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS novelty_score DOUBLE PRECISION`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS novelty_updated_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsv_novelty ON niche_spy_videos(novelty_score DESC NULLS LAST)`).catch(() => {});
     // Remember which target a job was for — so the admin UI can tell the user
     // "you clicked Thumbnail but there's already a Title v2 job running".
     await client.query(`ALTER TABLE niche_spy_embedding_jobs ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
