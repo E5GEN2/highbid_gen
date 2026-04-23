@@ -181,18 +181,28 @@ export default function AdminPage() {
   const [noveltyRecomputing, setNoveltyRecomputing] = useState(false);
   const [noveltyRecomputeMsg, setNoveltyRecomputeMsg] = useState<string | null>(null);
 
-  // Filters
-  const [noveltyType, setNoveltyType] = useState<'long' | 'short'>('long');
-  const [noveltyMinPct, setNoveltyMinPct] = useState(75);
-  const [noveltyMinViews, setNoveltyMinViews] = useState(10_000);
+  // Every filter is a standalone dial. Defaults are OFF so the admin gets
+  // the raw unfiltered distribution first, then opts into each constraint
+  // as they want to isolate a signal. 0 / 'any' / 'all' all mean "no filter."
+  const [noveltyType, setNoveltyType] = useState<'any' | 'long' | 'short'>('any');
+  const [noveltyMinPct, setNoveltyMinPct] = useState(0);
+  const [noveltyMinViews, setNoveltyMinViews] = useState(0);
+  const [noveltyMaxViews, setNoveltyMaxViews] = useState(0);
   const [noveltyMinOutlier, setNoveltyMinOutlier] = useState(0);
-  const [noveltyPostedWithin, setNoveltyPostedWithin] = useState<'30' | '90' | '180' | '240' | '365' | 'all'>('240');
-  // Channel-age filter — encoded as a single preset key mapping to
-  // {min, max} day bounds. Matches the presets on /niche/channels but
-  // with a few extra shorter windows because "brand-new channel" is
-  // especially interesting for novelty discovery.
+  const [noveltyMaxOutlier, setNoveltyMaxOutlier] = useState(0);
+  const [noveltyMinSubs, setNoveltyMinSubs] = useState(0);
+  const [noveltyMaxSubs, setNoveltyMaxSubs] = useState(0);
+  const [noveltyPostedWithin, setNoveltyPostedWithin] = useState<'30' | '90' | '180' | '240' | '365' | 'all'>('all');
   const [noveltyChannelAge, setNoveltyChannelAge] =
     useState<'any' | 'brand_new' | '30' | '90' | '180' | '365' | 'established'>('any');
+  // When true, hide videos whose channel has no computed peer_outlier_score.
+  // Lets the admin inspect whether the outlier filter is actually improving
+  // signal or just shrinking the set — compare `on` vs `off` side by side.
+  const [noveltyRequireOutlier, setNoveltyRequireOutlier] = useState(false);
+  // Sort mode — standalone knob so admin can rank by pure novelty, raw
+  // views, outlier, recency, or the composite blue-ocean score.
+  const [noveltySort, setNoveltySort] =
+    useState<'blue_ocean' | 'novelty' | 'views' | 'outlier' | 'recency' | 'subs_asc' | 'channel_age_asc'>('blue_ocean');
   const [noveltyQ, setNoveltyQ] = useState('');
   const [noveltyQInput, setNoveltyQInput] = useState('');
 
@@ -205,17 +215,22 @@ export default function AdminPage() {
   const fetchNoveltyVideos = useCallback(async () => {
     setNoveltyLoading(true);
     try {
-      const params = new URLSearchParams({
-        limit: '60',
-        minNoveltyPct: String(noveltyMinPct),
-        minViews: String(noveltyMinViews),
-        minOutlier: String(noveltyMinOutlier),
-        type: noveltyType,
-      });
+      const params = new URLSearchParams({ limit: '60' });
+      params.set('sort', noveltySort);
+      params.set('type', noveltyType);
+      if (noveltyMinPct     > 0) params.set('minNoveltyPct', String(noveltyMinPct));
+      if (noveltyMinViews   > 0) params.set('minViews',      String(noveltyMinViews));
+      if (noveltyMaxViews   > 0) params.set('maxViews',      String(noveltyMaxViews));
+      if (noveltyMinOutlier > 0) params.set('minOutlier',    String(noveltyMinOutlier));
+      if (noveltyMaxOutlier > 0) params.set('maxOutlier',    String(noveltyMaxOutlier));
+      if (noveltyMinSubs    > 0) params.set('minSubs',       String(noveltyMinSubs));
+      if (noveltyMaxSubs    > 0) params.set('maxSubs',       String(noveltyMaxSubs));
+      if (noveltyRequireOutlier) params.set('requireOutlier', 'true');
+      // Recency: 'all' sends empty string (server interprets as no filter).
+      // Any other value passes through as a day count.
       if (noveltyPostedWithin === 'all') params.set('postedWithin', '');
       else params.set('postedWithin', noveltyPostedWithin);
-      // Channel-age presets. "brand_new" = ≤30d; "established" = >1yr;
-      // numeric keys = "≤N days." Empty-string preset "any" skips the filter.
+      // Channel-age presets mapped to numeric bounds.
       switch (noveltyChannelAge) {
         case 'brand_new':   params.set('maxChannelAge', '30'); break;
         case '30':          params.set('maxChannelAge', '30'); break;
@@ -231,7 +246,13 @@ export default function AdminPage() {
       setNoveltyTotal(data.total || 0);
     } catch (err) { console.error('[novelty] fetch err', err); }
     setNoveltyLoading(false);
-  }, [noveltyMinPct, noveltyMinViews, noveltyMinOutlier, noveltyType, noveltyPostedWithin, noveltyChannelAge, noveltyQ]);
+  }, [
+    noveltyMinPct, noveltyMinViews, noveltyMaxViews,
+    noveltyMinOutlier, noveltyMaxOutlier,
+    noveltyMinSubs, noveltyMaxSubs,
+    noveltyType, noveltyPostedWithin, noveltyChannelAge,
+    noveltyRequireOutlier, noveltySort, noveltyQ,
+  ]);
 
   const fetchNoveltyDist = useCallback(async () => {
     try {
@@ -2856,7 +2877,7 @@ export default function AdminPage() {
 
             {/* Filters + results */}
             <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6 space-y-4">
-              {/* Top bar: search + type */}
+              {/* Top bar: search + type + match count + active-filter chip + reset */}
               <div className="flex items-center gap-3 flex-wrap">
                 <input
                   type="text"
@@ -2867,29 +2888,69 @@ export default function AdminPage() {
                 />
                 <div className="flex gap-1.5">
                   <button
+                    onClick={() => setNoveltyType('any')}
+                    className={`h-9 px-3 rounded-lg flex items-center justify-center transition text-xs font-medium ${noveltyType === 'any' ? 'bg-indigo-600 text-white' : 'bg-gray-900 text-gray-400 border border-gray-700 hover:border-gray-500'}`}
+                    title="All video types"
+                  >All</button>
+                  <button
                     onClick={() => setNoveltyType('long')}
                     className={`w-9 h-9 rounded-lg flex items-center justify-center transition ${noveltyType === 'long' ? 'bg-red-600 text-white' : 'bg-gray-900 text-gray-400 border border-gray-700 hover:border-gray-500'}`}
-                    title="Long videos"
+                    title="Long videos only"
                   >
                     <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/></svg>
                   </button>
                   <button
                     onClick={() => setNoveltyType('short')}
                     className={`w-9 h-9 rounded-lg flex items-center justify-center transition ${noveltyType === 'short' ? 'bg-pink-600 text-white' : 'bg-gray-900 text-gray-400 border border-gray-700 hover:border-gray-500'}`}
-                    title="Shorts"
+                    title="Shorts only"
                   >
                     <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.77 10.32l-1.2-.5L18 9.06c1.84-1 2.53-3.37 1.54-5.22-.74-1.17-1.79-1.64-2.89-1.64-.61 0-1.24.17-1.83.48L6.14 7c-1.31.62-2.16 1.97-2.14 3.42.12 1.47.97 2.75 2.29 3.37l1.2.5L6 14.94c-1.84 1-2.53 3.37-1.54 5.22.66 1.24 1.95 1.97 3.3 1.97.58 0 1.16-.14 1.7-.43L17.86 17c1.31-.62 2.16-1.97 2.14-3.42-.12-1.47-.97-2.75-2.29-3.37l.06.11z"/></svg>
                   </button>
                 </div>
                 <span className="text-sm text-gray-400 ml-auto">{noveltyTotal.toLocaleString()} matches</span>
+                <button
+                  onClick={() => {
+                    setNoveltyType('any');
+                    setNoveltyMinPct(0); setNoveltyMinViews(0); setNoveltyMaxViews(0);
+                    setNoveltyMinOutlier(0); setNoveltyMaxOutlier(0);
+                    setNoveltyMinSubs(0); setNoveltyMaxSubs(0);
+                    setNoveltyPostedWithin('all'); setNoveltyChannelAge('any');
+                    setNoveltyRequireOutlier(false);
+                    setNoveltySort('blue_ocean');
+                    setNoveltyQInput('');
+                  }}
+                  className="text-xs text-gray-500 hover:text-white transition"
+                >
+                  Reset all
+                </button>
               </div>
 
-              {/* Filter row */}
-              <div className="flex items-center gap-4 flex-wrap text-xs">
+              {/* Every knob is independent. Defaults = OFF so the raw
+                  unfiltered distribution shows first. Each filter can be
+                  turned on without requiring any other — "Novelty + new
+                  channels" is just two selects, not a preset. */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-2 text-xs">
+                {/* Sort — standalone so admin can rank purely by one dimension */}
                 <label className="flex items-center gap-2">
-                  <span className="text-gray-500 uppercase tracking-wider">Novelty ≥</span>
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Sort</span>
+                  <select value={noveltySort} onChange={e => setNoveltySort(e.target.value as typeof noveltySort)}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
+                    <option value="blue_ocean">Blue ocean (composite)</option>
+                    <option value="novelty">Novelty only</option>
+                    <option value="views">Views desc</option>
+                    <option value="outlier">Outlier desc</option>
+                    <option value="recency">Newest first</option>
+                    <option value="subs_asc">Subs asc (small first)</option>
+                    <option value="channel_age_asc">Channel age asc (new first)</option>
+                  </select>
+                </label>
+
+                {/* Novelty percentile */}
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Novelty ≥</span>
                   <select value={noveltyMinPct} onChange={e => setNoveltyMinPct(parseInt(e.target.value))}
-                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
+                    <option value={0}>any (all scored)</option>
                     <option value={50}>top 50%</option>
                     <option value={75}>top 25%</option>
                     <option value={90}>top 10%</option>
@@ -2897,45 +2958,119 @@ export default function AdminPage() {
                     <option value={99}>top 1%</option>
                   </select>
                 </label>
+
+                {/* Views range */}
                 <label className="flex items-center gap-2">
-                  <span className="text-gray-500 uppercase tracking-wider">Min views</span>
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Min views</span>
                   <select value={noveltyMinViews} onChange={e => setNoveltyMinViews(parseInt(e.target.value))}
-                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
                     <option value={0}>any</option>
+                    <option value={1_000}>1k+</option>
                     <option value={10_000}>10k+</option>
                     <option value={50_000}>50k+</option>
                     <option value={100_000}>100k+</option>
                     <option value={500_000}>500k+</option>
                     <option value={1_000_000}>1M+</option>
+                    <option value={5_000_000}>5M+</option>
                   </select>
                 </label>
                 <label className="flex items-center gap-2">
-                  <span className="text-gray-500 uppercase tracking-wider">Outlier ≥</span>
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Max views</span>
+                  <select value={noveltyMaxViews} onChange={e => setNoveltyMaxViews(parseInt(e.target.value))}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
+                    <option value={0}>any</option>
+                    <option value={10_000}>≤ 10k</option>
+                    <option value={100_000}>≤ 100k</option>
+                    <option value={500_000}>≤ 500k</option>
+                    <option value={1_000_000}>≤ 1M</option>
+                    <option value={10_000_000}>≤ 10M</option>
+                  </select>
+                </label>
+
+                {/* Outlier range + require-toggle — the audit tool you asked
+                    for: toggle 'Require outlier' off to see how the grid
+                    looks WITHOUT any outlier filtering at all. */}
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Outlier ≥</span>
                   <select value={noveltyMinOutlier} onChange={e => setNoveltyMinOutlier(parseFloat(e.target.value))}
-                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
                     <option value={0}>any</option>
                     <option value={1}>1×</option>
                     <option value={2}>2×</option>
                     <option value={5}>5×</option>
                     <option value={10}>10×</option>
+                    <option value={20}>20×</option>
                   </select>
                 </label>
                 <label className="flex items-center gap-2">
-                  <span className="text-gray-500 uppercase tracking-wider">Posted</span>
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Outlier ≤</span>
+                  <select value={noveltyMaxOutlier} onChange={e => setNoveltyMaxOutlier(parseFloat(e.target.value))}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
+                    <option value={0}>any</option>
+                    <option value={1}>≤ 1×</option>
+                    <option value={2}>≤ 2×</option>
+                    <option value={5}>≤ 5×</option>
+                    <option value={10}>≤ 10×</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 col-span-2 md:col-span-1">
+                  <input type="checkbox"
+                    checked={noveltyRequireOutlier}
+                    onChange={e => setNoveltyRequireOutlier(e.target.checked)}
+                    className="accent-indigo-500"
+                  />
+                  <span className="text-gray-400 uppercase tracking-wider whitespace-nowrap"
+                    title="When off, videos whose channel has no peer-outlier score are INCLUDED (they contribute 1.0 to the composite rank). Toggle on to compare whether the outlier filter actually improves signal.">
+                    Require outlier score
+                  </span>
+                </label>
+
+                {/* Subs range — lets you focus on small/large channels
+                    independently of the outlier metric. */}
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Min subs</span>
+                  <select value={noveltyMinSubs} onChange={e => setNoveltyMinSubs(parseInt(e.target.value))}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
+                    <option value={0}>any</option>
+                    <option value={100}>100+</option>
+                    <option value={1_000}>1k+</option>
+                    <option value={10_000}>10k+</option>
+                    <option value={100_000}>100k+</option>
+                    <option value={1_000_000}>1M+</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Max subs</span>
+                  <select value={noveltyMaxSubs} onChange={e => setNoveltyMaxSubs(parseInt(e.target.value))}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
+                    <option value={0}>any</option>
+                    <option value={1_000}>≤ 1k</option>
+                    <option value={10_000}>≤ 10k</option>
+                    <option value={50_000}>≤ 50k</option>
+                    <option value={100_000}>≤ 100k</option>
+                    <option value={1_000_000}>≤ 1M</option>
+                  </select>
+                </label>
+
+                {/* Recency — posted window. 'all' disables. */}
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Posted</span>
                   <select value={noveltyPostedWithin} onChange={e => setNoveltyPostedWithin(e.target.value as typeof noveltyPostedWithin)}
-                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1">
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1">
+                    <option value="all">All time</option>
                     <option value="30">Last 30d</option>
                     <option value="90">Last 3mo</option>
                     <option value="180">Last 6mo</option>
                     <option value="240">Last 8mo</option>
                     <option value="365">Last 1yr</option>
-                    <option value="all">All time</option>
                   </select>
                 </label>
+
+                {/* Channel age — same effective-age chain the chip uses */}
                 <label className="flex items-center gap-2">
-                  <span className="text-gray-500 uppercase tracking-wider">Channel age</span>
+                  <span className="text-gray-500 uppercase tracking-wider whitespace-nowrap">Channel age</span>
                   <select value={noveltyChannelAge} onChange={e => setNoveltyChannelAge(e.target.value as typeof noveltyChannelAge)}
-                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1"
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1 flex-1"
                     title="Filters by the channel's first_upload_at (falling back to channel_created_at) — same derivation the age chip displays.">
                     <option value="any">Any age</option>
                     <option value="brand_new">Brand new (≤30d)</option>
@@ -2953,7 +3088,7 @@ export default function AdminPage() {
                 <div className="text-center text-sm text-gray-500 py-12">Loading…</div>
               ) : noveltyVideos.length === 0 ? (
                 <div className="text-center text-sm text-gray-500 py-12">
-                  No videos match these filters. Try lowering the novelty percentile or min views.
+                  No videos match these filters. Click &quot;Reset all&quot; above to see the full unfiltered distribution.
                   {noveltyDist && noveltyDist.total === 0 && (
                     <div className="mt-2 text-gray-600">Novelty scores haven&apos;t been computed yet — click &quot;Recompute scores&quot; above.</div>
                   )}

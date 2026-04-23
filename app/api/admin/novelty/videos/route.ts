@@ -34,24 +34,44 @@ export async function GET(req: NextRequest) {
     return Number.isFinite(n) ? n : null;
   };
 
-  const minViews      = numOrNull(sp.get('minViews'))      ?? 0;
-  const minNoveltyPct = numOrNull(sp.get('minNoveltyPct')) ?? 50;
-  const minOutlier    = numOrNull(sp.get('minOutlier'))    ?? 0;
-  // Default 8mo recency — matches /niche/outliers. '' explicitly means
-  // "no recency filter" (all-time).
+  // All bounds default to NULL (= no filter). The UI passes '0' or '' for
+  // "no lower bound" and a real number for an active filter. This gives the
+  // admin true max-control: every knob can be turned off independently.
+  const minViews      = numOrNull(sp.get('minViews'));
+  const maxViews      = numOrNull(sp.get('maxViews'));
+  const minNoveltyPct = numOrNull(sp.get('minNoveltyPct'));
+  const minOutlier    = numOrNull(sp.get('minOutlier'));
+  const maxOutlier    = numOrNull(sp.get('maxOutlier'));
+  const minSubs       = numOrNull(sp.get('minSubs'));
+  const maxSubs       = numOrNull(sp.get('maxSubs'));
+  // Recency bound. '' explicitly means "no recency filter" (all-time).
+  // Default: null (no filter) — admin view, show everything unless asked.
   const postedWithinRaw = sp.get('postedWithin');
-  const postedWithinDays = postedWithinRaw === ''
+  const postedWithinDays = postedWithinRaw === '' || postedWithinRaw === null
     ? null
-    : (numOrNull(postedWithinRaw) ?? 240);
-  // Channel age bounds (days). null = no bound. Matches the
-  // /api/niche-spy/channels semantics and uses the same effective-age
-  // derivation the chip displays: COALESCE(first_upload_at, channel_created_at).
-  // Using first_upload_at as the preferred source means an "aged/reactivated"
-  // channel (created years ago, first upload recent) is treated as "new" —
-  // which is the correct creator-friendly interpretation.
+    : numOrNull(postedWithinRaw);
+  // Channel age bounds (days). null = no bound. Uses the same
+  // effective-age chain the chip displays: COALESCE(first_upload_at,
+  // channel_created_at). first_upload_at is preferred so an "aged /
+  // reactivated" channel (old creation date, recent first upload) is
+  // treated as new — the creator-friendly interpretation.
   const minChannelAgeDays = numOrNull(sp.get('minChannelAge'));
   const maxChannelAgeDays = numOrNull(sp.get('maxChannelAge'));
-  const type = sp.get('type') || 'long';
+  // type: 'long' | 'short' | 'any' (default 'any' so the unfiltered admin
+  // view includes everything). Empty string = same as 'any'.
+  const typeRaw = (sp.get('type') || 'any').toLowerCase();
+  const type = typeRaw === 'long' || typeRaw === 'short' ? typeRaw : 'any';
+  // requireOutlier: when 'true', exclude videos whose channel lacks a
+  // peer_outlier_score. When 'false' (default), include them and they
+  // contribute 1.0 to the composite ranking. Being able to toggle this off
+  // is critical for auditing whether the outlier signal is helping or
+  // hurting the novelty list.
+  const requireOutlier = sp.get('requireOutlier') === 'true';
+  // sort: 'blue_ocean' | 'novelty' | 'views' | 'outlier' | 'recency'
+  // Default 'blue_ocean' preserves the previous behaviour. Explicit sort
+  // lets the admin see pure novelty ranking (ignoring views and outlier)
+  // to judge the raw metric quality.
+  const sortMode = (sp.get('sort') || 'blue_ocean').toLowerCase();
   const q = (sp.get('q') || '').trim();
   const limit = Math.min(parseInt(sp.get('limit') || '60'), 200);
   const offset = parseInt(sp.get('offset') || '0');
@@ -62,9 +82,9 @@ export async function GET(req: NextRequest) {
 
   // Convert novelty percentile to an absolute score cutoff via the
   // distribution. "Top X%" is more intuitive than "distance > 0.87" which
-  // changes whenever the corpus shifts. One extra query but avoids coupling
-  // the UI to raw distances.
-  if (minNoveltyPct > 0) {
+  // changes whenever the corpus shifts. Skipped when minNoveltyPct is null
+  // (admin opted into "show everything novel-enough to be scored at all").
+  if (minNoveltyPct != null && minNoveltyPct > 0) {
     const percentile = Math.min(99.9, Math.max(0, minNoveltyPct)) / 100;
     const cutoffRes = await pool.query<{ cutoff: number | null }>(
       `SELECT PERCENTILE_CONT($1) WITHIN GROUP (ORDER BY novelty_score) AS cutoff
@@ -79,13 +99,31 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  if (minViews > 0) {
+  if (minViews != null && minViews > 0) {
     conditions.push(`v.view_count >= $${idx}`); params.push(minViews); idx++;
   }
-  if (minOutlier > 0) {
+  if (maxViews != null && maxViews > 0) {
+    conditions.push(`v.view_count <= $${idx}`); params.push(maxViews); idx++;
+  }
+  // Outlier bounds. `requireOutlier` decides whether videos with a NULL
+  // peer_outlier_score are included at all. With the toggle OFF (default),
+  // the comparisons only fire when the score is non-null so NULL rows pass.
+  if (requireOutlier) {
+    conditions.push(`c.peer_outlier_score IS NOT NULL`);
+  }
+  if (minOutlier != null && minOutlier > 0) {
     conditions.push(`c.peer_outlier_score >= $${idx}`); params.push(minOutlier); idx++;
   }
-  if (postedWithinDays != null) {
+  if (maxOutlier != null && maxOutlier > 0) {
+    conditions.push(`c.peer_outlier_score <= $${idx}`); params.push(maxOutlier); idx++;
+  }
+  if (minSubs != null && minSubs > 0) {
+    conditions.push(`c.subscriber_count >= $${idx}`); params.push(minSubs); idx++;
+  }
+  if (maxSubs != null && maxSubs > 0) {
+    conditions.push(`c.subscriber_count <= $${idx}`); params.push(maxSubs); idx++;
+  }
+  if (postedWithinDays != null && postedWithinDays > 0) {
     conditions.push(`v.posted_at >= NOW() - ($${idx} || ' days')::interval`);
     params.push(postedWithinDays); idx++;
   }
@@ -112,6 +150,7 @@ export async function GET(req: NextRequest) {
   } else if (type === 'long') {
     conditions.push(`v.url NOT ILIKE '%/shorts/%'`);
   }
+  // type === 'any' → no filter (default)
   if (q) {
     conditions.push(`(v.title ILIKE $${idx} OR v.channel_name ILIKE $${idx})`);
     params.push(`%${q}%`); idx++;
@@ -123,9 +162,40 @@ export async function GET(req: NextRequest) {
   const offsetIdx = idx + 1;
   params.push(limit, offset);
 
-  // Ranking: novelty × outlier × log1p(views). Videos without a channel
-  // peer_outlier_score still appear but rank lower (the score contributes
-  // 1.0 via COALESCE so they aren't excluded).
+  // Sort mode: standalone knobs so the admin can isolate each signal.
+  //   blue_ocean — default, novelty × outlier × log1p(views)
+  //   novelty    — pure novelty_score (audit the raw metric)
+  //   views      — view_count
+  //   outlier    — peer_outlier_score (NULLS LAST)
+  //   recency    — posted_at
+  //   subs_asc   — subscriber_count ASC (smallest channels first)
+  //   channel_age_asc — youngest channels first
+  let orderBy: string;
+  switch (sortMode) {
+    case 'novelty':
+      orderBy = 'v.novelty_score DESC NULLS LAST';
+      break;
+    case 'views':
+      orderBy = 'v.view_count DESC NULLS LAST';
+      break;
+    case 'outlier':
+      orderBy = 'c.peer_outlier_score DESC NULLS LAST';
+      break;
+    case 'recency':
+      orderBy = 'v.posted_at DESC NULLS LAST';
+      break;
+    case 'subs_asc':
+      orderBy = 'c.subscriber_count ASC NULLS LAST';
+      break;
+    case 'channel_age_asc':
+      orderBy = 'COALESCE(c.first_upload_at, c.channel_created_at) DESC NULLS LAST';
+      break;
+    case 'blue_ocean':
+    default:
+      orderBy =
+        `(v.novelty_score * COALESCE(c.peer_outlier_score, 1.0) * LN(1 + GREATEST(v.view_count, 1))) DESC NULLS LAST`;
+  }
+
   const videosRes = await pool.query(
     `SELECT
        v.id, v.url, v.title, v.view_count, v.channel_name, v.posted_at,
@@ -140,7 +210,7 @@ export async function GET(req: NextRequest) {
      FROM niche_spy_videos v
      LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
      ${where}
-     ORDER BY blue_ocean_rank DESC NULLS LAST
+     ORDER BY ${orderBy}
      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
     params,
   );
