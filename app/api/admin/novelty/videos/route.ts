@@ -43,6 +43,14 @@ export async function GET(req: NextRequest) {
   const postedWithinDays = postedWithinRaw === ''
     ? null
     : (numOrNull(postedWithinRaw) ?? 240);
+  // Channel age bounds (days). null = no bound. Matches the
+  // /api/niche-spy/channels semantics and uses the same effective-age
+  // derivation the chip displays: COALESCE(first_upload_at, channel_created_at).
+  // Using first_upload_at as the preferred source means an "aged/reactivated"
+  // channel (created years ago, first upload recent) is treated as "new" —
+  // which is the correct creator-friendly interpretation.
+  const minChannelAgeDays = numOrNull(sp.get('minChannelAge'));
+  const maxChannelAgeDays = numOrNull(sp.get('maxChannelAge'));
   const type = sp.get('type') || 'long';
   const q = (sp.get('q') || '').trim();
   const limit = Math.min(parseInt(sp.get('limit') || '60'), 200);
@@ -80,6 +88,24 @@ export async function GET(req: NextRequest) {
   if (postedWithinDays != null) {
     conditions.push(`v.posted_at >= NOW() - ($${idx} || ' days')::interval`);
     params.push(postedWithinDays); idx++;
+  }
+  // Channel age filter — applies to the channel's effective active age
+  // (first_upload_at preferred over channel_created_at, same chain the chip
+  // displays). A channel is INCLUDED when its effective age falls inside
+  // [minChannelAgeDays, maxChannelAgeDays].
+  //   minChannelAge=30   → channel is at least 30 days old
+  //   maxChannelAge=365  → channel is at most 1 year old
+  if (minChannelAgeDays != null && minChannelAgeDays > 0) {
+    conditions.push(
+      `COALESCE(c.first_upload_at, c.channel_created_at) <= NOW() - ($${idx} || ' days')::interval`
+    );
+    params.push(minChannelAgeDays); idx++;
+  }
+  if (maxChannelAgeDays != null && maxChannelAgeDays > 0) {
+    conditions.push(
+      `COALESCE(c.first_upload_at, c.channel_created_at) >= NOW() - ($${idx} || ' days')::interval`
+    );
+    params.push(maxChannelAgeDays); idx++;
   }
   if (type === 'short') {
     conditions.push(`v.url ILIKE '%/shorts/%'`);

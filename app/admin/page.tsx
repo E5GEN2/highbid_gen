@@ -187,6 +187,12 @@ export default function AdminPage() {
   const [noveltyMinViews, setNoveltyMinViews] = useState(10_000);
   const [noveltyMinOutlier, setNoveltyMinOutlier] = useState(0);
   const [noveltyPostedWithin, setNoveltyPostedWithin] = useState<'30' | '90' | '180' | '240' | '365' | 'all'>('240');
+  // Channel-age filter — encoded as a single preset key mapping to
+  // {min, max} day bounds. Matches the presets on /niche/channels but
+  // with a few extra shorter windows because "brand-new channel" is
+  // especially interesting for novelty discovery.
+  const [noveltyChannelAge, setNoveltyChannelAge] =
+    useState<'any' | 'brand_new' | '30' | '90' | '180' | '365' | 'established'>('any');
   const [noveltyQ, setNoveltyQ] = useState('');
   const [noveltyQInput, setNoveltyQInput] = useState('');
 
@@ -208,6 +214,16 @@ export default function AdminPage() {
       });
       if (noveltyPostedWithin === 'all') params.set('postedWithin', '');
       else params.set('postedWithin', noveltyPostedWithin);
+      // Channel-age presets. "brand_new" = ≤30d; "established" = >1yr;
+      // numeric keys = "≤N days." Empty-string preset "any" skips the filter.
+      switch (noveltyChannelAge) {
+        case 'brand_new':   params.set('maxChannelAge', '30'); break;
+        case '30':          params.set('maxChannelAge', '30'); break;
+        case '90':          params.set('maxChannelAge', '90'); break;
+        case '180':         params.set('maxChannelAge', '180'); break;
+        case '365':         params.set('maxChannelAge', '365'); break;
+        case 'established': params.set('minChannelAge', '365'); break;
+      }
       if (noveltyQ) params.set('q', noveltyQ);
       const res = await fetch(`/api/admin/novelty/videos?${params}`);
       const data = await res.json();
@@ -215,7 +231,7 @@ export default function AdminPage() {
       setNoveltyTotal(data.total || 0);
     } catch (err) { console.error('[novelty] fetch err', err); }
     setNoveltyLoading(false);
-  }, [noveltyMinPct, noveltyMinViews, noveltyMinOutlier, noveltyType, noveltyPostedWithin, noveltyQ]);
+  }, [noveltyMinPct, noveltyMinViews, noveltyMinOutlier, noveltyType, noveltyPostedWithin, noveltyChannelAge, noveltyQ]);
 
   const fetchNoveltyDist = useCallback(async () => {
     try {
@@ -2914,6 +2930,20 @@ export default function AdminPage() {
                     <option value="240">Last 8mo</option>
                     <option value="365">Last 1yr</option>
                     <option value="all">All time</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span className="text-gray-500 uppercase tracking-wider">Channel age</span>
+                  <select value={noveltyChannelAge} onChange={e => setNoveltyChannelAge(e.target.value as typeof noveltyChannelAge)}
+                    className="bg-gray-900 border border-gray-700 text-white rounded-md px-2 py-1"
+                    title="Filters by the channel's first_upload_at (falling back to channel_created_at) — same derivation the age chip displays.">
+                    <option value="any">Any age</option>
+                    <option value="brand_new">Brand new (≤30d)</option>
+                    <option value="30">≤ 30d</option>
+                    <option value="90">≤ 3mo</option>
+                    <option value="180">≤ 6mo</option>
+                    <option value="365">≤ 1yr</option>
+                    <option value="established">Established (&gt;1yr)</option>
                   </select>
                 </label>
               </div>
