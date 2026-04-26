@@ -43,6 +43,8 @@ export async function GET(req: NextRequest) {
        c.xgodo_submitted_at, c.xgodo_started_at, c.xgodo_finished_at,
        c.xgodo_last_polled_at, c.xgodo_error,
        c.youtube_url,
+       c.youtube_view_count, c.youtube_like_count, c.youtube_comment_count,
+       c.youtube_views_fetched_at,
        p.video_url AS project_url
      FROM vizard_clips c
      JOIN vizard_projects p ON p.id = c.project_id
@@ -101,6 +103,10 @@ export async function GET(req: NextRequest) {
       lastPolledAt:      r.xgodo_last_polled_at,
       error:             r.xgodo_error,
       youtubeUrl:        r.youtube_url,
+      youtubeViewCount:    r.youtube_view_count    !== null ? parseInt(r.youtube_view_count)    : null,
+      youtubeLikeCount:    r.youtube_like_count    !== null ? parseInt(r.youtube_like_count)    : null,
+      youtubeCommentCount: r.youtube_comment_count !== null ? parseInt(r.youtube_comment_count) : null,
+      youtubeViewsFetchedAt: r.youtube_views_fetched_at,
       projectUrl:        r.project_url,
     })),
   });

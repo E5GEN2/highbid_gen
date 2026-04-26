@@ -56,13 +56,35 @@ export async function submitClipToXgodo(input: VizardClipUploadInput): Promise<{
   ok: false; error: string;
 }> {
   const pool = await getPool();
-  const existing = await pool.query<{ xgodo_upload_id: string | null }>(
-    `SELECT xgodo_upload_id FROM vizard_clips WHERE id = $1`,
+  const existing = await pool.query<{ xgodo_upload_id: string | null; xgodo_upload_status: string | null }>(
+    `SELECT xgodo_upload_id, xgodo_upload_status FROM vizard_clips WHERE id = $1`,
     [input.clipId]
   );
   if (existing.rows.length === 0) return { ok: false, error: 'clip not found' };
-  if (existing.rows[0].xgodo_upload_id) {
-    return { ok: true, plannedTaskId: existing.rows[0].xgodo_upload_id, alreadyQueued: true };
+  const row = existing.rows[0];
+  // Idempotency: if a planned_task is still in flight (queued/running/uploaded/
+  // confirmed), don't re-submit. But if the previous attempt is in a terminal
+  // failure state (failed/declined), CLEAR everything and submit fresh — this
+  // is what the "Retry" button needs. Without this, retry was a no-op
+  // because xgodo_upload_id was non-null and we returned alreadyQueued.
+  const inFlight = row.xgodo_upload_id && row.xgodo_upload_status &&
+    !['failed', 'declined'].includes(row.xgodo_upload_status);
+  if (inFlight) {
+    return { ok: true, plannedTaskId: row.xgodo_upload_id!, alreadyQueued: true };
+  }
+  if (row.xgodo_upload_id) {
+    // Wipe stale failed-attempt state so reporting shows the new run cleanly,
+    // not a frankenstein mix of old worker/device + new task.
+    await pool.query(
+      `UPDATE vizard_clips SET
+         xgodo_upload_id = NULL, xgodo_upload_status = NULL,
+         xgodo_job_task_id = NULL, xgodo_device_id = NULL, xgodo_device_name = NULL,
+         xgodo_worker_id = NULL, xgodo_worker_name = NULL,
+         xgodo_submitted_at = NULL, xgodo_started_at = NULL, xgodo_finished_at = NULL,
+         xgodo_last_polled_at = NULL, xgodo_error = NULL, youtube_url = NULL
+       WHERE id = $1`,
+      [input.clipId]
+    );
   }
 
   const token = await getXgodoToken();

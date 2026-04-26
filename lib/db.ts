@@ -819,6 +819,14 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_url TEXT`).catch(() => {});
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS upload_title TEXT`).catch(() => {});
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS upload_description TEXT`).catch(() => {});
+    // Live view-count tracking via YouTube Data API. Refreshed on demand from
+    // the Vizard tab. youtube_video_id is the 11-char YT ID extracted from
+    // youtube_url so we can batch up to 50 IDs per videos.list call.
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_video_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_view_count BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_like_count BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_comment_count BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_views_fetched_at TIMESTAMPTZ`).catch(() => {});
     // Pull poll work efficiently: index in-flight tasks by status + last poll.
     await client.query(
       `CREATE INDEX IF NOT EXISTS idx_vizard_clips_upload_status_polled

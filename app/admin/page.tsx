@@ -381,6 +381,10 @@ export default function AdminPage() {
     xgodoDeviceName?: string | null;
     xgodoFinishedAt?: string | null;
     youtubeUrl?: string | null;
+    youtubeViewCount?: number | null;
+    youtubeLikeCount?: number | null;
+    youtubeCommentCount?: number | null;
+    youtubeViewsFetchedAt?: string | null;
   }
   interface VizardProjectRow {
     id: number;
@@ -438,6 +442,10 @@ export default function AdminPage() {
     lastPolledAt: string | null;
     error: string | null;
     youtubeUrl: string | null;
+    youtubeViewCount: number | null;
+    youtubeLikeCount: number | null;
+    youtubeCommentCount: number | null;
+    youtubeViewsFetchedAt: string | null;
     projectUrl: string;
   }
   interface VizardUploadSummary {
@@ -464,6 +472,31 @@ export default function AdminPage() {
   // the button shows "Sending..." and disables during the round trip.
   const [uploadingClipIds, setUploadingClipIds] = useState<Set<number>>(new Set());
   const [uploadDescription, setUploadDescription] = useState('');
+
+  // Refresh YT view counts for uploaded clips. Hits videos.list?part=statistics
+  // via /api/admin/vizard/clips/refresh-views — 1 quota unit per 50 clips.
+  const [refreshingViews, setRefreshingViews] = useState(false);
+  const refreshClipViews = async (clipIds?: number[]) => {
+    setRefreshingViews(true);
+    try {
+      const res = await fetch('/api/admin/vizard/clips/refresh-views', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clipIds, force: !!clipIds }),
+      });
+      const data = await res.json();
+      console.log('[refresh-views]', data);
+      // Re-pull projects so the new view counts show up on the row.
+      const r = await fetch('/api/admin/vizard/projects');
+      const d = await r.json();
+      if (d.projects) setVizardProjects(d.projects);
+      refetchVizardUploads();
+    } catch (err) {
+      console.error('refresh-views err', err);
+    } finally {
+      setRefreshingViews(false);
+    }
+  };
 
   const sendClipsToYouTube = async (clipIds: number[]) => {
     if (clipIds.length === 0) return;
@@ -2793,6 +2826,21 @@ export default function AdminPage() {
                             <p className="mt-1 text-xs text-red-400 break-words">{project.errorMessage}</p>
                           )}
                         </div>
+                        {/* Refresh YT views — only meaningful when there's at
+                            least one uploaded clip in this project. Forces a
+                            fresh videos.list call ignoring the staleness gate. */}
+                        {project.clips.some(c => c.youtubeUrl) && (
+                          <button
+                            onClick={() => refreshClipViews(
+                              project.clips.filter(c => c.youtubeUrl).map(c => c.id)
+                            )}
+                            disabled={refreshingViews}
+                            className="text-xs text-gray-400 hover:text-white disabled:text-gray-600 transition flex-shrink-0"
+                            title="Refresh YouTube view counts for uploaded clips in this project"
+                          >
+                            {refreshingViews ? 'Refreshing…' : '↻ YT views'}
+                          </button>
+                        )}
                         <button
                           onClick={() => deleteVizardProject(project.id)}
                           className="text-xs text-gray-500 hover:text-red-400 transition flex-shrink-0"
@@ -2925,6 +2973,22 @@ export default function AdminPage() {
                                       </button>
                                     )}
 
+                                    {/* YT view-count chip — visible when we've fetched
+                                        view stats at least once. Shows compact K/M number
+                                        with hover tooltip for likes/comments + fetch time. */}
+                                    {clip.youtubeViewCount != null && (
+                                      <span
+                                        className="text-[11px] text-green-400 font-mono whitespace-nowrap flex-shrink-0"
+                                        title={
+                                          `${clip.youtubeViewCount.toLocaleString()} views` +
+                                          (clip.youtubeLikeCount    != null ? ` · ${clip.youtubeLikeCount.toLocaleString()} likes` : '') +
+                                          (clip.youtubeCommentCount != null ? ` · ${clip.youtubeCommentCount.toLocaleString()} comments` : '') +
+                                          (clip.youtubeViewsFetchedAt ? ` · fetched ${new Date(clip.youtubeViewsFetchedAt).toLocaleString()}` : '')
+                                        }
+                                      >
+                                        👁 {fmtK(clip.youtubeViewCount)}
+                                      </span>
+                                    )}
                                     {/* Watch link once we have the YT URL. */}
                                     {ytUrl && (
                                       <a
@@ -3103,7 +3167,17 @@ export default function AdminPage() {
                     disabled={vizardUploadsRefreshing}
                     className="ml-auto text-xs text-gray-400 hover:text-white disabled:text-gray-600"
                   >
-                    {vizardUploadsRefreshing ? 'Refreshing…' : 'Refresh now'}
+                    {vizardUploadsRefreshing ? 'Refreshing…' : 'Refresh status'}
+                  </button>
+                  <button
+                    onClick={() => refreshClipViews(
+                      vizardUploads.filter(u => u.youtubeUrl).map(u => u.clipId)
+                    )}
+                    disabled={refreshingViews}
+                    className="text-xs text-gray-400 hover:text-white disabled:text-gray-600"
+                    title="Force-refresh YT view/like/comment counts via Data API"
+                  >
+                    {refreshingViews ? 'Fetching…' : '↻ YT views'}
                   </button>
                 </div>
 
@@ -3121,6 +3195,7 @@ export default function AdminPage() {
                             <th className="text-left px-3 py-2">Status</th>
                             <th className="text-left px-3 py-2">Title</th>
                             <th className="text-left px-3 py-2">YouTube</th>
+                            <th className="text-left px-3 py-2">Views</th>
                             <th className="text-left px-3 py-2">Device</th>
                             <th className="text-left px-3 py-2">Submitted</th>
                             <th className="text-left px-3 py-2">Finished</th>
@@ -3172,6 +3247,19 @@ export default function AdminPage() {
                                       title={u.youtubeUrl}>
                                       {u.youtubeUrl.replace(/^https?:\/\//, '')}
                                     </a>
+                                  ) : <span className="text-gray-600">—</span>}
+                                </td>
+                                <td className="px-3 py-2 whitespace-nowrap">
+                                  {u.youtubeViewCount != null ? (
+                                    <span className="text-green-400 font-mono"
+                                      title={
+                                        `${u.youtubeViewCount.toLocaleString()} views` +
+                                        (u.youtubeLikeCount    != null ? ` · ${u.youtubeLikeCount.toLocaleString()} likes` : '') +
+                                        (u.youtubeCommentCount != null ? ` · ${u.youtubeCommentCount.toLocaleString()} comments` : '') +
+                                        (u.youtubeViewsFetchedAt ? ` · fetched ${new Date(u.youtubeViewsFetchedAt).toLocaleString()}` : '')
+                                      }>
+                                      👁 {fmtK(u.youtubeViewCount)}
+                                    </span>
                                   ) : <span className="text-gray-600">—</span>}
                                 </td>
                                 <td className="px-3 py-2">

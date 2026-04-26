@@ -41,6 +41,8 @@ export async function GET() {
               transcript, viral_score, viral_reason, related_topic,
               clip_editor_url, local_path, xgodo_upload_status, xgodo_upload_id,
               xgodo_device_name, xgodo_finished_at, youtube_url,
+              youtube_view_count, youtube_like_count, youtube_comment_count,
+              youtube_views_fetched_at,
               created_at
        FROM vizard_clips
        WHERE project_id = ANY($1::int[])
@@ -67,6 +69,10 @@ export async function GET() {
         xgodoDeviceName: row.xgodo_device_name,
         xgodoFinishedAt: row.xgodo_finished_at,
         youtubeUrl: row.youtube_url,
+        youtubeViewCount:    row.youtube_view_count    !== null ? parseInt(row.youtube_view_count)    : null,
+        youtubeLikeCount:    row.youtube_like_count    !== null ? parseInt(row.youtube_like_count)    : null,
+        youtubeCommentCount: row.youtube_comment_count !== null ? parseInt(row.youtube_comment_count) : null,
+        youtubeViewsFetchedAt: row.youtube_views_fetched_at,
         createdAt: row.created_at,
       });
     }
