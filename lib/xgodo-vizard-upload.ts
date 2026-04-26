@@ -135,6 +135,13 @@ async function fetchTaskById(plannedTaskId: string): Promise<XgodoJobTask | null
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    // xgodo returns 400 with this specific message when the planned task
+    // exists but no worker has picked it up yet (job_task_id is null).
+    // That's not an error from our side — it's the "still queued" case —
+    // so swallow it and tell the caller "no task yet".
+    if (res.status === 400 && /no associated job task|job_task_id is null/i.test(text)) {
+      return null;
+    }
     throw new Error(`xgodo poll ${res.status}: ${text.slice(0, 200)}`);
   }
   const data = await res.json() as { job_tasks?: XgodoJobTask[] };
