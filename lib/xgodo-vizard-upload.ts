@@ -148,7 +148,20 @@ export async function submitClipToXgodo(input: VizardClipUploadInput): Promise<{
  * "Not found" means the planned task hasn't been assigned to a worker yet
  * (job_task_id is still null) — we leave status='queued' and wait.
  */
-async function fetchTaskById(plannedTaskId: string): Promise<XgodoJobTask | null> {
+/**
+ * Result of polling one task by id. Three terminal cases:
+ *   { status: 'queued' }   — exists, no worker assigned yet
+ *   { status: 'found', task } — assigned, returns the task row
+ *   { status: 'gone' }     — task_id no longer exists on xgodo (TTL'd or
+ *                            manually deleted). Caller treats this as a
+ *                            terminal failure so the row stops re-polling.
+ */
+type FetchTaskResult =
+  | { status: 'queued' }
+  | { status: 'found'; task: XgodoJobTask }
+  | { status: 'gone'; reason: string };
+
+async function fetchTaskById(plannedTaskId: string): Promise<FetchTaskResult> {
   const token = await getXgodoToken();
   const res = await fetch(`${XGODO_API}/jobs/applicants`, {
     method: 'POST',
@@ -157,18 +170,28 @@ async function fetchTaskById(plannedTaskId: string): Promise<XgodoJobTask | null
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    // xgodo returns 400 with this specific message when the planned task
-    // exists but no worker has picked it up yet (job_task_id is null).
-    // That's not an error from our side — it's the "still queued" case —
-    // so swallow it and tell the caller "no task yet".
+    // 400 "no associated job task" / "job_task_id is null" → planned task
+    // exists, just no worker picked it up yet. Keep polling.
     if (res.status === 400 && /no associated job task|job_task_id is null/i.test(text)) {
-      return null;
+      return { status: 'queued' };
+    }
+    // 404 "neither a valid job task ID nor a planned task ID" → xgodo no
+    // longer has this id at all. We've seen this when a planned task sits
+    // unassigned long enough that xgodo TTLs it (typically ~30 minutes).
+    // Treat as a terminal failure so the row stops re-polling forever and
+    // surfaces as 'failed' in the UI for one-click retry.
+    if (res.status === 404 && /neither a valid|not found/i.test(text)) {
+      return {
+        status: 'gone',
+        reason: 'xgodo dropped the planned task before a worker picked it up (likely queue saturation or TTL). Click Retry to resubmit.',
+      };
     }
     throw new Error(`xgodo poll ${res.status}: ${text.slice(0, 200)}`);
   }
   const data = await res.json() as { job_tasks?: XgodoJobTask[] };
-  const tasks = data.job_tasks || [];
-  return tasks[0] || null;
+  const task = (data.job_tasks || [])[0];
+  if (!task) return { status: 'queued' };
+  return { status: 'found', task };
 }
 
 interface XgodoJobTask {
@@ -245,17 +268,35 @@ export async function tickVizardUploads(): Promise<{
   for (const row of dueRes.rows) {
     polled++;
     try {
-      const task = await fetchTaskById(row.xgodo_upload_id);
+      const r = await fetchTaskById(row.xgodo_upload_id);
 
-      if (!task) {
-        // Still queued, no worker assignment yet — just bump last_polled_at.
+      if (r.status === 'queued') {
+        // Still in xgodo's queue, no worker assignment yet.
         await pool.query(
           `UPDATE vizard_clips SET xgodo_last_polled_at = NOW() WHERE id = $1`,
           [row.id]
         );
         continue;
       }
+      if (r.status === 'gone') {
+        // Terminal failure: xgodo dropped the planned task before any worker
+        // picked it up. Mark failed with a human-readable reason. The row
+        // stays out of the in-flight set on subsequent ticks (status='failed'
+        // isn't in the WHERE filter), so we stop polling automatically.
+        await pool.query(
+          `UPDATE vizard_clips SET
+             xgodo_upload_status = 'failed',
+             xgodo_last_polled_at = NOW(),
+             xgodo_finished_at = COALESCE(xgodo_finished_at, NOW()),
+             xgodo_error = $1
+           WHERE id = $2`,
+          [r.reason, row.id]
+        );
+        if (row.xgodo_upload_status !== 'failed') updated++;
+        continue;
+      }
 
+      const task = r.task;
       const newStatus = mapXgodoStatus(task.status);
       const proof = parseJobProof(task.job_proof);
       const ytUrl = typeof proof.video_url === 'string' ? proof.video_url : null;
