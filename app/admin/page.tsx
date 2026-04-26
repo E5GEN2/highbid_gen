@@ -2848,39 +2848,95 @@ export default function AdminPage() {
                                 : score >= 6 ? 'text-yellow-400'
                                 : 'text-gray-400';
                               const expanded = expandedClipIds.has(clip.id);
+                              const uploadStatus = clip.xgodoUploadStatus;
+                              const ytUrl = clip.youtubeUrl;
+                              const canSend = !uploadStatus || uploadStatus === 'failed' || uploadStatus === 'declined';
+                              const statusBg =
+                                uploadStatus === 'confirmed' ? 'bg-emerald-600/20 text-emerald-300 border-emerald-600/40' :
+                                uploadStatus === 'uploaded'  ? 'bg-green-600/20 text-green-300 border-green-600/40' :
+                                uploadStatus === 'running'   ? 'bg-blue-600/20 text-blue-300 border-blue-600/40 animate-pulse' :
+                                uploadStatus === 'queued'    ? 'bg-gray-700/40 text-gray-300 border-gray-600/40' :
+                                uploadStatus === 'failed'    ? 'bg-red-600/20 text-red-300 border-red-600/40' :
+                                uploadStatus === 'declined'  ? 'bg-orange-600/20 text-orange-300 border-orange-600/40' :
+                                                               '';
                               return (
                                 <div key={clip.id} className="px-4 py-2.5 hover:bg-gray-900/40 transition">
-                                  {/* Row — clicking anywhere outside the action buttons toggles expand */}
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleClipExpanded(clip.id)}
-                                    className="w-full flex items-center gap-3 text-left"
-                                  >
-                                    {/* Rank badge */}
-                                    <span className="text-[10px] font-mono text-gray-600 w-5 flex-shrink-0 text-right">
-                                      {idx + 1}
-                                    </span>
-                                    {/* Chevron */}
-                                    <svg className={`w-3.5 h-3.5 text-gray-500 flex-shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                    </svg>
-                                    {/* Title */}
-                                    <span className="text-xs text-white truncate flex-1 min-w-0" title={clip.title || ''}>
-                                      {clip.title || '(no title)'}
-                                    </span>
-                                    {/* Duration */}
-                                    {seconds != null && (
-                                      <span className="text-[10px] text-gray-500 font-mono flex-shrink-0">
-                                        {seconds}s
+                                  {/* Row — left side toggles expand; inline action buttons live on
+                                      the right and are NOT inside the toggle button (HTML can't
+                                      nest <button>). Status pill + Send-to-YT + Watch-on-YT all
+                                      visible without expanding the row. */}
+                                  <div className="w-full flex items-center gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleClipExpanded(clip.id)}
+                                      className="flex items-center gap-3 text-left flex-1 min-w-0"
+                                    >
+                                      {/* Rank badge */}
+                                      <span className="text-[10px] font-mono text-gray-600 w-5 flex-shrink-0 text-right">
+                                        {idx + 1}
+                                      </span>
+                                      {/* Chevron */}
+                                      <svg className={`w-3.5 h-3.5 text-gray-500 flex-shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                      </svg>
+                                      {/* Title */}
+                                      <span className="text-xs text-white truncate flex-1 min-w-0" title={clip.title || ''}>
+                                        {clip.title || '(no title)'}
+                                      </span>
+                                      {/* Duration */}
+                                      {seconds != null && (
+                                        <span className="text-[10px] text-gray-500 font-mono flex-shrink-0">
+                                          {seconds}s
+                                        </span>
+                                      )}
+                                      {/* Viral score */}
+                                      {score != null && (
+                                        <span className={`text-xs font-mono flex-shrink-0 w-12 text-right ${scoreColor}`} title={clip.viralReason || ''}>
+                                          ⚡ {score.toFixed(1)}
+                                        </span>
+                                      )}
+                                    </button>
+
+                                    {/* Upload status pill — visible inline on collapsed row.
+                                        Hover shows the device + finish time. */}
+                                    {uploadStatus && (
+                                      <span
+                                        className={`text-[10px] px-2 py-0.5 rounded-full border whitespace-nowrap flex-shrink-0 ${statusBg}`}
+                                        title={
+                                          (clip.xgodoFinishedAt ? `Finished ${new Date(clip.xgodoFinishedAt).toLocaleString()}` : '') +
+                                          (clip.xgodoDeviceName ? ` · ${clip.xgodoDeviceName}` : '')
+                                        }
+                                      >
+                                        {uploadStatus}
                                       </span>
                                     )}
-                                    {/* Viral score */}
-                                    {score != null && (
-                                      <span className={`text-xs font-mono flex-shrink-0 w-12 text-right ${scoreColor}`} title={clip.viralReason || ''}>
-                                        ⚡ {score.toFixed(1)}
-                                      </span>
+
+                                    {/* Inline Send-to-YT button. Shown when clip can be sent
+                                        (never sent, or last attempt failed). */}
+                                    {canSend && (
+                                      <button
+                                        onClick={() => sendClipsToYouTube([clip.id])}
+                                        disabled={uploadingClipIds.has(clip.id)}
+                                        className="text-[11px] px-2 py-1 bg-pink-600 hover:bg-pink-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-md transition whitespace-nowrap flex-shrink-0"
+                                        title={uploadStatus ? 'Retry upload' : 'Send to YouTube'}
+                                      >
+                                        {uploadingClipIds.has(clip.id) ? '…' :
+                                         uploadStatus ? '↻ Retry' : '↗ Send'}
+                                      </button>
                                     )}
-                                  </button>
+
+                                    {/* Watch link once we have the YT URL. */}
+                                    {ytUrl && (
+                                      <a
+                                        href={ytUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-[11px] px-2 py-1 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-600/40 rounded-md transition whitespace-nowrap flex-shrink-0"
+                                      >
+                                        ▶ YT
+                                      </a>
+                                    )}
+                                  </div>
 
                                   {/* Expanded body — player + full transcript + actions */}
                                   {expanded && (
