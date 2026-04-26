@@ -221,30 +221,32 @@ async function fetchTaskById(plannedTaskId: string, knownJobTaskId?: string | nu
   const lookupId = knownJobTaskId || plannedTaskId;
   const r = await postApplicants({ job_id: YT_UPLOAD_JOB_ID, task_id: lookupId });
 
-  if (r.ok) {
-    const task = (r.data.job_tasks || [])[0];
-    if (!task) return { status: 'queued' };
-    return { status: 'found', task };
+  // Narrow with `!r.ok` first so TS sees the false branch first; otherwise
+  // it doesn't propagate the discriminated-union narrowing past the
+  // truthy-block return.
+  if (!r.ok) {
+    // 400 "no associated job task" → planned task exists, just no worker
+    // picked it up yet. Keep polling.
+    if (r.status === 400 && /no associated job task|job_task_id is null/i.test(r.text)) {
+      return { status: 'queued' };
+    }
+    // 404 "neither valid…" — only happens for planned_task_id when the
+    // task has failed. Recover the job_task_id by scanning the failed
+    // list, then use it for the real lookup.
+    if (r.status === 404 && /neither a valid|not found/i.test(r.text) && !knownJobTaskId) {
+      const recovered = await scanForJobTaskId(plannedTaskId);
+      if (recovered) return { status: 'found', task: recovered };
+      return {
+        status: 'gone',
+        reason: 'xgodo no longer recognises this task id and it isn\'t in the recent failed list. Click Retry to resubmit.',
+      };
+    }
+    throw new Error(`xgodo poll ${r.status}: ${r.text.slice(0, 200)}`);
   }
 
-  // 400 "no associated job task" → still queued
-  if (r.status === 400 && /no associated job task|job_task_id is null/i.test(r.text)) {
-    return { status: 'queued' };
-  }
-
-  // 404 "neither valid…" — only happens for planned_task_id when the task
-  // has failed. Recover the job_task_id by scanning the failed list, then
-  // use it for the real lookup.
-  if (r.status === 404 && /neither a valid|not found/i.test(r.text) && !knownJobTaskId) {
-    const recovered = await scanForJobTaskId(plannedTaskId);
-    if (recovered) return { status: 'found', task: recovered };
-    return {
-      status: 'gone',
-      reason: 'xgodo no longer recognises this task id and it isn\'t in the recent failed list. Click Retry to resubmit.',
-    };
-  }
-
-  throw new Error(`xgodo poll ${r.status}: ${r.text.slice(0, 200)}`);
+  const task = (r.data.job_tasks || [])[0];
+  if (!task) return { status: 'queued' };
+  return { status: 'found', task };
 }
 
 interface XgodoJobTask {
