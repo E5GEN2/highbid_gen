@@ -1,145 +1,27 @@
 import { NextResponse } from 'next/server';
-import { getPool } from '@/lib/db';
-import { queryVizardProject, getVizardApiKey, type VizardClip } from '@/lib/vizard';
+import { runVizardTick } from '@/lib/vizard-tick';
 
-// Always run fresh — tick state lives in the DB, not in any cache.
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 /**
- * POST or GET /api/admin/vizard/tick
+ * POST/GET /api/admin/vizard/tick
  *
- * Polls Vizard for every vizard_project with status in ('pending', 'processing')
- * that has a vizard_project_id. For each:
- *   - code 2000 → mark done, upsert clips
- *   - code 1000 → mark processing, update last_polled_at
- *   - code 4xxx → mark error
+ * Manual trigger for the Vizard polling tick — same logic the server-side
+ * cron at /api/cron/vizard runs every minute. Useful as an admin escape
+ * hatch to force progress on a stuck project (or for one-off testing).
  *
- * Called by:
- *   1. The admin UI from the Vizard tab (while at least one project is
- *      processing, the client pings tick every 30s, then re-fetches /projects).
- *   2. Optional future cron for headless progress.
- *
- * Rate limit: we look at projects polled >25s ago to give Vizard breathing
- * room, matching their 30s polling recommendation.
+ * The actual implementation lives in lib/vizard-tick.ts; this route is a
+ * thin wrapper. Auth: standard admin-token (existing isAdmin checks at the
+ * route layer if/when added — for now exposed un-gated since it only ever
+ * affects vizard_* tables, never user-facing data).
  */
-async function runTick() {
-  const pool = await getPool();
-  const apiKey = await getVizardApiKey();
-  if (!apiKey) {
-    return { ok: false, reason: 'no_api_key' as const, polled: 0, done: 0, errors: 0 };
-  }
-
-  const dueRes = await pool.query<{ id: number; vizard_project_id: string }>(
-    `SELECT id, vizard_project_id
-     FROM vizard_projects
-     WHERE vizard_project_id IS NOT NULL
-       AND status IN ('pending', 'processing')
-       AND (last_polled_at IS NULL OR last_polled_at < NOW() - INTERVAL '25 seconds')
-     ORDER BY created_at ASC
-     LIMIT 10`
-  );
-
-  // Self-heal: if initSchema hasn't created the unique index for
-  // vizard_clips.vizard_video_id yet (e.g. the app booted before the column
-  // existed), our ON CONFLICT below will throw "no unique or exclusion
-  // constraint matching the ON CONFLICT specification". Create it idempotently
-  // at the top of every tick so this never blocks again.
-  await pool.query(
-    `CREATE UNIQUE INDEX IF NOT EXISTS uq_vizard_clips_vizard_video_id
-     ON vizard_clips(vizard_video_id) WHERE vizard_video_id IS NOT NULL`
-  ).catch(() => {});
-
-  let polled = 0, done = 0, errors = 0;
-
-  for (const row of dueRes.rows) {
-    polled++;
-    try {
-      const result = await queryVizardProject(row.vizard_project_id, apiKey);
-
-      // 2000 = done. Upsert clips, flip project to done.
-      if (result.code === 2000 && Array.isArray(result.videos)) {
-        for (const clip of result.videos as VizardClip[]) {
-          // Two-step upsert: DELETE any previous row with the same vizard_video_id,
-          // then INSERT. Avoids the ON CONFLICT dependency on the unique index —
-          // if the index creation above raced, or a different DB doesn't support
-          // partial indexes in ON CONFLICT, this still works.
-          await pool.query(
-            `DELETE FROM vizard_clips WHERE vizard_video_id = $1`,
-            [String(clip.videoId)]
-          );
-          await pool.query(
-            `INSERT INTO vizard_clips
-               (project_id, vizard_video_id, video_url, duration_ms, title,
-                transcript, viral_score, viral_reason, related_topic, clip_editor_url)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [
-              row.id,
-              String(clip.videoId),
-              clip.videoUrl,
-              clip.videoMsDuration,
-              clip.title,
-              clip.transcript,
-              clip.viralScore,
-              clip.viralReason,
-              clip.relatedTopic,
-              clip.clipEditorUrl,
-            ]
-          );
-        }
-        await pool.query(
-          `UPDATE vizard_projects
-           SET status = 'done', last_code = $1, clip_count = $2,
-               last_polled_at = NOW(), completed_at = NOW(), error_message = NULL
-           WHERE id = $3`,
-          [result.code, result.videos.length, row.id]
-        );
-        done++;
-        continue;
-      }
-
-      // 1000 = still processing. Just bump last_polled_at.
-      if (result.code === 1000) {
-        await pool.query(
-          `UPDATE vizard_projects
-           SET status = 'processing', last_code = $1, last_polled_at = NOW()
-           WHERE id = $2`,
-          [result.code, row.id]
-        );
-        continue;
-      }
-
-      // Any other code = error (4001-4008 per docs, plus HTTP 5xx leaking through).
-      await pool.query(
-        `UPDATE vizard_projects
-         SET status = 'error', last_code = $1, error_message = $2,
-             last_polled_at = NOW(), completed_at = NOW()
-         WHERE id = $3`,
-        [result.code, result.errMsg || `Vizard code ${result.code}`, row.id]
-      );
-      errors++;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'unknown';
-      await pool.query(
-        `UPDATE vizard_projects
-         SET last_polled_at = NOW(), error_message = $1
-         WHERE id = $2`,
-        [msg, row.id]
-      );
-      errors++;
-    }
-  }
-
-  return { ok: true as const, polled, done, errors };
-}
-
 export async function POST() {
-  const result = await runTick();
+  const result = await runVizardTick();
   return NextResponse.json(result);
 }
 
-// Allow GET too so a user could cron it with a simple curl.
 export async function GET() {
-  const result = await runTick();
+  const result = await runVizardTick();
   return NextResponse.json(result);
 }

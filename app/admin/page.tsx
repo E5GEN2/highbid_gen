@@ -406,10 +406,12 @@ export default function AdminPage() {
     });
   };
 
-  // Vizard tab — server-driven polling. Fetch the project list once on tab
-  // open, then while ANY project is still processing, ping /tick every 30s
-  // (Vizard's recommended polling cadence) and refetch the list. tick updates
-  // DB rows so the next fetch shows fresh clip counts / statuses.
+  // Vizard tab — UI refresh only. The actual Vizard polling is now done by
+  // the server-side cron at /api/cron/vizard (every 60s), so projects make
+  // progress whether or not this tab is open. This effect just refetches
+  // the project list periodically so the UI shows up-to-date statuses
+  // while the user is looking at it. No tick triggers from the client —
+  // closing the tab no longer leaves projects stranded.
   useEffect(() => {
     if (adminSection !== 'vizard') return;
     let cancelled = false;
@@ -418,23 +420,14 @@ export default function AdminPage() {
         const r = await fetch('/api/admin/vizard/projects');
         const d = await r.json();
         if (!cancelled && d.projects) setVizardProjects(d.projects);
-      } catch { /* swallow — next tick retries */ }
+      } catch { /* swallow */ }
     };
     setVizardLoading(true);
     refetch().finally(() => { if (!cancelled) setVizardLoading(false); });
 
-    const iv = setInterval(async () => {
-      // Only do work if there's something to poll — avoids hammering Vizard
-      // for nothing when every project is already done.
-      const hasActive = vizardProjects.some(p => p.status === 'pending' || p.status === 'processing');
-      if (!hasActive) { await refetch(); return; }
-      try {
-        await fetch('/api/admin/vizard/tick', { method: 'POST' });
-      } catch { /* tick is best-effort; the client refetch still shows whatever landed */ }
-      await refetch();
-    }, 30_000);
+    const iv = setInterval(refetch, 15_000);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [adminSection, vizardProjects]);
+  }, [adminSection]);
 
   const submitVizardUrl = async () => {
     setVizardSubmitError('');
