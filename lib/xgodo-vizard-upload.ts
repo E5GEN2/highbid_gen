@@ -329,7 +329,7 @@ export async function tickVizardUploads(): Promise<{
          OR
          (xgodo_upload_status IN ('failed','declined')
           AND xgodo_failure_comment IS NULL
-          AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '1 hour'))
+          AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '5 minutes'))
        )
      ORDER BY xgodo_submitted_at ASC NULLS LAST
      LIMIT 50`
