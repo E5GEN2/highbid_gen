@@ -32,9 +32,15 @@ export async function GET() {
   const clipsByProject: Record<number, unknown[]> = {};
   if (projectIds.length > 0) {
     const clipsRes = await pool.query(
+      // Project-list view also shows YT-upload badge + final URL on each
+      // clip card, so include the upload-tracking columns alongside the
+      // basic clip metadata. The full reporting view at
+      // /api/admin/vizard/uploads has all device/timing details for the
+      // dashboard; here we keep the payload light.
       `SELECT id, project_id, vizard_video_id, video_url, duration_ms, title,
               transcript, viral_score, viral_reason, related_topic,
               clip_editor_url, local_path, xgodo_upload_status, xgodo_upload_id,
+              xgodo_device_name, xgodo_finished_at, youtube_url,
               created_at
        FROM vizard_clips
        WHERE project_id = ANY($1::int[])
@@ -58,6 +64,9 @@ export async function GET() {
         localPath: row.local_path,
         xgodoUploadStatus: row.xgodo_upload_status,
         xgodoUploadId: row.xgodo_upload_id,
+        xgodoDeviceName: row.xgodo_device_name,
+        xgodoFinishedAt: row.xgodo_finished_at,
+        youtubeUrl: row.youtube_url,
         createdAt: row.created_at,
       });
     }

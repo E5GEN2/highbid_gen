@@ -375,6 +375,12 @@ export default function AdminPage() {
     viralReason: string | null;
     relatedTopic: string | null;
     clipEditorUrl: string | null;
+    // YT-upload tracking (lightweight subset; full reporting on Uploads view).
+    xgodoUploadStatus?: 'queued' | 'running' | 'uploaded' | 'confirmed' | 'failed' | 'declined' | null;
+    xgodoUploadId?: string | null;
+    xgodoDeviceName?: string | null;
+    xgodoFinishedAt?: string | null;
+    youtubeUrl?: string | null;
   }
   interface VizardProjectRow {
     id: number;
@@ -405,6 +411,102 @@ export default function AdminPage() {
       return next;
     });
   };
+
+  // YT-upload reporting view (sub-tab within Vizard).
+  // 'view' = 'projects' (the existing clip browser) or 'uploads' (the
+  // reporting dashboard showing what was sent to xgodo, when, by which device).
+  const [vizardView, setVizardView] = useState<'projects' | 'uploads'>('projects');
+  interface VizardUploadRow {
+    clipId: number;
+    projectId: number;
+    clipTitle: string | null;
+    uploadTitle: string | null;
+    uploadDescription: string | null;
+    sourceVideoUrl: string | null;
+    durationMs: number | null;
+    viralScore: string | null;
+    plannedTaskId: string | null;
+    jobTaskId: string | null;
+    status: 'queued' | 'running' | 'uploaded' | 'confirmed' | 'failed' | 'declined';
+    deviceId: string | null;
+    deviceName: string | null;
+    workerId: string | null;
+    workerName: string | null;
+    submittedAt: string | null;
+    startedAt: string | null;
+    finishedAt: string | null;
+    lastPolledAt: string | null;
+    error: string | null;
+    youtubeUrl: string | null;
+    projectUrl: string;
+  }
+  interface VizardUploadSummary {
+    queued: number; running: number; uploaded: number;
+    confirmed: number; failed: number; declined: number;
+  }
+  const [vizardUploads, setVizardUploads] = useState<VizardUploadRow[]>([]);
+  const [vizardUploadSummary, setVizardUploadSummary] = useState<VizardUploadSummary | null>(null);
+  const [vizardUploadFilter, setVizardUploadFilter] = useState<'' | VizardUploadRow['status']>('');
+  const [vizardUploadsRefreshing, setVizardUploadsRefreshing] = useState(false);
+
+  const refetchVizardUploads = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (vizardUploadFilter) params.set('status', vizardUploadFilter);
+      const r = await fetch(`/api/admin/vizard/uploads?${params}`);
+      const d = await r.json();
+      setVizardUploads(d.uploads || []);
+      setVizardUploadSummary(d.summary || null);
+    } catch { /* swallow */ }
+  }, [vizardUploadFilter]);
+
+  // Per-clip upload tracking — set of clip ids currently being submitted, so
+  // the button shows "Sending..." and disables during the round trip.
+  const [uploadingClipIds, setUploadingClipIds] = useState<Set<number>>(new Set());
+  const [uploadDescription, setUploadDescription] = useState('');
+
+  const sendClipsToYouTube = async (clipIds: number[]) => {
+    if (clipIds.length === 0) return;
+    setUploadingClipIds(prev => {
+      const next = new Set(prev);
+      for (const id of clipIds) next.add(id);
+      return next;
+    });
+    try {
+      const res = await fetch('/api/admin/vizard/upload-to-yt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clipIds, description: uploadDescription }),
+      });
+      const data = await res.json();
+      console.log('[upload-to-yt]', data);
+      // Pull the project list so submitted clips show their new "queued" badge,
+      // and the uploads list if we're already viewing it.
+      const r = await fetch('/api/admin/vizard/projects');
+      const d = await r.json();
+      if (d.projects) setVizardProjects(d.projects);
+      refetchVizardUploads();
+    } catch (err) {
+      console.error('upload err', err);
+    } finally {
+      setUploadingClipIds(prev => {
+        const next = new Set(prev);
+        for (const id of clipIds) next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  // Poll the uploads endpoint while the Uploads view is open. The cron is
+  // the source of truth for status changes; this just surfaces them
+  // promptly in the UI.
+  useEffect(() => {
+    if (adminSection !== 'vizard') return;
+    if (vizardView !== 'uploads') return;
+    refetchVizardUploads();
+    const iv = setInterval(refetchVizardUploads, 15_000);
+    return () => clearInterval(iv);
+  }, [adminSection, vizardView, refetchVizardUploads]);
 
   // Vizard tab — UI refresh only. The actual Vizard polling is now done by
   // the server-side cron at /api/cron/vizard (every 60s), so projects make
@@ -2544,12 +2646,55 @@ export default function AdminPage() {
             and a download link + "Send to xgodo" action (TODO next phase). */}
         <div style={{ display: adminSection === 'vizard' ? 'block' : 'none' }}>
           <div className="space-y-6">
+            {/* Sub-tabs: Projects (clip browser) | Uploads (YT upload reporting) */}
+            <div className="flex gap-2 border-b border-gray-800 pb-1">
+              {([
+                { value: 'projects', label: 'Projects & Clips' },
+                { value: 'uploads',  label: 'Uploads to YT' },
+              ] as const).map(opt => (
+                <button key={opt.value} onClick={() => setVizardView(opt.value)}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg transition ${
+                    vizardView === opt.value
+                      ? 'bg-pink-600 text-white'
+                      : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                  }`}>
+                  {opt.label}
+                  {opt.value === 'uploads' && vizardUploadSummary &&
+                   (vizardUploadSummary.queued + vizardUploadSummary.running > 0) && (
+                    <span className="ml-1.5 bg-pink-500 text-white text-[10px] px-1.5 py-0.5 rounded-full animate-pulse">
+                      {vizardUploadSummary.queued + vizardUploadSummary.running}
+                    </span>
+                   )}
+                </button>
+              ))}
+            </div>
+
+            {/* PROJECTS VIEW (existing — clip browser + submission) */}
+            <div style={{ display: vizardView === 'projects' ? 'block' : 'none' }}>
+            <div className="space-y-6">
             {/* API-key warning when unset — other fields are pointless without it */}
             {!vizardApiKey && (
               <div className="bg-yellow-900/20 border border-yellow-600/40 rounded-2xl p-4 text-sm text-yellow-200">
                 No Vizard API key configured. Add it in the <button onClick={() => setAdminSection('general')} className="underline hover:text-white">General tab</button> under <code className="text-yellow-400">vizard_api_key</code>, then come back.
               </div>
             )}
+
+            {/* YT-upload description box. The same description is reused for
+                every clip you click "Send to YT" on, since you typically
+                queue several related clips at once. Title comes from Vizard
+                directly — no rewriting per the agreed spec. */}
+            <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-4">
+              <label className="text-[10px] uppercase tracking-wider text-gray-500 block mb-1">
+                YT description (applied to clips you send next)
+              </label>
+              <textarea
+                value={uploadDescription}
+                onChange={e => setUploadDescription(e.target.value)}
+                placeholder="Optional. Leave empty if you want the YT description blank. Tip: drop a few hashtags and a CTA here — same text is reused for each clip you click 'Send to YT'."
+                rows={2}
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-pink-500"
+              />
+            </div>
 
             {/* Submit bar */}
             <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-5 sm:p-6">
@@ -2756,7 +2901,7 @@ export default function AdminPage() {
                                               <div className="text-xs text-gray-300">{clip.viralReason}</div>
                                             </div>
                                           )}
-                                          <div className="flex gap-1.5 flex-wrap">
+                                          <div className="flex gap-1.5 flex-wrap items-center">
                                             {clip.videoUrl && (
                                               <a
                                                 href={clip.videoUrl}
@@ -2775,6 +2920,49 @@ export default function AdminPage() {
                                                 className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-md transition"
                                               >
                                                 Edit
+                                              </a>
+                                            )}
+                                            {/* Send-to-YT button + status. Hidden once already queued/uploaded;
+                                                shown again only on failure so the user can retry. */}
+                                            {(!clip.xgodoUploadStatus || clip.xgodoUploadStatus === 'failed' || clip.xgodoUploadStatus === 'declined') && (
+                                              <button
+                                                onClick={() => sendClipsToYouTube([clip.id])}
+                                                disabled={uploadingClipIds.has(clip.id)}
+                                                className="text-[11px] px-2 py-1 bg-pink-600 hover:bg-pink-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-md transition"
+                                              >
+                                                {uploadingClipIds.has(clip.id) ? 'Sending…' :
+                                                 clip.xgodoUploadStatus ? 'Retry to YT' : 'Send to YT'}
+                                              </button>
+                                            )}
+                                            {/* Inline status pill — shows current upload state. */}
+                                            {clip.xgodoUploadStatus && (
+                                              <span
+                                                className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                                                  clip.xgodoUploadStatus === 'confirmed' ? 'bg-emerald-600/20 text-emerald-300 border-emerald-600/40' :
+                                                  clip.xgodoUploadStatus === 'uploaded'  ? 'bg-green-600/20 text-green-300 border-green-600/40' :
+                                                  clip.xgodoUploadStatus === 'running'   ? 'bg-blue-600/20 text-blue-300 border-blue-600/40 animate-pulse' :
+                                                  clip.xgodoUploadStatus === 'queued'    ? 'bg-gray-700/40 text-gray-300 border-gray-600/40' :
+                                                  clip.xgodoUploadStatus === 'failed'    ? 'bg-red-600/20 text-red-300 border-red-600/40' :
+                                                                                            'bg-orange-600/20 text-orange-300 border-orange-600/40'
+                                                }`}
+                                                title={
+                                                  clip.xgodoFinishedAt
+                                                    ? `Uploaded ${new Date(clip.xgodoFinishedAt).toLocaleString()}` +
+                                                      (clip.xgodoDeviceName ? ` from ${clip.xgodoDeviceName}` : '')
+                                                    : ''
+                                                }
+                                              >
+                                                {clip.xgodoUploadStatus}
+                                              </span>
+                                            )}
+                                            {clip.youtubeUrl && (
+                                              <a
+                                                href={clip.youtubeUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-[11px] px-2 py-1 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-600/40 rounded-md transition"
+                                              >
+                                                ▶ Watch on YT
                                               </a>
                                             )}
                                           </div>
@@ -2801,6 +2989,166 @@ export default function AdminPage() {
                 })}
               </div>
             )}
+            </div>
+            </div>
+            {/* end PROJECTS VIEW — closed inner space-y-6 + the
+                vizardView==='projects' display wrapper added at the top */}
+
+            {/* UPLOADS VIEW — YT-upload reporting dashboard.
+                Shows every clip we sent to xgodo with status, device,
+                worker, timing, error, final YT URL. Polls
+                /api/admin/vizard/uploads every 15s while open; the cron
+                is the source of truth. */}
+            <div style={{ display: vizardView === 'uploads' ? 'block' : 'none' }}>
+              <div className="space-y-4">
+                {/* Summary tiles — clickable to filter */}
+                {vizardUploadSummary && (
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                    {([
+                      { key: 'queued',    label: 'Queued',    color: 'text-gray-300' },
+                      { key: 'running',   label: 'Running',   color: 'text-blue-400' },
+                      { key: 'uploaded',  label: 'Uploaded',  color: 'text-green-400' },
+                      { key: 'confirmed', label: 'Confirmed', color: 'text-emerald-400' },
+                      { key: 'failed',    label: 'Failed',    color: 'text-red-400' },
+                      { key: 'declined',  label: 'Declined',  color: 'text-orange-400' },
+                    ] as const).map(t => (
+                      <button key={t.key}
+                        onClick={() => setVizardUploadFilter(prev => prev === t.key ? '' : t.key)}
+                        className={`bg-gray-900/50 rounded-lg p-3 text-center transition border ${
+                          vizardUploadFilter === t.key ? 'border-pink-500/60' : 'border-transparent hover:border-gray-700'
+                        }`}
+                      >
+                        <div className={`text-xl font-bold ${t.color}`}>{vizardUploadSummary[t.key].toLocaleString()}</div>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wider">{t.label}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Action bar */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  {vizardUploadFilter && (
+                    <button onClick={() => setVizardUploadFilter('')}
+                      className="text-xs text-gray-400 hover:text-white">
+                      Clear filter
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    {vizardUploads.length} {vizardUploadFilter ? `of ${vizardUploadFilter} status` : 'uploads'} shown
+                  </span>
+                  <button
+                    onClick={async () => {
+                      setVizardUploadsRefreshing(true);
+                      try {
+                        await fetch('/api/admin/vizard/uploads', { method: 'POST' });
+                        await refetchVizardUploads();
+                      } finally { setVizardUploadsRefreshing(false); }
+                    }}
+                    disabled={vizardUploadsRefreshing}
+                    className="ml-auto text-xs text-gray-400 hover:text-white disabled:text-gray-600"
+                  >
+                    {vizardUploadsRefreshing ? 'Refreshing…' : 'Refresh now'}
+                  </button>
+                </div>
+
+                {/* Reporting table */}
+                <div className="bg-gray-800/50 rounded-2xl border border-gray-700 overflow-hidden">
+                  {vizardUploads.length === 0 ? (
+                    <div className="p-8 text-center text-sm text-gray-500">
+                      No uploads yet. Send clips to YouTube from the Projects &amp; Clips tab.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-900/40 text-[10px] uppercase tracking-wider text-gray-500">
+                          <tr>
+                            <th className="text-left px-3 py-2">Status</th>
+                            <th className="text-left px-3 py-2">Title</th>
+                            <th className="text-left px-3 py-2">YouTube</th>
+                            <th className="text-left px-3 py-2">Device</th>
+                            <th className="text-left px-3 py-2">Submitted</th>
+                            <th className="text-left px-3 py-2">Finished</th>
+                            <th className="text-left px-3 py-2">Duration</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-800/70">
+                          {vizardUploads.map(u => {
+                            const statusColor =
+                              u.status === 'confirmed' ? 'bg-emerald-600/20 text-emerald-300 border-emerald-600/40' :
+                              u.status === 'uploaded'  ? 'bg-green-600/20 text-green-300 border-green-600/40' :
+                              u.status === 'running'   ? 'bg-blue-600/20 text-blue-300 border-blue-600/40 animate-pulse' :
+                              u.status === 'queued'    ? 'bg-gray-700/40 text-gray-300 border-gray-600/40' :
+                              u.status === 'failed'    ? 'bg-red-600/20 text-red-300 border-red-600/40' :
+                              u.status === 'declined'  ? 'bg-orange-600/20 text-orange-300 border-orange-600/40' :
+                                                         'bg-gray-700/40 text-gray-300 border-gray-600/40';
+                            const dur = (u.submittedAt && u.finishedAt)
+                              ? Math.round((new Date(u.finishedAt).getTime() - new Date(u.submittedAt).getTime()) / 1000)
+                              : null;
+                            const fmtDur = (s: number | null) =>
+                              s == null ? '—' :
+                              s < 60 ? `${s}s` :
+                              s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` :
+                              `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+                            return (
+                              <tr key={u.clipId} className="hover:bg-gray-900/30">
+                                <td className="px-3 py-2">
+                                  <span className={`inline-block text-[10px] px-2 py-0.5 rounded-full border ${statusColor}`}>
+                                    {u.status}
+                                  </span>
+                                  {u.error && (
+                                    <div className="text-[10px] text-red-400 mt-0.5 max-w-[180px] truncate" title={u.error}>
+                                      {u.error}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 text-gray-200 max-w-[260px]">
+                                  <div className="truncate" title={u.uploadTitle || u.clipTitle || ''}>
+                                    {u.uploadTitle || u.clipTitle || '—'}
+                                  </div>
+                                  {u.viralScore && (
+                                    <div className="text-[10px] text-gray-500">⚡ {u.viralScore}</div>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {u.youtubeUrl ? (
+                                    <a href={u.youtubeUrl} target="_blank" rel="noopener noreferrer"
+                                      className="text-pink-400 hover:text-pink-300 underline truncate inline-block max-w-[200px]"
+                                      title={u.youtubeUrl}>
+                                      {u.youtubeUrl.replace(/^https?:\/\//, '')}
+                                    </a>
+                                  ) : <span className="text-gray-600">—</span>}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {u.deviceName ? (
+                                    <div>
+                                      <div className="text-gray-200">{u.deviceName}</div>
+                                      <div className="text-[10px] text-gray-500 font-mono"
+                                        title={`device_id: ${u.deviceId}`}>
+                                        {u.deviceId?.substring(0, 8)}…
+                                      </div>
+                                    </div>
+                                  ) : <span className="text-gray-600">—</span>}
+                                </td>
+                                <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
+                                  {u.submittedAt ? new Date(u.submittedAt).toLocaleString() : '—'}
+                                </td>
+                                <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
+                                  {u.finishedAt ? new Date(u.finishedAt).toLocaleString() : '—'}
+                                </td>
+                                <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
+                                  {fmtDur(dur)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            {/* end UPLOADS VIEW */}
           </div>
         </div>
 

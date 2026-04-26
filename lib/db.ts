@@ -794,6 +794,37 @@ export async function initSchema(): Promise<void> {
       `CREATE UNIQUE INDEX IF NOT EXISTS uq_vizard_clips_vizard_video_id ON vizard_clips(vizard_video_id) WHERE vizard_video_id IS NOT NULL`
     ).catch(() => {});
 
+    // YT-upload reporting columns. xgodo_upload_id was created originally as
+    // a generic "xgodo's ID" — repurpose it as the planned_task_id we get
+    // back from /planned_tasks/submit. Everything else is filled by the cron
+    // poller as the worker progresses through pickup → upload → confirmation.
+    //
+    // Status state machine:
+    //   queued    – task submitted to xgodo, no worker assigned yet
+    //   running   – worker picked it up, upload in progress
+    //   uploaded  – worker submitted with YT URL (xgodo status='pending')
+    //   confirmed – employer reviewed and accepted (xgodo status='confirmed')
+    //   failed    – worker reported failure
+    //   declined  – employer rejected the submission
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_job_task_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_device_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_device_name TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_worker_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_worker_name TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_submitted_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_started_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_finished_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_last_polled_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_error TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_url TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS upload_title TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS upload_description TEXT`).catch(() => {});
+    // Pull poll work efficiently: index in-flight tasks by status + last poll.
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_vizard_clips_upload_status_polled
+       ON vizard_clips(xgodo_upload_status, xgodo_last_polled_at NULLS FIRST)`
+    ).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
