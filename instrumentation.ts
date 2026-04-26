@@ -70,6 +70,58 @@ export async function register() {
       }
     }
 
+    /**
+     * Vizard project poller. Calls /api/cron/vizard which queries Vizard for
+     * every project still in pending/processing state and pulls back clips
+     * once they're ready. Replaces the old client-side 30s setInterval that
+     * stopped working when the admin tab was closed.
+     *
+     * Tick has its own internal "last_polled_at >25s ago" gate so calling
+     * once a minute is safe even when there are dozens of in-flight projects.
+     */
+    async function runVizardClipsTick() {
+      try {
+        const pool = await getPool();
+        const config = await getConfig(pool);
+        if (!config.cron_secret) return;
+        const port = process.env.PORT || '3000';
+        const res = await fetch(`http://localhost:${port}/api/cron/vizard`, {
+          headers: { 'Authorization': `Bearer ${config.cron_secret}` },
+        });
+        const data = await res.json();
+        // Only log when we actually did work (avoid log spam every minute)
+        if (data && (data.polled > 0 || data.errors > 0)) {
+          console.log('[vizard-tick]', `polled=${data.polled} done=${data.done} errors=${data.errors}`);
+        }
+      } catch (err) {
+        console.error('[vizard-tick] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
+    /**
+     * YT-upload poller. Calls /api/cron/vizard-upload which polls each
+     * in-flight clip BY ID via /jobs/applicants and updates status,
+     * device, worker, YT URL on the vizard_clips row. Per-clip last_polled
+     * gate (>30s) makes this safe to call every minute.
+     */
+    async function runVizardUploadTick() {
+      try {
+        const pool = await getPool();
+        const config = await getConfig(pool);
+        if (!config.cron_secret) return;
+        const port = process.env.PORT || '3000';
+        const res = await fetch(`http://localhost:${port}/api/cron/vizard-upload`, {
+          headers: { 'Authorization': `Bearer ${config.cron_secret}` },
+        });
+        const data = await res.json();
+        if (data && (data.polled > 0 || data.errors > 0)) {
+          console.log('[vizard-upload]', `polled=${data.polled} updated=${data.updated} errors=${data.errors}`);
+        }
+      } catch (err) {
+        console.error('[vizard-upload] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAutoPost() {
       try {
         const pool = await getPool();
@@ -107,6 +159,11 @@ export async function register() {
       await runAutoSync();
       await runAutoSchedule();
       await runAutoPost();
+      // Vizard tickers fire every runAll cycle (=1min). Both are no-ops
+      // when there's nothing in-flight, so the only cost is one DB query
+      // each per minute when idle.
+      await runVizardClipsTick();
+      await runVizardUploadTick();
     }
 
     // Check every 60 seconds whether a sync/schedule is due
