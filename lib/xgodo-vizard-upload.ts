@@ -163,9 +163,14 @@ type FetchTaskResult =
   | { status: 'found'; task: XgodoJobTask }
   | { status: 'gone'; reason: string };
 
-async function postApplicants(body: Record<string, unknown>): Promise<{
-  ok: true; data: { job_tasks?: XgodoJobTask[] };
-} | { ok: false; status: number; text: string }> {
+interface ApplicantsResp {
+  ok: boolean;
+  status: number;        // HTTP status (always set)
+  text: string;          // raw error body when !ok, '' when ok
+  data: { job_tasks?: XgodoJobTask[] } | null;
+}
+
+async function postApplicants(body: Record<string, unknown>): Promise<ApplicantsResp> {
   const token = await getXgodoToken();
   const res = await fetch(`${XGODO_API}/jobs/applicants`, {
     method: 'POST',
@@ -173,9 +178,9 @@ async function postApplicants(body: Record<string, unknown>): Promise<{
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    return { ok: false, status: res.status, text: (await res.text().catch(() => '')) };
+    return { ok: false, status: res.status, text: (await res.text().catch(() => '')), data: null };
   }
-  return { ok: true, data: await res.json() };
+  return { ok: true, status: res.status, text: '', data: await res.json() };
 }
 
 /**
@@ -197,7 +202,7 @@ async function scanForJobTaskId(plannedTaskId: string, options?: { maxPages?: nu
         job_id: YT_UPLOAD_JOB_ID, status, limit: 50, page,
       });
       if (!r.ok) break;
-      const tasks = r.data.job_tasks || [];
+      const tasks = r.data?.job_tasks || [];
       if (tasks.length === 0) break;
       const hit = tasks.find(t => t.planned_task_id === plannedTaskId);
       if (hit) return hit;
@@ -244,7 +249,7 @@ async function fetchTaskById(plannedTaskId: string, knownJobTaskId?: string | nu
     throw new Error(`xgodo poll ${r.status}: ${r.text.slice(0, 200)}`);
   }
 
-  const task = (r.data.job_tasks || [])[0];
+  const task = (r.data?.job_tasks || [])[0];
   if (!task) return { status: 'queued' };
   return { status: 'found', task };
 }
