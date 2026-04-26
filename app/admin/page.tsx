@@ -380,6 +380,8 @@ export default function AdminPage() {
     xgodoUploadId?: string | null;
     xgodoDeviceName?: string | null;
     xgodoFinishedAt?: string | null;
+    xgodoFailureComment?: string | null;
+    xgodoFailureScreenshotUrl?: string | null;
     youtubeUrl?: string | null;
     youtubeViewCount?: number | null;
     youtubeLikeCount?: number | null;
@@ -441,6 +443,8 @@ export default function AdminPage() {
     finishedAt: string | null;
     lastPolledAt: string | null;
     error: string | null;
+    failureComment: string | null;
+    failureScreenshotUrl: string | null;
     youtubeUrl: string | null;
     youtubeViewCount: number | null;
     youtubeLikeCount: number | null;
@@ -2946,17 +2950,43 @@ export default function AdminPage() {
                                     </button>
 
                                     {/* Upload status pill — visible inline on collapsed row.
-                                        Hover shows the device + finish time. */}
+                                        Hover shows the device + finish time + worker comment. */}
                                     {uploadStatus && (
                                       <span
                                         className={`text-[10px] px-2 py-0.5 rounded-full border whitespace-nowrap flex-shrink-0 ${statusBg}`}
                                         title={
+                                          (clip.xgodoFailureComment ? `Worker comment: ${clip.xgodoFailureComment}\n` : '') +
                                           (clip.xgodoFinishedAt ? `Finished ${new Date(clip.xgodoFinishedAt).toLocaleString()}` : '') +
                                           (clip.xgodoDeviceName ? ` · ${clip.xgodoDeviceName}` : '')
                                         }
                                       >
                                         {uploadStatus}
                                       </span>
+                                    )}
+                                    {/* Worker comment chip — visible inline for failed/declined
+                                        rows so the user immediately sees WHY (e.g. "CRASH",
+                                        "Login required") without having to expand or open
+                                        the Uploads view. Click to view the failure screenshot
+                                        if xgodo attached one. */}
+                                    {clip.xgodoFailureComment && (uploadStatus === 'failed' || uploadStatus === 'declined') && (
+                                      clip.xgodoFailureScreenshotUrl ? (
+                                        <a
+                                          href={clip.xgodoFailureScreenshotUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-[10px] px-2 py-0.5 rounded-full border bg-red-700/30 text-red-200 border-red-700/50 hover:bg-red-700/40 whitespace-nowrap flex-shrink-0 max-w-[140px] truncate"
+                                          title={`Worker comment — click for failure screenshot. Comment: ${clip.xgodoFailureComment}`}
+                                        >
+                                          ⚠ {clip.xgodoFailureComment}
+                                        </a>
+                                      ) : (
+                                        <span
+                                          className="text-[10px] px-2 py-0.5 rounded-full border bg-red-700/30 text-red-200 border-red-700/50 whitespace-nowrap flex-shrink-0 max-w-[140px] truncate"
+                                          title={clip.xgodoFailureComment}
+                                        >
+                                          ⚠ {clip.xgodoFailureComment}
+                                        </span>
+                                      )
                                     )}
 
                                     {/* Inline Send-to-YT button. Shown when clip can be sent
@@ -3226,8 +3256,28 @@ export default function AdminPage() {
                                   <span className={`inline-block text-[10px] px-2 py-0.5 rounded-full border ${statusColor}`}>
                                     {u.status}
                                   </span>
-                                  {u.error && (
-                                    <div className="text-[10px] text-red-400 mt-0.5 max-w-[180px] truncate" title={u.error}>
+                                  {/* Worker comment from xgodo (e.g. "CRASH", "Login required") —
+                                      attached to failed/declined task. Click for screenshot if
+                                      one was captured. Persists until the user clicks Retry. */}
+                                  {u.failureComment && (
+                                    u.failureScreenshotUrl ? (
+                                      <a
+                                        href={u.failureScreenshotUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="block text-[10px] text-red-300 hover:text-red-200 mt-0.5 max-w-[200px] truncate underline"
+                                        title={`Worker comment: ${u.failureComment}\nClick for screenshot`}
+                                      >
+                                        ⚠ {u.failureComment}
+                                      </a>
+                                    ) : (
+                                      <div className="text-[10px] text-red-400 mt-0.5 max-w-[200px] truncate" title={u.failureComment}>
+                                        ⚠ {u.failureComment}
+                                      </div>
+                                    )
+                                  )}
+                                  {u.error && !u.failureComment && (
+                                    <div className="text-[10px] text-red-400 mt-0.5 max-w-[200px] truncate" title={u.error}>
                                       {u.error}
                                     </div>
                                   )}

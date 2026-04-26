@@ -827,6 +827,11 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_like_count BIGINT`).catch(() => {});
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_comment_count BIGINT`).catch(() => {});
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS youtube_views_fetched_at TIMESTAMPTZ`).catch(() => {});
+    // Worker-side failure detail. xgodo attaches a `comment` (e.g. "CRASH",
+    // "Login required", etc.) and a screenshot URL when a task fails during
+    // execution. We surface both in the Uploads UI until the user retries.
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_failure_comment TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_failure_screenshot_url TEXT`).catch(() => {});
     // Pull poll work efficiently: index in-flight tasks by status + last poll.
     await client.query(
       `CREATE INDEX IF NOT EXISTS idx_vizard_clips_upload_status_polled

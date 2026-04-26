@@ -41,6 +41,7 @@ export async function GET() {
               transcript, viral_score, viral_reason, related_topic,
               clip_editor_url, local_path, xgodo_upload_status, xgodo_upload_id,
               xgodo_device_name, xgodo_finished_at, youtube_url,
+              xgodo_failure_comment, xgodo_failure_screenshot_url,
               youtube_view_count, youtube_like_count, youtube_comment_count,
               youtube_views_fetched_at,
               created_at
@@ -68,6 +69,8 @@ export async function GET() {
         xgodoUploadId: row.xgodo_upload_id,
         xgodoDeviceName: row.xgodo_device_name,
         xgodoFinishedAt: row.xgodo_finished_at,
+        xgodoFailureComment: row.xgodo_failure_comment,
+        xgodoFailureScreenshotUrl: row.xgodo_failure_screenshot_url,
         youtubeUrl: row.youtube_url,
         youtubeViewCount:    row.youtube_view_count    !== null ? parseInt(row.youtube_view_count)    : null,
         youtubeLikeCount:    row.youtube_like_count    !== null ? parseInt(row.youtube_like_count)    : null,

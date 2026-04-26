@@ -81,7 +81,9 @@ export async function submitClipToXgodo(input: VizardClipUploadInput): Promise<{
          xgodo_job_task_id = NULL, xgodo_device_id = NULL, xgodo_device_name = NULL,
          xgodo_worker_id = NULL, xgodo_worker_name = NULL,
          xgodo_submitted_at = NULL, xgodo_started_at = NULL, xgodo_finished_at = NULL,
-         xgodo_last_polled_at = NULL, xgodo_error = NULL, youtube_url = NULL
+         xgodo_last_polled_at = NULL, xgodo_error = NULL,
+         xgodo_failure_comment = NULL, xgodo_failure_screenshot_url = NULL,
+         youtube_url = NULL
        WHERE id = $1`,
       [input.clipId]
     );
@@ -161,37 +163,88 @@ type FetchTaskResult =
   | { status: 'found'; task: XgodoJobTask }
   | { status: 'gone'; reason: string };
 
-async function fetchTaskById(plannedTaskId: string): Promise<FetchTaskResult> {
+async function postApplicants(body: Record<string, unknown>): Promise<{
+  ok: true; data: { job_tasks?: XgodoJobTask[] };
+} | { ok: false; status: number; text: string }> {
   const token = await getXgodoToken();
   const res = await fetch(`${XGODO_API}/jobs/applicants`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: YT_UPLOAD_JOB_ID, task_id: plannedTaskId }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    // 400 "no associated job task" / "job_task_id is null" → planned task
-    // exists, just no worker picked it up yet. Keep polling.
-    if (res.status === 400 && /no associated job task|job_task_id is null/i.test(text)) {
-      return { status: 'queued' };
-    }
-    // 404 "neither a valid job task ID nor a planned task ID" → xgodo no
-    // longer has this id at all. We've seen this when a planned task sits
-    // unassigned long enough that xgodo TTLs it (typically ~30 minutes).
-    // Treat as a terminal failure so the row stops re-polling forever and
-    // surfaces as 'failed' in the UI for one-click retry.
-    if (res.status === 404 && /neither a valid|not found/i.test(text)) {
-      return {
-        status: 'gone',
-        reason: 'xgodo dropped the planned task before a worker picked it up (likely queue saturation or TTL). Click Retry to resubmit.',
-      };
-    }
-    throw new Error(`xgodo poll ${res.status}: ${text.slice(0, 200)}`);
+    return { ok: false, status: res.status, text: (await res.text().catch(() => '')) };
   }
-  const data = await res.json() as { job_tasks?: XgodoJobTask[] };
-  const task = (data.job_tasks || [])[0];
-  if (!task) return { status: 'queued' };
-  return { status: 'found', task };
+  return { ok: true, data: await res.json() };
+}
+
+/**
+ * Page through xgodo's job_tasks list looking for a job_task whose
+ * planned_task_id matches. Used as a fallback when the direct
+ * task_id=<planned_task_id> lookup 404s — which happens once a task
+ * has FAILED on xgodo's side. Their server-side resolution of
+ * planned_task_id → job_task_id only works for in-flight tasks.
+ *
+ * We only scan recent pages of failed/declined tasks (newest first), so
+ * this stays fast: typically the planned task we're looking for failed
+ * within the last ~30 minutes and lives on page 1.
+ */
+async function scanForJobTaskId(plannedTaskId: string, options?: { maxPages?: number }): Promise<XgodoJobTask | null> {
+  const maxPages = options?.maxPages ?? 4;
+  for (const status of ['failed', 'declined']) {
+    for (let page = 1; page <= maxPages; page++) {
+      const r = await postApplicants({
+        job_id: YT_UPLOAD_JOB_ID, status, limit: 50, page,
+      });
+      if (!r.ok) break;
+      const tasks = r.data.job_tasks || [];
+      if (tasks.length === 0) break;
+      const hit = tasks.find(t => t.planned_task_id === plannedTaskId);
+      if (hit) return hit;
+      if (tasks.length < 50) break;
+    }
+  }
+  return null;
+}
+
+/**
+ * Look up the current state of one planned task. Strategy:
+ *   1. If we already know its job_task_id (stored from a prior poll),
+ *      query directly by that — works in every status including failed.
+ *   2. Else try task_id=<planned_task_id>. Works while pending/running.
+ *   3. On 400 "no associated job task" → still queued, return.
+ *   4. On 404 "neither a valid…" → task has likely failed and xgodo's
+ *      planned→job_task resolver no longer covers it. Scan the failed
+ *      list once to recover the job_task_id, then return that task.
+ */
+async function fetchTaskById(plannedTaskId: string, knownJobTaskId?: string | null): Promise<FetchTaskResult> {
+  const lookupId = knownJobTaskId || plannedTaskId;
+  const r = await postApplicants({ job_id: YT_UPLOAD_JOB_ID, task_id: lookupId });
+
+  if (r.ok) {
+    const task = (r.data.job_tasks || [])[0];
+    if (!task) return { status: 'queued' };
+    return { status: 'found', task };
+  }
+
+  // 400 "no associated job task" → still queued
+  if (r.status === 400 && /no associated job task|job_task_id is null/i.test(r.text)) {
+    return { status: 'queued' };
+  }
+
+  // 404 "neither valid…" — only happens for planned_task_id when the task
+  // has failed. Recover the job_task_id by scanning the failed list, then
+  // use it for the real lookup.
+  if (r.status === 404 && /neither a valid|not found/i.test(r.text) && !knownJobTaskId) {
+    const recovered = await scanForJobTaskId(plannedTaskId);
+    if (recovered) return { status: 'found', task: recovered };
+    return {
+      status: 'gone',
+      reason: 'xgodo no longer recognises this task id and it isn\'t in the recent failed list. Click Retry to resubmit.',
+    };
+  }
+
+  throw new Error(`xgodo poll ${r.status}: ${r.text.slice(0, 200)}`);
 }
 
 interface XgodoJobTask {
@@ -200,6 +253,7 @@ interface XgodoJobTask {
   job_proof: string | Record<string, unknown> | null;
   proof_input: string | null;
   failureReason: string | null;
+  comment: string | null;    // worker-attached note on failed tasks (e.g. "CRASH")
   device_id: string | null;
   device_name: string | null;
   worker_id: string | null;
@@ -251,14 +305,25 @@ export async function tickVizardUploads(): Promise<{
   polled: number; updated: number; errors: number;
 }> {
   const pool = await getPool();
+  // In-flight rows poll on a fast cadence (>30s gate). We ALSO opportunistically
+  // re-poll failed/declined rows whose worker comment hasn't been captured
+  // yet — happens for rows that hit the 404-on-planned-id path before we
+  // added the failed-list scan fallback. Cap to once an hour so we don't
+  // hammer xgodo for stale data.
   const dueRes = await pool.query<{
-    id: number; xgodo_upload_id: string; xgodo_upload_status: string;
+    id: number; xgodo_upload_id: string; xgodo_job_task_id: string | null; xgodo_upload_status: string;
   }>(
-    `SELECT id, xgodo_upload_id, xgodo_upload_status
+    `SELECT id, xgodo_upload_id, xgodo_job_task_id, xgodo_upload_status
      FROM vizard_clips
      WHERE xgodo_upload_id IS NOT NULL
-       AND xgodo_upload_status IN ('queued','running','uploaded')
-       AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '30 seconds')
+       AND (
+         (xgodo_upload_status IN ('queued','running','uploaded')
+          AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '30 seconds'))
+         OR
+         (xgodo_upload_status IN ('failed','declined')
+          AND xgodo_failure_comment IS NULL
+          AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '1 hour'))
+       )
      ORDER BY xgodo_submitted_at ASC NULLS LAST
      LIMIT 50`
   );
@@ -268,7 +333,7 @@ export async function tickVizardUploads(): Promise<{
   for (const row of dueRes.rows) {
     polled++;
     try {
-      const r = await fetchTaskById(row.xgodo_upload_id);
+      const r = await fetchTaskById(row.xgodo_upload_id, row.xgodo_job_task_id);
 
       if (r.status === 'queued') {
         // Still in xgodo's queue, no worker assignment yet.
@@ -300,21 +365,34 @@ export async function tickVizardUploads(): Promise<{
       const newStatus = mapXgodoStatus(task.status);
       const proof = parseJobProof(task.job_proof);
       const ytUrl = typeof proof.video_url === 'string' ? proof.video_url : null;
+      // Worker-side failure detail. xgodo's `comment` ("CRASH",
+      // "Login required", etc.) is the human-readable reason and lives
+      // alongside an optional `failureScreenshot` URL inside job_proof.
+      // Both are wiped on retry (see submitClipToXgodo) so they stay
+      // accurate for the latest run only.
+      const failureComment =
+        task.comment
+        || (typeof proof.comments === 'string' ? proof.comments : null)
+        || null;
+      const failureScreenshot =
+        typeof proof.failureScreenshot === 'string' ? proof.failureScreenshot : null;
 
       await pool.query(
         `UPDATE vizard_clips SET
-           xgodo_upload_status   = $1,
-           xgodo_job_task_id     = $2,
-           xgodo_device_id       = COALESCE($3, xgodo_device_id),
-           xgodo_device_name     = COALESCE($4, xgodo_device_name),
-           xgodo_worker_id       = COALESCE($5, xgodo_worker_id),
-           xgodo_worker_name     = COALESCE($6, xgodo_worker_name),
-           xgodo_started_at      = COALESCE(xgodo_started_at, $7),
-           xgodo_finished_at     = COALESCE(xgodo_finished_at, $8),
-           xgodo_last_polled_at  = NOW(),
-           xgodo_error           = $9,
-           youtube_url           = COALESCE(youtube_url, $10)
-         WHERE id = $11`,
+           xgodo_upload_status         = $1,
+           xgodo_job_task_id           = $2,
+           xgodo_device_id             = COALESCE($3, xgodo_device_id),
+           xgodo_device_name           = COALESCE($4, xgodo_device_name),
+           xgodo_worker_id             = COALESCE($5, xgodo_worker_id),
+           xgodo_worker_name           = COALESCE($6, xgodo_worker_name),
+           xgodo_started_at            = COALESCE(xgodo_started_at, $7),
+           xgodo_finished_at           = COALESCE(xgodo_finished_at, $8),
+           xgodo_last_polled_at        = NOW(),
+           xgodo_error                 = $9,
+           xgodo_failure_comment       = $10,
+           xgodo_failure_screenshot_url = $11,
+           youtube_url                 = COALESCE(youtube_url, $12)
+         WHERE id = $13`,
         [
           newStatus,
           task._id,
@@ -325,6 +403,8 @@ export async function tickVizardUploads(): Promise<{
           task.added,
           task.finished,
           task.failureReason,
+          failureComment,
+          failureScreenshot,
           ytUrl,
           row.id,
         ]
