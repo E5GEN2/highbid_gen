@@ -419,9 +419,10 @@ export default function AdminPage() {
   };
 
   // YT-upload reporting view (sub-tab within Vizard).
-  // 'view' = 'projects' (the existing clip browser) or 'uploads' (the
-  // reporting dashboard showing what was sent to xgodo, when, by which device).
-  const [vizardView, setVizardView] = useState<'projects' | 'uploads'>('projects');
+  // 'projects' (the existing clip browser), 'uploads' (per-clip reporting),
+  // or 'devices' (group every task under its xgodo worker so we can spot
+  // devices that need attention — SMS verif, login lost, repeat failures).
+  const [vizardView, setVizardView] = useState<'projects' | 'uploads' | 'devices'>('projects');
   interface VizardUploadRow {
     clipId: number;
     projectId: number;
@@ -471,6 +472,62 @@ export default function AdminPage() {
       setVizardUploadSummary(d.summary || null);
     } catch { /* swallow */ }
   }, [vizardUploadFilter]);
+
+  // Devices view (sub-tab #3 within Vizard). Aggregates all xgodo
+  // upload tasks by worker device so we can see per-device history,
+  // health, and the per-(job, device) bucket xgodo holds (login state,
+  // account info, etc.) — pulled via the new
+  // GET /api/v2/bucket/:job_id endpoint.
+  interface VizardDeviceTask {
+    clipId: number; projectId: number; projectUrl: string | null;
+    title: string | null; status: string | null;
+    plannedTaskId: string | null; jobTaskId: string | null;
+    submittedAt: string | null; startedAt: string | null; finishedAt: string | null;
+    durationSec: number | null;
+    failureComment: string | null; failureScreenshotUrl: string | null;
+    error: string | null;
+    youtubeUrl: string | null;
+    viewCount: number | null; likeCount: number | null; commentCount: number | null;
+    viralScore: string | null;
+  }
+  interface VizardDeviceRecord {
+    deviceId: string; deviceName: string | null;
+    workerId: string | null; workerName: string | null;
+    stats: {
+      total: number;
+      byStatus: { queued: number; running: number; uploaded: number; confirmed: number; failed: number; declined: number; other: number };
+      succeeded: number; finalFailures: number; successRate: number;
+      avgDurationSec: number | null;
+      totalViews: number; totalLikes: number; totalComments: number;
+      lastActivityAt: string | null;
+      last24h: { total: number; succeeded: number; failed: number };
+    };
+    bucket: { data: Record<string, unknown> | null; updatedAt: string | null; missing: boolean };
+    recentTasks: VizardDeviceTask[];
+    needsAttention: boolean; attentionReason: string | null;
+  }
+  interface VizardDevicesOverall {
+    devices: number; needsAttention: number;
+    totalUploaded: number; totalFailed: number; totalViews: number;
+  }
+  const [vizardDevices, setVizardDevices] = useState<VizardDeviceRecord[]>([]);
+  const [vizardDevicesOverall, setVizardDevicesOverall] = useState<VizardDevicesOverall | null>(null);
+  const [vizardDevicesBucketError, setVizardDevicesBucketError] = useState<string | null>(null);
+  const [vizardDevicesLoading, setVizardDevicesLoading] = useState(false);
+  // Which device cards are expanded (showing the recent-tasks list).
+  const [expandedDeviceIds, setExpandedDeviceIds] = useState<Set<string>>(new Set());
+
+  const refetchVizardDevices = useCallback(async () => {
+    setVizardDevicesLoading(true);
+    try {
+      const r = await fetch('/api/admin/vizard/devices');
+      const d = await r.json();
+      setVizardDevices(d.devices || []);
+      setVizardDevicesOverall(d.overall || null);
+      setVizardDevicesBucketError(d.bucketError || null);
+    } catch { /* swallow */ }
+    finally { setVizardDevicesLoading(false); }
+  }, []);
 
   // Per-clip upload tracking — set of clip ids currently being submitted, so
   // the button shows "Sending..." and disables during the round trip.
@@ -544,6 +601,17 @@ export default function AdminPage() {
     const iv = setInterval(refetchVizardUploads, 15_000);
     return () => clearInterval(iv);
   }, [adminSection, vizardView, refetchVizardUploads]);
+
+  // Same pattern for the Devices view. Slightly slower poll (30s) since
+  // device-level aggregates change less often than per-clip status, and
+  // each refresh also pulls all job-level buckets from xgodo.
+  useEffect(() => {
+    if (adminSection !== 'vizard') return;
+    if (vizardView !== 'devices') return;
+    refetchVizardDevices();
+    const iv = setInterval(refetchVizardDevices, 30_000);
+    return () => clearInterval(iv);
+  }, [adminSection, vizardView, refetchVizardDevices]);
 
   // Vizard tab — UI refresh only. The actual Vizard polling is now done by
   // the server-side cron at /api/cron/vizard (every 60s), so projects make
@@ -2683,11 +2751,12 @@ export default function AdminPage() {
             and a download link + "Send to xgodo" action (TODO next phase). */}
         <div style={{ display: adminSection === 'vizard' ? 'block' : 'none' }}>
           <div className="space-y-6">
-            {/* Sub-tabs: Projects (clip browser) | Uploads (YT upload reporting) */}
+            {/* Sub-tabs: Projects (clip browser) | Uploads (YT upload reporting) | Devices (per-device history) */}
             <div className="flex gap-2 border-b border-gray-800 pb-1">
               {([
                 { value: 'projects', label: 'Projects & Clips' },
                 { value: 'uploads',  label: 'Uploads to YT' },
+                { value: 'devices',  label: 'Devices' },
               ] as const).map(opt => (
                 <button key={opt.value} onClick={() => setVizardView(opt.value)}
                   className={`px-4 py-2 text-sm font-medium rounded-lg transition ${
@@ -2702,6 +2771,11 @@ export default function AdminPage() {
                       {vizardUploadSummary.queued + vizardUploadSummary.running}
                     </span>
                    )}
+                  {opt.value === 'devices' && vizardDevicesOverall && vizardDevicesOverall.needsAttention > 0 && (
+                    <span className="ml-1.5 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full" title="devices needing attention">
+                      {vizardDevicesOverall.needsAttention}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -3343,6 +3417,293 @@ export default function AdminPage() {
               </div>
             </div>
             {/* end UPLOADS VIEW */}
+
+            {/* DEVICES VIEW — same task data as Uploads, regrouped by
+                xgodo worker device. Each card shows the device's total
+                stats, the per-(job, device) bucket xgodo holds for it
+                (login state, account info), and an expandable recent-task
+                history. Devices that look stuck (last 3+ tasks failed,
+                or last failure comment mentions login/SMS/captcha) get a
+                "needs attention" banner so they're easy to spot. */}
+            <div style={{ display: vizardView === 'devices' ? 'block' : 'none' }}>
+              <div className="space-y-4">
+                {/* Header strip */}
+                {vizardDevicesOverall && (
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                      <div className="text-xl font-bold text-white">{vizardDevicesOverall.devices}</div>
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wider">Devices</div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                      <div className={`text-xl font-bold ${vizardDevicesOverall.needsAttention > 0 ? 'text-red-400' : 'text-gray-500'}`}>
+                        {vizardDevicesOverall.needsAttention}
+                      </div>
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wider">Need Attention</div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                      <div className="text-xl font-bold text-green-400">{vizardDevicesOverall.totalUploaded.toLocaleString()}</div>
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wider">Uploaded</div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                      <div className="text-xl font-bold text-red-400">{vizardDevicesOverall.totalFailed.toLocaleString()}</div>
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wider">Failed/Declined</div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded-lg p-3 text-center">
+                      <div className="text-xl font-bold text-blue-400">{vizardDevicesOverall.totalViews.toLocaleString()}</div>
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wider">Total YT Views</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Bucket-fetch error — non-fatal, but surface it so the
+                    operator knows the bucket column might be stale. */}
+                {vizardDevicesBucketError && (
+                  <div className="bg-amber-900/20 border border-amber-600/40 rounded-lg p-3 text-xs text-amber-300">
+                    Could not load xgodo job buckets — showing device stats only.
+                    <span className="block mt-1 text-amber-400/70 font-mono break-all">{vizardDevicesBucketError}</span>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500">
+                    {vizardDevices.length} device{vizardDevices.length === 1 ? '' : 's'} grouped — sorted by needs-attention then most recent activity
+                  </span>
+                  <button
+                    onClick={refetchVizardDevices}
+                    disabled={vizardDevicesLoading}
+                    className="ml-auto text-xs text-gray-400 hover:text-white disabled:text-gray-600"
+                  >
+                    {vizardDevicesLoading ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                </div>
+
+                {/* Device cards */}
+                {vizardDevices.length === 0 ? (
+                  <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 text-center text-sm text-gray-500">
+                    {vizardDevicesLoading ? 'Loading…' : 'No devices have processed Vizard uploads yet.'}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {vizardDevices.map(d => {
+                      const expanded = expandedDeviceIds.has(d.deviceId);
+                      const toggleExpand = () => {
+                        setExpandedDeviceIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(d.deviceId)) next.delete(d.deviceId);
+                          else next.add(d.deviceId);
+                          return next;
+                        });
+                      };
+                      const fmtDur = (s: number | null) =>
+                        s == null ? '—' :
+                        s < 60 ? `${s}s` :
+                        s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` :
+                        `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+                      // Truncate the bucket data to a couple key/value lines so
+                      // the card doesn't blow up when an automation stores big
+                      // payloads. Full content is in the expanded view.
+                      const bucketEntries = d.bucket.data
+                        ? Object.entries(d.bucket.data).slice(0, 6)
+                        : [];
+                      return (
+                        <div key={d.deviceId}
+                          className={`bg-gray-800/50 rounded-2xl border ${
+                            d.needsAttention ? 'border-red-600/40' : 'border-gray-700'
+                          } overflow-hidden`}
+                        >
+                          {/* Attention banner */}
+                          {d.needsAttention && (
+                            <div className="bg-red-900/30 border-b border-red-600/40 px-4 py-2 text-xs text-red-200 flex items-center gap-2">
+                              <span className="text-red-400">⚠</span>
+                              <span>Needs attention — {d.attentionReason}</span>
+                            </div>
+                          )}
+
+                          {/* Card header */}
+                          <div className="p-4 flex flex-wrap items-start gap-3">
+                            <div className="flex-1 min-w-[200px]">
+                              <div className="text-sm font-bold text-white">
+                                {d.deviceName || <span className="text-gray-500 font-mono">{d.deviceId.substring(0, 12)}…</span>}
+                              </div>
+                              <div className="text-[10px] text-gray-500 font-mono mt-0.5">
+                                {d.deviceId}
+                                {d.workerName && <span className="text-gray-400"> · {d.workerName}</span>}
+                              </div>
+                            </div>
+
+                            {/* Status pills strip */}
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {([
+                                { key: 'queued',    label: 'Q', color: 'bg-gray-700 text-gray-300' },
+                                { key: 'running',   label: 'R', color: 'bg-blue-700/40 text-blue-300' },
+                                { key: 'uploaded',  label: 'U', color: 'bg-green-700/40 text-green-300' },
+                                { key: 'confirmed', label: 'C', color: 'bg-emerald-700/40 text-emerald-300' },
+                                { key: 'failed',    label: 'F', color: 'bg-red-700/40 text-red-300' },
+                                { key: 'declined',  label: 'D', color: 'bg-orange-700/40 text-orange-300' },
+                              ] as const).map(s => {
+                                const n = d.stats.byStatus[s.key];
+                                return (
+                                  <span key={s.key}
+                                    className={`text-[10px] px-2 py-0.5 rounded ${n > 0 ? s.color : 'bg-gray-900 text-gray-600'}`}
+                                    title={`${s.key}: ${n}`}
+                                  >
+                                    {s.label} {n}
+                                  </span>
+                                );
+                              })}
+                            </div>
+
+                            {/* Right-side big numbers */}
+                            <div className="flex items-center gap-4 text-right">
+                              <div>
+                                <div className="text-lg font-bold text-white">{d.stats.total}</div>
+                                <div className="text-[10px] text-gray-500 uppercase">Total</div>
+                              </div>
+                              <div>
+                                <div className={`text-lg font-bold ${d.stats.successRate >= 0.7 ? 'text-green-400' : d.stats.successRate >= 0.4 ? 'text-amber-400' : 'text-red-400'}`}>
+                                  {(d.stats.successRate * 100).toFixed(0)}%
+                                </div>
+                                <div className="text-[10px] text-gray-500 uppercase">Success</div>
+                              </div>
+                              <div>
+                                <div className="text-lg font-bold text-blue-400">{d.stats.totalViews.toLocaleString()}</div>
+                                <div className="text-[10px] text-gray-500 uppercase">YT Views</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Sub-info row: bucket + last activity + expand */}
+                          <div className="border-t border-gray-700/60 bg-gray-900/30 px-4 py-2 flex flex-wrap gap-x-4 gap-y-1 items-center text-[11px]">
+                            <div className="text-gray-400">
+                              <span className="text-gray-500">Last activity: </span>
+                              {d.stats.lastActivityAt ? new Date(d.stats.lastActivityAt).toLocaleString() : '—'}
+                            </div>
+                            <div className="text-gray-400">
+                              <span className="text-gray-500">Avg duration: </span>
+                              {fmtDur(d.stats.avgDurationSec)}
+                            </div>
+                            <div className="text-gray-400">
+                              <span className="text-gray-500">Last 24h: </span>
+                              <span className="text-green-400">{d.stats.last24h.succeeded}↑</span>
+                              <span className="text-gray-600"> / </span>
+                              <span className="text-red-400">{d.stats.last24h.failed}↓</span>
+                              <span className="text-gray-600"> / </span>
+                              <span className="text-gray-300">{d.stats.last24h.total}</span>
+                            </div>
+                            <div className="text-gray-400">
+                              <span className="text-gray-500">Bucket: </span>
+                              {d.bucket.missing
+                                ? <span className="text-gray-600 italic">none</span>
+                                : bucketEntries.length === 0
+                                  ? <span className="text-gray-600 italic">empty</span>
+                                  : (
+                                    <span className="text-gray-300 font-mono">
+                                      {bucketEntries.map(([k, v]) => {
+                                        const display = typeof v === 'boolean' ? String(v)
+                                          : typeof v === 'number' ? String(v)
+                                          : typeof v === 'string' ? (v.length > 24 ? v.slice(0, 21) + '…' : v)
+                                          : '·';
+                                        return `${k}=${display}`;
+                                      }).join(' ')}
+                                    </span>
+                                  )
+                              }
+                              {d.bucket.updatedAt && (
+                                <span className="text-gray-600 ml-1">
+                                  ({new Date(d.bucket.updatedAt).toLocaleDateString()})
+                                </span>
+                              )}
+                            </div>
+                            <button onClick={toggleExpand}
+                              className="ml-auto text-pink-400 hover:text-pink-300"
+                            >
+                              {expanded ? `Hide tasks ▴` : `Show ${d.recentTasks.length} recent task${d.recentTasks.length === 1 ? '' : 's'} ▾`}
+                            </button>
+                          </div>
+
+                          {/* Expanded recent-tasks table */}
+                          {expanded && (
+                            <div className="border-t border-gray-700/60 overflow-x-auto">
+                              {d.recentTasks.length === 0 ? (
+                                <div className="px-4 py-3 text-xs text-gray-500">
+                                  No tasks yet — device has a bucket but hasn&apos;t run any clips.
+                                </div>
+                              ) : (
+                                <table className="w-full text-xs">
+                                  <thead className="bg-gray-900/40 text-[10px] uppercase tracking-wider text-gray-500">
+                                    <tr>
+                                      <th className="text-left px-3 py-2">Status</th>
+                                      <th className="text-left px-3 py-2">Title</th>
+                                      <th className="text-left px-3 py-2">YouTube</th>
+                                      <th className="text-left px-3 py-2">Views</th>
+                                      <th className="text-left px-3 py-2">Submitted</th>
+                                      <th className="text-left px-3 py-2">Duration</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-800/70">
+                                    {d.recentTasks.map(t => {
+                                      const statusColor =
+                                        t.status === 'confirmed' ? 'bg-emerald-600/20 text-emerald-300 border-emerald-600/40' :
+                                        t.status === 'uploaded'  ? 'bg-green-600/20 text-green-300 border-green-600/40' :
+                                        t.status === 'running'   ? 'bg-blue-600/20 text-blue-300 border-blue-600/40 animate-pulse' :
+                                        t.status === 'queued'    ? 'bg-gray-700/40 text-gray-300 border-gray-600/40' :
+                                        t.status === 'failed'    ? 'bg-red-600/20 text-red-300 border-red-600/40' :
+                                        t.status === 'declined'  ? 'bg-orange-600/20 text-orange-300 border-orange-600/40' :
+                                                                   'bg-gray-700/40 text-gray-300 border-gray-600/40';
+                                      return (
+                                        <tr key={t.clipId} className="hover:bg-gray-900/30">
+                                          <td className="px-3 py-2 align-top">
+                                            <span className={`inline-block text-[10px] px-2 py-0.5 rounded-full border ${statusColor}`}>
+                                              {t.status || '—'}
+                                            </span>
+                                            {t.failureComment && (
+                                              <div className="mt-1 text-[10px] text-red-300/80 max-w-[180px]" title={t.failureComment}>
+                                                {t.failureComment.length > 60 ? t.failureComment.slice(0, 57) + '…' : t.failureComment}
+                                                {t.failureScreenshotUrl && (
+                                                  <a href={t.failureScreenshotUrl} target="_blank" rel="noreferrer"
+                                                    className="block text-orange-400 hover:text-orange-300 underline mt-0.5">
+                                                    screenshot
+                                                  </a>
+                                                )}
+                                              </div>
+                                            )}
+                                          </td>
+                                          <td className="px-3 py-2 text-gray-200 max-w-[260px] truncate" title={t.title || ''}>
+                                            {t.title || <span className="text-gray-600">—</span>}
+                                          </td>
+                                          <td className="px-3 py-2">
+                                            {t.youtubeUrl ? (
+                                              <a href={t.youtubeUrl} target="_blank" rel="noreferrer"
+                                                className="text-pink-400 hover:text-pink-300 underline">
+                                                ▶ Watch
+                                              </a>
+                                            ) : <span className="text-gray-600">—</span>}
+                                          </td>
+                                          <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
+                                            {t.viewCount != null ? t.viewCount.toLocaleString() : '—'}
+                                          </td>
+                                          <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
+                                            {t.submittedAt ? new Date(t.submittedAt).toLocaleString() : '—'}
+                                          </td>
+                                          <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
+                                            {fmtDur(t.durationSec)}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* end DEVICES VIEW */}
           </div>
         </div>
 
