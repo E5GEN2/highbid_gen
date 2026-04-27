@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { isAdmin } from '@/lib/admin-auth';
 import { fetchRunningTasks, fetchPlannedTasks, countInFlight } from '@/lib/xgodo-tasks';
+import { buildFleetSnapshot, deployBatch } from '@/lib/agent-deploy';
 
-const XGODO_API = 'https://xgodo.com/api/v2';
 const NICHE_SPY_JOB_ID = '69a58c4277cb8e2b9f1dddc4';
 
 async function getConfig(): Promise<Record<string, string>> {
@@ -133,34 +133,31 @@ export async function POST(req: NextRequest) {
       maxSuggestedResultsBeforeFallback: maxSuggestedResultsBeforeFallback,
       rofeAPIKey: rofeAPIKey || config.agent_rofe_api_key || '',
     };
-
     const inputStr = JSON.stringify(taskInput);
-    const inputs = Array.from({ length: threads }, () => inputStr);
 
-    const res = await fetch(`${XGODO_API}/planned_tasks/submit`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        job_id: NICHE_SPY_JOB_ID,
-        inputs,
-      }),
-    });
+    // Use the same warm-device pinning logic the thermostat uses, so
+    // manual deploys also benefit from the agent's "skip browser-data
+    // wipe when same niche on same device" optimisation. Falls back
+    // gracefully to unpinned submission if no warm device is available.
+    const snapshot = await buildFleetSnapshot(token, NICHE_SPY_JOB_ID);
+    const dep = await deployBatch(token, NICHE_SPY_JOB_ID, { keyword, threads, taskInput: inputStr }, snapshot);
 
-    if (!res.ok) {
-      const text = await res.text();
-      return NextResponse.json({ error: `xgodo submit failed: ${res.status} ${text}` }, { status: 502 });
+    const totalDeployed = dep.pinned + dep.unpinned;
+    if (totalDeployed === 0 && dep.errors.length > 0) {
+      return NextResponse.json(
+        { error: `xgodo submit failed: ${dep.errors.join(' | ')}` },
+        { status: 502 },
+      );
     }
-
-    const result = await res.json();
 
     return NextResponse.json({
       ok: true,
-      deployed: threads,
+      deployed: totalDeployed,
+      pinned: dep.pinned,
+      unpinned: dep.unpinned,
+      pinnedDevices: dep.pinnedDevices,
       keyword,
-      xgodoResponse: result,
+      partialErrors: dep.errors,
     });
   } catch (err) {
     console.error('[agents] Deploy error:', err);

@@ -737,6 +737,30 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
+    // Agent planned-task pins — when the scheduler routes a planned task
+    // to a specific worker device (so the agent can skip its
+    // browser-data wipe and continue researching where it left off), we
+    // track the pin here. Used for two things:
+    //   1. Don't double-pin the same warm device on the next tick
+    //   2. Zombie sweep — if a pinned device drops off the market list
+    //      we delete the planned task so xgodo isn't sitting on it
+    //      forever, and the thermostat re-deploys on the next tick.
+    // Rows are removed when their planned_task_id leaves xgodo's
+    // unassigned planned-tasks list (= got picked up, or was deleted).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_planned_pins (
+        planned_task_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        device_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_app_keyword ON agent_planned_pins(keyword)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_app_device  ON agent_planned_pins(device_name)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_app_created ON agent_planned_pins(created_at)`).catch(() => {});
+
     // Vizard.ai clip generation — one project per submitted URL, many clips
     // per project. Polling is server-driven (see app/api/admin/vizard/tick),
     // so `status` tracks the lifecycle:

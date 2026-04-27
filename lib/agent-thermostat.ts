@@ -23,8 +23,12 @@ import {
   countInFlight,
   type RunningTaskInfo,
 } from './xgodo-tasks';
+import {
+  buildFleetSnapshot,
+  deployBatch,
+  sweepZombiePins,
+} from './agent-deploy';
 
-const XGODO_API = 'https://xgodo.com/api/v2';
 const NICHE_SPY_JOB_ID = '69a58c4277cb8e2b9f1dddc4';
 const INTERVAL_MS = 30_000;  // Check every 30s
 const SHORT_COOLDOWN_MS = 15_000;  // 15s after deploy before next action — covers xgodo's submit→list visibility race
@@ -91,6 +95,13 @@ async function runCheck() {
     // Count in-flight per keyword
     const inflight = countInFlight(running, planned);
 
+    // Build the fleet snapshot ONCE per tick — buckets + market + pins.
+    // All deploy decisions for this tick share it, and the zombie sweep
+    // at the end uses it too. If bucket/market reads fail, snapshot
+    // simply has empty warm/online sets and every deploy falls back to
+    // unpinned mode (graceful degradation).
+    const snapshot = await buildFleetSnapshot(token, NICHE_SPY_JOB_ID);
+
     // Iterate targets — deploy if short, delete planned if over
     for (const target of targetsRes.rows) {
       const kw: string = target.keyword;
@@ -128,19 +139,17 @@ async function runCheck() {
           maxSuggestedResultsBeforeFallback: parseInt(config.agent_max_suggested_results) || 50,
           rofeAPIKey: config.agent_rofe_api_key || '',
         });
-        try {
-          const submitRes = await fetch(`${XGODO_API}/planned_tasks/submit`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ job_id: NICHE_SPY_JOB_ID, inputs: Array.from({ length: diff }, () => taskInput) }),
-          });
-          if (submitRes.ok) {
-            await pool.query("UPDATE agent_thread_targets SET last_deployed_at = NOW() WHERE id = $1", [target.id]);
-            console.log(`[thermostat] Deployed ${diff} for "${kw}" (running=${rec.running}, planned=${rec.planned}, target=${target.target_threads})`);
-          }
-        } catch (err) {
-          console.error(`[thermostat] Deploy failed for "${kw}":`, (err as Error).message);
+
+        const dep = await deployBatch(token, NICHE_SPY_JOB_ID, { keyword: kw, threads: diff, taskInput }, snapshot);
+        if (dep.pinned + dep.unpinned > 0) {
+          await pool.query("UPDATE agent_thread_targets SET last_deployed_at = NOW() WHERE id = $1", [target.id]);
+          console.log(
+            `[thermostat] Deployed ${dep.pinned + dep.unpinned} for "${kw}" ` +
+            `(${dep.pinned} pinned to ${dep.pinnedDevices.join(', ') || '—'}, ${dep.unpinned} unpinned; ` +
+            `running=${rec.running}, planned=${rec.planned}, target=${target.target_threads})`,
+          );
         }
+        for (const e of dep.errors) console.error(`[thermostat] Deploy "${kw}" partial error:`, e);
         continue;
       }
 
@@ -152,10 +161,29 @@ async function runCheck() {
 
       const delResult = await deletePlannedTasks(token, toDelete);
       if (delResult.ok) {
+        // Best-effort prune of pin records that referenced these IDs.
+        await pool.query(
+          `DELETE FROM agent_planned_pins WHERE planned_task_id = ANY($1::text[])`,
+          [toDelete],
+        ).catch(() => {});
         console.log(`[thermostat] Over-provisioned "${kw}" — deleted ${toDelete.length} planned task(s) (running=${rec.running}, planned=${rec.planned}, target=${target.target_threads})`);
       } else {
         console.error(`[thermostat] Delete failed for "${kw}":`, delResult.error);
       }
+    }
+
+    // Zombie sweep — runs LAST so any deploys we just did are reflected
+    // in the live planned-tasks list (we'd otherwise mark them stale on
+    // the same tick they were created). The next tick will repopulate.
+    try {
+      const livePlannedIds = new Set(planned.map(p => p.plannedTaskId));
+      const sweep = await sweepZombiePins(token, NICHE_SPY_JOB_ID, snapshot, livePlannedIds);
+      if (sweep.stale > 0 || sweep.zombieDeleted > 0 || sweep.errors.length > 0) {
+        console.log(`[thermostat] Zombie sweep — stale=${sweep.stale}, zombieDeleted=${sweep.zombieDeleted}, errors=${sweep.errors.length}`);
+        for (const e of sweep.errors) console.error('[thermostat] sweep error:', e);
+      }
+    } catch (err) {
+      console.error('[thermostat] Zombie sweep failed:', (err as Error).message);
     }
   } catch (err) {
     console.error('[thermostat] Error:', (err as Error).message);
