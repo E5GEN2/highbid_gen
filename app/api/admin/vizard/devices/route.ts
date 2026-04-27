@@ -293,18 +293,41 @@ export async function GET(req: Request) {
 
     // Heuristic "needs attention" badge — surfaced on the card so the
     // operator can spot devices stuck in a bad loop without expanding
-    // every one. Threshold picked to be quiet on healthy devices but
-    // loud on the typical "device needs SMS verif / re-login" case.
+    // every one. Three independent triggers, evaluated in priority order
+    // so the most actionable reason wins:
+    //
+    //   (1) most recent failure has an actionable worker comment
+    //       (login / SMS / captcha / verif / sign-in / out_of_steps)
+    //   (2) last 3+ COMPLETED tasks were all failed/declined — note
+    //       we deliberately ignore queued/running rows here, otherwise
+    //       a device that's currently retrying after a failure streak
+    //       would silently lose its badge
+    //   (3) persistently low success rate over a meaningful sample —
+    //       catches the case where one stale success is masking an
+    //       otherwise-broken device (e.g. 1/12 over the last few days)
     let needsAttention = false;
     let attentionReason: string | null = null;
 
-    const last5 = entry.rows.slice(0, 5).map(r => r.xgodo_upload_status);
-    if (last5.length >= 3 && last5.every(s => s === 'failed' || s === 'declined')) {
+    const isTerminal = (s: string | null) =>
+      s === 'failed' || s === 'declined' || s === 'uploaded' || s === 'confirmed';
+    const isFailure  = (s: string | null) => s === 'failed' || s === 'declined';
+
+    const completedRows = entry.rows.filter(r => isTerminal(r.xgodo_upload_status));
+    const lastFailedRow = entry.rows.find(r => isFailure(r.xgodo_upload_status));
+
+    if (lastFailedRow?.xgodo_failure_comment &&
+        /login|sms|captcha|verif|sign[\s-]?in|out[_\s-]?of[_\s-]?steps/i.test(lastFailedRow.xgodo_failure_comment)) {
       needsAttention = true;
-      attentionReason = `last ${last5.length} tasks all ${last5[0] === 'failed' ? 'failed' : 'declined'}`;
-    } else if (entry.rows[0]?.xgodo_failure_comment && /login|sms|captcha|verif|sign[\s-]?in/i.test(entry.rows[0].xgodo_failure_comment)) {
-      needsAttention = true;
-      attentionReason = `worker reported: ${entry.rows[0].xgodo_failure_comment.slice(0, 80)}`;
+      attentionReason = `worker reported: ${lastFailedRow.xgodo_failure_comment.slice(0, 80)}`;
+    } else {
+      const last5Completed = completedRows.slice(0, 5);
+      if (last5Completed.length >= 3 && last5Completed.every(r => isFailure(r.xgodo_upload_status))) {
+        needsAttention = true;
+        attentionReason = `last ${last5Completed.length} completed tasks all failed`;
+      } else if (terminal >= 5 && stats.successRate < 0.2) {
+        needsAttention = true;
+        attentionReason = `${stats.finalFailures}/${terminal} completed tasks failed (${Math.round(stats.successRate * 100)}% success)`;
+      }
     }
 
     const bucket = bucketsByDevice.get(deviceId);
