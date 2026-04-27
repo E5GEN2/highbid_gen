@@ -41,11 +41,20 @@ const XGODO_API = 'https://xgodo.com/api/v2';
 
 /**
  * Bucket keys we accept for the niche field. Tried in order — first
- * non-empty wins. Lets the agent author pick whichever feels natural
- * (`niche` is the canonical one, but we read older fields too in case
- * the agent code uses them).
+ * non-empty wins. The agent currently writes `lastNiche` (verified by
+ * inspecting live buckets — every device on 2026-04-27 had it set),
+ * but we keep aliases so a future schema change doesn't immediately
+ * break the scheduler.
+ *
+ * Live bucket shape, for reference:
+ *   { lastNiche: "motivation", firefoxDataPreserved: false,
+ *     updatedAt: "2026-04-27T13:36:15.012Z" }
  */
-const BUCKET_NICHE_KEYS = ['niche', 'currentNiche', 'current_niche', 'keyword', 'currentKeyword'] as const;
+const BUCKET_NICHE_KEYS = [
+  'lastNiche', 'last_niche',
+  'niche', 'currentNiche', 'current_niche',
+  'keyword', 'currentKeyword',
+] as const;
 
 function extractBucketNiche(data: Record<string, unknown> | null | undefined): string | null {
   if (!data) return null;
