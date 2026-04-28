@@ -312,11 +312,19 @@ export async function tickVizardUploads(): Promise<{
   polled: number; updated: number; errors: number;
 }> {
   const pool = await getPool();
-  // In-flight rows poll on a fast cadence (>30s gate). We ALSO opportunistically
-  // re-poll failed/declined rows whose worker comment hasn't been captured
-  // yet — happens for rows that hit the 404-on-planned-id path before we
-  // added the failed-list scan fallback. Cap to once an hour so we don't
-  // hammer xgodo for stale data.
+  // Polling tiers — different urgency, different cadences:
+  //   queued / running: 30s cadence (worker is actively assigning / running,
+  //                     state changes fast and we want the dashboard to feel live)
+  //   uploaded:         5min cadence (clip is ALREADY live on YouTube; we're
+  //                     just waiting for xgodo's employer-review → confirmed
+  //                     transition, which isn't time-sensitive)
+  //   failed/declined:  5min cadence — opportunistic backfill of worker
+  //                     comment / screenshot for rows that hit the 404
+  //                     path before we added the failed-list scan
+  //
+  // ORDER BY status priority first, then submitted_at — without the priority
+  // ordering, a backlog of older `uploaded` rows starves newer `queued` rows
+  // out of the LIMIT 50 window.
   const dueRes = await pool.query<{
     id: number; xgodo_upload_id: string; xgodo_job_task_id: string | null; xgodo_upload_status: string;
   }>(
@@ -324,14 +332,26 @@ export async function tickVizardUploads(): Promise<{
      FROM vizard_clips
      WHERE xgodo_upload_id IS NOT NULL
        AND (
-         (xgodo_upload_status IN ('queued','running','uploaded')
+         (xgodo_upload_status IN ('queued','running')
           AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '30 seconds'))
+         OR
+         (xgodo_upload_status = 'uploaded'
+          AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '5 minutes'))
          OR
          (xgodo_upload_status IN ('failed','declined')
           AND xgodo_failure_comment IS NULL
           AND (xgodo_last_polled_at IS NULL OR xgodo_last_polled_at < NOW() - INTERVAL '5 minutes'))
        )
-     ORDER BY xgodo_submitted_at ASC NULLS LAST
+     ORDER BY
+       CASE xgodo_upload_status
+         WHEN 'running'  THEN 0
+         WHEN 'queued'   THEN 1
+         WHEN 'failed'   THEN 2
+         WHEN 'declined' THEN 2
+         WHEN 'uploaded' THEN 3
+         ELSE 9
+       END,
+       xgodo_submitted_at ASC NULLS LAST
      LIMIT 50`
   );
 
