@@ -90,6 +90,16 @@ export interface FleetSnapshot {
   onlineDevices: Set<string>;
   /** device names already pinned (any keyword) — don't double-pin */
   pinnedDevices: Set<string>;
+  /**
+   * device names currently running a task on this job. Excluded from
+   * pin candidates because xgodo's run_immediately can't assign a new
+   * task to a device that's already busy on the job — the planned task
+   * just sits in xgodo's queue indefinitely. Pinning to a busy device
+   * is exactly the failure mode that left target=3 keywords running 1
+   * thread with 2 stuck planned, even though `assigned: false` came
+   * back from xgodo at submit time.
+   */
+  busyDevices: Set<string>;
 }
 
 export async function buildFleetSnapshot(
@@ -98,19 +108,30 @@ export async function buildFleetSnapshot(
 ): Promise<FleetSnapshot> {
   const pool = await getPool();
 
-  // Fire all three reads in parallel — they're independent.
-  const [bucketsRes, marketRes, pinsRes] = await Promise.allSettled([
+  // Fire all four reads in parallel — they're independent. The running
+  // fetch needs device_name (which fetchRunningTasks doesn't surface),
+  // so we hit /jobs/applicants directly here.
+  const [bucketsRes, marketRes, pinsRes, runningRes] = await Promise.allSettled([
     listJobBuckets(token, jobId),
     listMarketDevices(token),
     pool.query<{ device_name: string }>(
       `SELECT device_name FROM agent_planned_pins WHERE job_id = $1`,
       [jobId],
     ),
+    fetch(`${XGODO_API}/jobs/applicants`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId, status: 'running', limit: 100 }),
+    }).then(async r => {
+      if (!r.ok) throw new Error(`xgodo running ${r.status}`);
+      return r.json() as Promise<{ job_tasks?: Array<{ device_name?: string | null }> }>;
+    }),
   ]);
 
   const buckets = bucketsRes.status === 'fulfilled' ? bucketsRes.value : [];
   const market  = marketRes.status  === 'fulfilled' ? marketRes.value  : [];
   const pinRows = pinsRes.status    === 'fulfilled' ? pinsRes.value.rows : [];
+  const runBody = runningRes.status === 'fulfilled' ? runningRes.value : { job_tasks: [] };
 
   if (bucketsRes.status === 'rejected') {
     console.warn('[agent-deploy] bucket fetch failed — pinning disabled this tick:', (bucketsRes.reason as Error).message);
@@ -118,9 +139,16 @@ export async function buildFleetSnapshot(
   if (marketRes.status === 'rejected') {
     console.warn('[agent-deploy] market fetch failed — pinning disabled this tick:', (marketRes.reason as Error).message);
   }
+  if (runningRes.status === 'rejected') {
+    console.warn('[agent-deploy] running fetch failed — busy-device exclusion disabled this tick:', (runningRes.reason as Error).message);
+  }
 
   const onlineDevices = marketDeviceNameSet(market);
   const pinnedDevices = new Set(pinRows.map(r => r.device_name));
+  const busyDevices = new Set<string>();
+  for (const t of runBody.job_tasks || []) {
+    if (t.device_name) busyDevices.add(t.device_name);
+  }
 
   const warmByNiche = new Map<string, Set<string>>();
   for (const b of buckets) {
@@ -132,7 +160,7 @@ export async function buildFleetSnapshot(
     set.add(b.device_name);
   }
 
-  return { buckets, warmByNiche, onlineDevices, pinnedDevices };
+  return { buckets, warmByNiche, onlineDevices, pinnedDevices, busyDevices };
 }
 
 /**
@@ -158,10 +186,18 @@ export async function deployBatch(
 
   if (batch.threads <= 0) return result;
 
-  // Pick warm devices: in our niche AND online AND not already pinned.
+  // Pick warm devices: in our niche AND online AND not already pinned
+  // AND not currently running another task on this job. The busy-device
+  // filter is essential — pinning to a busy device leaves the planned
+  // task waiting indefinitely (xgodo's run_immediately returns
+  // assigned:false and there's no auto-pickup once the device frees).
   const warmSet = snapshot.warmByNiche.get(batch.keyword.toLowerCase());
   const candidates = warmSet
-    ? [...warmSet].filter(name => snapshot.onlineDevices.has(name) && !snapshot.pinnedDevices.has(name))
+    ? [...warmSet].filter(name =>
+        snapshot.onlineDevices.has(name) &&
+        !snapshot.pinnedDevices.has(name) &&
+        !snapshot.busyDevices.has(name)
+      )
     : [];
 
   // Take up to `threads` warm candidates; submit one task per pin.
@@ -273,20 +309,34 @@ export async function sweepZombiePins(
   const pool = await getPool();
   const result = { stale: 0, zombieDeleted: 0, errors: [] as string[] };
 
-  const pinsRes = await pool.query<{ planned_task_id: string; device_name: string }>(
-    `SELECT planned_task_id, device_name FROM agent_planned_pins WHERE job_id = $1`,
+  // The 60s grace window protects newly-inserted pin rows from being
+  // stale-pruned in the same tick they were created. The sweep uses
+  // `livePlannedIds` from the START of the tick (before deploys), so
+  // pins inserted DURING this tick won't be in that set even though
+  // their planned tasks just got created. Without this gate, every
+  // pinned deploy got immediately wiped from agent_planned_pins,
+  // leaving pinnedDevices empty for the next tick and causing us to
+  // pin to busy devices repeatedly.
+  const pinsRes = await pool.query<{ planned_task_id: string; device_name: string; created_at: Date }>(
+    `SELECT planned_task_id, device_name, created_at
+     FROM agent_planned_pins
+     WHERE job_id = $1`,
     [jobId],
   );
 
+  const now = Date.now();
   const stalePins: string[] = [];
   const zombiePins: string[] = [];
 
   for (const row of pinsRes.rows) {
+    const ageSec = (now - row.created_at.getTime()) / 1000;
     const stillPlanned = livePlannedIds.has(row.planned_task_id);
     if (!stillPlanned) {
       // Task got picked up by a worker (or was deleted) → pin record
-      // is stale, prune it.
-      stalePins.push(row.planned_task_id);
+      // is stale. Only prune if the pin is at least 60s old, otherwise
+      // it might just be a freshly-submitted pin not yet visible in
+      // the start-of-tick planned snapshot.
+      if (ageSec >= 60) stalePins.push(row.planned_task_id);
       continue;
     }
     if (!snapshot.onlineDevices.has(row.device_name)) {
