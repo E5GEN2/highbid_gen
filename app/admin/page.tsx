@@ -559,6 +559,34 @@ export default function AdminPage() {
     }
   };
 
+  // Per-clip delete — used when Vizard returned a bad source clip (wrong
+  // video, corrupted file, etc.) and we want to drop it from our DB so it
+  // stops appearing in the project list and skewing reports. Local-only:
+  // does not cancel/delete any xgodo task tied to this clip.
+  const deleteClip = async (clipId: number, title: string | null) => {
+    const confirmed = window.confirm(
+      `Delete this clip from the project?\n\n"${title || '(no title)'}"\n\nThis only removes it from rofe.ai — any xgodo upload it triggered is left alone.`
+    );
+    if (!confirmed) return;
+    try {
+      const r = await fetch(`/api/admin/vizard/clips/${clipId}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(`Delete failed: ${d.error || r.status}`);
+        return;
+      }
+      // Refresh project list so the row disappears.
+      const pj = await fetch('/api/admin/vizard/projects');
+      const pd = await pj.json();
+      if (pd.projects) setVizardProjects(pd.projects);
+      // If the Uploads view is also open, refetch that too so the row
+      // disappears there as well.
+      refetchVizardUploads();
+    } catch (err) {
+      alert(`Delete failed: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
+  };
+
   const sendClipsToYouTube = async (clipIds: number[]) => {
     if (clipIds.length === 0) return;
     setUploadingClipIds(prev => {
@@ -3104,6 +3132,19 @@ export default function AdminPage() {
                                         ▶ YT
                                       </a>
                                     )}
+                                    {/* Per-clip delete — for the rare case where Vizard
+                                        returned a bad source URL or wrong clip and we just
+                                        want it out of our list. Confirmation prompt prevents
+                                        accidental clicks on adjacent rows. Local-only —
+                                        doesn't touch xgodo. */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); deleteClip(clip.id, clip.title); }}
+                                      className="text-[11px] px-1.5 py-1 text-gray-600 hover:text-red-400 hover:bg-red-600/10 rounded-md transition whitespace-nowrap flex-shrink-0"
+                                      title="Delete this clip from rofe.ai (does not affect xgodo)"
+                                    >
+                                      ✕
+                                    </button>
                                   </div>
 
                                   {/* Expanded body — player + full transcript + actions */}
