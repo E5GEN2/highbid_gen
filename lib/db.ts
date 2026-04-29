@@ -856,11 +856,39 @@ export async function initSchema(): Promise<void> {
     // execution. We surface both in the Uploads UI until the user retries.
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_failure_comment TEXT`).catch(() => {});
     await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_failure_screenshot_url TEXT`).catch(() => {});
+    // YT account that uploaded this clip — captured from xgodo's job_proof.
+    // Each device hosts one or more gmails, and (per current setup) each
+    // gmail has exactly one YT channel. We use account_email as the join
+    // key to vizard_yt_accounts for channel-level stats.
+    await client.query(`ALTER TABLE vizard_clips ADD COLUMN IF NOT EXISTS xgodo_account_email TEXT`).catch(() => {});
     // Pull poll work efficiently: index in-flight tasks by status + last poll.
     await client.query(
       `CREATE INDEX IF NOT EXISTS idx_vizard_clips_upload_status_polled
        ON vizard_clips(xgodo_upload_status, xgodo_last_polled_at NULLS FIRST)`
     ).catch(() => {});
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_vizard_clips_account_email
+       ON vizard_clips(xgodo_account_email) WHERE xgodo_account_email IS NOT NULL`
+    ).catch(() => {});
+
+    // Per-account channel stats — gmail → YT channel → subs/views.
+    // Refreshed via the same Data API + key/proxy pool used for clip-view
+    // refresh. Resolved by taking any uploaded clip for the account, looking
+    // up videos.list to get channelId, then channels.list for stats.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vizard_yt_accounts (
+        account_email     TEXT PRIMARY KEY,
+        channel_id        TEXT,
+        channel_title     TEXT,
+        custom_url        TEXT,
+        subscriber_count  BIGINT,
+        view_count        BIGINT,
+        video_count       INTEGER,
+        fetched_at        TIMESTAMPTZ,
+        created_at        TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vya_channel_id ON vizard_yt_accounts(channel_id) WHERE channel_id IS NOT NULL`).catch(() => {});
 
     schemaInitialized = true;
     console.log('Database schema initialized');

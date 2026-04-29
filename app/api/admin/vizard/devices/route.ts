@@ -25,6 +25,7 @@ interface ClipRow {
   xgodo_device_name: string | null;
   xgodo_worker_id: string | null;
   xgodo_worker_name: string | null;
+  xgodo_account_email: string | null;
   xgodo_submitted_at: Date | null;
   xgodo_started_at: Date | null;
   xgodo_finished_at: Date | null;
@@ -59,6 +60,21 @@ interface DeviceTask {
   likeCount: number | null;
   commentCount: number | null;
   viralScore: string | null;
+  accountEmail: string | null;
+}
+
+/** YT-account info for a gmail that uploaded clips on a device. */
+interface DeviceAccount {
+  email: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  customUrl: string | null;
+  subscriberCount: number | null;
+  channelViewCount: number | null;
+  videoCount: number | null;
+  fetchedAt: string | null;
+  /** How many of THIS device's clips were uploaded by this account. */
+  uploadsOnDevice: number;
 }
 
 interface DeviceStats {
@@ -90,6 +106,13 @@ interface DeviceRecord {
     /** True when xgodo had no bucket for this device on the YT upload job. */
     missing: boolean;
   };
+  /**
+   * Distinct gmail accounts that have uploaded a clip from this device,
+   * each enriched with channel + subscriber data when available
+   * (populated by lib/yt-vizard-accounts → /api/admin/vizard/accounts/refresh).
+   * Sorted by uploads-on-this-device DESC.
+   */
+  accounts: DeviceAccount[];
   /** Most recent N tasks (default 30), newest first. */
   recentTasks: DeviceTask[];
   /** Heuristic flag — if last 5 tasks were all failed/declined, surface it. */
@@ -134,7 +157,7 @@ export async function GET(req: Request) {
        c.duration_ms, c.viral_score,
        c.xgodo_upload_id, c.xgodo_job_task_id, c.xgodo_upload_status,
        c.xgodo_device_id, c.xgodo_device_name,
-       c.xgodo_worker_id, c.xgodo_worker_name,
+       c.xgodo_worker_id, c.xgodo_worker_name, c.xgodo_account_email,
        c.xgodo_submitted_at, c.xgodo_started_at, c.xgodo_finished_at,
        c.xgodo_failure_comment, c.xgodo_failure_screenshot_url, c.xgodo_error,
        c.youtube_url,
@@ -146,6 +169,24 @@ export async function GET(req: Request) {
      WHERE c.xgodo_device_id IS NOT NULL
      ORDER BY c.xgodo_submitted_at DESC NULLS LAST, c.id DESC`
   );
+
+  // Pull every account row in one query — we'll cross-reference per-device
+  // below using the email set we collect from this device's clips.
+  const acctsRes = await pool.query<{
+    account_email: string;
+    channel_id: string | null;
+    channel_title: string | null;
+    custom_url: string | null;
+    subscriber_count: string | null;
+    view_count: string | null;
+    video_count: number | null;
+    fetched_at: Date | null;
+  }>(
+    `SELECT account_email, channel_id, channel_title, custom_url,
+            subscriber_count, view_count, video_count, fetched_at
+       FROM vizard_yt_accounts`
+  );
+  const accountsByEmail = new Map(acctsRes.rows.map(r => [r.account_email, r]));
 
   // Group by device_id. We aggregate stats over ALL tasks ever assigned to
   // the device but only return the most recent `limit` in `recentTasks` —
@@ -231,11 +272,15 @@ export async function GET(req: Request) {
     let durationSum = 0;
     let durationCount = 0;
     let lastActivity = 0;
+    // Count uploads per gmail on this device — used to sort accounts
+    // newest-most-active first on the card.
+    const emailCounts = new Map<string, number>();
 
     for (const r of entry.rows) {
       bumpStatus(stats.byStatus, r.xgodo_upload_status);
       if (r.xgodo_upload_status === 'uploaded' || r.xgodo_upload_status === 'confirmed') stats.succeeded++;
       if (r.xgodo_upload_status === 'failed' || r.xgodo_upload_status === 'declined') stats.finalFailures++;
+      if (r.xgodo_account_email) emailCounts.set(r.xgodo_account_email, (emailCounts.get(r.xgodo_account_email) || 0) + 1);
 
       if (r.youtube_view_count    != null) stats.totalViews    += parseInt(r.youtube_view_count)    || 0;
       if (r.youtube_like_count    != null) stats.totalLikes    += parseInt(r.youtube_like_count)    || 0;
@@ -288,8 +333,28 @@ export async function GET(req: Request) {
         likeCount:            r.youtube_like_count    != null ? parseInt(r.youtube_like_count)    : null,
         commentCount:         r.youtube_comment_count != null ? parseInt(r.youtube_comment_count) : null,
         viralScore:           r.viral_score,
+        accountEmail:         r.xgodo_account_email,
       };
     });
+
+    // Build the accounts list for this device, joining the per-clip
+    // emailCounts with channel/subs info from vizard_yt_accounts.
+    const accounts: DeviceAccount[] = [...emailCounts.entries()]
+      .map(([email, count]) => {
+        const a = accountsByEmail.get(email);
+        return {
+          email,
+          channelId:        a?.channel_id      ?? null,
+          channelTitle:     a?.channel_title   ?? null,
+          customUrl:        a?.custom_url      ?? null,
+          subscriberCount:  a?.subscriber_count != null ? parseInt(a.subscriber_count) : null,
+          channelViewCount: a?.view_count       != null ? parseInt(a.view_count)       : null,
+          videoCount:       a?.video_count      ?? null,
+          fetchedAt:        a?.fetched_at?.toISOString() ?? null,
+          uploadsOnDevice:  count,
+        };
+      })
+      .sort((x, y) => y.uploadsOnDevice - x.uploadsOnDevice);
 
     // Heuristic "needs attention" badge — surfaced on the card so the
     // operator can spot devices stuck in a bad loop without expanding
@@ -342,6 +407,7 @@ export async function GET(req: Request) {
         updatedAt: bucket?.updated_at ?? null,
         missing:   !bucket,
       },
+      accounts,
       recentTasks,
       needsAttention,
       attentionReason,

@@ -392,6 +392,11 @@ export async function tickVizardUploads(): Promise<{
       const newStatus = mapXgodoStatus(task.status);
       const proof = parseJobProof(task.job_proof);
       const ytUrl = typeof proof.video_url === 'string' ? proof.video_url : null;
+      // YT account that uploaded the clip. xgodo's worker writes the gmail
+      // it used into proof.account_email — we store it on the clip so the
+      // Devices view can show "this clip was uploaded by laylacollins...
+      // @gmail.com" and aggregate accounts per device.
+      const accountEmail = typeof proof.account_email === 'string' ? proof.account_email : null;
       // Worker-side failure detail. xgodo's `comment` ("CRASH",
       // "Login required", etc.) is the human-readable reason and lives
       // alongside an optional `failureScreenshot` URL inside job_proof.
@@ -418,8 +423,9 @@ export async function tickVizardUploads(): Promise<{
            xgodo_error                 = $9,
            xgodo_failure_comment       = $10,
            xgodo_failure_screenshot_url = $11,
-           youtube_url                 = COALESCE(youtube_url, $12)
-         WHERE id = $13`,
+           youtube_url                 = COALESCE(youtube_url, $12),
+           xgodo_account_email         = COALESCE($13, xgodo_account_email)
+         WHERE id = $14`,
         [
           newStatus,
           task._id,
@@ -433,9 +439,21 @@ export async function tickVizardUploads(): Promise<{
           failureComment,
           failureScreenshot,
           ytUrl,
+          accountEmail,
           row.id,
         ]
       );
+
+      // Seed an empty vizard_yt_accounts row so the channel-resolver can
+      // pick it up next time it runs. We don't fetch channel stats here
+      // (would balloon the cron) — the dedicated refresh handles that.
+      if (accountEmail) {
+        await pool.query(
+          `INSERT INTO vizard_yt_accounts (account_email)
+           VALUES ($1) ON CONFLICT (account_email) DO NOTHING`,
+          [accountEmail],
+        ).catch(() => {});
+      }
       if (newStatus !== row.xgodo_upload_status) updated++;
     } catch (err) {
       errors++;

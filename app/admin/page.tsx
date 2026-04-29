@@ -489,6 +489,15 @@ export default function AdminPage() {
     youtubeUrl: string | null;
     viewCount: number | null; likeCount: number | null; commentCount: number | null;
     viralScore: string | null;
+    accountEmail: string | null;
+  }
+  interface VizardDeviceAccount {
+    email: string;
+    channelId: string | null; channelTitle: string | null; customUrl: string | null;
+    subscriberCount: number | null; channelViewCount: number | null;
+    videoCount: number | null;
+    fetchedAt: string | null;
+    uploadsOnDevice: number;
   }
   interface VizardDeviceRecord {
     deviceId: string; deviceName: string | null;
@@ -503,6 +512,7 @@ export default function AdminPage() {
       last24h: { total: number; succeeded: number; failed: number };
     };
     bucket: { data: Record<string, unknown> | null; updatedAt: string | null; missing: boolean };
+    accounts: VizardDeviceAccount[];
     recentTasks: VizardDeviceTask[];
     needsAttention: boolean; attentionReason: string | null;
   }
@@ -528,6 +538,27 @@ export default function AdminPage() {
     } catch { /* swallow */ }
     finally { setVizardDevicesLoading(false); }
   }, []);
+
+  // Force-refresh per-account YT channel + subscriber data via Data API.
+  // Calls /api/admin/vizard/accounts/refresh which uses the same key/proxy
+  // pool as clip-view refresh — ~2 quota units per ~50 accounts.
+  const [vizardAccountsRefreshing, setVizardAccountsRefreshing] = useState(false);
+  const refreshVizardAccountsSubs = useCallback(async () => {
+    setVizardAccountsRefreshing(true);
+    try {
+      const r = await fetch('/api/admin/vizard/accounts/refresh', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      });
+      const d = await r.json();
+      console.log('[accounts refresh]', d);
+      await refetchVizardDevices();
+    } catch (err) {
+      console.error('accounts refresh err', err);
+    } finally {
+      setVizardAccountsRefreshing(false);
+    }
+  }, [refetchVizardDevices]);
 
   // Per-clip upload tracking — set of clip ids currently being submitted, so
   // the button shows "Sending..." and disables during the round trip.
@@ -3510,9 +3541,17 @@ export default function AdminPage() {
                     {vizardDevices.length} device{vizardDevices.length === 1 ? '' : 's'} grouped — sorted by needs-attention then most recent activity
                   </span>
                   <button
+                    onClick={refreshVizardAccountsSubs}
+                    disabled={vizardAccountsRefreshing}
+                    className="ml-auto text-xs text-gray-400 hover:text-white disabled:text-gray-600"
+                    title="Resolve YT channel + subscriber count for every gmail that uploaded a clip (Data API, ~2 quota units)"
+                  >
+                    {vizardAccountsRefreshing ? 'Fetching…' : '↻ Subs'}
+                  </button>
+                  <button
                     onClick={refetchVizardDevices}
                     disabled={vizardDevicesLoading}
-                    className="ml-auto text-xs text-gray-400 hover:text-white disabled:text-gray-600"
+                    className="text-xs text-gray-400 hover:text-white disabled:text-gray-600"
                   >
                     {vizardDevicesLoading ? 'Refreshing…' : 'Refresh'}
                   </button>
@@ -3662,6 +3701,53 @@ export default function AdminPage() {
                             </button>
                           </div>
 
+                          {/* Accounts row — gmails that have uploaded from this
+                              device, each with channel + subscriber count when
+                              the YT Data API enrichment has been run. Hidden
+                              when nothing is known yet (early-state device). */}
+                          {d.accounts.length > 0 && (
+                            <div className="border-t border-gray-700/60 bg-gray-900/30 px-4 py-2 flex flex-wrap gap-x-3 gap-y-1.5 items-center text-[11px]">
+                              <span className="text-gray-500">Accounts:</span>
+                              {d.accounts.map(acct => {
+                                const subs = acct.subscriberCount;
+                                const subsLabel = subs == null ? '—' : subs >= 1_000_000 ? (subs/1_000_000).toFixed(1).replace(/\.0$/, '') + 'M' : subs >= 1_000 ? (subs/1_000).toFixed(1).replace(/\.0$/, '') + 'K' : String(subs);
+                                const subsColor = subs == null ? 'text-gray-600' :
+                                  subs >= 10_000 ? 'text-green-400' :
+                                  subs >= 1_000  ? 'text-blue-400'  :
+                                  subs >= 100    ? 'text-gray-300'  : 'text-gray-500';
+                                const channelHref = acct.customUrl
+                                  ? (acct.customUrl.startsWith('@') ? `https://www.youtube.com/${acct.customUrl}` : `https://www.youtube.com/${acct.customUrl}`)
+                                  : acct.channelId ? `https://www.youtube.com/channel/${acct.channelId}` : null;
+                                return (
+                                  <span key={acct.email}
+                                    className="inline-flex items-center gap-1.5 bg-gray-900/60 border border-gray-700 rounded-md px-2 py-0.5"
+                                    title={
+                                      `${acct.email}` +
+                                      (acct.channelTitle ? `\nchannel: ${acct.channelTitle}` : '') +
+                                      (subs != null ? `\nsubs: ${subs.toLocaleString()}` : '\nsubs: not fetched (click ↻ Subs above)') +
+                                      (acct.channelViewCount != null ? `\ntotal channel views: ${acct.channelViewCount.toLocaleString()}` : '') +
+                                      (acct.videoCount != null ? `\nvideo count: ${acct.videoCount}` : '') +
+                                      `\nuploads from this device: ${acct.uploadsOnDevice}` +
+                                      (acct.fetchedAt ? `\nfetched: ${new Date(acct.fetchedAt).toLocaleString()}` : '')
+                                    }
+                                  >
+                                    <span className="text-gray-300 font-mono">{acct.email.split('@')[0]}</span>
+                                    <span className="text-gray-600">·</span>
+                                    {channelHref ? (
+                                      <a href={channelHref} target="_blank" rel="noreferrer" className={`${subsColor} hover:underline`}>
+                                        {subsLabel} subs
+                                      </a>
+                                    ) : (
+                                      <span className={subsColor}>{subsLabel} subs</span>
+                                    )}
+                                    <span className="text-gray-600">·</span>
+                                    <span className="text-gray-500">{acct.uploadsOnDevice}↑</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+
                           {/* Expanded recent-tasks table */}
                           {expanded && (
                             <div className="border-t border-gray-700/60 overflow-x-auto">
@@ -3675,6 +3761,7 @@ export default function AdminPage() {
                                     <tr>
                                       <th className="text-left px-3 py-2">Status</th>
                                       <th className="text-left px-3 py-2">Title</th>
+                                      <th className="text-left px-3 py-2">Account</th>
                                       <th className="text-left px-3 py-2">YouTube</th>
                                       <th className="text-left px-3 py-2">Views</th>
                                       <th className="text-left px-3 py-2">Submitted</th>
@@ -3711,6 +3798,9 @@ export default function AdminPage() {
                                           </td>
                                           <td className="px-3 py-2 text-gray-200 max-w-[260px] truncate" title={t.title || ''}>
                                             {t.title || <span className="text-gray-600">—</span>}
+                                          </td>
+                                          <td className="px-3 py-2 text-gray-400 font-mono whitespace-nowrap" title={t.accountEmail || ''}>
+                                            {t.accountEmail ? t.accountEmail.split('@')[0] : <span className="text-gray-600">—</span>}
                                           </td>
                                           <td className="px-3 py-2">
                                             {t.youtubeUrl ? (
