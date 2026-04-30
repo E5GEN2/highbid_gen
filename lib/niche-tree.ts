@@ -131,9 +131,13 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       umap_dims:        params.umapDims       || 50,
     }));
 
+    // 30min timeout — global L1 on the full dataset (currently ~73K
+    // videos at 6144 dims) does PCA + UMAP + HDBSCAN end-to-end. With
+    // PCA pre-reduction down to 256 dims first, the heavy parts run
+    // in 1-2 min, but we leave generous headroom.
     const { stdout, stderr } = await execFileAsync('python3', [
       path.join(SCRIPTS_DIR, 'cluster-niches.py'), tmpFile,
-    ], { timeout: 600_000, maxBuffer: 200 * 1024 * 1024 });
+    ], { timeout: 1_800_000, maxBuffer: 200 * 1024 * 1024 });
 
     try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
     if (stderr) console.log('[niche-tree] Python stderr:', stderr);
@@ -216,9 +220,18 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     console.log(`[niche-tree] global run ${runId} done: ${result.num_clusters} clusters, ${result.num_noise} noise`);
   } catch (err) {
     console.error('[niche-tree] global run error:', err);
+    // Pull a useful chunk of context: child-process stderr is the most
+    // diagnostic part; fall back to the wrapping Error.message. Slice
+    // generously so timeouts/SIGTERM/Python tracebacks survive the
+    // round-trip into the DB and the UI banner.
+    const e = err as Error & { stderr?: string; signal?: string; killed?: boolean };
+    const detail =
+      (e.signal ? `[${e.signal}${e.killed ? '/killed' : ''}] ` : '') +
+      (e.stderr || '').toString().slice(-3000) +
+      (e.message ? `\n${e.message.slice(0, 500)}` : '');
     await pool.query(
       `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
-      [(err as Error).message?.slice(0, 500) || 'unknown', runId],
+      [detail.slice(0, 4000) || 'unknown', runId],
     ).catch(() => {});
   }
 }

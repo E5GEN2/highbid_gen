@@ -152,9 +152,26 @@ def main():
         min_samples = max(5, min(min_cluster_size, 15))
     sys.stderr.write(f"[cluster] min_cluster_size={min_cluster_size}, min_samples={min_samples}\n")
 
+    # --- Optional PCA pre-reduction for large/high-dim inputs ---
+    # UMAP on 70K+ points × 6144 dims (combined source on the full
+    # global dataset) takes >10min and times out. PCA from 6144 → 256
+    # is ~10s and the UMAP step that follows finishes in seconds.
+    # Threshold chosen to skip pre-reduction on the small per-keyword
+    # runs the per-keyword pipeline still uses (lib/clustering.ts).
+    if dim > 512 and n > 5000:
+        from sklearn.decomposition import PCA
+        pca_dims = min(256, dim - 1, n - 1)
+        sys.stderr.write(f"[cluster] PCA pre-reduction {dim}D -> {pca_dims}D (n={n}, dim={dim})\n")
+        pca = PCA(n_components=pca_dims, random_state=42)
+        X = pca.fit_transform(X).astype(np.float32)
+        dim = X.shape[1]
+        sys.stderr.write(f"[cluster] After PCA: X shape=({n},{dim})\n")
+
     # --- UMAP to umap_dims for clustering ---
     from umap import UMAP
     n_neighbors = config.get('n_neighbors', 5)
+    # When pre-reduced via PCA the input is already euclidean; otherwise
+    # the original embeddings come from cosine-similar spaces.
     reducer_cluster = UMAP(
         n_components=umap_dims,
         n_neighbors=n_neighbors,
