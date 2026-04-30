@@ -363,9 +363,12 @@ export async function tickVizardUploads(): Promise<{
       const r = await fetchTaskById(row.xgodo_upload_id, row.xgodo_job_task_id);
 
       if (r.status === 'queued') {
-        // Still in xgodo's queue, no worker assignment yet.
+        // Still in xgodo's queue, no worker assignment yet. Clear any
+        // stale transient error from a previous tick (e.g. an xgodo
+        // 5xx outage) — if we got a successful "still queued" answer
+        // now, the row isn't actually broken.
         await pool.query(
-          `UPDATE vizard_clips SET xgodo_last_polled_at = NOW() WHERE id = $1`,
+          `UPDATE vizard_clips SET xgodo_last_polled_at = NOW(), xgodo_error = NULL WHERE id = $1`,
           [row.id]
         );
         continue;
@@ -458,10 +461,24 @@ export async function tickVizardUploads(): Promise<{
     } catch (err) {
       errors++;
       const msg = err instanceof Error ? err.message : 'unknown';
-      await pool.query(
-        `UPDATE vizard_clips SET xgodo_last_polled_at = NOW(), xgodo_error = $1 WHERE id = $2`,
-        [msg, row.id]
-      );
+      // Distinguish transient (xgodo 5xx, network) from permanent
+      // (4xx that maps to a known state). Transient errors should NOT
+      // poison the row's xgodo_error chip — they'd then linger long
+      // after xgodo recovers, even though successful polls would
+      // succeed if we just retried. Log + bump poll timestamp only.
+      const isTransient = /xgodo poll 5\d\d/.test(msg) || /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND/i.test(msg);
+      if (isTransient) {
+        console.warn(`[vizard-upload] transient xgodo error on clip ${row.id}, will retry: ${msg.slice(0, 120)}`);
+        await pool.query(
+          `UPDATE vizard_clips SET xgodo_last_polled_at = NOW() WHERE id = $1`,
+          [row.id]
+        );
+      } else {
+        await pool.query(
+          `UPDATE vizard_clips SET xgodo_last_polled_at = NOW(), xgodo_error = $1 WHERE id = $2`,
+          [msg, row.id]
+        );
+      }
     }
   }
 
