@@ -3469,11 +3469,13 @@ export default function AdminPage() {
                                     </div>
                                   ) : <span className="text-gray-600">—</span>}
                                 </td>
-                                <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
-                                  {u.submittedAt ? new Date(u.submittedAt).toLocaleString() : '—'}
+                                <td className="px-3 py-2 text-gray-300 whitespace-nowrap"
+                                    title={u.submittedAt ? new Date(u.submittedAt).toLocaleString() : ''}>
+                                  {fmtAgo(u.submittedAt)}
                                 </td>
-                                <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
-                                  {u.finishedAt ? new Date(u.finishedAt).toLocaleString() : '—'}
+                                <td className="px-3 py-2 text-gray-300 whitespace-nowrap"
+                                    title={u.finishedAt ? new Date(u.finishedAt).toLocaleString() : ''}>
+                                  {fmtAgo(u.finishedAt)}
                                 </td>
                                 <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
                                   {fmtDur(dur)}
@@ -3654,9 +3656,9 @@ export default function AdminPage() {
 
                           {/* Sub-info row: bucket + last activity + expand */}
                           <div className="border-t border-gray-700/60 bg-gray-900/30 px-4 py-2 flex flex-wrap gap-x-4 gap-y-1 items-center text-[11px]">
-                            <div className="text-gray-400">
+                            <div className="text-gray-400" title={d.stats.lastActivityAt ? new Date(d.stats.lastActivityAt).toLocaleString() : ''}>
                               <span className="text-gray-500">Last activity: </span>
-                              {d.stats.lastActivityAt ? new Date(d.stats.lastActivityAt).toLocaleString() : '—'}
+                              {fmtAgo(d.stats.lastActivityAt)}
                             </div>
                             <div className="text-gray-400">
                               <span className="text-gray-500">Avg duration: </span>
@@ -3813,8 +3815,9 @@ export default function AdminPage() {
                                           <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
                                             {t.viewCount != null ? t.viewCount.toLocaleString() : '—'}
                                           </td>
-                                          <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
-                                            {t.submittedAt ? new Date(t.submittedAt).toLocaleString() : '—'}
+                                          <td className="px-3 py-2 text-gray-300 whitespace-nowrap"
+                                              title={t.submittedAt ? new Date(t.submittedAt).toLocaleString() : ''}>
+                                            {fmtAgo(t.submittedAt)}
                                           </td>
                                           <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
                                             {fmtDur(t.durationSec)}
@@ -4188,6 +4191,34 @@ function fmtK(n: number | null | undefined): string {
   if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+/**
+ * Compact "how long ago" formatter for ISO strings — used by the Uploads
+ * + Devices reporting tables so the operator can see freshness at a
+ * glance without parsing absolute timestamps. Returns "—" for null,
+ * "now" for <30s, then "Nm" / "Nh Mm" / "Nd Nh".
+ *
+ * Pair with `title={new Date(iso).toLocaleString()}` on the cell so the
+ * absolute timestamp is one hover away.
+ */
+function fmtAgo(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 30)    return 'now';
+  if (sec < 60)    return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60)    return `${min}m ago`;
+  const hr  = Math.floor(min / 60);
+  const mr  = min % 60;
+  if (hr < 24)     return mr === 0 ? `${hr}h ago` : `${hr}h ${mr}m ago`;
+  const day = Math.floor(hr / 24);
+  const hRem = hr % 24;
+  if (day < 7)     return hRem === 0 ? `${day}d ago` : `${day}d ${hRem}h ago`;
+  // > 7d: just show the date so the column doesn't widen unboundedly
+  return new Date(iso).toLocaleDateString();
 }
 
 interface DeployConfig {
