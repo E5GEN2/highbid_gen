@@ -32,7 +32,30 @@ def parse_embedding(raw):
 
 
 def fetch_single_source(cur, table, keyword, video_ids):
-    """Pull (video_id, title, embedding) rows from one table, optionally filtered to video_ids."""
+    """Pull (video_id, title, embedding) rows from one table, optionally filtered to video_ids.
+
+    When keyword == '__global__' (sentinel used by the niche-tree global
+    clustering), the keyword filter is dropped — we want every embedding
+    across all keywords. Vector tables can have the same video_id stored
+    under multiple keywords (the same video discovered via different
+    searches); DISTINCT ON (video_id) keeps one embedding per video. The
+    embeddings are computed from the title/thumbnail not the keyword,
+    so the duplicate rows are interchangeable.
+    """
+    if keyword == '__global__':
+        if video_ids:
+            placeholders = ','.join(['%s'] * len(video_ids))
+            cur.execute(
+                f"SELECT DISTINCT ON (video_id) video_id, title, embedding "
+                f"FROM {table} WHERE video_id IN ({placeholders})",
+                list(video_ids)
+            )
+        else:
+            cur.execute(
+                f"SELECT DISTINCT ON (video_id) video_id, title, embedding FROM {table}"
+            )
+        return cur.fetchall()
+
     if video_ids:
         placeholders = ','.join(['%s'] * len(video_ids))
         cur.execute(
