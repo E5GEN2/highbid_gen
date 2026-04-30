@@ -709,6 +709,78 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_cluster ON niche_cluster_assignments(cluster_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nca_video ON niche_cluster_assignments(video_id)`).catch(() => {});
 
+    // ─────────────────────────────────────────────────────────────────
+    // Niche TREE — hierarchical clustering across the entire dataset.
+    // Sandboxed in its own tables while we validate it before merging
+    // with the per-keyword pipeline above. Every cluster has a level
+    // (1 = global, 2 = sub-niche of an L1, etc.) and an optional
+    // parent_cluster_id pointing one level up. NULL parent = top-level.
+    //
+    // The Python clustering script (scripts/cluster-niches.py) is reused
+    // verbatim — Node passes the input video set (all embedded videos
+    // for L1, the L1 cluster's videos for L2, etc.) and writes the
+    // returned assignments here.
+    // ─────────────────────────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_tree_runs (
+        id SERIAL PRIMARY KEY,
+        kind TEXT NOT NULL,                     -- 'global' | 'subdivide'
+        parent_cluster_id INTEGER,              -- NULL for global; set for subdivide
+        level INTEGER NOT NULL DEFAULT 1,       -- depth this run produces (1, 2, 3…)
+        source TEXT NOT NULL DEFAULT 'thumbnail_v2',
+        status TEXT NOT NULL DEFAULT 'running', -- 'running' | 'done' | 'error'
+        params JSONB DEFAULT '{}',
+        num_clusters INTEGER DEFAULT 0,
+        num_noise INTEGER DEFAULT 0,
+        total_videos INTEGER DEFAULT 0,
+        error_message TEXT,
+        started_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_kind ON niche_tree_runs(kind, started_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_parent ON niche_tree_runs(parent_cluster_id)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_tree_clusters (
+        id SERIAL PRIMARY KEY,
+        run_id INTEGER NOT NULL REFERENCES niche_tree_runs(id) ON DELETE CASCADE,
+        parent_cluster_id INTEGER REFERENCES niche_tree_clusters(id) ON DELETE CASCADE,
+        level INTEGER NOT NULL,
+        cluster_index INTEGER NOT NULL,
+        auto_label TEXT,
+        ai_label TEXT,
+        label TEXT,
+        video_count INTEGER DEFAULT 0,
+        avg_score REAL,
+        avg_views BIGINT,
+        total_views BIGINT,
+        top_channels TEXT[],
+        representative_video_id INTEGER,
+        centroid_2d REAL[],
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntc_run    ON niche_tree_clusters(run_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntc_parent ON niche_tree_clusters(parent_cluster_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntc_level  ON niche_tree_clusters(level)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_tree_assignments (
+        id SERIAL PRIMARY KEY,
+        run_id INTEGER NOT NULL REFERENCES niche_tree_runs(id) ON DELETE CASCADE,
+        video_id INTEGER NOT NULL,
+        cluster_id INTEGER REFERENCES niche_tree_clusters(id) ON DELETE CASCADE,
+        cluster_index INTEGER NOT NULL,
+        x_2d REAL,
+        y_2d REAL,
+        distance_to_centroid REAL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_run     ON niche_tree_assignments(run_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_cluster ON niche_tree_assignments(cluster_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_video   ON niche_tree_assignments(video_id)`).catch(() => {});
+
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_task_log (

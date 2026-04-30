@@ -29,7 +29,81 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree'>('general');
+
+  // Niche Tree tab state — global hierarchical clustering. Sandboxed
+  // alongside the existing per-keyword clustering until validated.
+  interface TreeRun {
+    id: number; status: 'running' | 'done' | 'error';
+    source: string; numClusters: number; numNoise: number; totalVideos: number;
+    errorMessage: string | null; startedAt: string; completedAt: string | null;
+    params: Record<string, unknown>;
+  }
+  interface TreeCluster {
+    id: number; clusterIndex: number; level: number;
+    label: string | null; autoLabel: string | null; aiLabel: string | null;
+    videoCount: number; avgScore: number | null; avgViews: number | null; totalViews: number | null;
+    topChannels: string[]; representativeVideoId: number | null;
+    repTitle: string | null; repThumbnail: string | null; repUrl: string | null;
+    repViewCount: number | null; repChannelName: string | null;
+  }
+  const [treeData, setTreeData] = useState<{ run: TreeRun | null; clusters: TreeCluster[] }>({ run: null, clusters: [] });
+  const [treeLoading, setTreeLoading] = useState(false);
+  const [treeStarting, setTreeStarting] = useState(false);
+  const [treeError, setTreeError] = useState<string | null>(null);
+  // Cluster controls — sensible defaults for a global L1 run on
+  // ~thousands of videos. Bigger min_cluster_size = fewer, broader niches.
+  const [treeParams, setTreeParams] = useState({
+    source: 'thumbnail_v2' as 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined',
+    minClusterSize: 80,
+    minSamples: 10,
+    umapDims: 50,
+  });
+
+  const refetchTree = useCallback(async () => {
+    setTreeLoading(true);
+    try {
+      const r = await fetch('/api/admin/niche-tree');
+      const d = await r.json();
+      setTreeData({ run: d.run || null, clusters: d.clusters || [] });
+    } catch { /* swallow */ }
+    finally { setTreeLoading(false); }
+  }, []);
+
+  // Initial load + poll while a run is in progress
+  useEffect(() => {
+    if (adminSection !== 'tree') return;
+    refetchTree();
+  }, [adminSection, refetchTree]);
+  useEffect(() => {
+    if (adminSection !== 'tree') return;
+    if (treeData.run?.status !== 'running') return;
+    const iv = setInterval(refetchTree, 5_000);
+    return () => clearInterval(iv);
+  }, [adminSection, treeData.run?.status, refetchTree]);
+
+  const startTreeRun = async () => {
+    setTreeStarting(true);
+    setTreeError(null);
+    try {
+      const r = await fetch('/api/admin/niche-tree', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(treeParams),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        setTreeError(d.error || `HTTP ${r.status}`);
+      } else {
+        // Optimistically reflect "running" immediately
+        await refetchTree();
+      }
+    } catch (err) {
+      setTreeError(err instanceof Error ? err.message : 'unknown');
+    } finally {
+      setTreeStarting(false);
+    }
+  };
 
   // Agents tab state
   const [agentsData, setAgentsData] = useState<{
@@ -1158,6 +1232,10 @@ export default function AdminPage() {
           <button onClick={() => setAdminSection('novelty')}
             className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'novelty' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
             Novelty
+          </button>
+          <button onClick={() => setAdminSection('tree')}
+            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'tree' ? 'bg-amber-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+            Niche Tree
           </button>
         </div>
 
@@ -4176,6 +4254,209 @@ export default function AdminPage() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Niche Tree Tab — global hierarchical clustering sandbox.
+            L1 lives here; L2/drill-down comes in the next iteration.
+            Sandboxed in admin until validated, then promoted to user side. */}
+        <div style={{ display: adminSection === 'tree' ? 'block' : 'none' }}>
+          <div className="space-y-6">
+            {/* Header + run controls */}
+            <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+              <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+                <div>
+                  <h2 className="text-lg font-bold text-white mb-1">Niche Tree (global L1)</h2>
+                  <p className="text-xs text-gray-500 max-w-2xl">
+                    HDBSCAN over the entire embedded video set — produces broad parent niches.
+                    Each card uses the closest-to-centroid video as its visual identity (thumb + title)
+                    instead of a synthesized label. Results are sandboxed in <code className="text-amber-400">niche_tree_*</code> tables;
+                    user-facing pages are untouched.
+                  </p>
+                </div>
+                <button
+                  onClick={startTreeRun}
+                  disabled={treeStarting || treeData.run?.status === 'running'}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg text-sm font-medium transition whitespace-nowrap"
+                >
+                  {treeStarting ? 'Starting…' :
+                   treeData.run?.status === 'running' ? 'Running…' :
+                   'Run global clustering'}
+                </button>
+              </div>
+
+              {/* Param controls — only shown when no run is in progress */}
+              {treeData.run?.status !== 'running' && (
+                <div className="flex flex-wrap gap-3 items-end mb-4">
+                  <div>
+                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Embedding</label>
+                    <select
+                      value={treeParams.source}
+                      onChange={e => setTreeParams(p => ({ ...p, source: e.target.value as typeof treeParams.source }))}
+                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="thumbnail_v2">Thumbnail v2</option>
+                      <option value="title_v2">Title v2</option>
+                      <option value="title_v1">Title v1</option>
+                      <option value="combined">Combined (title+thumb v2)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1" title="Bigger = fewer, broader niches. 80 is a good L1 default.">
+                      min_cluster_size
+                    </label>
+                    <input type="number" min={10} max={500} value={treeParams.minClusterSize}
+                      onChange={e => setTreeParams(p => ({ ...p, minClusterSize: parseInt(e.target.value) || 80 }))}
+                      className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">min_samples</label>
+                    <input type="number" min={1} max={50} value={treeParams.minSamples}
+                      onChange={e => setTreeParams(p => ({ ...p, minSamples: parseInt(e.target.value) || 10 }))}
+                      className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">umap_dims</label>
+                    <input type="number" min={5} max={200} value={treeParams.umapDims}
+                      onChange={e => setTreeParams(p => ({ ...p, umapDims: parseInt(e.target.value) || 50 }))}
+                      className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
+                  </div>
+                </div>
+              )}
+
+              {/* Status line */}
+              {treeData.run ? (
+                <div className="text-xs text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span>
+                    Latest run:{' '}
+                    <span className={
+                      treeData.run.status === 'done'    ? 'text-green-400' :
+                      treeData.run.status === 'running' ? 'text-amber-400 animate-pulse' :
+                      'text-red-400'
+                    }>{treeData.run.status}</span>
+                  </span>
+                  {treeData.run.status === 'done' && (
+                    <>
+                      <span>·</span>
+                      <span className="text-white font-medium">{treeData.run.numClusters}</span> clusters
+                      <span>·</span>
+                      <span>{treeData.run.numNoise} noise</span>
+                      <span>·</span>
+                      <span>{treeData.run.totalVideos.toLocaleString()} videos</span>
+                    </>
+                  )}
+                  <span>·</span>
+                  <span title={new Date(treeData.run.startedAt).toLocaleString()}>started {fmtAgo(treeData.run.startedAt)}</span>
+                  {treeData.run.completedAt && (
+                    <>
+                      <span>·</span>
+                      <span title={new Date(treeData.run.completedAt).toLocaleString()}>completed {fmtAgo(treeData.run.completedAt)}</span>
+                    </>
+                  )}
+                  <span>·</span>
+                  <span className="text-gray-500">source={treeData.run.source}</span>
+                  {treeData.run.errorMessage && (
+                    <div className="w-full mt-1 text-red-400 break-all">error: {treeData.run.errorMessage}</div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500">No global run yet. Configure params and click <span className="text-amber-400">Run global clustering</span> to start.</div>
+              )}
+              {treeError && (
+                <div className="mt-2 text-xs text-red-400">{treeError}</div>
+              )}
+            </div>
+
+            {/* L1 Cluster grid */}
+            {treeData.run?.status === 'running' && treeData.clusters.length === 0 && (
+              <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 text-center">
+                <div className="w-6 h-6 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                <div className="text-sm text-amber-200">Clustering — this can take a few minutes on the full dataset…</div>
+              </div>
+            )}
+            {treeData.clusters.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {treeData.clusters.map(c => {
+                  const label = c.label || c.autoLabel || `Cluster ${c.clusterIndex}`;
+                  const score = c.avgScore != null ? Math.round(c.avgScore) : null;
+                  const scoreBg =
+                    score == null ? '' :
+                    score >= 80 ? 'bg-green-500/20 text-green-400' :
+                    score >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-red-500/20 text-red-400';
+                  return (
+                    <div key={c.id}
+                      className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden hover:border-amber-500/60 transition group"
+                    >
+                      {/* Representative thumbnail — the whole point. Show a 9:16
+                          aspect like Shorts thumbnails are; YouTube serves both
+                          shapes via the same URL. */}
+                      <div className="relative aspect-[9/16] bg-black overflow-hidden">
+                        {c.repThumbnail ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={c.repThumbnail}
+                            alt={c.repTitle || label}
+                            className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-gray-700 text-xs">no thumb</div>
+                        )}
+                        {/* Score chip top-right */}
+                        {score != null && (
+                          <span className={`absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded-md font-bold ${scoreBg}`}>
+                            ⚡ {score}
+                          </span>
+                        )}
+                        {/* Video count chip bottom-left */}
+                        <span className="absolute bottom-2 left-2 text-[10px] px-2 py-0.5 rounded-md bg-black/70 text-white font-mono">
+                          {c.videoCount} vids
+                        </span>
+                      </div>
+                      <div className="p-3">
+                        {/* Representative title — the visual identity of the niche */}
+                        <div className="text-sm font-semibold text-white line-clamp-2 mb-1" title={c.repTitle || ''}>
+                          {c.repTitle || <span className="text-gray-500 italic">(no representative)</span>}
+                        </div>
+                        {c.repChannelName && (
+                          <div className="text-[11px] text-gray-500 truncate mb-2">{c.repChannelName}</div>
+                        )}
+                        {/* Cluster stats row */}
+                        <div className="flex items-center gap-3 text-[11px] text-gray-400">
+                          {c.totalViews != null && (
+                            <span className="text-green-400">{fmtK(c.totalViews)} views</span>
+                          )}
+                          {c.topChannels.length > 0 && (
+                            <span className="text-gray-500 truncate" title={c.topChannels.join(', ')}>
+                              {c.topChannels.length} ch
+                            </span>
+                          )}
+                          {c.repUrl && (
+                            <a href={c.repUrl} target="_blank" rel="noreferrer"
+                              className="ml-auto text-pink-400 hover:text-pink-300 underline">
+                              ▶ open
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {treeData.run?.status === 'done' && treeData.clusters.length === 0 && (
+              <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 text-center text-sm text-gray-500">
+                Run completed but no clusters were produced. Try lowering <code className="text-amber-400">min_cluster_size</code> or switching embedding source.
+              </div>
+            )}
+
+            {/* Loading skeleton on first fetch */}
+            {treeLoading && !treeData.run && (
+              <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 text-center text-sm text-gray-500">
+                Loading…
+              </div>
+            )}
           </div>
         </div>
       </div>
