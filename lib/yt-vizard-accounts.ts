@@ -28,7 +28,17 @@ interface YtVideoSnippet {
 interface YtChannelItem {
   id?: string;
   snippet?: { title?: string; customUrl?: string };
-  statistics?: { subscriberCount?: string; viewCount?: string; videoCount?: string };
+  statistics?: {
+    subscriberCount?: string;
+    viewCount?: string;
+    videoCount?: string;
+    /**
+     * When true, the channel has opted to hide their subscriber count and
+     * `subscriberCount` is meaningless (often 0 or absent). We store NULL
+     * for those so the UI can render "hidden" instead of a fake 0.
+     */
+    hiddenSubscriberCount?: boolean;
+  };
 }
 
 export interface RefreshAccountsOpts {
@@ -170,9 +180,13 @@ export async function refreshVizardAccounts(
     for (const item of data.items || []) {
       const cid = item.id; if (!cid) continue;
       const emails = channelToEmails.get(cid); if (!emails) continue;
-      const subs   = parseInt(item.statistics?.subscriberCount || '0') || 0;
-      const views  = parseInt(item.statistics?.viewCount       || '0') || 0;
-      const videos = parseInt(item.statistics?.videoCount      || '0') || 0;
+      // hiddenSubscriberCount: store NULL so the UI can show "hidden"
+      // instead of a misleading 0. A real 0-sub channel still stores 0.
+      const subs   = item.statistics?.hiddenSubscriberCount === true
+        ? null
+        : (parseInt(item.statistics?.subscriberCount || '0') || 0);
+      const views  = parseInt(item.statistics?.viewCount  || '0') || 0;
+      const videos = parseInt(item.statistics?.videoCount || '0') || 0;
       const title  = item.snippet?.title     || null;
       const custom = item.snippet?.customUrl || null;
       for (const email of emails) {
