@@ -152,33 +152,23 @@ def main():
         min_samples = max(5, min(min_cluster_size, 15))
     sys.stderr.write(f"[cluster] min_cluster_size={min_cluster_size}, min_samples={min_samples}\n")
 
-    # --- Optional PCA pre-reduction for large/high-dim inputs ---
-    # UMAP on 70K+ points × 6144 dims (combined source on the full
-    # global dataset) takes >10min and times out. PCA from 6144 → 256
-    # is ~10s and the UMAP step that follows finishes in seconds.
-    # Threshold chosen to skip pre-reduction on the small per-keyword
-    # runs the per-keyword pipeline still uses (lib/clustering.ts).
-    if dim > 512 and n > 5000:
-        from sklearn.decomposition import PCA
-        pca_dims = min(256, dim - 1, n - 1)
-        sys.stderr.write(f"[cluster] PCA pre-reduction {dim}D -> {pca_dims}D (n={n}, dim={dim})\n")
-        pca = PCA(n_components=pca_dims, random_state=42)
-        X = pca.fit_transform(X).astype(np.float32)
-        dim = X.shape[1]
-        sys.stderr.write(f"[cluster] After PCA: X shape=({n},{dim})\n")
-
     # --- UMAP to umap_dims for clustering ---
+    # No PCA pre-reduction — operate directly on the full embedding so we
+    # don't risk discarding subtle low-amplitude directions that distinguish
+    # near-cluster sub-niches. Cost: significantly more wall time on
+    # high-dim sources (combined = 6144D → expect 10–30 min on 70K+ rows).
+    # We compensate with low_memory=True and (for global tree runs) by
+    # opting out of the secondary 2D-scatter UMAP pass below.
     from umap import UMAP
     n_neighbors = config.get('n_neighbors', 5)
-    # When pre-reduced via PCA the input is already euclidean; otherwise
-    # the original embeddings come from cosine-similar spaces.
     reducer_cluster = UMAP(
         n_components=umap_dims,
         n_neighbors=n_neighbors,
         metric='cosine',
         min_dist=0.0,
         random_state=42,
-        verbose=False
+        low_memory=True,         # halves peak RAM on wide inputs (>3K dims)
+        verbose=False,
     )
     X_reduced = reducer_cluster.fit_transform(X)
     sys.stderr.write(f"[cluster] UMAP {dim}D -> {umap_dims}D done\n")
@@ -196,16 +186,29 @@ def main():
     num_noise = int(np.sum(labels == -1))
     sys.stderr.write(f"[cluster] HDBSCAN: {num_clusters} clusters, {num_noise} noise\n")
 
-    # --- 2D UMAP for scatter ---
-    reducer_2d = UMAP(
-        n_components=2,
-        n_neighbors=n_neighbors,
-        metric='cosine',
-        min_dist=0.0,
-        random_state=42,
-        verbose=False
-    )
-    X_2d = reducer_2d.fit_transform(X)
+    # --- 2D UMAP for scatter (optional) ---
+    # The user-side scatter view (/api/niche-spy/clusters/scatter) needs
+    # x_2d / y_2d per assignment; per-keyword runs always compute it.
+    # Global niche-tree runs skip it via compute_2d=false to halve UMAP
+    # wall time on the full dataset — the niche tree admin tab doesn't
+    # render a scatter, and we can recompute it separately later if we
+    # promote the tree to user-side.
+    compute_2d = bool(config.get('compute_2d', True))
+    if compute_2d:
+        reducer_2d = UMAP(
+            n_components=2,
+            n_neighbors=n_neighbors,
+            metric='cosine',
+            min_dist=0.0,
+            random_state=42,
+            low_memory=True,
+            verbose=False,
+        )
+        X_2d = reducer_2d.fit_transform(X)
+        sys.stderr.write(f"[cluster] UMAP {dim}D -> 2D scatter done\n")
+    else:
+        X_2d = np.zeros((n, 2), dtype=np.float32)
+        sys.stderr.write(f"[cluster] 2D scatter skipped (compute_2d=false)\n")
 
     # --- TF-IDF per-cluster auto-labels (titles only — same regardless of source) ---
     from sklearn.feature_extraction.text import TfidfVectorizer

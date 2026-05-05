@@ -120,6 +120,9 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
 
     // Build script input. We pass keyword='__global__' as a sentinel so
     // the Python script's logging/labeling path knows it's a global run.
+    // compute_2d=false skips the secondary 2D-scatter UMAP pass — the
+    // niche tree admin tab doesn't render a scatter, and computing it
+    // doubles the UMAP wall time on the full dataset.
     const tmpFile = path.join(os.tmpdir(), `cluster-tree-${runId}.json`);
     fs.writeFileSync(tmpFile, JSON.stringify({
       db_url: vectorDbUrl,
@@ -129,15 +132,18 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       min_cluster_size: params.minClusterSize || 80,
       min_samples:      params.minSamples     || 10,
       umap_dims:        params.umapDims       || 50,
+      compute_2d:       false,
     }));
 
-    // 30min timeout — global L1 on the full dataset (currently ~73K
-    // videos at 6144 dims) does PCA + UMAP + HDBSCAN end-to-end. With
-    // PCA pre-reduction down to 256 dims first, the heavy parts run
-    // in 1-2 min, but we leave generous headroom.
+    // 90min timeout — without PCA pre-reduction we run UMAP directly on
+    // the full embedding (6144D for combined source). On 70K+ rows that
+    // realistically takes 10–30 min for the clustering UMAP. We pay this
+    // wall time deliberately — PCA was lossy on subtle sub-niche
+    // structure, and this pipeline keeps every embedding dimension
+    // through the kNN graph. Generous headroom for dataset growth.
     const { stdout, stderr } = await execFileAsync('python3', [
       path.join(SCRIPTS_DIR, 'cluster-niches.py'), tmpFile,
-    ], { timeout: 1_800_000, maxBuffer: 200 * 1024 * 1024 });
+    ], { timeout: 5_400_000, maxBuffer: 200 * 1024 * 1024 });
 
     try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
     if (stderr) console.log('[niche-tree] Python stderr:', stderr);
