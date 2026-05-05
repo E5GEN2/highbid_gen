@@ -459,6 +459,69 @@ export async function getLatestGlobalRun(): Promise<{
     [run.id],
   );
 
+  // Top 4 popular videos per cluster — single window-function query
+  // joins the assignments table and picks the highest-view video per
+  // cluster. Used to render a Nexlev-style 4-thumb strip on each card
+  // so the operator gets the niche's visual texture from multiple
+  // examples instead of guessing from one rep video.
+  const popRes = await pool.query<{
+    cluster_id: number;
+    video_id: number;
+    title: string | null;
+    thumbnail: string | null;
+    url: string | null;
+    view_count: string | null;
+    channel_name: string | null;
+    posted_at: Date | null;
+    posted_date: string | null;
+    score: number | null;
+  }>(
+    `WITH ranked AS (
+       SELECT a.cluster_id, v.id AS video_id, v.title, v.thumbnail, v.url,
+              v.view_count, v.channel_name, v.posted_at, v.posted_date, v.score,
+              ROW_NUMBER() OVER (
+                PARTITION BY a.cluster_id
+                ORDER BY v.view_count DESC NULLS LAST, v.score DESC NULLS LAST
+              ) AS rn
+         FROM niche_tree_assignments a
+         JOIN niche_spy_videos v ON v.id = a.video_id
+         WHERE a.run_id = $1 AND a.cluster_id IS NOT NULL
+     )
+     SELECT cluster_id, video_id, title, thumbnail, url, view_count,
+            channel_name, posted_at, posted_date, score
+       FROM ranked
+       WHERE rn <= 4
+       ORDER BY cluster_id, rn`,
+    [run.id],
+  );
+
+  const popularByCluster = new Map<number, Array<{
+    videoId: number;
+    title: string | null;
+    thumbnail: string | null;
+    url: string | null;
+    viewCount: number | null;
+    channelName: string | null;
+    postedAt: string | null;
+    postedDate: string | null;
+    score: number | null;
+  }>>();
+  for (const row of popRes.rows) {
+    const arr = popularByCluster.get(row.cluster_id) || [];
+    arr.push({
+      videoId:     row.video_id,
+      title:       row.title,
+      thumbnail:   row.thumbnail,
+      url:         row.url,
+      viewCount:   row.view_count !== null ? parseInt(row.view_count) : null,
+      channelName: row.channel_name,
+      postedAt:    row.posted_at?.toISOString() ?? null,
+      postedDate:  row.posted_date,
+      score:       row.score,
+    });
+    popularByCluster.set(row.cluster_id, arr);
+  }
+
   const clusters = clRes.rows.map(row => ({
     id:                   row.id,
     runId:                row.run_id,
@@ -480,6 +543,7 @@ export async function getLatestGlobalRun(): Promise<{
     repUrl:               row.rep_url,
     repViewCount:         row.rep_view_count !== null ? Number(row.rep_view_count) : null,
     repChannelName:       row.rep_channel_name,
+    popularVideos:        popularByCluster.get(row.id) || [],
   }));
 
   return { run, clusters };

@@ -50,6 +50,17 @@ export default function AdminPage() {
     params: Record<string, unknown>;
     progress?: TreeProgress | null;
   }
+  interface TreePopularVideo {
+    videoId: number;
+    title: string | null;
+    thumbnail: string | null;
+    url: string | null;
+    viewCount: number | null;
+    channelName: string | null;
+    postedAt: string | null;
+    postedDate: string | null;
+    score: number | null;
+  }
   interface TreeCluster {
     id: number; clusterIndex: number; level: number;
     label: string | null; autoLabel: string | null; aiLabel: string | null;
@@ -57,6 +68,7 @@ export default function AdminPage() {
     topChannels: string[]; representativeVideoId: number | null;
     repTitle: string | null; repThumbnail: string | null; repUrl: string | null;
     repViewCount: number | null; repChannelName: string | null;
+    popularVideos: TreePopularVideo[];
   }
   const [treeData, setTreeData] = useState<{ run: TreeRun | null; clusters: TreeCluster[] }>({ run: null, clusters: [] });
   const [treeLoading, setTreeLoading] = useState(false);
@@ -4512,107 +4524,140 @@ export default function AdminPage() {
               );
             })()}
 
-            {/* L1 grid — copied 1:1 from the user video card pattern in
-                /niche/niches/[keyword]/videos/page.tsx (lines 525–613).
-                3 cols, gap-4, aspect-video thumbnail, filled score chip,
-                hover-#333 border, two-line stat hierarchy, refresh-style
-                circular action button. */}
+            {/* L1 cluster rows — Nexlev-style. Each cluster is a
+                full-width row with: a header strip (cluster meta +
+                score), a 4-tile stats bar (avg views, channels, total
+                views, video count), and a 4-thumb "most popular videos"
+                strip beneath. Multiple thumbs convey the niche's visual
+                texture (composition, color palette, on-camera energy)
+                way better than a single rep video. */}
             {treeData.clusters.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="space-y-3">
                 {treeData.clusters.map(c => {
-                  const label = c.label || c.autoLabel || `Cluster ${c.clusterIndex}`;
+                  const label = c.label || c.autoLabel || `Cluster #${c.clusterIndex}`;
                   const score = c.avgScore != null ? Math.round(c.avgScore) : null;
-                  // Filled chip colors mirror user's video card score chip
-                  const chipBg =
-                    score == null ? 'bg-[#222] text-[#888]' :
-                    score >= 80   ? 'bg-green-500 text-white' :
-                    score >= 50   ? 'bg-yellow-500 text-black' :
-                                    'bg-red-500 text-white';
+                  const scoreColor =
+                    score == null ? 'text-[#666]' :
+                    score >= 80   ? 'text-green-400' :
+                    score >= 50   ? 'text-yellow-400' :
+                                    'text-red-400';
+                  // Pad popularVideos to 4 slots so the strip alignment
+                  // is consistent even for sparse small clusters.
+                  const slots: Array<typeof c.popularVideos[number] | null> = [...c.popularVideos];
+                  while (slots.length < 4) slots.push(null);
                   return (
                     <div key={c.id}
-                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition"
+                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl hover:border-[#333] transition overflow-hidden"
                     >
-                      {/* Thumbnail (aspect-video, like the user grid). YouTube
-                          hqdefault.jpg is 16:9 even for Shorts so this matches
-                          the user pattern exactly. */}
-                      <div className="relative aspect-video bg-[#0a0a0a]">
-                        {c.repThumbnail ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={c.repThumbnail}
-                            alt={c.repTitle || label}
-                            className="w-full h-full object-cover"
-                            loading="lazy"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-[#333]">
-                            <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
+                      {/* Header strip: cluster meta + score on the right */}
+                      <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span className="text-xs bg-amber-600/30 text-amber-300 border border-amber-600/50 rounded-full px-2 py-0.5 whitespace-nowrap">
+                              {c.videoCount.toLocaleString()} videos
+                            </span>
+                            <span className="text-xs text-[#666] font-mono">#{c.clusterIndex}</span>
+                            {c.topChannels.length > 0 && (
+                              <span className="text-xs text-[#888] truncate" title={c.topChannels.join(', ')}>
+                                · {c.topChannels.slice(0, 3).join(', ')}
+                                {c.topChannels.length > 3 && ` +${c.topChannels.length - 3}`}
+                              </span>
+                            )}
                           </div>
-                        )}
-                        {/* Score chip — filled, like the user video card */}
-                        {score != null && (
-                          <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${chipBg}`}>
-                            ⚡ {score}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="p-3">
-                        {/* Top row: video count pill + cluster index. Mirrors
-                            the keyword pill + action buttons row from the
-                            user card. */}
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs bg-amber-600/30 text-amber-300 border border-amber-600/50 rounded-full px-2 py-0.5">
-                            {c.videoCount.toLocaleString()} videos
-                          </span>
-                          <span className="text-xs text-[#666]">cluster #{c.clusterIndex}</span>
+                          <h3 className="text-sm font-medium text-white line-clamp-1" title={label}>
+                            {label}
+                          </h3>
                         </div>
-
-                        {/* Title — same weight/size as user (text-sm font-medium) */}
-                        <h3 className="text-sm font-medium text-white line-clamp-2 mb-2" title={c.repTitle || ''}>
-                          {c.repTitle || <span className="text-[#666] italic">(no representative)</span>}
-                        </h3>
-
-                        {/* Stat line 1 — text-[#888], views in green, channel after */}
-                        <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
-                          {c.totalViews != null && (
-                            <span className="text-green-400 font-medium">{fmtK(c.totalViews)} views</span>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          {score != null && (
+                            <div className="text-right">
+                              <div className={`text-lg font-bold ${scoreColor}`}>⚡ {score}</div>
+                              <div className="text-[10px] text-[#666] uppercase tracking-wider">avg score</div>
+                            </div>
                           )}
-                          {c.repChannelName && <span>· {c.repChannelName}</span>}
-                        </div>
-
-                        {/* Stat line 2 — text-[#666], cluster-only stats */}
-                        <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
-                          {c.topChannels.length > 0 && (
-                            <span title={c.topChannels.join(', ')}>📺 {c.topChannels.length} top ch</span>
-                          )}
-                          {c.avgViews != null && (
-                            <span>~{fmtK(c.avgViews)} avg</span>
-                          )}
-                        </div>
-
-                        {/* URL row + circular action button — mirrors user's
-                            refresh button slot. The arrow icon hints at
-                            "subdivide / drill into this niche" for L2. */}
-                        <div className="flex items-center justify-between gap-2">
-                          {c.repUrl ? (
-                            <a href={c.repUrl} target="_blank" rel="noreferrer"
-                              className="text-xs text-blue-400 hover:text-blue-300 truncate flex-1 min-w-0">
-                              {c.repUrl.replace(/^https?:\/\//, '')}
-                            </a>
-                          ) : <span className="flex-1" />}
                           <button
                             type="button"
                             disabled
                             title="Subdivide into sub-niches (L2 — coming next iteration)"
-                            className="w-7 h-7 rounded-full bg-black/60 hover:bg-black/80 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white/80 hover:text-white transition flex-shrink-0"
+                            className="w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white/80 hover:text-white transition flex-shrink-0"
                           >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
                             </svg>
                           </button>
+                        </div>
+                      </div>
+
+                      {/* 4-tile stats row, mirrors the Nexlev metrics bar */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 mb-3">
+                        <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
+                          <div className="text-[10px] text-[#666] uppercase tracking-wider">Avg views per video</div>
+                          <div className="text-base font-semibold text-white mt-0.5">
+                            {c.avgViews != null ? fmtK(c.avgViews) : '—'}
+                          </div>
+                        </div>
+                        <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
+                          <div className="text-[10px] text-[#666] uppercase tracking-wider">Top channels</div>
+                          <div className="text-base font-semibold text-white mt-0.5">
+                            {c.topChannels.length || '—'}
+                          </div>
+                        </div>
+                        <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
+                          <div className="text-[10px] text-[#666] uppercase tracking-wider">Total views</div>
+                          <div className="text-base font-semibold text-green-400 mt-0.5">
+                            {c.totalViews != null ? fmtK(c.totalViews) : '—'}
+                          </div>
+                        </div>
+                        <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
+                          <div className="text-[10px] text-[#666] uppercase tracking-wider">Videos</div>
+                          <div className="text-base font-semibold text-white mt-0.5">
+                            {c.videoCount.toLocaleString()}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Popular Videos strip — the headline change vs
+                          the old single-thumb card. 4 thumbs side-by-side
+                          give the niche's visual signature. */}
+                      <div className="px-4 pb-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-[11px] text-[#666] uppercase tracking-wider">Most popular videos</h4>
+                          {c.popularVideos.length > 0 && (
+                            <span className="text-[10px] text-[#666]">top {c.popularVideos.length} by views</span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {slots.map((v, i) => v ? (
+                            <a
+                              key={v.videoId}
+                              href={v.url || '#'}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="block group/thumb"
+                            >
+                              <div className="relative aspect-video bg-[#0a0a0a] rounded-md overflow-hidden border border-[#1f1f1f] group-hover/thumb:border-[#333] transition">
+                                {v.thumbnail ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-[#333] text-[10px]">no thumb</div>
+                                )}
+                              </div>
+                              <div className="mt-1.5 text-[11px] text-white line-clamp-2 leading-tight" title={v.title || ''}>
+                                {v.title || '(no title)'}
+                              </div>
+                              <div className="mt-0.5 text-[10px] text-[#666] flex items-center gap-1.5">
+                                {v.viewCount != null && (
+                                  <span className="text-green-400/90">{fmtK(v.viewCount)} views</span>
+                                )}
+                                {v.channelName && <span className="truncate">· {v.channelName}</span>}
+                              </div>
+                            </a>
+                          ) : (
+                            <div key={`empty-${i}`} className="aspect-video bg-[#0a0a0a] border border-dashed border-[#1f1f1f] rounded-md flex items-center justify-center text-[#333] text-[10px]">
+                              —
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </div>
