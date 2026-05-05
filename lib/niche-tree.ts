@@ -20,12 +20,29 @@
  */
 
 import { getPool } from './db';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
 
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
+
+// ─────────────────────────────────────────────────────────────────
+// Cancel support
+//
+// Active Python child processes are held here, keyed by the run id
+// that owns them. Concurrency policy means there's at most one entry
+// at any time, but we treat it as a map for clarity.
+//
+// `cancelledL1Runs` holds the L1 run ids the user has actively
+// cancelled. The L2 baking loop checks this set between iterations
+// and breaks out without firing the next subdivide. All DB writes
+// inside the pipeline are guarded with `WHERE status='running'` so
+// the cancel-time error state isn't overwritten by a late status
+// update racing in from the streaming code.
+// ─────────────────────────────────────────────────────────────────
+const activePyProcesses = new Map<number, ChildProcess>();
+const cancelledL1Runs = new Set<number>();
 
 /** Stages a global clustering run progresses through, in order. */
 export const TREE_STAGES = [
@@ -220,6 +237,7 @@ async function runOneClusteringPipeline(opts: {
     const py = spawn('python3', [
       path.join(SCRIPTS_DIR, 'cluster-niches.py'), tmpFile,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    activePyProcesses.set(opts.runId, py);
     const timer = setTimeout(() => py.kill('SIGTERM'), opts.pyTimeoutMs ?? 5_400_000);
 
     const stdoutChunks: Buffer[] = [];
@@ -261,6 +279,7 @@ async function runOneClusteringPipeline(opts: {
       py.on('error', reject);
     });
     clearTimeout(timer);
+    activePyProcesses.delete(opts.runId);
     try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
 
     const stdout = Buffer.concat(stdoutChunks).toString();
@@ -357,7 +376,69 @@ async function runOneClusteringPipeline(opts: {
       (e.stderr || '').toString().slice(-3000) +
       (e.message ? `\n${e.message.slice(0, 500)}` : '');
     return { ok: false, error: detail.slice(0, 4000) || 'unknown' };
+  } finally {
+    // Always release the active-process entry, even on early throws,
+    // so cancelRun can never SIGTERM a zombie reference.
+    activePyProcesses.delete(opts.runId);
   }
+}
+
+/**
+ * Cancel a global L1 run in progress. Marks the L1 row as errored
+ * with a "Cancelled by user" message, kills any active python child
+ * process, and signals the L2 baking loop (if it's running) to stop
+ * after the current iteration. All DB writes the running pipeline
+ * makes are guarded with `WHERE status='running'`, so the cancel
+ * state isn't overwritten by a late update.
+ */
+export async function cancelGlobalRun(l1RunId: number): Promise<{
+  ok: boolean; affectedRow: boolean; error?: string;
+}> {
+  const pool = await getPool();
+
+  // Flag in-memory so the L2 baking loop can break out before its
+  // next iteration spawns another subprocess.
+  cancelledL1Runs.add(l1RunId);
+
+  // Mark the L1 row cancelled. Only acts if it's still 'running' —
+  // means a no-op race is harmless if the run finished naturally
+  // between the user's click and our update.
+  const r = await pool.query(
+    `UPDATE niche_tree_runs
+       SET status = 'error',
+           error_message = 'Cancelled by user',
+           completed_at = NOW()
+       WHERE id = $1 AND status = 'running'
+       RETURNING id`,
+    [l1RunId],
+  );
+  const affectedRow = (r.rowCount ?? 0) > 0;
+
+  // Same treatment for any in-flight subdivide whose parent cluster
+  // belongs to this L1 run. Cleans up the chained-baking loop's
+  // current iteration.
+  await pool.query(
+    `UPDATE niche_tree_runs
+       SET status = 'error',
+           error_message = 'Cancelled by user',
+           completed_at = NOW()
+       WHERE kind = 'subdivide'
+         AND status = 'running'
+         AND parent_cluster_id IN (SELECT id FROM niche_tree_clusters WHERE run_id = $1)`,
+    [l1RunId],
+  ).catch(() => {});
+
+  // Kill any active python child processes. There's at most one at a
+  // time per the concurrency policy, but iterate defensively.
+  for (const [, proc] of activePyProcesses) {
+    try { proc.kill('SIGTERM'); } catch { /* ok */ }
+  }
+
+  // Drop our cancel flag a few seconds later — by then the loop has
+  // checked it and broken out, and we don't want stale entries.
+  setTimeout(() => cancelledL1Runs.delete(l1RunId), 30_000);
+
+  return { ok: true, affectedRow };
 }
 
 /**
@@ -409,12 +490,22 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     });
 
     if (l1.ok === false) {
+      // If the user cancelled the run, the L1 row is already in
+      // 'error' state with a "Cancelled by user" message. The
+      // status='running' guard makes this a no-op in that case so
+      // the cancel reason isn't overwritten.
       await pool.query(
-        `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+        `UPDATE niche_tree_runs
+           SET status='error', error_message=$1, completed_at=NOW()
+           WHERE id=$2 AND status='running'`,
         [l1.error, runId],
       );
       return;
     }
+    // If cancellation came in mid-L1, the helper exited via SIGTERM
+    // and reported ok:false above. If we somehow reached here despite
+    // a cancel, bail before starting L2 baking.
+    if (cancelledL1Runs.has(runId)) return;
 
     // ── L2 baking phase ──────────────────────────────────────────
     // After L1 done, run a sub-cluster pass for each L1 cluster with
@@ -451,6 +542,12 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     });
 
     for (const parent of eligibleParents) {
+      // Cancel check — break out before spawning the next subprocess.
+      if (cancelledL1Runs.has(runId)) {
+        console.log(`[niche-tree] L2 baking cancelled at ${l2State.completed}/${l2State.total}`);
+        break;
+      }
+
       // Pull the parent cluster's video IDs from its assignments.
       const subAssignRes = await pool.query<{ video_id: number }>(
         `SELECT video_id FROM niche_tree_assignments WHERE cluster_id = $1`,
@@ -502,13 +599,17 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       if (subResult.ok === true) {
         l2State.completed++;
         await pool.query(
-          `UPDATE niche_tree_runs SET status='done', completed_at=NOW() WHERE id=$1`,
+          `UPDATE niche_tree_runs SET status='done', completed_at=NOW()
+             WHERE id=$1 AND status='running'`,
           [subRunId],
         );
       } else {
         l2State.failed++;
+        // status='running' guard: if cancelGlobalRun already flipped
+        // this subrun to 'error: Cancelled by user', don't overwrite.
         await pool.query(
-          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW()
+             WHERE id=$2 AND status='running'`,
           [subResult.error, subRunId],
         );
         console.error(`[niche-tree] subdivide of cluster ${parent.id} failed:`, subResult.error);
@@ -524,10 +625,12 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     }
 
     // ── Mark L1 run done ────────────────────────────────────────
+    // status='running' guard so that if the loop broke out due to
+    // cancellation, the cancelled state stays intact.
     await pool.query(
       `UPDATE niche_tree_runs SET status='done', completed_at=NOW(),
          progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb
-         WHERE id=$2`,
+         WHERE id=$2 AND status='running'`,
       [JSON.stringify({
         stage: 'done',
         stageStartedAt: new Date().toISOString(),
@@ -545,8 +648,13 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       (e.signal ? `[${e.signal}${e.killed ? '/killed' : ''}] ` : '') +
       (e.stderr || '').toString().slice(-3000) +
       (e.message ? `\n${e.message.slice(0, 500)}` : '');
+    // status='running' guard so a cancellation isn't overwritten by
+    // a SIGTERM-induced error message — when the user cancels, the
+    // python process exits with SIGTERM and we land here, but the
+    // L1 row is already in 'error: Cancelled by user' state.
     await pool.query(
-      `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+      `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW()
+         WHERE id=$2 AND status='running'`,
       [detail.slice(0, 4000) || 'unknown', runId],
     ).catch(() => {});
   }

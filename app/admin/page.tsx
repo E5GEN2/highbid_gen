@@ -4419,15 +4419,46 @@ export default function AdminPage() {
                   Sandboxed in <code className="text-amber-400 text-[11px]">niche_tree_*</code> tables; user-facing pages untouched.
                 </p>
               </div>
-              <button
-                onClick={startTreeRun}
-                disabled={treeStarting || treeData.run?.status === 'running'}
-                className="px-4 h-9 bg-amber-500 hover:bg-amber-400 disabled:bg-[#222] disabled:text-[#666] text-black text-xs font-semibold rounded-md whitespace-nowrap transition"
-              >
-                {treeStarting ? 'Starting…' :
-                 treeData.run?.status === 'running' ? 'Running…' :
-                 'Run global clustering'}
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={startTreeRun}
+                  disabled={treeStarting || treeData.run?.status === 'running'}
+                  className="px-4 h-9 bg-amber-500 hover:bg-amber-400 disabled:bg-[#222] disabled:text-[#666] text-black text-xs font-semibold rounded-md whitespace-nowrap transition"
+                >
+                  {treeStarting ? 'Starting…' :
+                   treeData.run?.status === 'running' ? 'Running…' :
+                   'Run global clustering'}
+                </button>
+                {/* Cancel button — only shown while a run is in flight.
+                    SIGTERMs the active python process and breaks the
+                    L2 baking loop on its next iteration. UI confirms
+                    first because cancel = lose all progress. */}
+                {treeData.run?.status === 'running' && (
+                  <button
+                    onClick={async () => {
+                      if (!confirm('Cancel this clustering run? All progress so far will be discarded and the partial run marked as errored.')) return;
+                      setTreeError(null);
+                      try {
+                        const r = await fetch('/api/admin/niche-tree/cancel', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+                        });
+                        const d = await r.json();
+                        if (!r.ok || !d.ok) {
+                          setTreeError(d.error || `HTTP ${r.status}`);
+                        } else {
+                          await refetchTree();
+                        }
+                      } catch (err) {
+                        setTreeError(err instanceof Error ? err.message : 'unknown');
+                      }
+                    }}
+                    className="px-4 h-9 bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/40 text-xs font-semibold rounded-md whitespace-nowrap transition"
+                    title="SIGTERM the python process + stop the L2 baking loop"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Param controls — quieter card in user palette */}
