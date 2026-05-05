@@ -33,7 +33,13 @@ export default function AdminPage() {
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
-  type TreeStage = 'starting' | 'fetching' | 'umap_cluster' | 'hdbscan' | 'labeling' | 'writing' | 'done';
+  type TreeStage = 'starting' | 'fetching' | 'umap_cluster' | 'hdbscan' | 'labeling' | 'writing' | 'baking_l2' | 'done';
+  interface TreeBakeL2Progress {
+    total: number; completed: number; skipped: number; failed: number;
+    currentParentId: number | null;
+    currentParentLabel: string | null;
+    currentSubrunId: number | null;
+  }
   interface TreeProgress {
     stage: TreeStage;
     startedAt: string;
@@ -42,6 +48,7 @@ export default function AdminPage() {
     recentLogs: string[];
     numClusters?: number;
     numNoise?: number;
+    l2?: TreeBakeL2Progress;
   }
   interface TreeRun {
     id: number; status: 'running' | 'done' | 'error';
@@ -69,6 +76,9 @@ export default function AdminPage() {
     repTitle: string | null; repThumbnail: string | null; repUrl: string | null;
     repViewCount: number | null; repChannelName: string | null;
     popularVideos: TreePopularVideo[];
+    childrenCount: number;
+    subdivideStatus: 'running' | 'done' | 'error' | null;
+    subdivideError: string | null;
   }
   const [treeData, setTreeData] = useState<{ run: TreeRun | null; clusters: TreeCluster[] }>({ run: null, clusters: [] });
   const [treeLoading, setTreeLoading] = useState(false);
@@ -93,17 +103,59 @@ export default function AdminPage() {
     finally { setTreeLoading(false); }
   }, []);
 
+  // ── Drill-down state ──────────────────────────────────────────
+  // When the user clicks a cluster card with children (or with a
+  // running subdivide), we navigate "into" it. The viewed cluster id
+  // pushes a pseudo-route — no URL routing for now, just state.
+  interface TreeAncestor {
+    id: number; level: number; label: string | null;
+    autoLabel: string | null; clusterIndex: number;
+  }
+  interface TreeViewedData {
+    parent: TreeCluster | null;
+    ancestors: TreeAncestor[];
+    children: TreeCluster[];
+    subdivideRun: (TreeRun & { progress?: TreeProgress | null }) | null;
+  }
+  const [treeViewedClusterId, setTreeViewedClusterId] = useState<number | null>(null);
+  const [treeViewedData, setTreeViewedData] = useState<TreeViewedData | null>(null);
+  const [treeViewedLoading, setTreeViewedLoading] = useState(false);
+
+  const refetchViewedCluster = useCallback(async (clusterId: number) => {
+    setTreeViewedLoading(true);
+    try {
+      const r = await fetch(`/api/admin/niche-tree/cluster/${clusterId}`);
+      const d = await r.json();
+      if (r.ok) setTreeViewedData(d);
+    } catch { /* swallow */ }
+    finally { setTreeViewedLoading(false); }
+  }, []);
+
   // Initial load + poll while a run is in progress
   useEffect(() => {
     if (adminSection !== 'tree') return;
-    refetchTree();
-  }, [adminSection, refetchTree]);
+    if (treeViewedClusterId == null) refetchTree();
+    else refetchViewedCluster(treeViewedClusterId);
+  }, [adminSection, treeViewedClusterId, refetchTree, refetchViewedCluster]);
+
+  // Polling — different cadences depending on what's running:
+  //   L1 grid view: poll while the global run (or its L2 baking) is active
+  //   Drill-down view: poll while THIS cluster's subdivide is active OR
+  //     while the global L2 baking is mid-flight on this parent
   useEffect(() => {
     if (adminSection !== 'tree') return;
-    if (treeData.run?.status !== 'running') return;
-    const iv = setInterval(refetchTree, 5_000);
+    if (treeViewedClusterId == null) {
+      if (treeData.run?.status !== 'running') return;
+      const iv = setInterval(refetchTree, 5_000);
+      return () => clearInterval(iv);
+    }
+    // Drill-down: keep polling while children are being baked or the
+    // active subdivide hasn't reached 'done'.
+    const subRunning = treeViewedData?.subdivideRun?.status === 'running';
+    if (!subRunning) return;
+    const iv = setInterval(() => refetchViewedCluster(treeViewedClusterId), 5_000);
     return () => clearInterval(iv);
-  }, [adminSection, treeData.run?.status, refetchTree]);
+  }, [adminSection, treeViewedClusterId, treeData.run?.status, treeViewedData?.subdivideRun?.status, refetchTree, refetchViewedCluster]);
 
   const startTreeRun = async () => {
     setTreeStarting(true);
@@ -125,6 +177,41 @@ export default function AdminPage() {
       setTreeError(err instanceof Error ? err.message : 'unknown');
     } finally {
       setTreeStarting(false);
+    }
+  };
+
+  // Manual subdivide — used when an L1 card has no children yet (e.g.
+  // baking failed or was never run for this cluster) or to re-bake.
+  const subdivideCluster = async (clusterId: number) => {
+    try {
+      const r = await fetch(`/api/admin/niche-tree/cluster/${clusterId}/subdivide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        setTreeError(d.error || `HTTP ${r.status}`);
+        return;
+      }
+      // Drill into the cluster — user will see the live progress
+      setTreeViewedClusterId(clusterId);
+    } catch (err) {
+      setTreeError(err instanceof Error ? err.message : 'unknown');
+    }
+  };
+
+  // Click on a cluster card — decides: drill into existing children,
+  // or fire a subdivide if there are none yet.
+  const onClusterCardClick = (c: TreeCluster) => {
+    if (c.childrenCount > 0 || c.subdivideStatus === 'running') {
+      setTreeViewedClusterId(c.id);
+    } else if (c.videoCount >= 50) {
+      // No children, big enough to subdivide → kick it off and drill in.
+      subdivideCluster(c.id);
+    } else {
+      // Too small — nothing to do, but still let user open it (will show empty).
+      setTreeViewedClusterId(c.id);
     }
   };
 
@@ -4439,6 +4526,7 @@ export default function AdminPage() {
                 { key: 'hdbscan',      label: 'HDBSCAN',          sub: 'density clustering + rep videos' },
                 { key: 'labeling',     label: 'Auto-labels',      sub: 'TF-IDF per cluster' },
                 { key: 'writing',      label: 'Writing',          sub: 'cards populate live below' },
+                { key: 'baking_l2',    label: 'Baking L2',         sub: 'subdivide each L1 niche' },
               ];
               const currentStage: TreeStage = prog?.stage ?? 'starting';
               const currentIdx = TREE_STAGES_UI.findIndex(s => s.key === currentStage);
@@ -4498,7 +4586,7 @@ export default function AdminPage() {
 
                   {/* Counts surfaced as soon as HDBSCAN reports them, even
                       before the writing stage starts populating the grid. */}
-                  {(prog?.numClusters != null || prog?.numNoise != null) && currentStage !== 'done' && (
+                  {(prog?.numClusters != null || prog?.numNoise != null) && currentStage !== 'done' && currentStage !== 'baking_l2' && (
                     <div className="text-xs text-[#888]">
                       {prog?.numClusters != null && (
                         <>HDBSCAN found <span className="text-white font-medium">{prog.numClusters}</span> clusters</>
@@ -4506,6 +4594,35 @@ export default function AdminPage() {
                       {prog?.numNoise != null && <span> · {prog.numNoise} noise</span>}
                       {currentStage === 'writing' && (
                         <span className="text-amber-400"> · writing to DB — cards populate below</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* L2 baking aggregate progress — shown while the chained
+                      subdivide loop runs. The L1 grid is fully populated
+                      below at this point; each card flips its L2 chip
+                      from "L2 pending" → "baking…" → "N sub-niches" as
+                      the loop walks through them. */}
+                  {currentStage === 'baking_l2' && prog?.l2 && (
+                    <div className="text-xs text-[#888] flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span>
+                        Baking L2:{' '}
+                        <span className="text-white font-medium">{prog.l2.completed}</span>
+                        <span className="text-[#666]"> / {prog.l2.total}</span>
+                        {' '}clusters subdivided
+                      </span>
+                      {prog.l2.skipped > 0 && (
+                        <><span className="text-[#444]">·</span><span>{prog.l2.skipped} too small to split</span></>
+                      )}
+                      {prog.l2.failed > 0 && (
+                        <><span className="text-[#444]">·</span><span className="text-red-400">{prog.l2.failed} failed</span></>
+                      )}
+                      {prog.l2.currentParentLabel && (
+                        <><span className="text-[#444]">·</span>
+                          <span className="text-amber-400 truncate max-w-[300px]">
+                            current: {prog.l2.currentParentLabel}
+                          </span>
+                        </>
                       )}
                     </div>
                   )}
@@ -4524,16 +4641,101 @@ export default function AdminPage() {
               );
             })()}
 
-            {/* L1 cluster rows — Nexlev-style. Each cluster is a
-                full-width row with: a header strip (cluster meta +
-                score), a 4-tile stats bar (avg views, channels, total
-                views, video count), and a 4-thumb "most popular videos"
-                strip beneath. Multiple thumbs convey the niche's visual
-                texture (composition, color palette, on-camera energy)
-                way better than a single rep video. */}
-            {treeData.clusters.length > 0 && (
+            {/* Breadcrumb — shown when drilled into a cluster */}
+            {treeViewedClusterId != null && treeViewedData?.parent && (
+              <div className="flex items-center gap-2 text-sm">
+                <button
+                  type="button"
+                  onClick={() => setTreeViewedClusterId(null)}
+                  className="text-[#888] hover:text-white transition"
+                >
+                  Niche Tree
+                </button>
+                {treeViewedData.ancestors.map(a => (
+                  <React.Fragment key={a.id}>
+                    <span className="text-[#444]">·</span>
+                    <button
+                      type="button"
+                      onClick={() => setTreeViewedClusterId(a.id)}
+                      className="text-[#888] hover:text-white transition truncate max-w-[200px]"
+                      title={a.label || a.autoLabel || `Cluster ${a.clusterIndex}`}
+                    >
+                      {a.label || a.autoLabel || `Cluster #${a.clusterIndex}`}
+                    </button>
+                  </React.Fragment>
+                ))}
+                <span className="text-[#444]">·</span>
+                <span className="text-white font-medium truncate max-w-[300px]" title={treeViewedData.parent.label || treeViewedData.parent.autoLabel || ''}>
+                  {treeViewedData.parent.label || treeViewedData.parent.autoLabel || `Cluster #${treeViewedData.parent.clusterIndex}`}
+                </span>
+                <span className="ml-auto text-xs text-[#666]">
+                  L{treeViewedData.parent.level + 1} sub-niches
+                </span>
+              </div>
+            )}
+
+            {/* In-flight subdivide notice for the viewed cluster */}
+            {treeViewedClusterId != null && treeViewedData?.subdivideRun?.status === 'running' && (
+              <div className="bg-[#141414] border border-amber-500/40 rounded-xl p-4 flex items-center gap-3">
+                <div className="w-5 h-5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                <div className="text-xs text-amber-200">
+                  Subdividing this niche…
+                  {treeViewedData.subdivideRun.progress?.stage && (
+                    <span className="text-[#888] ml-2">stage: {treeViewedData.subdivideRun.progress.stage}</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {treeViewedClusterId != null && treeViewedData?.subdivideRun?.status === 'error' && (treeViewedData.children.length === 0) && (
+              <div className="bg-[#141414] border border-red-500/40 rounded-xl p-4 text-xs">
+                <div className="text-red-400 font-medium mb-1">Subdivide failed</div>
+                {treeViewedData.subdivideRun.errorMessage && (
+                  <div className="text-[#888] break-all mb-2">{treeViewedData.subdivideRun.errorMessage.slice(0, 400)}</div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => treeViewedClusterId && subdivideCluster(treeViewedClusterId)}
+                  className="px-3 h-8 bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold rounded-md"
+                >
+                  Retry subdivide
+                </button>
+              </div>
+            )}
+
+            {treeViewedClusterId != null && treeViewedData && treeViewedData.children.length === 0
+              && treeViewedData.subdivideRun?.status !== 'running'
+              && treeViewedData.subdivideRun?.status !== 'error' && (
+              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-6 text-center text-sm text-[#888]">
+                {treeViewedData.parent && treeViewedData.parent.videoCount < 50
+                  ? `This niche has only ${treeViewedData.parent.videoCount} videos — too few to subdivide meaningfully.`
+                  : 'No sub-niches yet — click "Subdivide this niche" to bake them.'}
+                {treeViewedData.parent && treeViewedData.parent.videoCount >= 50 && (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={() => treeViewedClusterId && subdivideCluster(treeViewedClusterId)}
+                      className="px-4 h-9 bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold rounded-md"
+                    >
+                      Subdivide this niche
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Cluster rows — same layout for L1 grid and L2+ drill-down.
+                Either treeData.clusters (L1) or treeViewedData.children
+                (L2+) feeds the list. Multiple thumbs convey the niche's
+                visual texture way better than a single rep video. */}
+            {(() => {
+              const displayedClusters: TreeCluster[] = treeViewedClusterId != null
+                ? (treeViewedData?.children ?? [])
+                : treeData.clusters;
+              if (displayedClusters.length === 0) return null;
+              return (
               <div className="space-y-3">
-                {treeData.clusters.map(c => {
+                {displayedClusters.map(c => {
                   const label = c.label || c.autoLabel || `Cluster #${c.clusterIndex}`;
                   const score = c.avgScore != null ? Math.round(c.avgScore) : null;
                   const scoreColor =
@@ -4545,9 +4747,35 @@ export default function AdminPage() {
                   // is consistent even for sparse small clusters.
                   const slots: Array<typeof c.popularVideos[number] | null> = [...c.popularVideos];
                   while (slots.length < 4) slots.push(null);
+                  // L2 status chip — derives a single status string from
+                  // a few inputs: did we already have children, is the
+                  // global L2 baking phase currently working on us, or
+                  // did the latest subdivide error.
+                  const isCurrentlyBaking =
+                    treeData.run?.progress?.l2?.currentParentId === c.id;
+                  const l2Chip: { label: string; cls: string; tooltip?: string } | null = (() => {
+                    if (c.childrenCount > 0) {
+                      return { label: `${c.childrenCount} sub-niches`, cls: 'bg-green-500/15 text-green-400 border-green-500/25' };
+                    }
+                    if (isCurrentlyBaking || c.subdivideStatus === 'running') {
+                      return { label: 'baking…', cls: 'bg-amber-500/15 text-amber-400 border-amber-500/25 animate-pulse' };
+                    }
+                    if (c.subdivideStatus === 'error') {
+                      return { label: 'L2 failed', cls: 'bg-red-500/15 text-red-400 border-red-500/25', tooltip: c.subdivideError || '' };
+                    }
+                    if (c.videoCount < 50) {
+                      return { label: 'too small to split', cls: 'bg-[#1a1a1a] text-[#666] border-[#1f1f1f]' };
+                    }
+                    // Eligible but not yet baked — usually means user clicked
+                    // before global L2 baking reached this cluster, or the
+                    // cluster was added after a partial bake.
+                    return { label: 'L2 pending', cls: 'bg-[#1a1a1a] text-[#888] border-[#1f1f1f]' };
+                  })();
+
                   return (
                     <div key={c.id}
-                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl hover:border-[#333] transition"
+                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl hover:border-[#333] transition cursor-pointer"
+                      onClick={() => onClusterCardClick(c)}
                     >
                       {/* Header strip: cluster meta + score on the right */}
                       <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
@@ -4557,6 +4785,14 @@ export default function AdminPage() {
                               {c.videoCount.toLocaleString()} videos
                             </span>
                             <span className="text-xs text-[#666] font-mono">#{c.clusterIndex}</span>
+                            {l2Chip && (
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-full border whitespace-nowrap ${l2Chip.cls}`}
+                                title={l2Chip.tooltip}
+                              >
+                                {l2Chip.label}
+                              </span>
+                            )}
                             {c.topChannels.length > 0 && (
                               <span className="text-xs text-[#888] truncate" title={c.topChannels.join(', ')}>
                                 · {c.topChannels.slice(0, 3).join(', ')}
@@ -4577,12 +4813,20 @@ export default function AdminPage() {
                           )}
                           <button
                             type="button"
-                            disabled
-                            title="Subdivide into sub-niches (L2 — coming next iteration)"
-                            className="w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white/80 hover:text-white transition flex-shrink-0"
+                            onClick={(e) => { e.stopPropagation(); onClusterCardClick(c); }}
+                            title={
+                              c.childrenCount > 0
+                                ? `Drill into ${c.childrenCount} sub-niches`
+                                : c.subdivideStatus === 'running' || isCurrentlyBaking
+                                  ? 'Subdividing in progress — click to watch'
+                                  : c.videoCount < 50
+                                    ? 'Too few videos to subdivide'
+                                    : 'Subdivide into sub-niches'
+                            }
+                            className="w-8 h-8 rounded-full bg-black/60 hover:bg-amber-500/30 flex items-center justify-center text-white/80 hover:text-white transition flex-shrink-0"
                           >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
                             </svg>
                           </button>
                         </div>
@@ -4648,6 +4892,7 @@ export default function AdminPage() {
                                 href={v.url || '#'}
                                 target="_blank"
                                 rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
                                 className="block group/thumb relative transition-transform duration-200 ease-out hover:scale-[1.45] hover:z-20 hover:shadow-2xl"
                                 style={{ transformOrigin: origin }}
                               >
@@ -4681,8 +4926,9 @@ export default function AdminPage() {
                   );
                 })}
               </div>
-            )}
-            {treeData.run?.status === 'done' && treeData.clusters.length === 0 && (
+              );
+            })()}
+            {treeViewedClusterId == null && treeData.run?.status === 'done' && treeData.clusters.length === 0 && (
               <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
                 Run completed but no clusters were produced. Try lowering <code className="text-amber-400">min_cluster_size</code> or switching embedding source.
               </div>

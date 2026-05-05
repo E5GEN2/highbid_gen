@@ -45,24 +45,25 @@ export async function POST(req: NextRequest) {
   } = {};
   try { body = await req.json(); } catch { /* empty body ok */ }
 
-  // One global run at a time. If something's stuck >10min mark it errored
-  // so the next click can proceed without manual DB cleanup.
+  // One job at a time across the whole tree (global L1 OR any subdivide).
+  // The chained L1+L2 baking pipeline is stateful — letting a manual
+  // subdivide start mid-bake would race on parent_cluster_id rows.
+  // Stuck >2h means a worker died; force-fail so the next click works.
   const inflight = await pool.query(
-    `SELECT id, started_at FROM niche_tree_runs
-       WHERE kind = 'global' AND status = 'running'
-       LIMIT 1`,
+    `SELECT id, started_at, kind FROM niche_tree_runs
+       WHERE status = 'running' LIMIT 1`,
   );
   if (inflight.rows.length > 0) {
-    const ageMin = (Date.now() - new Date(inflight.rows[0].started_at).getTime()) / 60000;
-    if (ageMin < 10) {
+    const ageMin = (Date.now() - new Date(inflight.rows[0].started_at).getTime()) / 60_000;
+    if (ageMin < 120) {
       return NextResponse.json(
-        { error: 'A global clustering run is already in progress', runId: inflight.rows[0].id },
+        { error: `A ${inflight.rows[0].kind} clustering run is already in progress`, runningRunId: inflight.rows[0].id },
         { status: 409 },
       );
     }
     await pool.query(
       `UPDATE niche_tree_runs
-         SET status='error', error_message='Timed out (stuck >10min)', completed_at=NOW()
+         SET status='error', error_message='Timed out (stuck >2h)', completed_at=NOW()
          WHERE id=$1`,
       [inflight.rows[0].id],
     );
