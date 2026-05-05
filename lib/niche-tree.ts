@@ -459,30 +459,10 @@ export async function getLatestGlobalRun(): Promise<{
     [run.id],
   );
 
-  // 4 channels that REPRESENT each niche the most, with one video per
-  // channel for the thumbnail strip.
-  //
-  // The ranking signal is each channel's **average distance to the
-  // cluster centroid across all of its videos in this cluster**.
-  // A channel with 30 videos all clustered near the centroid is the
-  // niche's defining creator — far more so than a channel that
-  // produced one viral on-niche hit and otherwise sits elsewhere.
-  // Ranking by a single video's distance (or by view count) would
-  // surface those outliers; per-channel average distance picks the
-  // creators whose entire catalog is centred on this niche.
-  //
-  // Three-CTE query:
-  //   per_channel_stats — AVG(distance) + COUNT(*) per (cluster,
-  //                       channel)
-  //   top_channels      — for each cluster, rank channels by avg dist
-  //                       ASC and keep the top 4
-  //   best_video_per_channel — for each (cluster, channel) pick the
-  //                       single video closest to centroid (used as
-  //                       the thumbnail for that channel's slot)
-  //
-  // Result: 4 most-representative channels per cluster, each shown
-  // via their most-on-niche video. Clusters with < 4 channels return
-  // whatever they have; UI pads with dashed placeholders.
+  // 4 videos closest to the cluster centroid, deduped to one per
+  // channel so the strip shows 4 different creators converging on
+  // the niche. Per (cluster, channel) keep only the channel's
+  // most-central video, then per cluster take the 4 closest.
   const popRes = await pool.query<{
     cluster_id: number;
     video_id: number;
@@ -494,28 +474,8 @@ export async function getLatestGlobalRun(): Promise<{
     posted_at: Date | null;
     posted_date: string | null;
     score: number | null;
-    avg_dist: string | null;
-    channel_video_count: string | null;
   }>(
-    `WITH per_channel_stats AS (
-       SELECT a.cluster_id, v.channel_name,
-              AVG(a.distance_to_centroid)::float AS avg_dist,
-              COUNT(*)::int                       AS channel_video_count
-         FROM niche_tree_assignments a
-         JOIN niche_spy_videos v ON v.id = a.video_id
-         WHERE a.run_id = $1
-           AND a.cluster_id IS NOT NULL
-           AND v.channel_name IS NOT NULL
-         GROUP BY a.cluster_id, v.channel_name
-     ),
-     top_channels AS (
-       SELECT *, ROW_NUMBER() OVER (
-                  PARTITION BY cluster_id
-                  ORDER BY avg_dist ASC NULLS LAST
-                ) AS channel_rn
-         FROM per_channel_stats
-     ),
-     best_video_per_channel AS (
+    `WITH per_channel AS (
        SELECT a.cluster_id,
               v.id AS video_id, v.title, v.thumbnail, v.url, v.view_count,
               v.channel_name, v.posted_at, v.posted_date, v.score,
@@ -523,25 +483,27 @@ export async function getLatestGlobalRun(): Promise<{
               ROW_NUMBER() OVER (
                 PARTITION BY a.cluster_id, v.channel_name
                 ORDER BY a.distance_to_centroid ASC NULLS LAST
-              ) AS video_rn
+              ) AS channel_rn
          FROM niche_tree_assignments a
          JOIN niche_spy_videos v ON v.id = a.video_id
          WHERE a.run_id = $1
            AND a.cluster_id IS NOT NULL
            AND v.channel_name IS NOT NULL
+     ),
+     ranked AS (
+       SELECT *, ROW_NUMBER() OVER (
+                  PARTITION BY cluster_id
+                  ORDER BY distance_to_centroid ASC NULLS LAST
+                ) AS rn
+         FROM per_channel
+         WHERE channel_rn = 1
      )
-     SELECT
-       bv.cluster_id,
-       bv.video_id, bv.title, bv.thumbnail, bv.url, bv.view_count,
-       bv.channel_name, bv.posted_at, bv.posted_date, bv.score,
-       tc.avg_dist, tc.channel_video_count
-     FROM top_channels tc
-     JOIN best_video_per_channel bv
-       ON bv.cluster_id   = tc.cluster_id
-      AND bv.channel_name = tc.channel_name
-      AND bv.video_rn = 1
-     WHERE tc.channel_rn <= 4
-     ORDER BY tc.cluster_id, tc.channel_rn`,
+     SELECT cluster_id,
+            video_id, title, thumbnail, url, view_count,
+            channel_name, posted_at, posted_date, score
+       FROM ranked
+       WHERE rn <= 4
+       ORDER BY cluster_id, rn`,
     [run.id],
   );
 
@@ -555,13 +517,6 @@ export async function getLatestGlobalRun(): Promise<{
     postedAt: string | null;
     postedDate: string | null;
     score: number | null;
-    /** How many of this channel's videos live in this cluster — the
-     *  signal that lets the UI show "47 videos in this niche" so the
-     *  user can see *why* this channel was picked as representative. */
-    channelVideoCount: number | null;
-    /** Average distance to centroid for this channel's videos in the
-     *  cluster — lower = more representative. Surfaced as a tooltip. */
-    channelAvgDist: number | null;
   }>>();
   for (const row of popRes.rows) {
     const arr = popularByCluster.get(row.cluster_id) || [];
@@ -575,8 +530,6 @@ export async function getLatestGlobalRun(): Promise<{
       postedAt:    row.posted_at?.toISOString() ?? null,
       postedDate:  row.posted_date,
       score:       row.score,
-      channelVideoCount: row.channel_video_count !== null ? parseInt(row.channel_video_count) : null,
-      channelAvgDist:    row.avg_dist            !== null ? parseFloat(row.avg_dist)         : null,
     });
     popularByCluster.set(row.cluster_id, arr);
   }
