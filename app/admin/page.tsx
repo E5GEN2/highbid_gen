@@ -4541,10 +4541,10 @@ export default function AdminPage() {
                     score >= 80   ? 'text-green-400' :
                     score >= 50   ? 'text-yellow-400' :
                                     'text-red-400';
-                  // Pad popularVideos to 4 slots so the strip alignment
+                  // Pad popularVideos to 3 slots so the strip alignment
                   // is consistent even for sparse small clusters.
                   const slots: Array<typeof c.popularVideos[number] | null> = [...c.popularVideos];
-                  while (slots.length < 4) slots.push(null);
+                  while (slots.length < 3) slots.push(null);
                   return (
                     <div key={c.id}
                       className="bg-[#141414] border border-[#1f1f1f] rounded-xl hover:border-[#333] transition overflow-hidden"
@@ -4628,7 +4628,7 @@ export default function AdminPage() {
                             </span>
                           )}
                         </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                           {slots.map((v, i) => v ? (
                             <a
                               key={v.videoId}
@@ -4645,10 +4645,10 @@ export default function AdminPage() {
                                   <div className="w-full h-full flex items-center justify-center text-[#333] text-[10px]">no thumb</div>
                                 )}
                               </div>
-                              <div className="mt-1.5 text-[11px] text-white line-clamp-2 leading-tight" title={v.title || ''}>
+                              <div className="mt-2 text-xs text-white line-clamp-2 leading-snug" title={v.title || ''}>
                                 {v.title || '(no title)'}
                               </div>
-                              <div className="mt-0.5 text-[10px] text-[#666] flex items-center gap-1.5">
+                              <div className="mt-1 text-[11px] text-[#666] flex items-center gap-1.5">
                                 {v.viewCount != null && (
                                   <span className="text-green-400/90">{fmtK(v.viewCount)} views</span>
                                 )}

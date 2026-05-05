@@ -459,10 +459,10 @@ export async function getLatestGlobalRun(): Promise<{
     [run.id],
   );
 
-  // 4 videos closest to the cluster centroid, deduped to one per
-  // channel so the strip shows 4 different creators converging on
+  // 3 videos closest to the cluster centroid, deduped to one per
+  // channel so the strip shows 3 different creators converging on
   // the niche. Per (cluster, channel) keep only the channel's
-  // most-central video, then per cluster take the 4 closest.
+  // most-central video, then per cluster take the 3 closest.
   const popRes = await pool.query<{
     cluster_id: number;
     video_id: number;
@@ -502,7 +502,7 @@ export async function getLatestGlobalRun(): Promise<{
             video_id, title, thumbnail, url, view_count,
             channel_name, posted_at, posted_date, score
        FROM ranked
-       WHERE rn <= 4
+       WHERE rn <= 3
        ORDER BY cluster_id, rn`,
     [run.id],
   );
