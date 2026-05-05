@@ -60,6 +60,8 @@ export default function AdminPage() {
     postedAt: string | null;
     postedDate: string | null;
     score: number | null;
+    channelVideoCount: number | null;  // how many videos this channel has in this cluster
+    channelAvgDist: number | null;     // avg distance to centroid for this channel's videos in cluster
   }
   interface TreeCluster {
     id: number; clusterIndex: number; level: number;
@@ -4621,9 +4623,11 @@ export default function AdminPage() {
                           give the niche's visual signature. */}
                       <div className="px-4 pb-4">
                         <div className="flex items-center justify-between mb-2">
-                          <h4 className="text-[11px] text-[#666] uppercase tracking-wider">Top channels in this niche</h4>
+                          <h4 className="text-[11px] text-[#666] uppercase tracking-wider">Channels most representative of this niche</h4>
                           {c.popularVideos.length > 0 && (
-                            <span className="text-[10px] text-[#666]">{c.popularVideos.length} channels · best video each</span>
+                            <span className="text-[10px] text-[#666]" title="Channels ranked by their average distance to the cluster centroid across all their videos in this niche. Lower = more on-niche.">
+                              ranked by centroid proximity
+                            </span>
                           )}
                         </div>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -4634,6 +4638,11 @@ export default function AdminPage() {
                               target="_blank"
                               rel="noreferrer"
                               className="block group/thumb"
+                              title={
+                                (v.channelName ? `${v.channelName}\n` : '') +
+                                (v.channelVideoCount != null ? `${v.channelVideoCount} videos in this niche\n` : '') +
+                                (v.channelAvgDist   != null ? `avg centroid distance: ${v.channelAvgDist.toFixed(3)}` : '')
+                              }
                             >
                               <div className="relative aspect-video bg-[#0a0a0a] rounded-md overflow-hidden border border-[#1f1f1f] group-hover/thumb:border-[#333] transition">
                                 {v.thumbnail ? (
@@ -4642,15 +4651,20 @@ export default function AdminPage() {
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center text-[#333] text-[10px]">no thumb</div>
                                 )}
-                              </div>
-                              <div className="mt-1.5 text-[11px] text-white line-clamp-2 leading-tight" title={v.title || ''}>
-                                {v.title || '(no title)'}
-                              </div>
-                              <div className="mt-0.5 text-[10px] text-[#666] flex items-center gap-1.5">
-                                {v.viewCount != null && (
-                                  <span className="text-green-400/90">{fmtK(v.viewCount)} views</span>
+                                {/* "N in niche" chip, bottom-right of the thumb. Tells the
+                                    user this channel has N videos in the cluster — the
+                                    "why this channel was picked" signal. */}
+                                {v.channelVideoCount != null && v.channelVideoCount > 1 && (
+                                  <span className="absolute bottom-1.5 right-1.5 text-[10px] px-1.5 py-0.5 rounded-md bg-black/75 text-white font-mono">
+                                    {v.channelVideoCount} in niche
+                                  </span>
                                 )}
-                                {v.channelName && <span className="truncate">· {v.channelName}</span>}
+                              </div>
+                              <div className="mt-1.5 text-[11px] text-white truncate" title={v.channelName || ''}>
+                                {v.channelName || '(no channel)'}
+                              </div>
+                              <div className="mt-0.5 text-[10px] text-[#666] line-clamp-1" title={v.title || ''}>
+                                {v.title || '(no title)'}
                               </div>
                             </a>
                           ) : (
