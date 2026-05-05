@@ -4541,13 +4541,13 @@ export default function AdminPage() {
                     score >= 80   ? 'text-green-400' :
                     score >= 50   ? 'text-yellow-400' :
                                     'text-red-400';
-                  // Pad popularVideos to 3 slots so the strip alignment
+                  // Pad popularVideos to 4 slots so the strip alignment
                   // is consistent even for sparse small clusters.
                   const slots: Array<typeof c.popularVideos[number] | null> = [...c.popularVideos];
-                  while (slots.length < 3) slots.push(null);
+                  while (slots.length < 4) slots.push(null);
                   return (
                     <div key={c.id}
-                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl hover:border-[#333] transition overflow-hidden"
+                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl hover:border-[#333] transition"
                     >
                       {/* Header strip: cluster meta + score on the right */}
                       <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
@@ -4628,38 +4628,53 @@ export default function AdminPage() {
                             </span>
                           )}
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          {slots.map((v, i) => v ? (
-                            <a
-                              key={v.videoId}
-                              href={v.url || '#'}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="block group/thumb"
-                            >
-                              <div className="relative aspect-video bg-[#0a0a0a] rounded-md overflow-hidden border border-[#1f1f1f] group-hover/thumb:border-[#333] transition">
-                                {v.thumbnail ? (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
-                                ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-[#333] text-[10px]">no thumb</div>
-                                )}
+                        {/* 4-tile compact strip — overview density. On hover
+                            each tile scales up so the title + thumbnail
+                            become legible without sacrificing the at-a-glance
+                            grid layout. transformOrigin per index so edge
+                            tiles expand inward (1st → right, 4th → left)
+                            instead of clipping past the row's edge. The
+                            parent grid drops gap-2 in favour of a slightly
+                            looser gap-3 to make hover bumps feel less crowded. */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          {slots.map((v, i) => {
+                            const origin =
+                              i === 0 ? 'left center'  :
+                              i === 3 ? 'right center' :
+                                        'center';
+                            return v ? (
+                              <a
+                                key={v.videoId}
+                                href={v.url || '#'}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block group/thumb relative transition-transform duration-200 ease-out hover:scale-[1.45] hover:z-20 hover:shadow-2xl"
+                                style={{ transformOrigin: origin }}
+                              >
+                                <div className="relative aspect-video bg-[#0a0a0a] rounded-md overflow-hidden border border-[#1f1f1f] group-hover/thumb:border-[#444] transition">
+                                  {v.thumbnail ? (
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-[#333] text-[10px]">no thumb</div>
+                                  )}
+                                </div>
+                                <div className="mt-1.5 text-[11px] text-white line-clamp-2 leading-tight" title={v.title || ''}>
+                                  {v.title || '(no title)'}
+                                </div>
+                                <div className="mt-0.5 text-[10px] text-[#666] flex items-center gap-1.5">
+                                  {v.viewCount != null && (
+                                    <span className="text-green-400/90">{fmtK(v.viewCount)} views</span>
+                                  )}
+                                  {v.channelName && <span className="truncate">· {v.channelName}</span>}
+                                </div>
+                              </a>
+                            ) : (
+                              <div key={`empty-${i}`} className="aspect-video bg-[#0a0a0a] border border-dashed border-[#1f1f1f] rounded-md flex items-center justify-center text-[#333] text-[10px]">
+                                —
                               </div>
-                              <div className="mt-2 text-xs text-white line-clamp-2 leading-snug" title={v.title || ''}>
-                                {v.title || '(no title)'}
-                              </div>
-                              <div className="mt-1 text-[11px] text-[#666] flex items-center gap-1.5">
-                                {v.viewCount != null && (
-                                  <span className="text-green-400/90">{fmtK(v.viewCount)} views</span>
-                                )}
-                                {v.channelName && <span className="truncate">· {v.channelName}</span>}
-                              </div>
-                            </a>
-                          ) : (
-                            <div key={`empty-${i}`} className="aspect-video bg-[#0a0a0a] border border-dashed border-[#1f1f1f] rounded-md flex items-center justify-center text-[#333] text-[10px]">
-                              —
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     </div>
