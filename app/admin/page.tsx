@@ -33,11 +33,22 @@ export default function AdminPage() {
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
+  type TreeStage = 'starting' | 'fetching' | 'umap_cluster' | 'hdbscan' | 'labeling' | 'writing' | 'done';
+  interface TreeProgress {
+    stage: TreeStage;
+    startedAt: string;
+    stageStartedAt: string;
+    stagesElapsedMs: Partial<Record<TreeStage, number>>;
+    recentLogs: string[];
+    numClusters?: number;
+    numNoise?: number;
+  }
   interface TreeRun {
     id: number; status: 'running' | 'done' | 'error';
     source: string; numClusters: number; numNoise: number; totalVideos: number;
     errorMessage: string | null; startedAt: string; completedAt: string | null;
     params: Record<string, unknown>;
+    progress?: TreeProgress | null;
   }
   interface TreeCluster {
     id: number; clusterIndex: number; level: number;
@@ -4403,13 +4414,103 @@ export default function AdminPage() {
               <div className="text-xs text-red-400">{treeError}</div>
             )}
 
-            {/* In-progress placeholder (no clusters yet) */}
-            {treeData.run?.status === 'running' && treeData.clusters.length === 0 && (
-              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center">
-                <div className="w-6 h-6 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                <div className="text-sm text-amber-200">Clustering — this can take a few minutes on the full dataset…</div>
-              </div>
-            )}
+            {/* In-progress stepper — shown whenever a run is active.
+                Each stage's elapsed time persists once it completes; the
+                current stage gets a live ticker. Tail of stderr below
+                gives operator confidence that work is actually moving. */}
+            {treeData.run?.status === 'running' && (() => {
+              const prog = treeData.run.progress;
+              const TREE_STAGES_UI: Array<{ key: TreeStage; label: string; sub: string }> = [
+                { key: 'starting',     label: 'Starting',         sub: 'spawning python' },
+                { key: 'fetching',     label: 'Fetching',         sub: 'pulling embeddings + matrix' },
+                { key: 'umap_cluster', label: 'UMAP clustering',  sub: 'longest stage; raw embedding → 50D' },
+                { key: 'hdbscan',      label: 'HDBSCAN',          sub: 'density clustering + rep videos' },
+                { key: 'labeling',     label: 'Auto-labels',      sub: 'TF-IDF per cluster' },
+                { key: 'writing',      label: 'Writing',          sub: 'cards populate live below' },
+              ];
+              const currentStage: TreeStage = prog?.stage ?? 'starting';
+              const currentIdx = TREE_STAGES_UI.findIndex(s => s.key === currentStage);
+              const fmtMs = (ms?: number) => {
+                if (ms == null) return '';
+                const s = Math.round(ms / 1000);
+                if (s < 60) return `${s}s`;
+                return `${Math.floor(s / 60)}m ${s % 60}s`;
+              };
+              const stageLiveMs = prog?.stageStartedAt
+                ? Date.now() - new Date(prog.stageStartedAt).getTime()
+                : null;
+              return (
+                <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 space-y-3">
+                  {/* Stepper */}
+                  <div className="flex items-stretch gap-2 overflow-x-auto">
+                    {TREE_STAGES_UI.map((s, i) => {
+                      const done = i < currentIdx;
+                      const active = i === currentIdx;
+                      const elapsed = active
+                        ? fmtMs(stageLiveMs ?? 0)
+                        : done
+                          ? fmtMs(prog?.stagesElapsedMs?.[s.key])
+                          : '';
+                      return (
+                        <div key={s.key}
+                          className={`flex-1 min-w-[140px] rounded-lg border px-3 py-2 transition ${
+                            done   ? 'border-[#1f1f1f] bg-[#0a0a0a]' :
+                            active ? 'border-amber-500/40 bg-amber-500/5' :
+                                     'border-[#1a1a1a] bg-[#111] opacity-60'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-0.5">
+                            {done ? (
+                              <svg className="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            ) : active ? (
+                              <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <div className="w-3.5 h-3.5 rounded-full border border-[#333]" />
+                            )}
+                            <span className={`text-xs font-medium ${active ? 'text-white' : done ? 'text-[#888]' : 'text-[#666]'}`}>
+                              {s.label}
+                            </span>
+                            {elapsed && (
+                              <span className={`ml-auto text-[10px] font-mono ${active ? 'text-amber-300' : 'text-[#666]'}`}>
+                                {elapsed}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-[#666] truncate">{s.sub}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Counts surfaced as soon as HDBSCAN reports them, even
+                      before the writing stage starts populating the grid. */}
+                  {(prog?.numClusters != null || prog?.numNoise != null) && currentStage !== 'done' && (
+                    <div className="text-xs text-[#888]">
+                      {prog?.numClusters != null && (
+                        <>HDBSCAN found <span className="text-white font-medium">{prog.numClusters}</span> clusters</>
+                      )}
+                      {prog?.numNoise != null && <span> · {prog.numNoise} noise</span>}
+                      {currentStage === 'writing' && (
+                        <span className="text-amber-400"> · writing to DB — cards populate below</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Stderr tail — collapsible, helps confirm work is
+                      moving during the long UMAP stage. */}
+                  {prog?.recentLogs && prog.recentLogs.length > 0 && (
+                    <details className="text-[11px]">
+                      <summary className="text-[#666] cursor-pointer hover:text-white">Recent log output</summary>
+                      <pre className="mt-2 p-2 bg-[#0a0a0a] border border-[#1f1f1f] rounded-md text-[#888] font-mono overflow-x-auto max-h-40">
+{prog.recentLogs.join('\n')}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* L1 grid — copied 1:1 from the user video card pattern in
                 /niche/niches/[keyword]/videos/page.tsx (lines 525–613).

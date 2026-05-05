@@ -738,6 +738,11 @@ export async function initSchema(): Promise<void> {
         completed_at TIMESTAMPTZ
       )
     `);
+    // Live progress for in-flight runs — parsed from the Python script's
+    // stderr stage markers (X shape, UMAP done, HDBSCAN, etc.) as they
+    // stream in. Read by the admin UI to render a per-stage progress bar
+    // alongside the cluster grid.
+    await client.query(`ALTER TABLE niche_tree_runs ADD COLUMN IF NOT EXISTS progress JSONB DEFAULT '{}'`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_kind ON niche_tree_runs(kind, started_at DESC)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_parent ON niche_tree_runs(parent_cluster_id)`).catch(() => {});
 

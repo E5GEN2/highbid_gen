@@ -20,14 +20,48 @@
  */
 
 import { getPool } from './db';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
 
-const execFileAsync = promisify(execFile);
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
+
+/** Stages a global clustering run progresses through, in order. */
+export const TREE_STAGES = [
+  'starting',
+  'fetching',      // Python: pulling embeddings + building feature matrix
+  'umap_cluster',  // Python: UMAP NND -> umap_dims (the long one)
+  'hdbscan',       // Python: HDBSCAN
+  'labeling',      // Python: TF-IDF auto-labels
+  'writing',       // Node: inserting clusters + assignments to DB
+  'done',
+] as const;
+export type TreeStage = (typeof TREE_STAGES)[number];
+
+export interface TreeProgress {
+  stage: TreeStage;
+  startedAt: string;          // run start
+  stageStartedAt: string;     // current stage start
+  stagesElapsedMs: Partial<Record<TreeStage, number>>; // per-stage durations once finished
+  recentLogs: string[];       // last 12 lines of stderr for transparency
+  numClusters?: number;       // populated as soon as HDBSCAN reports
+  numNoise?: number;
+}
+
+/** Persist a partial progress update without overwriting unrelated fields. */
+async function writeProgress(runId: number, patch: Partial<TreeProgress> & { stage?: TreeStage }) {
+  const pool = await getPool();
+  // jsonb_set per field would be cleaner but we already hold the full
+  // object in memory in the caller, so just overwrite. Concurrent writers
+  // aren't a concern — only one streaming reader writes per run.
+  await pool.query(
+    `UPDATE niche_tree_runs
+       SET progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb
+       WHERE id = $2`,
+    [JSON.stringify(patch), runId],
+  ).catch(() => {});
+}
 
 export type TreeSource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined';
 
@@ -141,12 +175,115 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     // wall time deliberately — PCA was lossy on subtle sub-niche
     // structure, and this pipeline keeps every embedding dimension
     // through the kNN graph. Generous headroom for dataset growth.
-    const { stdout, stderr } = await execFileAsync('python3', [
-      path.join(SCRIPTS_DIR, 'cluster-niches.py'), tmpFile,
-    ], { timeout: 5_400_000, maxBuffer: 200 * 1024 * 1024 });
+    //
+    // Spawn (vs execFileAsync) gives us streaming stderr — we parse the
+    // Python script's stage markers line-by-line and write a `progress`
+    // object to niche_tree_runs so the UI can render a live stepper.
+    const startedAt = new Date().toISOString();
+    let currentStage: TreeStage = 'starting';
+    let stageStartedAt = startedAt;
+    const stagesElapsedMs: Partial<Record<TreeStage, number>> = {};
+    const recentLogs: string[] = [];
 
-    try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
-    if (stderr) console.log('[niche-tree] Python stderr:', stderr);
+    await writeProgress(runId, {
+      stage: currentStage,
+      startedAt,
+      stageStartedAt,
+      stagesElapsedMs: {},
+      recentLogs: [],
+    });
+
+    const transitionTo = async (next: TreeStage, extra?: Partial<TreeProgress>) => {
+      if (next === currentStage) return;
+      const now = new Date();
+      stagesElapsedMs[currentStage] = now.getTime() - new Date(stageStartedAt).getTime();
+      currentStage = next;
+      stageStartedAt = now.toISOString();
+      await writeProgress(runId, {
+        stage: currentStage,
+        stageStartedAt,
+        stagesElapsedMs: { ...stagesElapsedMs },
+        recentLogs: [...recentLogs],
+        ...extra,
+      });
+    };
+
+    // Map a single stderr line to the stage it implies we just ENTERED.
+    const detectStage = (line: string): TreeStage | null => {
+      // "X shape=(N,DIM)" → matrix is built, UMAP is about to start
+      if (/\[cluster\] X shape=/.test(line))                 return 'umap_cluster';
+      // "UMAP NND -> NND done" → UMAP cluster finished, HDBSCAN about to run
+      if (/\[cluster\] UMAP \d+D -> \d+D done/.test(line))   return 'hdbscan';
+      // "HDBSCAN: N clusters, M noise" → clustering done, labeling next
+      if (/\[cluster\] HDBSCAN:/.test(line))                 return 'labeling';
+      return null;
+    };
+
+    const py = spawn('python3', [
+      path.join(SCRIPTS_DIR, 'cluster-niches.py'), tmpFile,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => py.kill('SIGTERM'), 5_400_000);
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stderrBuf = '';
+
+    py.stdout.on('data', (c: Buffer) => stdoutChunks.push(c));
+    py.stderr.on('data', async (c: Buffer) => {
+      stderrChunks.push(c);
+      stderrBuf += c.toString();
+      // Process complete lines; carry partial trailing line forward
+      const lines = stderrBuf.split('\n');
+      stderrBuf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        recentLogs.push(line);
+        if (recentLogs.length > 12) recentLogs.shift();
+
+        const next = detectStage(line);
+        if (next) {
+          // First Python output after the initial fetch lands in
+          // 'umap_cluster' — we jumped past 'fetching' implicitly.
+          // Backfill its elapsed time.
+          if (currentStage === 'starting' && next !== 'fetching') {
+            stagesElapsedMs['fetching'] = Date.now() - new Date(stageStartedAt).getTime();
+            currentStage = 'fetching';
+            stageStartedAt = new Date().toISOString();
+          }
+          // Capture HDBSCAN's cluster count as soon as it lands so the
+          // UI can show "23 clusters detected, writing now…" while we
+          // wait for the DB-write phase.
+          let extra: Partial<TreeProgress> | undefined;
+          const m = /\[cluster\] HDBSCAN:\s*(\d+)\s*clusters,\s*(\d+)\s*noise/.exec(line);
+          if (m) extra = { numClusters: parseInt(m[1]), numNoise: parseInt(m[2]) };
+          await transitionTo(next, extra);
+        } else {
+          // No stage transition — just refresh the recent logs ~every
+          // 5s so the UI tail stays alive.
+          await writeProgress(runId, { recentLogs: [...recentLogs] });
+        }
+      }
+    });
+
+    // First thing the script does is open the DB and fetch — flip to
+    // 'fetching' immediately so the UI doesn't sit on 'starting' for
+    // the whole pre-X-shape window.
+    await transitionTo('fetching');
+
+    const exitCode: number = await new Promise((resolve, reject) => {
+      py.on('close', (code) => resolve(code ?? -1));
+      py.on('error', reject);
+    });
+    clearTimeout(timer);
+
+    const stdout = Buffer.concat(stdoutChunks).toString();
+    const stderr = Buffer.concat(stderrChunks).toString();
+    if (exitCode !== 0) {
+      throw Object.assign(new Error(`python exit ${exitCode}`), {
+        stderr, signal: py.signalCode, killed: py.killed,
+      });
+    }
+    if (stderr) console.log('[niche-tree] Python stderr (tail):', stderr.slice(-800));
 
     const result = JSON.parse(stdout);
     if (result.error) {
@@ -162,6 +299,14 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       `UPDATE niche_tree_runs SET num_clusters=$1, num_noise=$2 WHERE id=$3`,
       [result.num_clusters, result.num_noise, runId],
     );
+
+    // Enter the writing stage. The grid populates as each cluster is
+    // inserted because the API drops the status='done' guard for
+    // partial reads — UI polls every 5s and sees N more cards each tick.
+    await transitionTo('writing', {
+      numClusters: result.num_clusters,
+      numNoise: result.num_noise,
+    });
 
     // Insert clusters (level=1, parent=NULL for global L1).
     for (const cluster of result.clusters) {
@@ -219,9 +364,19 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       );
     }
 
+    // Final stage transition + status flip together, so the UI sees one
+    // last poll where stage='done' and status='done' arrive simultaneously.
+    stagesElapsedMs[currentStage] = Date.now() - new Date(stageStartedAt).getTime();
     await pool.query(
-      `UPDATE niche_tree_runs SET status='done', completed_at=NOW() WHERE id=$1`,
-      [runId],
+      `UPDATE niche_tree_runs SET status='done', completed_at=NOW(),
+         progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb
+         WHERE id=$2`,
+      [JSON.stringify({
+        stage: 'done',
+        stageStartedAt: new Date().toISOString(),
+        stagesElapsedMs: { ...stagesElapsedMs },
+        recentLogs: [...recentLogs],
+      }), runId],
     );
     console.log(`[niche-tree] global run ${runId} done: ${result.num_clusters} clusters, ${result.num_noise} noise`);
   } catch (err) {
@@ -246,9 +401,14 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
  * Fetch the latest global L1 run + its clusters, joined with the
  * representative video's title + thumbnail + URL. Powers the Niche Tree
  * admin tab grid.
+ *
+ * Important: clusters are returned regardless of run status. While the
+ * Node-side DB-write phase is in progress (status='running', stage='writing')
+ * the UI polls this endpoint every 5s and renders clusters as they're
+ * inserted — so the grid populates live, ~5–10 cards per poll.
  */
 export async function getLatestGlobalRun(): Promise<{
-  run: TreeRun | null;
+  run: (TreeRun & { progress?: TreeProgress | null }) | null;
   clusters: Array<TreeCluster & {
     repTitle: string | null;
     repThumbnail: string | null;
@@ -268,14 +428,16 @@ export async function getLatestGlobalRun(): Promise<{
   if (runRes.rows.length === 0) return { run: null, clusters: [] };
 
   const r = runRes.rows[0];
-  const run: TreeRun = {
+  const run = {
     id: r.id, kind: r.kind, parentClusterId: r.parent_cluster_id, level: r.level,
     source: r.source, status: r.status, params: r.params || {},
     numClusters: r.num_clusters, numNoise: r.num_noise, totalVideos: r.total_videos,
     errorMessage: r.error_message, startedAt: r.started_at, completedAt: r.completed_at,
+    progress: (r.progress && typeof r.progress === 'object') ? r.progress as TreeProgress : null,
   };
 
-  if (run.status !== 'done') return { run, clusters: [] };
+  // No early return for status — we want partial cluster reads during
+  // the Node-side DB-write phase so the grid populates live.
 
   // LEFT JOIN representative video so a cluster without a rep (shouldn't
   // happen but defensive) still shows up with nulls.
