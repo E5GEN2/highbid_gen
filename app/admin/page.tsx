@@ -139,14 +139,16 @@ export default function AdminPage() {
   }, [adminSection, treeViewedClusterId, refetchTree, refetchViewedCluster]);
 
   // Polling — different cadences depending on what's running:
-  //   L1 grid view: poll while the global run (or its L2 baking) is active
+  //   L1 grid view: 5s while a run is active, 30s otherwise (so a
+  //     stale 'error' status line auto-heals if the run actually
+  //     became 'running' via Resume L2 or a sibling tab)
   //   Drill-down view: poll while THIS cluster's subdivide is active OR
   //     while the global L2 baking is mid-flight on this parent
   useEffect(() => {
     if (adminSection !== 'tree') return;
     if (treeViewedClusterId == null) {
-      if (treeData.run?.status !== 'running') return;
-      const iv = setInterval(refetchTree, 5_000);
+      const fast = treeData.run?.status === 'running';
+      const iv = setInterval(refetchTree, fast ? 5_000 : 30_000);
       return () => clearInterval(iv);
     }
     // Drill-down: keep polling while children are being baked or the
@@ -169,10 +171,10 @@ export default function AdminPage() {
       const d = await r.json();
       if (!r.ok || !d.ok) {
         setTreeError(d.error || `HTTP ${r.status}`);
-      } else {
-        // Optimistically reflect "running" immediately
-        await refetchTree();
       }
+      // Always refetch so a 409 ("already running") shows the live
+      // run instead of leaving the user on stale error data.
+      await refetchTree();
     } catch (err) {
       setTreeError(err instanceof Error ? err.message : 'unknown');
     } finally {
@@ -4444,9 +4446,11 @@ export default function AdminPage() {
                         const d = await r.json();
                         if (!r.ok || !d.ok) {
                           setTreeError(d.error || `HTTP ${r.status}`);
-                        } else {
-                          await refetchTree();
                         }
+                        // Always refetch — on 409 ("already running") the
+                        // status line was stale and not refreshing it
+                        // leaves the user staring at the old error.
+                        await refetchTree();
                       } catch (err) {
                         setTreeError(err instanceof Error ? err.message : 'unknown');
                       }
