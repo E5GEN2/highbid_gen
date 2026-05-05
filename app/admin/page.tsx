@@ -131,6 +131,76 @@ export default function AdminPage() {
     finally { setTreeViewedLoading(false); }
   }, []);
 
+  // ── Cluster videos grid state ─────────────────────────────────
+  // When the user clicks the "videos" icon on a cluster card we load
+  // the per-cluster video list and switch the right pane to grid mode.
+  // treeVideosClusterId being non-null is the on/off signal — closing
+  // it just resets back to the cluster grid (or whichever drill-down
+  // level was active before, since treeViewedClusterId is preserved).
+  type TreeVideoSort = 'centroid' | 'score' | 'views' | 'date' | 'oldest' | 'likes';
+  interface TreeVideoRow {
+    videoId: number; url: string | null; title: string | null;
+    thumbnail: string | null; channelName: string | null;
+    viewCount: number | null; likeCount: number | null; commentCount: number | null;
+    subscriberCount: number | null; channelCreatedAt: string | null;
+    postedAt: string | null; postedDate: string | null;
+    score: number | null; topComment: string | null; keyword: string | null;
+    distanceToCentroid: number | null;
+  }
+  interface TreeVideosData {
+    parent: TreeCluster | null;
+    ancestors: TreeAncestor[];
+    videos: TreeVideoRow[];
+    total: number;
+  }
+  const [treeVideosClusterId, setTreeVideosClusterId] = useState<number | null>(null);
+  const [treeVideosData, setTreeVideosData] = useState<TreeVideosData | null>(null);
+  const [treeVideosLoading, setTreeVideosLoading] = useState(false);
+  const [treeVideosOffset, setTreeVideosOffset] = useState(0);
+  const [treeVideosSort, setTreeVideosSort] = useState<TreeVideoSort>('centroid');
+
+  const fetchClusterVideos = useCallback(async (clusterId: number, offset: number, sort: TreeVideoSort) => {
+    setTreeVideosLoading(true);
+    try {
+      const params = new URLSearchParams({ sort, limit: '60', offset: String(offset) });
+      const r = await fetch(`/api/admin/niche-tree/cluster/${clusterId}/videos?${params}`);
+      const d = await r.json();
+      if (r.ok) {
+        if (offset === 0) {
+          setTreeVideosData(d);
+          setTreeVideosOffset(d.videos?.length ?? 0);
+        } else {
+          // Append: reuse the existing parent/ancestors, only extend videos.
+          setTreeVideosData(prev => prev
+            ? { ...prev, videos: [...prev.videos, ...(d.videos ?? [])], total: d.total ?? prev.total }
+            : d);
+          setTreeVideosOffset(prev => prev + (d.videos?.length ?? 0));
+        }
+      }
+    } catch { /* swallow */ }
+    finally { setTreeVideosLoading(false); }
+  }, []);
+
+  const openClusterVideos = useCallback((clusterId: number) => {
+    setTreeVideosClusterId(clusterId);
+    setTreeVideosOffset(0);
+    setTreeVideosData(null);
+    fetchClusterVideos(clusterId, 0, treeVideosSort);
+  }, [fetchClusterVideos, treeVideosSort]);
+
+  const closeClusterVideos = useCallback(() => {
+    setTreeVideosClusterId(null);
+    setTreeVideosData(null);
+    setTreeVideosOffset(0);
+  }, []);
+
+  // Refetch from offset 0 when sort changes mid-view.
+  useEffect(() => {
+    if (treeVideosClusterId == null) return;
+    fetchClusterVideos(treeVideosClusterId, 0, treeVideosSort);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [treeVideosSort]);
+
   // Initial load + poll while a run is in progress
   useEffect(() => {
     if (adminSection !== 'tree') return;
@@ -4704,8 +4774,207 @@ export default function AdminPage() {
               );
             })()}
 
+            {/* Per-cluster video grid view — opens when the user clicks
+                the "view videos" button on any L1/L2+ cluster card. Hides
+                the cluster grid entirely while open; back chevron returns
+                to whichever cluster level was active before. */}
+            {treeVideosClusterId != null && (() => {
+              const vd = treeVideosData;
+              const parent = vd?.parent;
+              const ancestors = vd?.ancestors ?? [];
+              const total = vd?.total ?? 0;
+              const videos = vd?.videos ?? [];
+              const parentLabel = parent
+                ? (parent.label || parent.autoLabel || `Cluster #${parent.clusterIndex}`)
+                : 'Loading…';
+              const sortOptions: Array<{ value: TreeVideoSort; label: string }> = [
+                { value: 'centroid', label: 'Most representative' },
+                { value: 'score',    label: 'Score' },
+                { value: 'views',    label: 'Views' },
+                { value: 'date',     label: 'Newest' },
+                { value: 'oldest',   label: 'Oldest' },
+                { value: 'likes',    label: 'Likes' },
+              ];
+
+              return (
+                <div className="space-y-3">
+                  {/* Breadcrumb + back chevron + total count */}
+                  <div className="flex items-center gap-2 text-sm">
+                    <button
+                      type="button"
+                      onClick={closeClusterVideos}
+                      className="w-7 h-7 rounded-full bg-black/60 hover:bg-white/10 flex items-center justify-center text-white/80 hover:text-white transition flex-shrink-0"
+                      title="Back"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { closeClusterVideos(); setTreeViewedClusterId(null); }}
+                      className="text-[#888] hover:text-white transition"
+                    >
+                      Niche Tree
+                    </button>
+                    {ancestors.map(a => (
+                      <React.Fragment key={a.id}>
+                        <span className="text-[#444]">·</span>
+                        <button
+                          type="button"
+                          onClick={() => { closeClusterVideos(); setTreeViewedClusterId(a.id); }}
+                          className="text-[#888] hover:text-white transition truncate max-w-[200px]"
+                          title={a.label || a.autoLabel || `Cluster ${a.clusterIndex}`}
+                        >
+                          {a.label || a.autoLabel || `Cluster #${a.clusterIndex}`}
+                        </button>
+                      </React.Fragment>
+                    ))}
+                    <span className="text-[#444]">·</span>
+                    <span className="text-white font-medium truncate max-w-[300px]" title={parentLabel}>
+                      {parentLabel}
+                    </span>
+                    <span className="text-[10px] bg-blue-500/15 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full">videos</span>
+                    <span className="ml-auto text-xs text-[#666]">{total.toLocaleString()} total</span>
+                  </div>
+
+                  {/* Sort pills — same options as user-side videos page,
+                      with `centroid` added (and made the default) since
+                      the admin view sorts by representativeness first. */}
+                  <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 flex items-center gap-2 flex-wrap">
+                    {sortOptions.map(opt => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setTreeVideosSort(opt.value)}
+                        className={`px-3 py-1 rounded-full text-xs transition ${
+                          treeVideosSort === opt.value
+                            ? 'bg-white text-black font-medium'
+                            : 'text-[#888] border border-[#333] hover:border-[#555]'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                    <span className="ml-auto text-xs text-[#666]">
+                      {videos.length}/{total}
+                    </span>
+                  </div>
+
+                  {/* Video grid — 3 columns on lg+, mirrors the user-side
+                      niche videos card layout (thumbnail + score badge,
+                      title, views/channel/time row, likes/comments/subs
+                      meta, optional top comment, URL footer). */}
+                  {treeVideosLoading && videos.length === 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {Array.from({ length: 9 }).map((_, i) => (
+                        <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden animate-pulse">
+                          <div className="aspect-video bg-[#1a1a1a]" />
+                          <div className="p-3 space-y-2">
+                            <div className="h-4 w-3/4 bg-[#1f1f1f] rounded" />
+                            <div className="h-3 w-1/2 bg-[#1f1f1f] rounded" />
+                            <div className="h-3 w-2/3 bg-[#1f1f1f] rounded" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : videos.length === 0 ? (
+                    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
+                      No videos in this cluster.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {videos.map(v => {
+                          const score = v.score != null ? Math.round(v.score) : null;
+                          const scoreBadge =
+                            score == null ? null :
+                            score >= 80   ? 'bg-green-500 text-white' :
+                            score >= 50   ? 'bg-yellow-500 text-black' :
+                                            'bg-red-500 text-white';
+                          return (
+                            <div key={v.videoId} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition">
+                              <div className="relative aspect-video bg-[#0a0a0a]">
+                                {v.thumbnail ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-[#333] text-xs">no thumb</div>
+                                )}
+                                {scoreBadge && (
+                                  <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${scoreBadge}`}>
+                                    ⚡ {score}
+                                  </div>
+                                )}
+                                {v.distanceToCentroid != null && (
+                                  <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-[10px] font-mono bg-black/60 text-white/80 border border-white/10"
+                                       title="Distance to cluster centroid (lower = more representative)">
+                                    d={v.distanceToCentroid.toFixed(2)}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="p-3">
+                                {v.keyword && (
+                                  <div className="mb-2">
+                                    <span className="text-[10px] bg-purple-600/30 text-purple-300 border border-purple-600/50 rounded-full px-2 py-0.5">
+                                      {v.keyword}
+                                    </span>
+                                  </div>
+                                )}
+                                <h3 className="text-sm font-medium text-white line-clamp-2 mb-2" title={v.title || ''}>
+                                  {v.title || '(no title)'}
+                                </h3>
+                                <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5 flex-wrap">
+                                  {v.viewCount != null && (
+                                    <span className="text-green-400 font-medium">{fmtK(v.viewCount)} views</span>
+                                  )}
+                                  {v.channelName && <span className="truncate">· {v.channelName}</span>}
+                                  {(v.postedAt || v.postedDate) && (
+                                    <span>· {v.postedAt ? fmtAgo(v.postedAt) : v.postedDate}</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 text-xs text-[#666] mb-2 flex-wrap">
+                                  {v.likeCount != null && v.likeCount > 0    && <span>👍 {fmtK(v.likeCount)}</span>}
+                                  {v.commentCount != null && v.commentCount > 0 && <span>💬 {fmtK(v.commentCount)}</span>}
+                                  {v.subscriberCount != null && v.subscriberCount > 0 && <span>👥 {fmtK(v.subscriberCount)} subs</span>}
+                                </div>
+                                {v.topComment && (
+                                  <p className="text-xs text-[#666] italic line-clamp-2 border-l-2 border-[#333] pl-2 mb-2">
+                                    &ldquo;{v.topComment}&rdquo;
+                                  </p>
+                                )}
+                                {v.url && (
+                                  <a href={v.url} target="_blank" rel="noreferrer"
+                                     className="text-xs text-blue-400 hover:text-blue-300 truncate block">
+                                    {v.url}
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Load more */}
+                      {videos.length < total && (
+                        <div className="text-center">
+                          <button
+                            type="button"
+                            onClick={() => treeVideosClusterId && fetchClusterVideos(treeVideosClusterId, treeVideosOffset, treeVideosSort)}
+                            disabled={treeVideosLoading}
+                            className="px-6 py-2 bg-white/10 hover:bg-white/15 disabled:opacity-50 text-white rounded-xl text-sm transition"
+                          >
+                            {treeVideosLoading ? 'Loading…' : `Load more (${videos.length}/${total})`}
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Breadcrumb — shown when drilled into a cluster */}
-            {treeViewedClusterId != null && treeViewedData?.parent && (
+            {treeVideosClusterId == null && treeViewedClusterId != null && treeViewedData?.parent && (
               <div className="flex items-center gap-2 text-sm">
                 <button
                   type="button"
@@ -4738,7 +5007,7 @@ export default function AdminPage() {
             )}
 
             {/* In-flight subdivide notice for the viewed cluster */}
-            {treeViewedClusterId != null && treeViewedData?.subdivideRun?.status === 'running' && (
+            {treeVideosClusterId == null && treeViewedClusterId != null && treeViewedData?.subdivideRun?.status === 'running' && (
               <div className="bg-[#141414] border border-amber-500/40 rounded-xl p-4 flex items-center gap-3">
                 <div className="w-5 h-5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
                 <div className="text-xs text-amber-200">
@@ -4750,7 +5019,7 @@ export default function AdminPage() {
               </div>
             )}
 
-            {treeViewedClusterId != null && treeViewedData?.subdivideRun?.status === 'error' && (treeViewedData.children.length === 0) && (
+            {treeVideosClusterId == null && treeViewedClusterId != null && treeViewedData?.subdivideRun?.status === 'error' && (treeViewedData.children.length === 0) && (
               <div className="bg-[#141414] border border-red-500/40 rounded-xl p-4 text-xs">
                 <div className="text-red-400 font-medium mb-1">Subdivide failed</div>
                 {treeViewedData.subdivideRun.errorMessage && (
@@ -4766,7 +5035,7 @@ export default function AdminPage() {
               </div>
             )}
 
-            {treeViewedClusterId != null && treeViewedData && treeViewedData.children.length === 0
+            {treeVideosClusterId == null && treeViewedClusterId != null && treeViewedData && treeViewedData.children.length === 0
               && treeViewedData.subdivideRun?.status !== 'running'
               && treeViewedData.subdivideRun?.status !== 'error' && (
               <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-6 text-center text-sm text-[#888]">
@@ -4792,6 +5061,9 @@ export default function AdminPage() {
                 (L2+) feeds the list. Multiple thumbs convey the niche's
                 visual texture way better than a single rep video. */}
             {(() => {
+              // Hide the cluster grid entirely when the per-cluster video
+              // grid view is open — the videos block above takes over.
+              if (treeVideosClusterId != null) return null;
               const displayedClusters: TreeCluster[] = treeViewedClusterId != null
                 ? (treeViewedData?.children ?? [])
                 : treeData.clusters;
@@ -4874,6 +5146,21 @@ export default function AdminPage() {
                               <div className="text-[10px] text-[#666] uppercase tracking-wider">avg score</div>
                             </div>
                           )}
+                          {/* View videos — opens the per-cluster paginated
+                              video grid. Separate from the drill-arrow so
+                              the user can pick: "see sub-niches" vs "see
+                              every video in this niche". */}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openClusterVideos(c.id); }}
+                            title={`View all ${c.videoCount.toLocaleString()} videos`}
+                            className="w-8 h-8 rounded-full bg-black/60 hover:bg-blue-500/30 flex items-center justify-center text-white/80 hover:text-white transition flex-shrink-0"
+                          >
+                            {/* Grid icon — matches the "video grid" intent */}
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                            </svg>
+                          </button>
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); onClusterCardClick(c); }}
@@ -4991,7 +5278,7 @@ export default function AdminPage() {
               </div>
               );
             })()}
-            {treeViewedClusterId == null && treeData.run?.status === 'done' && treeData.clusters.length === 0 && (
+            {treeVideosClusterId == null && treeViewedClusterId == null && treeData.run?.status === 'done' && treeData.clusters.length === 0 && (
               <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
                 Run completed but no clusters were produced. Try lowering <code className="text-amber-400">min_cluster_size</code> or switching embedding source.
               </div>

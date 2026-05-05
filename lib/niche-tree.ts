@@ -1388,3 +1388,177 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
     subdivideRun,
   };
 }
+
+
+// ──────────────────────────────────────────────────────────────────────
+// Cluster videos — paginated grid of every video assigned to one
+// cluster. Mirrors the user-side /api/niche-spy/clusters/:id/videos
+// shape so the admin tree drill-down can reuse the same card layout.
+// Distance-to-centroid sort is the default because it surfaces the
+// most representative samples first (same logic the 4-thumb strip uses).
+// ──────────────────────────────────────────────────────────────────────
+
+export type ClusterVideoSort = 'centroid' | 'score' | 'views' | 'date' | 'oldest' | 'likes';
+
+export interface ClusterVideoRow {
+  videoId: number;
+  url: string | null;
+  title: string | null;
+  thumbnail: string | null;
+  channelName: string | null;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  subscriberCount: number | null;
+  channelCreatedAt: string | null;
+  postedAt: string | null;
+  postedDate: string | null;
+  score: number | null;
+  topComment: string | null;
+  keyword: string | null;
+  distanceToCentroid: number | null;
+}
+
+export interface ClusterVideosResult {
+  parent: TreeClusterWithRep | null;
+  ancestors: Array<{ id: number; level: number; label: string | null; autoLabel: string | null; clusterIndex: number }>;
+  videos: ClusterVideoRow[];
+  total: number;
+}
+
+export async function getClusterVideos(opts: {
+  clusterId: number;
+  sort?: ClusterVideoSort;
+  limit?: number;
+  offset?: number;
+}): Promise<ClusterVideosResult> {
+  const pool = await getPool();
+  const sort = opts.sort ?? 'centroid';
+  const limit = Math.min(Math.max(opts.limit ?? 60, 1), 200);
+  const offset = Math.max(opts.offset ?? 0, 0);
+
+  // Parent + ancestor chain — same shape getClusterChildren returns so
+  // the UI can render a consistent breadcrumb header for both views.
+  const parentRow = await pool.query(
+    `SELECT
+       c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
+       c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
+       c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
+       c.centroid_2d,
+       v.title AS rep_title, v.thumbnail AS rep_thumbnail, v.url AS rep_url,
+       v.view_count AS rep_view_count, v.channel_name AS rep_channel_name
+     FROM niche_tree_clusters c
+     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id
+     WHERE c.id = $1`,
+    [opts.clusterId],
+  );
+  if (parentRow.rows.length === 0) {
+    return { parent: null, ancestors: [], videos: [], total: 0 };
+  }
+  const pr = parentRow.rows[0];
+
+  const ancestorsRes = await pool.query(
+    `WITH RECURSIVE walk AS (
+       SELECT id, parent_cluster_id, level, label, auto_label, cluster_index
+         FROM niche_tree_clusters WHERE id = $1
+       UNION ALL
+       SELECT c.id, c.parent_cluster_id, c.level, c.label, c.auto_label, c.cluster_index
+         FROM niche_tree_clusters c
+         JOIN walk w ON w.parent_cluster_id = c.id
+     )
+     SELECT id, level, label, auto_label, cluster_index FROM walk
+       WHERE id != $1 ORDER BY level ASC`,
+    [opts.clusterId],
+  );
+
+  // Total count from assignments — single source of truth (the cluster
+  // row's video_count is denormalized at insert time and could drift if
+  // a backfill runs).
+  const countRes = await pool.query<{ cnt: string }>(
+    `SELECT COUNT(*)::text AS cnt FROM niche_tree_assignments WHERE cluster_id = $1`,
+    [opts.clusterId],
+  );
+  const total = parseInt(countRes.rows[0]?.cnt ?? '0') || 0;
+
+  // Sort whitelist — keys must map to safe ORDER BY fragments since
+  // they're concatenated. NEVER let untrusted strings into ORDER BY.
+  const orderMap: Record<ClusterVideoSort, string> = {
+    centroid: 'a.distance_to_centroid ASC NULLS LAST',
+    score:    'v.score DESC NULLS LAST',
+    views:    'v.view_count DESC NULLS LAST',
+    date:     'v.posted_at DESC NULLS LAST',
+    oldest:   'v.posted_at ASC NULLS LAST',
+    likes:    'v.like_count DESC NULLS LAST',
+  };
+  const orderBy = orderMap[sort] ?? orderMap.centroid;
+
+  const vidsRes = await pool.query<{
+    video_id: number; url: string | null; title: string | null; thumbnail: string | null;
+    channel_name: string | null; view_count: string | null; like_count: string | null;
+    comment_count: string | null; subscriber_count: string | null;
+    channel_created_at: Date | null; posted_at: Date | null; posted_date: string | null;
+    score: number | null; top_comment: string | null; keyword: string | null;
+    distance_to_centroid: number | null;
+  }>(
+    `SELECT
+       v.id AS video_id, v.url, v.title, v.thumbnail, v.channel_name,
+       v.view_count, v.like_count, v.comment_count, v.subscriber_count,
+       v.channel_created_at, v.posted_at, v.posted_date, v.score,
+       v.top_comment, v.keyword,
+       a.distance_to_centroid
+     FROM niche_tree_assignments a
+     JOIN niche_spy_videos v ON v.id = a.video_id
+     WHERE a.cluster_id = $1
+     ORDER BY ${orderBy}
+     LIMIT $2 OFFSET $3`,
+    [opts.clusterId, limit, offset],
+  );
+
+  const videos: ClusterVideoRow[] = vidsRes.rows.map(r => ({
+    videoId: r.video_id,
+    url: r.url,
+    title: r.title,
+    thumbnail: r.thumbnail,
+    channelName: r.channel_name,
+    viewCount:        r.view_count        != null ? parseInt(r.view_count)        : null,
+    likeCount:        r.like_count        != null ? parseInt(r.like_count)        : null,
+    commentCount:     r.comment_count     != null ? parseInt(r.comment_count)     : null,
+    subscriberCount:  r.subscriber_count  != null ? parseInt(r.subscriber_count)  : null,
+    channelCreatedAt: r.channel_created_at?.toISOString() ?? null,
+    postedAt:         r.posted_at?.toISOString() ?? null,
+    postedDate:       r.posted_date,
+    score:            r.score,
+    topComment:       r.top_comment,
+    keyword:          r.keyword,
+    distanceToCentroid: r.distance_to_centroid,
+  }));
+
+  // Build a TreeClusterWithRep parent (no popularVideos / grandchild
+  // stats — those are needed for the cluster grid, not the video grid).
+  const parent: TreeClusterWithRep = {
+    id: pr.id, runId: pr.run_id, parentClusterId: pr.parent_cluster_id, level: pr.level,
+    clusterIndex: pr.cluster_index, autoLabel: pr.auto_label, aiLabel: pr.ai_label, label: pr.label,
+    videoCount: pr.video_count,
+    avgScore:   pr.avg_score   !== null ? Number(pr.avg_score)   : null,
+    avgViews:   pr.avg_views   !== null ? Number(pr.avg_views)   : null,
+    totalViews: pr.total_views !== null ? Number(pr.total_views) : null,
+    topChannels: pr.top_channels || [],
+    representativeVideoId: pr.representative_video_id, centroid2d: pr.centroid_2d || null,
+    repTitle: pr.rep_title, repThumbnail: pr.rep_thumbnail, repUrl: pr.rep_url,
+    repViewCount: pr.rep_view_count !== null ? Number(pr.rep_view_count) : null,
+    repChannelName: pr.rep_channel_name,
+    popularVideos: [],
+    childrenCount: 0,
+    subdivideStatus: null,
+    subdivideError: null,
+  };
+
+  return {
+    parent,
+    ancestors: ancestorsRes.rows.map(a => ({
+      id: a.id, level: a.level, label: a.label, autoLabel: a.auto_label, clusterIndex: a.cluster_index,
+    })),
+    videos,
+    total,
+  };
+}
