@@ -4621,9 +4621,9 @@ export default function AdminPage() {
                           give the niche's visual signature. */}
                       <div className="px-4 pb-4">
                         <div className="flex items-center justify-between mb-2">
-                          <h4 className="text-[11px] text-[#666] uppercase tracking-wider">Most popular videos</h4>
+                          <h4 className="text-[11px] text-[#666] uppercase tracking-wider">Top channels in this niche</h4>
                           {c.popularVideos.length > 0 && (
-                            <span className="text-[10px] text-[#666]">top {c.popularVideos.length} by views</span>
+                            <span className="text-[10px] text-[#666]">{c.popularVideos.length} channels · best video each</span>
                           )}
                         </div>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

@@ -459,11 +459,18 @@ export async function getLatestGlobalRun(): Promise<{
     [run.id],
   );
 
-  // Top 4 popular videos per cluster — single window-function query
-  // joins the assignments table and picks the highest-view video per
-  // cluster. Used to render a Nexlev-style 4-thumb strip on each card
-  // so the operator gets the niche's visual texture from multiple
-  // examples instead of guessing from one rep video.
+  // Top 4 popular videos per cluster, **one per channel** — the
+  // headline UX choice: a niche is more legible when you see four
+  // different creators converging on the same format than when you
+  // see one creator's top four uploads (which would just look like
+  // a channel's catalog). Two-level window:
+  //   1. For each (cluster, channel) pick the channel's best video
+  //      (highest views, ties broken by score).
+  //   2. For each cluster pick the top 4 channels by their best
+  //      video's view count.
+  // Result: 4 thumbnails from 4 distinct channels per cluster.
+  // Clusters with < 4 channels still return whatever they have; the
+  // UI pads with dashed placeholders.
   const popRes = await pool.query<{
     cluster_id: number;
     video_id: number;
@@ -476,18 +483,30 @@ export async function getLatestGlobalRun(): Promise<{
     posted_date: string | null;
     score: number | null;
   }>(
-    `WITH ranked AS (
-       SELECT a.cluster_id, v.id AS video_id, v.title, v.thumbnail, v.url,
-              v.view_count, v.channel_name, v.posted_at, v.posted_date, v.score,
+    `WITH best_per_channel AS (
+       SELECT a.cluster_id,
+              v.id, v.title, v.thumbnail, v.url, v.view_count,
+              v.channel_name, v.posted_at, v.posted_date, v.score,
               ROW_NUMBER() OVER (
-                PARTITION BY a.cluster_id
+                PARTITION BY a.cluster_id, v.channel_name
                 ORDER BY v.view_count DESC NULLS LAST, v.score DESC NULLS LAST
-              ) AS rn
+              ) AS channel_rn
          FROM niche_tree_assignments a
          JOIN niche_spy_videos v ON v.id = a.video_id
-         WHERE a.run_id = $1 AND a.cluster_id IS NOT NULL
+         WHERE a.run_id = $1
+           AND a.cluster_id IS NOT NULL
+           AND v.channel_name IS NOT NULL
+     ),
+     ranked AS (
+       SELECT *, ROW_NUMBER() OVER (
+                   PARTITION BY cluster_id
+                   ORDER BY view_count DESC NULLS LAST, score DESC NULLS LAST
+                 ) AS rn
+         FROM best_per_channel
+         WHERE channel_rn = 1
      )
-     SELECT cluster_id, video_id, title, thumbnail, url, view_count,
+     SELECT cluster_id,
+            id AS video_id, title, thumbnail, url, view_count,
             channel_name, posted_at, posted_date, score
        FROM ranked
        WHERE rn <= 4
