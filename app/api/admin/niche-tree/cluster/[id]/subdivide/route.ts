@@ -33,23 +33,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   const pool = await getPool();
 
-  // Single-job-at-a-time guard, same as the global path. Stuck >30min
-  // gets force-failed so a dead worker doesn't block the next click.
+  // Single-job-at-a-time guard. NEVER auto-fail another running job —
+  // that previously took out a healthy 40-min-deep global L1 run when
+  // the user clicked subdivide on a card. If something's running, just
+  // return 409 and let the user wait or cancel via the cancel button.
   const inflight = await pool.query(
-    `SELECT id, started_at, kind, parent_cluster_id FROM niche_tree_runs
+    `SELECT id, started_at, kind FROM niche_tree_runs
        WHERE status = 'running' LIMIT 1`,
   );
   if (inflight.rows.length > 0) {
-    const ageMin = (Date.now() - new Date(inflight.rows[0].started_at).getTime()) / 60_000;
-    if (ageMin < 30) {
-      return NextResponse.json(
-        { error: `A ${inflight.rows[0].kind} clustering run is already in progress`, runningRunId: inflight.rows[0].id },
-        { status: 409 },
-      );
-    }
-    await pool.query(
-      `UPDATE niche_tree_runs SET status='error', error_message='Timed out (stuck >30min)', completed_at=NOW() WHERE id=$1`,
-      [inflight.rows[0].id],
+    return NextResponse.json(
+      {
+        error: `A ${inflight.rows[0].kind} clustering run is already in progress. Cancel it first or wait for it to finish.`,
+        runningRunId: inflight.rows[0].id,
+      },
+      { status: 409 },
     );
   }
 

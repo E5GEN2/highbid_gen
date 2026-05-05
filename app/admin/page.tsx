@@ -4429,6 +4429,34 @@ export default function AdminPage() {
                    treeData.run?.status === 'running' ? 'Running…' :
                    'Run global clustering'}
                 </button>
+                {/* Resume L2 baking — only shown when L1 exists but
+                    some clusters lack children (e.g. cancelled bake or
+                    pre-fix interrupted run). Walks every eligible
+                    parent and bakes the missing L2. */}
+                {treeData.run?.status !== 'running' && treeData.clusters.some(c => c.childrenCount === 0 && c.videoCount >= 50) && (
+                  <button
+                    onClick={async () => {
+                      setTreeError(null);
+                      try {
+                        const r = await fetch('/api/admin/niche-tree/resume-l2', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+                        });
+                        const d = await r.json();
+                        if (!r.ok || !d.ok) {
+                          setTreeError(d.error || `HTTP ${r.status}`);
+                        } else {
+                          await refetchTree();
+                        }
+                      } catch (err) {
+                        setTreeError(err instanceof Error ? err.message : 'unknown');
+                      }
+                    }}
+                    className="px-4 h-9 bg-amber-600/15 hover:bg-amber-600/25 text-amber-400 border border-amber-600/40 text-xs font-semibold rounded-md whitespace-nowrap transition"
+                    title="Bake L2 sub-niches for any L1 cluster that doesn't have children yet"
+                  >
+                    Resume L2 baking
+                  </button>
+                )}
                 {/* Cancel button — only shown while a run is in flight.
                     SIGTERMs the active python process and breaks the
                     L2 baking loop on its next iteration. UI confirms

@@ -32,35 +32,33 @@ def parse_embedding(raw):
 
 
 def fetch_single_source(cur, table, keyword, video_ids):
-    """Pull (video_id, title, embedding) rows from one table, optionally filtered to video_ids.
+    """Pull (video_id, title, embedding) rows from one table.
 
-    When keyword == '__global__' (sentinel used by the niche-tree global
-    clustering), the keyword filter is dropped — we want every embedding
-    across all keywords. Vector tables can have the same video_id stored
-    under multiple keywords (the same video discovered via different
-    searches); DISTINCT ON (video_id) keeps one embedding per video. The
-    embeddings are computed from the title/thumbnail not the keyword,
-    so the duplicate rows are interchangeable.
+    Filter logic: if `video_ids` is provided, that's the precise filter
+    we use — drop the keyword filter entirely, because the same video
+    can live under multiple keywords (the same URL discovered via
+    different searches) and the embeddings are computed from the
+    title/thumbnail not the keyword, so duplicates are interchangeable.
+    DISTINCT ON (video_id) keeps one row per video.
+
+    Without `video_ids`, fall back to the legacy per-keyword path used
+    by lib/clustering.ts. The '__global__' sentinel still means
+    "every embedding in the table" in that path, while any other
+    keyword string is used as a literal filter.
     """
-    if keyword == '__global__':
-        if video_ids:
-            placeholders = ','.join(['%s'] * len(video_ids))
-            cur.execute(
-                f"SELECT DISTINCT ON (video_id) video_id, title, embedding "
-                f"FROM {table} WHERE video_id IN ({placeholders})",
-                list(video_ids)
-            )
-        else:
-            cur.execute(
-                f"SELECT DISTINCT ON (video_id) video_id, title, embedding FROM {table}"
-            )
-        return cur.fetchall()
-
     if video_ids:
         placeholders = ','.join(['%s'] * len(video_ids))
         cur.execute(
-            f"SELECT video_id, title, embedding FROM {table} WHERE keyword = %s AND video_id IN ({placeholders})",
-            [keyword] + list(video_ids)
+            f"SELECT DISTINCT ON (video_id) video_id, title, embedding "
+            f"FROM {table} WHERE video_id IN ({placeholders})",
+            list(video_ids)
+        )
+        return cur.fetchall()
+
+    # No video_ids — legacy per-keyword path
+    if keyword == '__global__':
+        cur.execute(
+            f"SELECT DISTINCT ON (video_id) video_id, title, embedding FROM {table}"
         )
     else:
         cur.execute(

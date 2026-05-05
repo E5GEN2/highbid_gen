@@ -661,6 +661,190 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
 }
 
 /**
+ * Resume L2 baking for an L1 run that didn't complete its bake — e.g.
+ * cancelled or interrupted by the now-fixed subdivide-endpoint bug.
+ * Fire-and-forget. Iterates the L1 run's clusters that don't already
+ * have children + meet the size threshold, runs subdivides
+ * sequentially, updates `progress.l2` on the L1 run row so the UI
+ * shows the same "12/30 clusters subdivided" banner used in a fresh
+ * run.
+ *
+ * The L1 run row is flipped back to status='running' (with progress
+ * stage='baking_l2') for the duration so cancel + concurrency guards
+ * work the same way.
+ */
+export async function resumeL2Baking(l1RunId: number): Promise<void> {
+  const pool = await getPool();
+  try {
+    // Pull L1 run + verify it exists
+    const runRes = await pool.query<{ id: number; source: TreeSource; params: Record<string, unknown> }>(
+      `SELECT id, source, params FROM niche_tree_runs WHERE id = $1 AND kind = 'global'`,
+      [l1RunId],
+    );
+    if (runRes.rows.length === 0) {
+      console.error(`[niche-tree] resume L2: run ${l1RunId} not found`);
+      return;
+    }
+    const source = runRes.rows[0].source;
+
+    // Find L1 clusters in this run that don't already have children.
+    // Eligibility: ≥50 videos. Order by video_count DESC so the biggest
+    // niches get baked first (faster perceived progress for the user).
+    const todoRes = await pool.query<{
+      id: number; video_count: number; cluster_index: number; auto_label: string | null;
+    }>(
+      `SELECT c.id, c.video_count, c.cluster_index, c.auto_label
+         FROM niche_tree_clusters c
+         WHERE c.run_id = $1
+           AND c.parent_cluster_id IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM niche_tree_clusters child
+             WHERE child.parent_cluster_id = c.id
+           )
+         ORDER BY c.video_count DESC`,
+      [l1RunId],
+    );
+    const eligible = todoRes.rows.filter(c => c.video_count >= 50);
+    const skipped  = todoRes.rows.length - eligible.length;
+
+    if (eligible.length === 0) {
+      console.log(`[niche-tree] resume L2: nothing to do for run ${l1RunId} (skipped ${skipped} too small)`);
+      return;
+    }
+
+    // Already-baked count from clusters that DID have children — we
+    // surface this so the progress chip shows accurate totals.
+    const alreadyDoneRes = await pool.query<{ cnt: string }>(
+      `SELECT COUNT(*)::text AS cnt FROM niche_tree_clusters c
+         WHERE c.run_id = $1
+           AND c.parent_cluster_id IS NULL
+           AND EXISTS (SELECT 1 FROM niche_tree_clusters child WHERE child.parent_cluster_id = c.id)`,
+      [l1RunId],
+    );
+    const alreadyDone = parseInt(alreadyDoneRes.rows[0]?.cnt ?? '0') || 0;
+
+    // Flip the L1 row back to running + baking_l2 so the UI banner
+    // reactivates and the cancel guard works.
+    const l2State: TreeBakeL2Progress = {
+      total: alreadyDone + eligible.length,
+      completed: alreadyDone,
+      skipped,
+      failed: 0,
+      currentParentId: null,
+      currentParentLabel: null,
+      currentSubrunId: null,
+    };
+    await pool.query(
+      `UPDATE niche_tree_runs
+         SET status = 'running',
+             error_message = NULL,
+             completed_at = NULL,
+             progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb
+         WHERE id = $2`,
+      [JSON.stringify({
+        stage: 'baking_l2',
+        stageStartedAt: new Date().toISOString(),
+        l2: { ...l2State },
+      }), l1RunId],
+    );
+
+    for (const parent of eligible) {
+      if (cancelledL1Runs.has(l1RunId)) {
+        console.log(`[niche-tree] resume L2 cancelled at ${l2State.completed}/${l2State.total}`);
+        break;
+      }
+
+      const subAssignRes = await pool.query<{ video_id: number }>(
+        `SELECT video_id FROM niche_tree_assignments WHERE cluster_id = $1`,
+        [parent.id],
+      );
+      const subVideoIds = subAssignRes.rows.map(r => r.video_id);
+      if (subVideoIds.length < 50) {
+        l2State.skipped++;
+        await writeProgress(l1RunId, { l2: { ...l2State } });
+        continue;
+      }
+
+      const subMinClusterSize = Math.max(10, Math.round(subVideoIds.length * 0.02));
+      const subMinSamples     = Math.max(3, Math.min(subMinClusterSize, 10));
+
+      const subRunRes = await pool.query<{ id: number }>(
+        `INSERT INTO niche_tree_runs (kind, parent_cluster_id, level, source, params, status, total_videos)
+         VALUES ('subdivide', $1, 2, $2, $3, 'running', $4) RETURNING id`,
+        [
+          parent.id, source,
+          JSON.stringify({ minClusterSize: subMinClusterSize, minSamples: subMinSamples }),
+          subVideoIds.length,
+        ],
+      );
+      const subRunId = subRunRes.rows[0].id;
+
+      l2State.currentParentId = parent.id;
+      l2State.currentParentLabel = parent.auto_label || `Cluster ${parent.cluster_index}`;
+      l2State.currentSubrunId = subRunId;
+      await writeProgress(l1RunId, { l2: { ...l2State } });
+
+      const subResult = await runOneClusteringPipeline({
+        runId: subRunId,
+        source,
+        videoIds: subVideoIds,
+        parentClusterId: parent.id,
+        level: 2,
+        minClusterSize: subMinClusterSize,
+        minSamples:     subMinSamples,
+        umapDims:       50,
+        scriptKeyword:  `subdivide:${parent.id}`,
+        pyTimeoutMs: 1_800_000,
+      });
+
+      if (subResult.ok === true) {
+        l2State.completed++;
+        await pool.query(
+          `UPDATE niche_tree_runs SET status='done', completed_at=NOW()
+             WHERE id=$1 AND status='running'`,
+          [subRunId],
+        );
+      } else {
+        l2State.failed++;
+        await pool.query(
+          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW()
+             WHERE id=$2 AND status='running'`,
+          [subResult.error, subRunId],
+        );
+        console.error(`[niche-tree] resume L2: subdivide of ${parent.id} failed:`, subResult.error);
+      }
+      await writeProgress(l1RunId, {
+        l2: { ...l2State, currentParentId: null, currentParentLabel: null, currentSubrunId: null },
+      });
+    }
+
+    // Done — flip L1 row back to 'done'.
+    await pool.query(
+      `UPDATE niche_tree_runs
+         SET status='done', completed_at=NOW(),
+             progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb
+         WHERE id=$2 AND status='running'`,
+      [JSON.stringify({
+        stage: 'done',
+        stageStartedAt: new Date().toISOString(),
+        l2: { ...l2State, currentParentId: null, currentParentLabel: null, currentSubrunId: null },
+      }), l1RunId],
+    );
+    console.log(
+      `[niche-tree] resume L2 done for run ${l1RunId}: ` +
+      `baked ${l2State.completed}/${l2State.total} (skipped ${l2State.skipped}, failed ${l2State.failed})`,
+    );
+  } catch (err) {
+    console.error('[niche-tree] resume L2 error:', err);
+    await pool.query(
+      `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW()
+         WHERE id=$2 AND status='running'`,
+      [(err as Error).message?.slice(0, 4000) || 'unknown', l1RunId],
+    ).catch(() => {});
+  }
+}
+
+/**
  * Manual subdivide of a single cluster (e.g. from a "Re-bake this niche"
  * button in admin). Fire-and-forget. Caller inserts the niche_tree_runs
  * row first, like the global path.
