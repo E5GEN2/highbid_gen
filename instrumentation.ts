@@ -207,6 +207,23 @@ export async function register() {
       if (r2.rowCount && r2.rowCount > 0) {
         console.log(`[boot] Marked ${r2.rowCount} orphaned enrich job(s) as error`);
       }
+      // niche_tree_runs: the global L1 + chained L2 baking pipeline runs
+      // entirely in-process (Node-driven loop calling python via spawn).
+      // A redeploy kills both the python child and the JS loop, but the
+      // DB rows stay flagged 'running' forever. Sweep both kinds (global
+      // and subdivide) using the same 3-minute grace so a fresh click
+      // post-boot isn't caught.
+      const r3 = await pool.query(
+        `UPDATE niche_tree_runs
+            SET status = 'error',
+                error_message = 'Orphaned: server restarted before run finished',
+                completed_at = NOW()
+          WHERE status = 'running' AND started_at < NOW() - INTERVAL '3 minutes'
+          RETURNING id, kind`
+      );
+      if (r3.rowCount && r3.rowCount > 0) {
+        console.log(`[boot] Marked ${r3.rowCount} orphaned niche_tree run(s) as error`);
+      }
     } catch (err) {
       console.error('[boot] Failed to cleanup orphaned jobs:', (err as Error).message);
     }
