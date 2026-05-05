@@ -1172,71 +1172,107 @@ export default function AdminPage() {
     );
   }
 
-  // Admin dashboard
-  return (
-    <div className="min-h-screen bg-gray-950">
-      {/* Container: wider on desktop, reduced padding on phones. max-w-4xl was
-          too narrow — the 6-tab bar + multi-column grids needed more room. */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6 sm:mb-10 gap-3 flex-wrap">
-          <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-bold text-white">Admin Panel</h1>
-            <p className="text-gray-400 text-xs sm:text-sm">rofe.ai data operations</p>
-          </div>
-          <a href="/" className="px-3 sm:px-4 py-2 bg-gray-800 text-gray-300 rounded-xl hover:bg-gray-700 transition text-xs sm:text-sm flex-shrink-0">
-            Back to App
-          </a>
-        </div>
+  // ── Tab metadata table — drives both the tab strip and the breadcrumb.
+  // Each entry has the label, the tab key, and the per-tab accent color
+  // (used as a small dot beside the label so the "where am I" cue
+  // survives the move from filled-pill tabs to user-style underlined tabs).
+  const tabs: Array<{
+    key: typeof adminSection;
+    label: string;
+    dot: string;          // Tailwind bg-* class for the accent dot
+    badge?: React.ReactNode;
+    onClick?: () => void; // optional side-effect on activation (e.g. fetch admin tokens)
+  }> = [
+    { key: 'general',        label: 'General',         dot: 'bg-purple-500/70' },
+    { key: 'niche',          label: 'Niche Explorer',  dot: 'bg-amber-500/70' },
+    { key: 'enrich',         label: 'Enrich Data',     dot: 'bg-purple-500/70' },
+    { key: 'datacollection', label: 'Data Collection', dot: 'bg-cyan-500/70' },
+    { key: 'tokens',         label: 'Admin Tokens',    dot: 'bg-red-500/70',
+      onClick: () => { fetch('/api/admin/admin-tokens').then(r => r.json()).then(d => setAdminTokens(d.tokens || [])).catch(() => {}); } },
+    { key: 'agents',         label: 'Agents',          dot: 'bg-green-500/70',
+      badge: agentsData && agentsData.totalActive > 0 ? (
+        <span className="ml-1 text-[10px] bg-green-500/15 text-green-400 border border-green-500/25 rounded-full px-1.5 py-0.5">{agentsData.totalActive}</span>
+      ) : null,
+      onClick: () => { setAgentsLoading(true); fetch('/api/admin/agents').then(r => r.json()).then(d => { setAgentsData(d); setAgentsLoading(false); }).catch(() => setAgentsLoading(false)); } },
+    { key: 'vizard',         label: 'Vizard',          dot: 'bg-pink-500/70',
+      badge: vizardProjects.some(p => p.status === 'pending' || p.status === 'processing') ? (
+        <span className="ml-1 text-[10px] bg-pink-500/15 text-pink-400 border border-pink-500/25 rounded-full px-1.5 py-0.5 animate-pulse">
+          {vizardProjects.filter(p => p.status === 'pending' || p.status === 'processing').length}
+        </span>
+      ) : null },
+    { key: 'novelty',        label: 'Novelty',         dot: 'bg-indigo-500/70' },
+    { key: 'tree',           label: 'Niche Tree',      dot: 'bg-amber-500/70' },
+  ];
+  const activeTab = tabs.find(t => t.key === adminSection);
 
-        {/* Admin Section Tabs — flex-wrap so they break to a second row on
-            narrow viewports instead of overflowing off-screen. Slightly
-            smaller tap target on phones via responsive padding. */}
-        <div className="flex flex-wrap gap-2 mb-6 sm:mb-8">
-          <button onClick={() => setAdminSection('general')}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'general' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            General
-          </button>
-          <button onClick={() => setAdminSection('niche')}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'niche' ? 'bg-amber-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Niche Explorer
-          </button>
-          <button onClick={() => setAdminSection('enrich')}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'enrich' ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Enrich Data
-          </button>
-          <button onClick={() => setAdminSection('datacollection')}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'datacollection' ? 'bg-cyan-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Data Collection
-          </button>
-          <button onClick={() => { setAdminSection('tokens'); fetch('/api/admin/admin-tokens').then(r => r.json()).then(d => setAdminTokens(d.tokens || [])).catch(() => {}); }}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'tokens' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Admin Tokens
-          </button>
-          <button onClick={() => { setAdminSection('agents'); setAgentsLoading(true); fetch('/api/admin/agents').then(r => r.json()).then(d => { setAgentsData(d); setAgentsLoading(false); }).catch(() => setAgentsLoading(false)); }}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'agents' ? 'bg-green-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Agents
-            {agentsData && agentsData.totalActive > 0 && (
-              <span className="ml-1.5 bg-green-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">{agentsData.totalActive}</span>
-            )}
-          </button>
-          <button onClick={() => setAdminSection('vizard')}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'vizard' ? 'bg-pink-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Vizard
-            {vizardProjects.some(p => p.status === 'pending' || p.status === 'processing') && (
-              <span className="ml-1.5 bg-pink-500 text-white text-[10px] px-1.5 py-0.5 rounded-full animate-pulse">
-                {vizardProjects.filter(p => p.status === 'pending' || p.status === 'processing').length}
-              </span>
-            )}
-          </button>
-          <button onClick={() => setAdminSection('novelty')}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'novelty' ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Novelty
-          </button>
-          <button onClick={() => setAdminSection('tree')}
-            className={`px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium transition whitespace-nowrap ${adminSection === 'tree' ? 'bg-amber-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-            Niche Tree
-          </button>
+  // Admin dashboard — restyled to match the user-side `/niche/*` chrome:
+  // page bg #0a0a0a, fixed top bar with breadcrumb, top tab strip with
+  // amber underline for the active tab and a per-tab accent dot for the
+  // section identity cue.
+  return (
+    <div className="min-h-screen bg-[#0a0a0a]">
+      {/* ── Top bar (mirrors components/TopBar.tsx) ─────────────────── */}
+      <div className="h-14 px-6 flex items-center justify-between border-b border-[#1a1a1a] bg-[#0a0a0a]">
+        <div className="flex items-center gap-2 text-sm">
+          <a href="/" className="text-[#888] hover:text-white transition-colors" title="Home">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+            </svg>
+          </a>
+          <span className="text-[#444]">·</span>
+          <span className="text-[#888]">Admin</span>
+          {activeTab && (
+            <>
+              <span className="text-[#444]">·</span>
+              <span className="text-white font-medium">{activeTab.label}</span>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <a href="/" className="text-xs text-[#888] hover:text-white transition-colors">Back to App</a>
+          <div className="w-8 h-8 rounded-full bg-orange-600 flex items-center justify-center text-white text-sm font-bold">A</div>
+        </div>
+      </div>
+
+      {/* ── Tab strip (top tabs, restyled to match user vocabulary) ── */}
+      {/* Active tab: amber underline + white text. Inactive: muted text-3
+          with hover-to-white. Per-tab accent preserved as a 1.5px dot to
+          the left of the label so we keep the section identity cue. */}
+      <div className="border-b border-[#1a1a1a] bg-[#0a0a0a] sticky top-0 z-10">
+        <div className="max-w-[1400px] mx-auto px-6 flex items-center gap-1 overflow-x-auto -mb-px">
+          {tabs.map(tab => {
+            const active = adminSection === tab.key;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => { setAdminSection(tab.key); tab.onClick?.(); }}
+                className={`px-4 h-12 text-xs font-medium flex items-center gap-2 whitespace-nowrap transition border-b-2 ${
+                  active
+                    ? 'text-white font-semibold border-amber-500'
+                    : 'text-[#888] hover:text-white border-transparent'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${active ? tab.dot.replace('/70', '') : tab.dot}`} />
+                {tab.label}
+                {tab.badge}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Page content ─────────────────────────────────────────── */}
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {/* Header — kept the section title for the inactive-block tabs.
+            Once each tab adopts user-style section headers (title + action
+            inline) we can drop this. For now it covers the pre-restyle
+            tabs that still expect a page heading. */}
+        {/* Heading band — kept for tabs that haven't been ported to the
+            user-style "title + inline action" header yet. The Niche Tree
+            tab renders its own header so we hide this for that tab. */}
+        <div style={{ display: adminSection === 'tree' ? 'none' : 'block' }} className="mb-6 sm:mb-8">
+          <h1 className="text-xl sm:text-2xl font-bold text-white">{activeTab?.label || 'Admin Panel'}</h1>
+          <p className="text-[#888] text-xs sm:text-sm">rofe.ai data operations</p>
         </div>
 
         <div style={{ display: adminSection === 'general' ? 'block' : 'none' }}>
@@ -4257,43 +4293,43 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* Niche Tree Tab — global hierarchical clustering sandbox.
-            L1 lives here; L2/drill-down comes in the next iteration.
-            Sandboxed in admin until validated, then promoted to user side. */}
+        {/* Niche Tree Tab — restyled in user vocabulary. Cards are
+            structurally identical to the user video grid in
+            app/(products)/niche/niches/[keyword]/videos/page.tsx so the
+            admin and user surfaces share one visual language. L2 drill-
+            down + breadcrumbs come in the next iteration. */}
         <div style={{ display: adminSection === 'tree' ? 'block' : 'none' }}>
           <div className="space-y-6">
-            {/* Header + run controls */}
-            <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
-              <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
-                <div>
-                  <h2 className="text-lg font-bold text-white mb-1">Niche Tree (global L1)</h2>
-                  <p className="text-xs text-gray-500 max-w-2xl">
-                    HDBSCAN over the entire embedded video set — produces broad parent niches.
-                    Each card uses the closest-to-centroid video as its visual identity (thumb + title)
-                    instead of a synthesized label. Results are sandboxed in <code className="text-amber-400">niche_tree_*</code> tables;
-                    user-facing pages are untouched.
-                  </p>
-                </div>
-                <button
-                  onClick={startTreeRun}
-                  disabled={treeStarting || treeData.run?.status === 'running'}
-                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg text-sm font-medium transition whitespace-nowrap"
-                >
-                  {treeStarting ? 'Starting…' :
-                   treeData.run?.status === 'running' ? 'Running…' :
-                   'Run global clustering'}
-                </button>
+            {/* Section header — user pattern: title left, primary action right */}
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <h1 className="text-xl font-bold text-white">Niche Tree</h1>
+                <p className="text-[#888] text-xs mt-1 max-w-2xl">
+                  HDBSCAN over the entire embedded video set — broad parent niches identified by the closest-to-centroid representative video.
+                  Sandboxed in <code className="text-amber-400 text-[11px]">niche_tree_*</code> tables; user-facing pages untouched.
+                </p>
               </div>
+              <button
+                onClick={startTreeRun}
+                disabled={treeStarting || treeData.run?.status === 'running'}
+                className="px-4 h-9 bg-amber-500 hover:bg-amber-400 disabled:bg-[#222] disabled:text-[#666] text-black text-xs font-semibold rounded-md whitespace-nowrap transition"
+              >
+                {treeStarting ? 'Starting…' :
+                 treeData.run?.status === 'running' ? 'Running…' :
+                 'Run global clustering'}
+              </button>
+            </div>
 
-              {/* Param controls — only shown when no run is in progress */}
-              {treeData.run?.status !== 'running' && (
-                <div className="flex flex-wrap gap-3 items-end mb-4">
+            {/* Param controls — quieter card in user palette */}
+            {treeData.run?.status !== 'running' && (
+              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4">
+                <div className="flex flex-wrap gap-4 items-end">
                   <div>
-                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Embedding</label>
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1">Embedding</label>
                     <select
                       value={treeParams.source}
                       onChange={e => setTreeParams(p => ({ ...p, source: e.target.value as typeof treeParams.source }))}
-                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500"
+                      className="bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500"
                     >
                       <option value="thumbnail_v2">Thumbnail v2</option>
                       <option value="title_v2">Title v2</option>
@@ -4302,142 +4338,180 @@ export default function AdminPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1" title="Bigger = fewer, broader niches. 80 is a good L1 default.">
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1" title="Bigger = fewer, broader niches. 80 is a good L1 default.">
                       min_cluster_size
                     </label>
                     <input type="number" min={10} max={500} value={treeParams.minClusterSize}
                       onChange={e => setTreeParams(p => ({ ...p, minClusterSize: parseInt(e.target.value) || 80 }))}
-                      className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
+                      className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">min_samples</label>
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1">min_samples</label>
                     <input type="number" min={1} max={50} value={treeParams.minSamples}
                       onChange={e => setTreeParams(p => ({ ...p, minSamples: parseInt(e.target.value) || 10 }))}
-                      className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
+                      className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">umap_dims</label>
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1">umap_dims</label>
                     <input type="number" min={5} max={200} value={treeParams.umapDims}
                       onChange={e => setTreeParams(p => ({ ...p, umapDims: parseInt(e.target.value) || 50 }))}
-                      className="w-24 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
+                      className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
                   </div>
                 </div>
-              )}
+              </div>
+            )}
 
-              {/* Status line */}
-              {treeData.run ? (
-                <div className="text-xs text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span>
-                    Latest run:{' '}
-                    <span className={
-                      treeData.run.status === 'done'    ? 'text-green-400' :
-                      treeData.run.status === 'running' ? 'text-amber-400 animate-pulse' :
-                      'text-red-400'
-                    }>{treeData.run.status}</span>
-                  </span>
-                  {treeData.run.status === 'done' && (
-                    <>
-                      <span>·</span>
-                      <span className="text-white font-medium">{treeData.run.numClusters}</span> clusters
-                      <span>·</span>
-                      <span>{treeData.run.numNoise} noise</span>
-                      <span>·</span>
-                      <span>{treeData.run.totalVideos.toLocaleString()} videos</span>
-                    </>
-                  )}
-                  <span>·</span>
-                  <span title={new Date(treeData.run.startedAt).toLocaleString()}>started {fmtAgo(treeData.run.startedAt)}</span>
-                  {treeData.run.completedAt && (
-                    <>
-                      <span>·</span>
-                      <span title={new Date(treeData.run.completedAt).toLocaleString()}>completed {fmtAgo(treeData.run.completedAt)}</span>
-                    </>
-                  )}
-                  <span>·</span>
-                  <span className="text-gray-500">source={treeData.run.source}</span>
-                  {treeData.run.errorMessage && (
-                    <div className="w-full mt-1 text-red-400 break-all">error: {treeData.run.errorMessage}</div>
-                  )}
-                </div>
-              ) : (
-                <div className="text-xs text-gray-500">No global run yet. Configure params and click <span className="text-amber-400">Run global clustering</span> to start.</div>
-              )}
-              {treeError && (
-                <div className="mt-2 text-xs text-red-400">{treeError}</div>
-              )}
-            </div>
+            {/* Status line — single row, user vocabulary */}
+            {treeData.run ? (
+              <div className="text-xs text-[#888] flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span>
+                  Latest run:{' '}
+                  <span className={
+                    treeData.run.status === 'done'    ? 'text-green-400 font-medium' :
+                    treeData.run.status === 'running' ? 'text-amber-400 animate-pulse font-medium' :
+                    'text-red-400 font-medium'
+                  }>{treeData.run.status}</span>
+                </span>
+                {treeData.run.status === 'done' && (
+                  <>
+                    <span className="text-[#444]">·</span>
+                    <span><span className="text-white font-medium">{treeData.run.numClusters}</span> clusters</span>
+                    <span className="text-[#444]">·</span>
+                    <span>{treeData.run.numNoise} noise</span>
+                    <span className="text-[#444]">·</span>
+                    <span>{treeData.run.totalVideos.toLocaleString()} videos</span>
+                  </>
+                )}
+                <span className="text-[#444]">·</span>
+                <span title={new Date(treeData.run.startedAt).toLocaleString()}>started {fmtAgo(treeData.run.startedAt)}</span>
+                {treeData.run.completedAt && (
+                  <>
+                    <span className="text-[#444]">·</span>
+                    <span title={new Date(treeData.run.completedAt).toLocaleString()}>completed {fmtAgo(treeData.run.completedAt)}</span>
+                  </>
+                )}
+                <span className="text-[#444]">·</span>
+                <span className="text-[#666]">source={treeData.run.source}</span>
+                {treeData.run.errorMessage && (
+                  <div className="w-full mt-1 text-red-400 break-all">error: {treeData.run.errorMessage}</div>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-[#666]">No global run yet. Configure params and click <span className="text-amber-400">Run global clustering</span> to start.</div>
+            )}
+            {treeError && (
+              <div className="text-xs text-red-400">{treeError}</div>
+            )}
 
-            {/* L1 Cluster grid */}
+            {/* In-progress placeholder (no clusters yet) */}
             {treeData.run?.status === 'running' && treeData.clusters.length === 0 && (
-              <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 text-center">
+              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center">
                 <div className="w-6 h-6 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
                 <div className="text-sm text-amber-200">Clustering — this can take a few minutes on the full dataset…</div>
               </div>
             )}
+
+            {/* L1 grid — copied 1:1 from the user video card pattern in
+                /niche/niches/[keyword]/videos/page.tsx (lines 525–613).
+                3 cols, gap-4, aspect-video thumbnail, filled score chip,
+                hover-#333 border, two-line stat hierarchy, refresh-style
+                circular action button. */}
             {treeData.clusters.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {treeData.clusters.map(c => {
                   const label = c.label || c.autoLabel || `Cluster ${c.clusterIndex}`;
                   const score = c.avgScore != null ? Math.round(c.avgScore) : null;
-                  const scoreBg =
-                    score == null ? '' :
-                    score >= 80 ? 'bg-green-500/20 text-green-400' :
-                    score >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
-                    'bg-red-500/20 text-red-400';
+                  // Filled chip colors mirror user's video card score chip
+                  const chipBg =
+                    score == null ? 'bg-[#222] text-[#888]' :
+                    score >= 80   ? 'bg-green-500 text-white' :
+                    score >= 50   ? 'bg-yellow-500 text-black' :
+                                    'bg-red-500 text-white';
                   return (
                     <div key={c.id}
-                      className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden hover:border-amber-500/60 transition group"
+                      className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition"
                     >
-                      {/* Representative thumbnail — the whole point. Show a 9:16
-                          aspect like Shorts thumbnails are; YouTube serves both
-                          shapes via the same URL. */}
-                      <div className="relative aspect-[9/16] bg-black overflow-hidden">
+                      {/* Thumbnail (aspect-video, like the user grid). YouTube
+                          hqdefault.jpg is 16:9 even for Shorts so this matches
+                          the user pattern exactly. */}
+                      <div className="relative aspect-video bg-[#0a0a0a]">
                         {c.repThumbnail ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={c.repThumbnail}
                             alt={c.repTitle || label}
-                            className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform"
+                            className="w-full h-full object-cover"
                             loading="lazy"
                           />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center text-gray-700 text-xs">no thumb</div>
+                          <div className="w-full h-full flex items-center justify-center text-[#333]">
+                            <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          </div>
                         )}
-                        {/* Score chip top-right */}
+                        {/* Score chip — filled, like the user video card */}
                         {score != null && (
-                          <span className={`absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded-md font-bold ${scoreBg}`}>
+                          <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${chipBg}`}>
                             ⚡ {score}
-                          </span>
+                          </div>
                         )}
-                        {/* Video count chip bottom-left */}
-                        <span className="absolute bottom-2 left-2 text-[10px] px-2 py-0.5 rounded-md bg-black/70 text-white font-mono">
-                          {c.videoCount} vids
-                        </span>
                       </div>
+
                       <div className="p-3">
-                        {/* Representative title — the visual identity of the niche */}
-                        <div className="text-sm font-semibold text-white line-clamp-2 mb-1" title={c.repTitle || ''}>
-                          {c.repTitle || <span className="text-gray-500 italic">(no representative)</span>}
+                        {/* Top row: video count pill + cluster index. Mirrors
+                            the keyword pill + action buttons row from the
+                            user card. */}
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs bg-amber-600/30 text-amber-300 border border-amber-600/50 rounded-full px-2 py-0.5">
+                            {c.videoCount.toLocaleString()} videos
+                          </span>
+                          <span className="text-xs text-[#666]">cluster #{c.clusterIndex}</span>
                         </div>
-                        {c.repChannelName && (
-                          <div className="text-[11px] text-gray-500 truncate mb-2">{c.repChannelName}</div>
-                        )}
-                        {/* Cluster stats row */}
-                        <div className="flex items-center gap-3 text-[11px] text-gray-400">
+
+                        {/* Title — same weight/size as user (text-sm font-medium) */}
+                        <h3 className="text-sm font-medium text-white line-clamp-2 mb-2" title={c.repTitle || ''}>
+                          {c.repTitle || <span className="text-[#666] italic">(no representative)</span>}
+                        </h3>
+
+                        {/* Stat line 1 — text-[#888], views in green, channel after */}
+                        <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
                           {c.totalViews != null && (
-                            <span className="text-green-400">{fmtK(c.totalViews)} views</span>
+                            <span className="text-green-400 font-medium">{fmtK(c.totalViews)} views</span>
                           )}
+                          {c.repChannelName && <span>· {c.repChannelName}</span>}
+                        </div>
+
+                        {/* Stat line 2 — text-[#666], cluster-only stats */}
+                        <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
                           {c.topChannels.length > 0 && (
-                            <span className="text-gray-500 truncate" title={c.topChannels.join(', ')}>
-                              {c.topChannels.length} ch
-                            </span>
+                            <span title={c.topChannels.join(', ')}>📺 {c.topChannels.length} top ch</span>
                           )}
-                          {c.repUrl && (
+                          {c.avgViews != null && (
+                            <span>~{fmtK(c.avgViews)} avg</span>
+                          )}
+                        </div>
+
+                        {/* URL row + circular action button — mirrors user's
+                            refresh button slot. The arrow icon hints at
+                            "subdivide / drill into this niche" for L2. */}
+                        <div className="flex items-center justify-between gap-2">
+                          {c.repUrl ? (
                             <a href={c.repUrl} target="_blank" rel="noreferrer"
-                              className="ml-auto text-pink-400 hover:text-pink-300 underline">
-                              ▶ open
+                              className="text-xs text-blue-400 hover:text-blue-300 truncate flex-1 min-w-0">
+                              {c.repUrl.replace(/^https?:\/\//, '')}
                             </a>
-                          )}
+                          ) : <span className="flex-1" />}
+                          <button
+                            type="button"
+                            disabled
+                            title="Subdivide into sub-niches (L2 — coming next iteration)"
+                            className="w-7 h-7 rounded-full bg-black/60 hover:bg-black/80 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center text-white/80 hover:text-white transition flex-shrink-0"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                            </svg>
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -4446,14 +4520,14 @@ export default function AdminPage() {
               </div>
             )}
             {treeData.run?.status === 'done' && treeData.clusters.length === 0 && (
-              <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 text-center text-sm text-gray-500">
+              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
                 Run completed but no clusters were produced. Try lowering <code className="text-amber-400">min_cluster_size</code> or switching embedding source.
               </div>
             )}
 
             {/* Loading skeleton on first fetch */}
             {treeLoading && !treeData.run && (
-              <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-8 text-center text-sm text-gray-500">
+              <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#666]">
                 Loading…
               </div>
             )}
