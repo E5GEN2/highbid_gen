@@ -32,8 +32,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const sort = sortParam && SORTS.includes(sortParam) ? sortParam : 'centroid';
   const limit  = parseInt(req.nextUrl.searchParams.get('limit')  || '60');
   const offset = parseInt(req.nextUrl.searchParams.get('offset') || '0');
+  const q      = req.nextUrl.searchParams.get('q') || undefined;
 
-  const result = await getClusterVideos({ clusterId, sort, limit, offset });
+  const result = await getClusterVideos({ clusterId, sort, limit, offset, q });
   if (!result.parent) {
     return NextResponse.json({ error: 'cluster not found' }, { status: 404 });
   }

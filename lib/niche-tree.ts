@@ -1431,11 +1431,14 @@ export async function getClusterVideos(opts: {
   sort?: ClusterVideoSort;
   limit?: number;
   offset?: number;
+  /** Optional case-insensitive title filter (matched with ILIKE %q%). */
+  q?: string;
 }): Promise<ClusterVideosResult> {
   const pool = await getPool();
   const sort = opts.sort ?? 'centroid';
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 200);
   const offset = Math.max(opts.offset ?? 0, 0);
+  const q = opts.q?.trim() || '';
 
   // Parent + ancestor chain — same shape getClusterChildren returns so
   // the UI can render a consistent breadcrumb header for both views.
@@ -1473,12 +1476,26 @@ export async function getClusterVideos(opts: {
 
   // Total count from assignments — single source of truth (the cluster
   // row's video_count is denormalized at insert time and could drift if
-  // a backfill runs).
-  const countRes = await pool.query<{ cnt: string }>(
-    `SELECT COUNT(*)::text AS cnt FROM niche_tree_assignments WHERE cluster_id = $1`,
-    [opts.clusterId],
-  );
-  const total = parseInt(countRes.rows[0]?.cnt ?? '0') || 0;
+  // a backfill runs). When `q` is set we have to join niche_spy_videos
+  // so the count reflects the filter; otherwise we use the lighter
+  // assignments-only path.
+  let total: number;
+  if (q) {
+    const countRes = await pool.query<{ cnt: string }>(
+      `SELECT COUNT(*)::text AS cnt
+         FROM niche_tree_assignments a
+         JOIN niche_spy_videos v ON v.id = a.video_id
+        WHERE a.cluster_id = $1 AND v.title ILIKE $2`,
+      [opts.clusterId, `%${q}%`],
+    );
+    total = parseInt(countRes.rows[0]?.cnt ?? '0') || 0;
+  } else {
+    const countRes = await pool.query<{ cnt: string }>(
+      `SELECT COUNT(*)::text AS cnt FROM niche_tree_assignments WHERE cluster_id = $1`,
+      [opts.clusterId],
+    );
+    total = parseInt(countRes.rows[0]?.cnt ?? '0') || 0;
+  }
 
   // Sort whitelist — keys must map to safe ORDER BY fragments since
   // they're concatenated. NEVER let untrusted strings into ORDER BY.
@@ -1493,6 +1510,35 @@ export async function getClusterVideos(opts: {
   };
   const orderBy = orderMap[sort] ?? orderMap.centroid;
 
+  // Build the videos query — same shape regardless of filter, but
+  // params shift by one when `q` is set. Use $-numbers to keep limit
+  // and offset positions correct in both branches.
+  const vidsSql = q
+    ? `SELECT
+         v.id AS video_id, v.url, v.title, v.thumbnail, v.channel_name,
+         v.view_count, v.like_count, v.comment_count, v.subscriber_count,
+         v.channel_created_at, v.posted_at, v.posted_date, v.score,
+         v.top_comment, v.keyword,
+         a.distance_to_centroid
+       FROM niche_tree_assignments a
+       JOIN niche_spy_videos v ON v.id = a.video_id
+       WHERE a.cluster_id = $1 AND v.title ILIKE $2
+       ORDER BY ${orderBy}
+       LIMIT $3 OFFSET $4`
+    : `SELECT
+         v.id AS video_id, v.url, v.title, v.thumbnail, v.channel_name,
+         v.view_count, v.like_count, v.comment_count, v.subscriber_count,
+         v.channel_created_at, v.posted_at, v.posted_date, v.score,
+         v.top_comment, v.keyword,
+         a.distance_to_centroid
+       FROM niche_tree_assignments a
+       JOIN niche_spy_videos v ON v.id = a.video_id
+       WHERE a.cluster_id = $1
+       ORDER BY ${orderBy}
+       LIMIT $2 OFFSET $3`;
+  const vidsParams: (number | string)[] = q
+    ? [opts.clusterId, `%${q}%`, limit, offset]
+    : [opts.clusterId, limit, offset];
   const vidsRes = await pool.query<{
     video_id: number; url: string | null; title: string | null; thumbnail: string | null;
     channel_name: string | null; view_count: string | null; like_count: string | null;
@@ -1500,20 +1546,7 @@ export async function getClusterVideos(opts: {
     channel_created_at: Date | null; posted_at: Date | null; posted_date: string | null;
     score: number | null; top_comment: string | null; keyword: string | null;
     distance_to_centroid: number | null;
-  }>(
-    `SELECT
-       v.id AS video_id, v.url, v.title, v.thumbnail, v.channel_name,
-       v.view_count, v.like_count, v.comment_count, v.subscriber_count,
-       v.channel_created_at, v.posted_at, v.posted_date, v.score,
-       v.top_comment, v.keyword,
-       a.distance_to_centroid
-     FROM niche_tree_assignments a
-     JOIN niche_spy_videos v ON v.id = a.video_id
-     WHERE a.cluster_id = $1
-     ORDER BY ${orderBy}
-     LIMIT $2 OFFSET $3`,
-    [opts.clusterId, limit, offset],
-  );
+  }>(vidsSql, vidsParams);
 
   const videos: ClusterVideoRow[] = vidsRes.rows.map(r => ({
     videoId: r.video_id,

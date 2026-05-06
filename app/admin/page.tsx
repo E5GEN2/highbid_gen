@@ -158,11 +158,17 @@ export default function AdminPage() {
   const [treeVideosLoading, setTreeVideosLoading] = useState(false);
   const [treeVideosOffset, setTreeVideosOffset] = useState(0);
   const [treeVideosSort, setTreeVideosSort] = useState<TreeVideoSort>('centroid');
+  // Two-step search state — `treeVideosSearchInput` is what the user
+  // types live; we debounce 300ms into `treeVideosSearch` (the committed
+  // value used for fetches) so each keystroke doesn't fire a new query.
+  const [treeVideosSearchInput, setTreeVideosSearchInput] = useState('');
+  const [treeVideosSearch, setTreeVideosSearch] = useState('');
 
-  const fetchClusterVideos = useCallback(async (clusterId: number, offset: number, sort: TreeVideoSort) => {
+  const fetchClusterVideos = useCallback(async (clusterId: number, offset: number, sort: TreeVideoSort, q: string) => {
     setTreeVideosLoading(true);
     try {
       const params = new URLSearchParams({ sort, limit: '60', offset: String(offset) });
+      if (q) params.set('q', q);
       const r = await fetch(`/api/admin/niche-tree/cluster/${clusterId}/videos?${params}`);
       const d = await r.json();
       if (r.ok) {
@@ -185,21 +191,35 @@ export default function AdminPage() {
     setTreeVideosClusterId(clusterId);
     setTreeVideosOffset(0);
     setTreeVideosData(null);
-    fetchClusterVideos(clusterId, 0, treeVideosSort);
+    // Fresh cluster → reset search so the user isn't carrying an old
+    // filter into a different niche.
+    setTreeVideosSearchInput('');
+    setTreeVideosSearch('');
+    fetchClusterVideos(clusterId, 0, treeVideosSort, '');
   }, [fetchClusterVideos, treeVideosSort]);
 
   const closeClusterVideos = useCallback(() => {
     setTreeVideosClusterId(null);
     setTreeVideosData(null);
     setTreeVideosOffset(0);
+    setTreeVideosSearchInput('');
+    setTreeVideosSearch('');
   }, []);
 
-  // Refetch from offset 0 when sort changes mid-view.
+  // Refetch from offset 0 when sort or committed search changes.
   useEffect(() => {
     if (treeVideosClusterId == null) return;
-    fetchClusterVideos(treeVideosClusterId, 0, treeVideosSort);
+    fetchClusterVideos(treeVideosClusterId, 0, treeVideosSort, treeVideosSearch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [treeVideosSort]);
+  }, [treeVideosSort, treeVideosSearch]);
+
+  // Debounce the search input → commit value → effect above refires.
+  useEffect(() => {
+    const h = setTimeout(() => {
+      setTreeVideosSearch(prev => prev === treeVideosSearchInput ? prev : treeVideosSearchInput);
+    }, 300);
+    return () => clearTimeout(h);
+  }, [treeVideosSearchInput]);
 
   // ── Infinite scroll for the videos grid ──────────────────────
   // Sentinel + IntersectionObserver. Refs hold the current state
@@ -210,10 +230,12 @@ export default function AdminPage() {
   const treeVideosOffsetRef  = useRef(treeVideosOffset);
   const treeVideosSortRef    = useRef(treeVideosSort);
   const treeVideosTotalRef   = useRef(treeVideosData?.total ?? 0);
+  const treeVideosSearchRef  = useRef(treeVideosSearch);
   useEffect(() => { treeVideosLoadingRef.current = treeVideosLoading; }, [treeVideosLoading]);
   useEffect(() => { treeVideosOffsetRef.current  = treeVideosOffset;  }, [treeVideosOffset]);
   useEffect(() => { treeVideosSortRef.current    = treeVideosSort;    }, [treeVideosSort]);
   useEffect(() => { treeVideosTotalRef.current   = treeVideosData?.total ?? 0; }, [treeVideosData?.total]);
+  useEffect(() => { treeVideosSearchRef.current  = treeVideosSearch;  }, [treeVideosSearch]);
 
   const treeVideosSentinelRef = useRef<HTMLDivElement | null>(null);
   // The sentinel only renders once treeVideosData has arrived AND there
@@ -234,7 +256,7 @@ export default function AdminPage() {
       const total  = treeVideosTotalRef.current;
       const offset = treeVideosOffsetRef.current;
       if (total === 0 || offset >= total) return;
-      fetchClusterVideos(treeVideosClusterId, offset, treeVideosSortRef.current);
+      fetchClusterVideos(treeVideosClusterId, offset, treeVideosSortRef.current, treeVideosSearchRef.current);
     }, { rootMargin: '300px' });  // fire 300px before sentinel actually hits viewport
     obs.observe(el);
     return () => obs.disconnect();
@@ -4878,6 +4900,36 @@ export default function AdminPage() {
                     <span className="ml-auto text-xs text-[#666]">{total.toLocaleString()} total</span>
                   </div>
 
+                  {/* Search bar — title-only ILIKE filter applied on the
+                      server. Debounced 300ms (see treeVideosSearchInput
+                      effect) so each keystroke doesn't fire a query. */}
+                  <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3">
+                    <div className="flex items-center gap-2 bg-[#0a0a0a] border border-[#1f1f1f] rounded-xl px-3 py-2 focus-within:border-blue-500 transition">
+                      <svg className="w-4 h-4 text-[#555] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                      <input
+                        type="text"
+                        value={treeVideosSearchInput}
+                        onChange={e => setTreeVideosSearchInput(e.target.value)}
+                        placeholder="Search videos by title…"
+                        className="flex-1 bg-transparent text-white text-sm placeholder-[#555] focus:outline-none"
+                      />
+                      {treeVideosSearchInput && (
+                        <button
+                          type="button"
+                          onClick={() => setTreeVideosSearchInput('')}
+                          className="text-[#666] hover:text-white"
+                          title="Clear search"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Sort pills — same options as user-side videos page,
                       with `centroid` added (and made the default) since
                       the admin view sorts by representativeness first. */}
@@ -4920,7 +4972,9 @@ export default function AdminPage() {
                     </div>
                   ) : videos.length === 0 ? (
                     <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
-                      No videos in this cluster.
+                      {treeVideosSearch
+                        ? <>No videos match &ldquo;{treeVideosSearch}&rdquo; in this cluster.</>
+                        : 'No videos in this cluster.'}
                     </div>
                   ) : (
                     <>
@@ -5007,7 +5061,7 @@ export default function AdminPage() {
                           <div className="text-center">
                             <button
                               type="button"
-                              onClick={() => treeVideosClusterId && fetchClusterVideos(treeVideosClusterId, treeVideosOffset, treeVideosSort)}
+                              onClick={() => treeVideosClusterId && fetchClusterVideos(treeVideosClusterId, treeVideosOffset, treeVideosSort, treeVideosSearch)}
                               disabled={treeVideosLoading}
                               className="px-6 py-2 bg-white/10 hover:bg-white/15 disabled:opacity-50 text-white rounded-xl text-sm transition"
                             >

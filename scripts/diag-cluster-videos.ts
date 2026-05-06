@@ -34,6 +34,13 @@ async function main() {
   const p2 = await getClusterVideos({ clusterId: c.id, sort: 'centroid', limit: 5, offset: 5 });
   console.log(`\nPagination check: page1 last id=${p1.videos.at(-1)?.videoId}  page2 first id=${p2.videos[0]?.videoId}  same=${p1.videos.at(-1)?.videoId === p2.videos[0]?.videoId}`);
 
+  // Search filter
+  for (const q of ['young', 'awakening', 'qqzznotreal']) {
+    const sr = await getClusterVideos({ clusterId: c.id, sort: 'centroid', limit: 3, offset: 0, q });
+    console.log(`\nSearch q="${q}"  total=${sr.total}  returned=${sr.videos.length}`);
+    for (const v of sr.videos) console.log(`  ${(v.title ?? '').slice(0, 80)}`);
+  }
+
   await pool.end();
 }
 
