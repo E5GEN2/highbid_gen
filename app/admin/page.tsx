@@ -216,8 +216,16 @@ export default function AdminPage() {
   useEffect(() => { treeVideosTotalRef.current   = treeVideosData?.total ?? 0; }, [treeVideosData?.total]);
 
   const treeVideosSentinelRef = useRef<HTMLDivElement | null>(null);
+  // The sentinel only renders once treeVideosData has arrived AND there
+  // are more pages to fetch. Track that flag in deps so the effect
+  // re-runs when the sentinel actually appears in the DOM — otherwise
+  // we'd attach the observer to a null ref on initial open and never
+  // retry, leaving auto-load silently broken.
+  const treeVideosHasMore = treeVideosData != null
+    && treeVideosData.videos.length < treeVideosData.total;
   useEffect(() => {
     if (treeVideosClusterId == null) return;
+    if (!treeVideosHasMore) return;
     const el = treeVideosSentinelRef.current;
     if (!el) return;
     const obs = new IntersectionObserver(entries => {
@@ -230,7 +238,7 @@ export default function AdminPage() {
     }, { rootMargin: '300px' });  // fire 300px before sentinel actually hits viewport
     obs.observe(el);
     return () => obs.disconnect();
-  }, [treeVideosClusterId, fetchClusterVideos]);
+  }, [treeVideosClusterId, treeVideosHasMore, fetchClusterVideos]);
 
   // Initial load + poll while a run is in progress
   useEffect(() => {
@@ -4819,8 +4827,8 @@ export default function AdminPage() {
                 ? (parent.label || parent.autoLabel || `Cluster #${parent.clusterIndex}`)
                 : 'Loading…';
               const sortOptions: Array<{ value: TreeVideoSort; label: string; title?: string }> = [
-                { value: 'centroid', label: 'Most representative', title: 'Closest to cluster centroid (lowest d) — the niche\'s core samples' },
-                { value: 'outlier',  label: 'Edge of niche',       title: 'Furthest from cluster centroid (highest d) — niche-edge or possible misclassifications' },
+                { value: 'centroid', label: 'd ↑ closest to centroid',   title: 'Sort by distance-to-centroid ascending — most representative samples first' },
+                { value: 'outlier',  label: 'd ↓ farthest from centroid', title: 'Sort by distance-to-centroid descending — niche-edge or possible misclassifications first' },
                 { value: 'score',    label: 'Score' },
                 { value: 'views',    label: 'Views' },
                 { value: 'date',     label: 'Newest' },
