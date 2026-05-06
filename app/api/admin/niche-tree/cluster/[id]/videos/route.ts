@@ -5,7 +5,7 @@ import { getClusterVideos, type ClusterVideoSort } from '@/lib/niche-tree';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const SORTS: readonly ClusterVideoSort[] = ['centroid', 'score', 'views', 'date', 'oldest', 'likes'];
+const SORTS: readonly ClusterVideoSort[] = ['centroid', 'outlier', 'score', 'views', 'date', 'oldest', 'likes'];
 
 /**
  * GET /api/admin/niche-tree/cluster/:id/videos?sort=centroid&limit=60&offset=0

@@ -137,7 +137,7 @@ export default function AdminPage() {
   // treeVideosClusterId being non-null is the on/off signal — closing
   // it just resets back to the cluster grid (or whichever drill-down
   // level was active before, since treeViewedClusterId is preserved).
-  type TreeVideoSort = 'centroid' | 'score' | 'views' | 'date' | 'oldest' | 'likes';
+  type TreeVideoSort = 'centroid' | 'outlier' | 'score' | 'views' | 'date' | 'oldest' | 'likes';
   interface TreeVideoRow {
     videoId: number; url: string | null; title: string | null;
     thumbnail: string | null; channelName: string | null;
@@ -200,6 +200,37 @@ export default function AdminPage() {
     fetchClusterVideos(treeVideosClusterId, 0, treeVideosSort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treeVideosSort]);
+
+  // ── Infinite scroll for the videos grid ──────────────────────
+  // Sentinel + IntersectionObserver. Refs hold the current state
+  // so the observer callback always reads fresh values without
+  // having to rebuild the observer on every offset/loading tick
+  // (which would race with fetches in flight).
+  const treeVideosLoadingRef = useRef(treeVideosLoading);
+  const treeVideosOffsetRef  = useRef(treeVideosOffset);
+  const treeVideosSortRef    = useRef(treeVideosSort);
+  const treeVideosTotalRef   = useRef(treeVideosData?.total ?? 0);
+  useEffect(() => { treeVideosLoadingRef.current = treeVideosLoading; }, [treeVideosLoading]);
+  useEffect(() => { treeVideosOffsetRef.current  = treeVideosOffset;  }, [treeVideosOffset]);
+  useEffect(() => { treeVideosSortRef.current    = treeVideosSort;    }, [treeVideosSort]);
+  useEffect(() => { treeVideosTotalRef.current   = treeVideosData?.total ?? 0; }, [treeVideosData?.total]);
+
+  const treeVideosSentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (treeVideosClusterId == null) return;
+    const el = treeVideosSentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(entries => {
+      if (!entries[0]?.isIntersecting) return;
+      if (treeVideosLoadingRef.current) return;
+      const total  = treeVideosTotalRef.current;
+      const offset = treeVideosOffsetRef.current;
+      if (total === 0 || offset >= total) return;
+      fetchClusterVideos(treeVideosClusterId, offset, treeVideosSortRef.current);
+    }, { rootMargin: '300px' });  // fire 300px before sentinel actually hits viewport
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [treeVideosClusterId, fetchClusterVideos]);
 
   // Initial load + poll while a run is in progress
   useEffect(() => {
@@ -4787,8 +4818,9 @@ export default function AdminPage() {
               const parentLabel = parent
                 ? (parent.label || parent.autoLabel || `Cluster #${parent.clusterIndex}`)
                 : 'Loading…';
-              const sortOptions: Array<{ value: TreeVideoSort; label: string }> = [
-                { value: 'centroid', label: 'Most representative' },
+              const sortOptions: Array<{ value: TreeVideoSort; label: string; title?: string }> = [
+                { value: 'centroid', label: 'Most representative', title: 'Closest to cluster centroid (lowest d) — the niche\'s core samples' },
+                { value: 'outlier',  label: 'Edge of niche',       title: 'Furthest from cluster centroid (highest d) — niche-edge or possible misclassifications' },
                 { value: 'score',    label: 'Score' },
                 { value: 'views',    label: 'Views' },
                 { value: 'date',     label: 'Newest' },
@@ -4846,6 +4878,7 @@ export default function AdminPage() {
                       <button
                         key={opt.value}
                         onClick={() => setTreeVideosSort(opt.value)}
+                        title={opt.title}
                         className={`px-3 py-1 rounded-full text-xs transition ${
                           treeVideosSort === opt.value
                             ? 'bg-white text-black font-medium'
@@ -4954,18 +4987,26 @@ export default function AdminPage() {
                         })}
                       </div>
 
-                      {/* Load more */}
+                      {/* Auto-load: invisible sentinel that the
+                          IntersectionObserver watches. Sits 300px above
+                          the load-more button (rootMargin) so the next
+                          page is already in flight before the user runs
+                          out of cards. The button stays as a manual
+                          fallback for keyboard nav / odd browsers. */}
                       {videos.length < total && (
-                        <div className="text-center">
-                          <button
-                            type="button"
-                            onClick={() => treeVideosClusterId && fetchClusterVideos(treeVideosClusterId, treeVideosOffset, treeVideosSort)}
-                            disabled={treeVideosLoading}
-                            className="px-6 py-2 bg-white/10 hover:bg-white/15 disabled:opacity-50 text-white rounded-xl text-sm transition"
-                          >
-                            {treeVideosLoading ? 'Loading…' : `Load more (${videos.length}/${total})`}
-                          </button>
-                        </div>
+                        <>
+                          <div ref={treeVideosSentinelRef} aria-hidden className="h-px w-full" />
+                          <div className="text-center">
+                            <button
+                              type="button"
+                              onClick={() => treeVideosClusterId && fetchClusterVideos(treeVideosClusterId, treeVideosOffset, treeVideosSort)}
+                              disabled={treeVideosLoading}
+                              className="px-6 py-2 bg-white/10 hover:bg-white/15 disabled:opacity-50 text-white rounded-xl text-sm transition"
+                            >
+                              {treeVideosLoading ? 'Loading…' : `Load more (${videos.length}/${total})`}
+                            </button>
+                          </div>
+                        </>
                       )}
                     </>
                   )}

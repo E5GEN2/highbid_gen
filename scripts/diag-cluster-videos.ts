@@ -20,7 +20,7 @@ async function main() {
   const c = r.rows[0];
   console.log(`Picked L1 cluster id=${c.id}  label=${c.label || c.auto_label || '?'}  videos=${c.video_count}`);
 
-  const sorts: ClusterVideoSort[] = ['centroid', 'score', 'views', 'date', 'oldest', 'likes'];
+  const sorts: ClusterVideoSort[] = ['centroid', 'outlier', 'score', 'views', 'date', 'oldest', 'likes'];
   for (const sort of sorts) {
     const res = await getClusterVideos({ clusterId: c.id, sort, limit: 3, offset: 0 });
     console.log(`\n=== sort=${sort}  total=${res.total}  returned=${res.videos.length} ===`);

@@ -1398,7 +1398,7 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
 // most representative samples first (same logic the 4-thumb strip uses).
 // ──────────────────────────────────────────────────────────────────────
 
-export type ClusterVideoSort = 'centroid' | 'score' | 'views' | 'date' | 'oldest' | 'likes';
+export type ClusterVideoSort = 'centroid' | 'outlier' | 'score' | 'views' | 'date' | 'oldest' | 'likes';
 
 export interface ClusterVideoRow {
   videoId: number;
@@ -1484,6 +1484,7 @@ export async function getClusterVideos(opts: {
   // they're concatenated. NEVER let untrusted strings into ORDER BY.
   const orderMap: Record<ClusterVideoSort, string> = {
     centroid: 'a.distance_to_centroid ASC NULLS LAST',
+    outlier:  'a.distance_to_centroid DESC NULLS LAST',
     score:    'v.score DESC NULLS LAST',
     views:    'v.view_count DESC NULLS LAST',
     date:     'v.posted_at DESC NULLS LAST',
