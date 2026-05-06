@@ -1,113 +1,170 @@
 /**
  * Xgodo Device Proxy Manager
- * Fetches online devices from xgodo API and provides rotating proxy URLs.
  *
- * All devices share the same host/port — only credentials change.
- * Host + port are configurable via admin_config (keys: xgodo_proxy_host, xgodo_proxy_port).
+ * Pulls the rentable proxy list from xgodo's admin API and exposes
+ * round-robin / random pickers used by yt-dlp downloads, niche-spy
+ * fetchers, and the YouTube enrichment pipeline.
+ *
+ * Endpoint (new dealer):
+ *   GET https://xgodo.com/server/api/v2/admin/devices/proxies
+ *   Authorization: Bearer <xgodo_proxy_token | xgodo_api_token>
+ *
+ * Response shape:
+ *   { total, proxies: [{ connection_id, password, name, bytes_*, device: {
+ *       remote_device_id, country, online, is_rented, is_onMarket, ...
+ *     } }] }
+ *
+ * Each proxy is reachable at host:port from admin_config (or default
+ * xgodo.com:3008) using Basic auth: connection_id : password.
+ *
+ * Filters applied (all configurable via admin_config):
+ *   - Country (default 'us'): xgodo_proxy_country, set to '' / 'all' to skip
+ *   - Online: device.online === true (always required)
+ *   - Detached devices (device == null): always skipped
  */
 
 import { getPool } from './db';
 
-const XGODO_API = 'https://xgodo.com/api/v2';
-const DEFAULT_PROXY_HOST = 'ec2-44-200-81-136.compute-1.amazonaws.com';
+const XGODO_PROXIES_URL = 'https://xgodo.com/server/api/v2/admin/devices/proxies';
+// 54.36.178.74:1082 is the working SOCKS/HTTP gateway for the new
+// dealer's inventory. xgodo.com:3008 looks plausible (matches the
+// admin domain) but auth fails there — only this OVH IP accepts the
+// connection_id:password from the admin endpoint. Verified: 34/51 US
+// online proxies returned 200 OK end-to-end via this host.
+const DEFAULT_PROXY_HOST = '54.36.178.74';
 const DEFAULT_PROXY_PORT = 1082;
+const DEFAULT_COUNTRY = 'us';
 
-/** Read proxy host/port from admin_config, fallback to defaults */
-async function getProxyHostPort(): Promise<{ host: string; port: number }> {
+/** Read proxy host / port / country filter from admin_config, with defaults. */
+async function getProxyConfig(): Promise<{ host: string; port: number; country: string }> {
   try {
     const pool = await getPool();
-    const res = await pool.query("SELECT key, value FROM admin_config WHERE key IN ('xgodo_proxy_host', 'xgodo_proxy_port')");
+    const res = await pool.query(
+      "SELECT key, value FROM admin_config WHERE key IN ('xgodo_proxy_host', 'xgodo_proxy_port', 'xgodo_proxy_country')",
+    );
     let host = DEFAULT_PROXY_HOST;
     let port = DEFAULT_PROXY_PORT;
+    let country = DEFAULT_COUNTRY;
     for (const row of res.rows) {
-      if (row.key === 'xgodo_proxy_host' && row.value) host = row.value;
-      if (row.key === 'xgodo_proxy_port' && row.value) port = parseInt(row.value) || DEFAULT_PROXY_PORT;
+      if (row.key === 'xgodo_proxy_host'    && row.value) host    = row.value;
+      if (row.key === 'xgodo_proxy_port'    && row.value) port    = parseInt(row.value) || DEFAULT_PROXY_PORT;
+      if (row.key === 'xgodo_proxy_country' && row.value !== undefined && row.value !== null) country = String(row.value).toLowerCase();
     }
-    return { host, port };
+    return { host, port, country };
   } catch {
-    return { host: DEFAULT_PROXY_HOST, port: DEFAULT_PROXY_PORT };
+    return { host: DEFAULT_PROXY_HOST, port: DEFAULT_PROXY_PORT, country: DEFAULT_COUNTRY };
   }
 }
 
-interface XgodoDevice {
-  remote_device_id: string;
-  online: boolean;
-  networkType?: string;
-  proxy_username: string;
-  proxy_password: string | null;
-  proxy_passwords?: Array<{ label: string; password: string }>;
-}
-
-interface ProxyInfo {
-  url: string; // http://user:pass@host:port
-  deviceId: string;
-  networkType: string;
-}
-
-let cachedProxies: ProxyInfo[] = [];
-let lastFetchTime = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 min
-let rotationIndex = 0;
-
-/** Get xgodo API token from admin config */
+/** Bearer token for the xgodo admin API. Tries the dedicated proxy
+ *  token first, falls back to the legacy admin tokens, then env. */
 async function getXgodoToken(): Promise<string> {
   const pool = await getPool();
-  // Try niche spy token first, then general xgodo token
-  for (const key of ['xgodo_niche_spy_token', 'xgodo_api_token']) {
+  for (const key of ['xgodo_proxy_token', 'xgodo_admin_token', 'xgodo_api_token', 'xgodo_niche_spy_token']) {
     const res = await pool.query("SELECT value FROM admin_config WHERE key = $1", [key]);
     if (res.rows[0]?.value) return res.rows[0].value;
   }
   return process.env.XGODO_API_TOKEN || '';
 }
 
-/** Fetch online devices from xgodo and build proxy list */
+interface XgodoDeviceMeta {
+  remote_device_id: string;
+  user_id: string | null;
+  name: string | null;
+  brand: string | null;
+  model: string | null;
+  country: string | null;
+  online: boolean;
+  is_rented: boolean;
+  is_onMarket: boolean;
+}
+
+interface XgodoProxy {
+  connection_id: string;
+  password: string;
+  name: string | null;
+  bytes_last_24h: number;
+  bytes_lifetime: number;
+  device: XgodoDeviceMeta | null;
+}
+
+export interface ProxyInfo {
+  /** http://connection_id:password@host:port */
+  url: string;
+  /** Device the proxy is anchored to. */
+  deviceId: string;
+  /** ISO 3166-1 alpha-2 (e.g. 'us'), or 'unknown' if missing. */
+  country: string;
+  /** xgodo's display name for the proxy device. */
+  name: string | null;
+}
+
+let cachedProxies: ProxyInfo[] = [];
+let cachedTotal = 0;          // raw count returned by xgodo (pre-filter)
+let cachedOnline = 0;         // count of online proxies (pre-country-filter)
+let lastFetchTime = 0;
+let lastError: string | null = null;
+const CACHE_TTL = 5 * 60 * 1000; // 5 min
+let rotationIndex = 0;
+
 async function refreshProxies(): Promise<ProxyInfo[]> {
   const token = await getXgodoToken();
   if (!token) {
+    lastError = 'No xgodo token configured';
     console.warn('[proxy] No xgodo token configured');
     return [];
   }
 
   try {
-    const { host, port } = await getProxyHostPort();
-    const res = await fetch(`${XGODO_API}/devices`, {
+    const { host, port, country } = await getProxyConfig();
+    const res = await fetch(XGODO_PROXIES_URL, {
       headers: { 'Authorization': `Bearer ${token}` },
     });
-
     if (!res.ok) {
-      console.error(`[proxy] Failed to fetch devices: ${res.status}`);
-      return cachedProxies; // Return stale cache
+      lastError = `Failed to fetch proxies: HTTP ${res.status}`;
+      console.error(`[proxy] ${lastError}`);
+      return cachedProxies;  // serve stale cache rather than nothing
     }
 
-    const data = await res.json();
-    const devices: XgodoDevice[] = Array.isArray(data) ? data : data.devices || [];
+    const data = await res.json() as { total?: number; proxies?: XgodoProxy[] };
+    const all = Array.isArray(data?.proxies) ? data.proxies : [];
+    cachedTotal = data.total ?? all.length;
 
-    const proxies: ProxyInfo[] = [];
-    for (const d of devices) {
-      if (!d.online) continue;
-      // Only use devices with proxy_password set — others aren't routing
-      if (!d.proxy_password) continue;
-
-      const password = d.proxy_password;
-      const username = d.proxy_username || d.remote_device_id;
-      proxies.push({
-        url: `http://${username}:${password}@${host}:${port}`,
-        deviceId: d.remote_device_id,
-        networkType: d.networkType || 'unknown',
+    const wantCountry = country && country !== 'all' && country !== '' ? country : null;
+    const built: ProxyInfo[] = [];
+    let onlineCount = 0;
+    for (const p of all) {
+      const dev = p.device;
+      if (!dev) continue;            // detached device, no use to us
+      if (!dev.online) continue;     // skip offline
+      onlineCount += 1;
+      if (wantCountry && (dev.country ?? '').toLowerCase() !== wantCountry) continue;
+      if (!p.connection_id || !p.password) continue;
+      built.push({
+        url: `http://${p.connection_id}:${p.password}@${host}:${port}`,
+        deviceId: dev.remote_device_id,
+        country: (dev.country ?? 'unknown').toLowerCase(),
+        name: p.name ?? dev.name ?? null,
       });
     }
 
-    cachedProxies = proxies;
+    cachedProxies = built;
+    cachedOnline = onlineCount;
     lastFetchTime = Date.now();
-    console.log(`[proxy] Refreshed: ${proxies.length} online proxies (host=${host}:${port})`);
-    return proxies;
+    lastError = null;
+    console.log(
+      `[proxy] Refreshed: ${built.length} usable / ${onlineCount} online / ${cachedTotal} total ` +
+      `(country=${wantCountry ?? 'any'}, host=${host}:${port})`
+    );
+    return built;
   } catch (err) {
-    console.error('[proxy] Refresh error:', (err as Error).message);
+    lastError = (err as Error).message;
+    console.error('[proxy] Refresh error:', lastError);
     return cachedProxies;
   }
 }
 
-/** Get all available proxies (cached, refreshes every 5 min) */
+/** Get all available proxies (cached, refreshes every 5 min). */
 export async function getProxies(): Promise<ProxyInfo[]> {
   if (Date.now() - lastFetchTime > CACHE_TTL || cachedProxies.length === 0) {
     await refreshProxies();
@@ -115,7 +172,7 @@ export async function getProxies(): Promise<ProxyInfo[]> {
   return cachedProxies;
 }
 
-/** Get a single proxy (round-robin rotation) */
+/** Round-robin proxy picker. Walks the cached list each call. */
 export async function getProxy(): Promise<ProxyInfo | null> {
   const proxies = await getProxies();
   if (proxies.length === 0) return null;
@@ -124,19 +181,37 @@ export async function getProxy(): Promise<ProxyInfo | null> {
   return proxy;
 }
 
-/** Get a random proxy */
+/** Random proxy picker — used when callers want pure jitter. */
 export async function getRandomProxy(): Promise<ProxyInfo | null> {
   const proxies = await getProxies();
   if (proxies.length === 0) return null;
   return proxies[Math.floor(Math.random() * proxies.length)];
 }
 
-/** Get proxy stats */
-export async function getProxyStats(): Promise<{ total: number; online: number; cached: boolean; cacheAge: number }> {
+/** Force-refresh the proxy cache. Useful after admin_config changes. */
+export async function reloadProxies(): Promise<ProxyInfo[]> {
+  lastFetchTime = 0;
+  cachedProxies = [];
+  return refreshProxies();
+}
+
+/** Stats surfaced in admin dashboards. */
+export async function getProxyStats(): Promise<{
+  total: number;     // total proxies returned by xgodo
+  online: number;    // online of the total (pre-country-filter)
+  usable: number;    // online + matches country filter
+  cached: boolean;
+  cacheAge: number;
+  error: string | null;
+}> {
+  // If never fetched, do it now so admin pages don't show 0/0.
+  if (lastFetchTime === 0) await refreshProxies();
   return {
-    total: cachedProxies.length,
-    online: cachedProxies.length,
+    total: cachedTotal,
+    online: cachedOnline,
+    usable: cachedProxies.length,
     cached: Date.now() - lastFetchTime < CACHE_TTL,
     cacheAge: Math.round((Date.now() - lastFetchTime) / 1000),
+    error: lastError,
   };
 }

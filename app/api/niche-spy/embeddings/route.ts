@@ -382,7 +382,7 @@ export async function GET(req: NextRequest) {
     keys: keyStatus,
     proxy: {
       ...proxyStats,
-      current: currentProxy ? { deviceId: currentProxy.deviceId.substring(0, 8), networkType: currentProxy.networkType } : null,
+      current: currentProxy ? { deviceId: currentProxy.deviceId.substring(0, 8), country: currentProxy.country, name: currentProxy.name } : null,
     },
     keywordCoverage: coverage,
   });

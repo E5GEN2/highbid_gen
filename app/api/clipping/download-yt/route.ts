@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getApiUser } from '@/lib/api-auth';
 import { CLIPS_DIR } from '@/lib/clips-dir';
+import { getProxy } from '@/lib/xgodo-proxy';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 
 const execFileAsync = promisify(execFile);
-
-// Proxy config for yt-dlp to avoid YouTube bot detection
-const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@xgodo.com:3008';
 
 /**
  * POST /api/clipping/download-yt
@@ -48,11 +46,22 @@ export async function POST(req: NextRequest) {
       };
 
       try {
+        // Pick a fresh proxy from the dealer pool. Same one is reused
+        // for the dump-json + download below so the YouTube session
+        // stays consistent across calls.
+        const proxy = await getProxy();
+        if (!proxy) {
+          send('error', { error: 'No proxy available — check xgodo dealer config' });
+          controller.close();
+          return;
+        }
+        const proxyUrl = proxy.url;
+
         // Step 1: Get video info
         send('progress', { step: 'info', message: 'Fetching video info...' });
 
         const { stdout: infoJson } = await execFileAsync('yt-dlp', [
-          '--dump-json', '--no-warnings', '--proxy', PROXY_URL, url,
+          '--dump-json', '--no-warnings', '--proxy', proxyUrl, url,
         ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
 
         const info = JSON.parse(infoJson);
@@ -77,7 +86,7 @@ export async function POST(req: NextRequest) {
             '--no-warnings',
             '--no-playlist',
             '--newline',  // Force progress on new lines
-            '--proxy', PROXY_URL,
+            '--proxy', proxyUrl,
             url,
           ]);
 

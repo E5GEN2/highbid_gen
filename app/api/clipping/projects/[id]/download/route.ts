@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { CLIPS_DIR } from '@/lib/clips-dir';
 import { validateProject, setStepRunning, setStepProgress, setStepDone, setStepError, logStep } from '@/lib/clipping-pipeline';
+import { getProxy } from '@/lib/xgodo-proxy';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 
 const execFileAsync = promisify(execFile);
-const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@xgodo.com:3008';
 
 /**
  * POST /api/clipping/projects/{id}/download
@@ -44,9 +44,15 @@ async function runDownload(projectId: string, url: string) {
   fs.mkdirSync(dir, { recursive: true });
   const outputPath = path.join(dir, 'source.mp4');
 
+  // Pull a fresh proxy from the dealer pool. Reused across the
+  // dump-json + download below so the YT session stays consistent.
+  const proxy = await getProxy();
+  if (!proxy) throw new Error('No proxy available — check xgodo dealer config');
+  const proxyUrl = proxy.url;
+
   // Get video info
   const { stdout: infoJson } = await execFileAsync('yt-dlp', [
-    '--dump-json', '--no-warnings', '--proxy', PROXY_URL, url,
+    '--dump-json', '--no-warnings', '--proxy', proxyUrl, url,
   ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
   const info = JSON.parse(infoJson);
   await setStepProgress(projectId, { percent: 5, title: info.title, duration: info.duration });
@@ -57,7 +63,7 @@ async function runDownload(projectId: string, url: string) {
       '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
       '--merge-output-format', 'mp4',
       '-o', outputPath, '--no-warnings', '--no-playlist', '--newline',
-      '--proxy', PROXY_URL, url,
+      '--proxy', proxyUrl, url,
     ]);
 
     let lastPct = 5;

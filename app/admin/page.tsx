@@ -1052,7 +1052,7 @@ export default function AdminPage() {
   const [xgodoToken, setXgodoToken] = useState('');
   const [nicheSpyToken, setNicheSpyToken] = useState('');
   const [xgodoJobId, setXgodoJobId] = useState('');
-  const [xgodoProxyHost, setXgodoProxyHost] = useState('ec2-44-200-81-136.compute-1.amazonaws.com');
+  const [xgodoProxyHost, setXgodoProxyHost] = useState('54.36.178.74');
   const [xgodoProxyPort, setXgodoProxyPort] = useState('1082');
   const [channelCheckApiKey, setChannelCheckApiKey] = useState('');
   const [configSaving, setConfigSaving] = useState(false);
@@ -1140,7 +1140,7 @@ export default function AdminPage() {
         setNichePriorityKeywords(data.config.niche_priority_keywords || '');
         setNicheYtApiKeys(data.config.niche_yt_api_keys || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
-        setXgodoProxyHost(data.config.xgodo_proxy_host || 'ec2-44-200-81-136.compute-1.amazonaws.com');
+        setXgodoProxyHost(data.config.xgodo_proxy_host || '54.36.178.74');
         setXgodoProxyPort(data.config.xgodo_proxy_port || '1082');
         setChannelCheckApiKey(data.config.channel_check_api_key || '');
         setSchedYoutubeKey(data.config.youtube_api_key || '');
@@ -2249,7 +2249,7 @@ export default function AdminPage() {
                   type="text"
                   value={xgodoProxyHost}
                   onChange={(e) => setXgodoProxyHost(e.target.value)}
-                  placeholder="ec2-44-200-81-136.compute-1.amazonaws.com"
+                  placeholder="54.36.178.74"
                   className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono text-sm"
                 />
               </div>

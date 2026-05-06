@@ -5,13 +5,13 @@ import { planChunks, extractChunks, analyzeVideoChunk, mergeChunkResults, VIDEO_
 import { selectClips } from '@/lib/gemini-clip-selector';
 import { cutClip } from '@/lib/clip-cutter';
 import { CLIPS_DIR } from '@/lib/clips-dir';
+import { getProxy } from '@/lib/xgodo-proxy';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 
 const execFileAsync = promisify(execFile);
-const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@xgodo.com:3008';
 
 /**
  * POST /api/clipping/test-pipeline
@@ -59,12 +59,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Source file not found. Download first.', projectId }, { status: 400 });
     } else if (url && url.match(/(?:youtube\.com|youtu\.be)/i)) {
       await dbLog(projectId, 'download', 'active', 'Downloading from YouTube...');
+      const proxy = await getProxy();
+      if (!proxy) throw new Error('No proxy available — check xgodo dealer config');
       await execFileAsync('yt-dlp', [
         '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         '--merge-output-format', 'mp4',
         '-o', outputPath,
         '--no-warnings', '--no-playlist',
-        '--proxy', PROXY_URL,
+        '--proxy', proxy.url,
         url,
       ], { timeout: 600000 });
       const size = fs.statSync(outputPath).size;

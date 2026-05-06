@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getProxy } from '@/lib/xgodo-proxy';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
-const PROXY_URL = 'http://dce70f86-5501-4da9-a8c8-ea48f4418da6:QFZmMFWSWnQASZYy@xgodo.com:3008';
 
 /**
  * GET /api/clipping/test-ytdlp?url=...&action=info|download
@@ -17,9 +17,15 @@ export async function GET(req: NextRequest) {
     // Check yt-dlp version
     const { stdout: version } = await execFileAsync('yt-dlp', ['--version'], { timeout: 5000 });
 
+    const proxy = await getProxy();
+    if (!proxy) {
+      return NextResponse.json({ ok: false, error: 'No proxy available — check xgodo dealer config' }, { status: 503 });
+    }
+    const proxyUrl = proxy.url;
+
     if (action === 'info') {
       const { stdout, stderr } = await execFileAsync('yt-dlp', [
-        '--dump-json', '--proxy', PROXY_URL, url,
+        '--dump-json', '--proxy', proxyUrl, url,
       ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
 
       const info = JSON.parse(stdout);
@@ -40,7 +46,7 @@ export async function GET(req: NextRequest) {
         '--merge-output-format', 'mp4',
         '-o', outputPath,
         '--no-warnings', '--no-playlist',
-        '--proxy', PROXY_URL,
+        '--proxy', proxyUrl,
         url,
       ], { timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
 
