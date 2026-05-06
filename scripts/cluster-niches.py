@@ -180,9 +180,58 @@ def main():
         metric='euclidean'
     )
     labels = clusterer.fit_predict(X_reduced)
+    num_clusters_raw = len(set(labels)) - (1 if -1 in labels else 0)
+    num_noise_raw = int(np.sum(labels == -1))
+    sys.stderr.write(f"[cluster] HDBSCAN: {num_clusters_raw} clusters, {num_noise_raw} noise (pre-cleanup)\n")
+
+    # --- Outlier cleanup: per-cluster Tukey IQR fence on centroid distance ---
+    # HDBSCAN clusters via mutual-reachability distance, which builds a
+    # single-linkage tree. Long "tendrils" can pull stragglers into a
+    # cluster — points labeled as in-cluster but euclidean-far from the
+    # centroid in feature space. Example from a real run: 7 scary-story
+    # videos labeled into a "bitcoin crypto" cluster at d=6.29 while the
+    # core sat at d<0.5.
+    #
+    # Per cluster: compute Q1, Q3, IQR on euclidean distance to centroid.
+    # Demote anything above (Q3 + iqr_mult * IQR) back to noise (-1).
+    # Multiplier defaults to 3.0 — lenient enough to keep legitimate
+    # cluster-edge members, strict enough to catch the d=4-6 outliers
+    # that are clearly miscategorized.
+    iqr_mult = float(config.get('outlier_iqr_mult', 3.0))
+    cleanup_demoted = 0
+    cleanup_clusters_affected = 0
+    if iqr_mult > 0:
+        cluster_indices_raw = sorted(set(labels) - {-1})
+        for ci in cluster_indices_raw:
+            cluster_members = np.where(labels == ci)[0]
+            if cluster_members.size < 4:
+                continue  # too few points for meaningful quartiles
+            pts = X_reduced[cluster_members]
+            centroid = pts.mean(axis=0)
+            dists = np.linalg.norm(pts - centroid, axis=1)
+            q1, q3 = np.percentile(dists, [25, 75])
+            iqr = q3 - q1
+            if iqr <= 0:
+                continue  # degenerate (all distances equal); nothing to do
+            upper_fence = q3 + iqr_mult * iqr
+            outlier_local = dists > upper_fence
+            n_out = int(outlier_local.sum())
+            if n_out == 0:
+                continue
+            labels[cluster_members[outlier_local]] = -1
+            cleanup_demoted += n_out
+            cleanup_clusters_affected += 1
+
     num_clusters = len(set(labels)) - (1 if -1 in labels else 0)
     num_noise = int(np.sum(labels == -1))
-    sys.stderr.write(f"[cluster] HDBSCAN: {num_clusters} clusters, {num_noise} noise\n")
+    if cleanup_demoted > 0:
+        sys.stderr.write(
+            f"[cluster] outlier cleanup (Tukey {iqr_mult}*IQR): demoted "
+            f"{cleanup_demoted} videos across {cleanup_clusters_affected} "
+            f"clusters; final {num_clusters} clusters, {num_noise} noise\n"
+        )
+    else:
+        sys.stderr.write(f"[cluster] outlier cleanup: nothing to demote\n")
 
     # --- 2D UMAP for scatter (optional) ---
     # The user-side scatter view (/api/niche-spy/clusters/scatter) needs

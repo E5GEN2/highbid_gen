@@ -175,6 +175,13 @@ async function runOneClusteringPipeline(opts: {
   minClusterSize: number;
   minSamples: number;
   umapDims: number;
+  /**
+   * Tukey-fence multiplier for per-cluster outlier cleanup (Q3 + k*IQR).
+   * 0 disables cleanup, 3.0 is the default — lenient enough to keep
+   * legitimate cluster-edge members, strict enough to demote clear
+   * misclassifications back to noise. See cluster-niches.py.
+   */
+  outlierIqrMult?: number;
   scriptKeyword: string;     // sentinel for Python's logging/labeling path
   pyTimeoutMs?: number;      // default 90 min
 }): Promise<
@@ -195,6 +202,7 @@ async function runOneClusteringPipeline(opts: {
     min_samples:      opts.minSamples,
     umap_dims:        opts.umapDims,
     compute_2d:       false,
+    outlier_iqr_mult: opts.outlierIqrMult ?? 3.0,
   }));
 
   const startedAt = new Date().toISOString();
