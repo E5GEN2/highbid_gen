@@ -112,15 +112,18 @@ async function main() {
   const pool = await getPool();
 
   // Bulk insert with ON CONFLICT — idempotent so re-runs are safe.
+  // Only the key itself goes into the table; device/worker stay as
+  // dump-time telemetry (printed above) since they're not used for
+  // routing or anything else downstream.
   let inserted = 0;
   let skippedDup = 0;
   for (const r of unique) {
     const res = await pool.query(
-      `INSERT INTO xgodo_api_keys (service, key, remote_device_id, worker, source, status)
-       VALUES ($1, $2, $3, $4, 'xgodo', 'active')
+      `INSERT INTO xgodo_api_keys (service, key, source, status)
+       VALUES ($1, $2, 'xgodo', 'active')
        ON CONFLICT (service, key) DO NOTHING
        RETURNING id`,
-      [serviceArg, r.key, r.remote_device_id, r.worker],
+      [serviceArg, r.key],
     );
     if (res.rowCount && res.rowCount > 0) inserted += 1;
     else skippedDup += 1;

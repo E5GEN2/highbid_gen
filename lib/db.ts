@@ -791,9 +791,9 @@ export async function initSchema(): Promise<void> {
     // keys migrated out of the admin_config newline-string. One row per
     // (service, key); `service` scopes which API the key targets.
     //
-    // remote_device_id + worker are kept for provenance only — proxy
-    // routing uses the round-robin USA pool, not per-device pairing.
-    // Status drives scheduling:
+    // No device/worker columns: routing uses the round-robin USA proxy
+    // pool, not per-device pairing, and the worker name is just xgodo
+    // bookkeeping noise. Status drives scheduling:
     //   active            → eligible for the round-robin pool
     //   banned (with banned_until in future) → temporarily skipped (5-min 429/403 cooloff)
     //   invalid           → key never worked (dropped permanently from rotation)
@@ -803,8 +803,6 @@ export async function initSchema(): Promise<void> {
         id SERIAL PRIMARY KEY,
         service TEXT NOT NULL CHECK (service IN ('youtube_data', 'google_ai_studio')),
         key TEXT NOT NULL,
-        remote_device_id TEXT,
-        worker TEXT,
         source TEXT NOT NULL DEFAULT 'xgodo',
         status TEXT NOT NULL DEFAULT 'active',
         banned_until TIMESTAMPTZ,
