@@ -127,6 +127,13 @@ export interface TreeRun {
   numClusters: number;
   numNoise: number;
   totalVideos: number;
+  /**
+   * Live count of assignment rows with cluster_id != NULL for this run.
+   * Drifts from numClusters * avg(video_count) after cleanup or cascade
+   * passes; computed on read so it always matches the assignments table.
+   * Optional because subdivide runs / older payloads don't carry it.
+   */
+  numAssigned?: number;
   errorMessage: string | null;
   startedAt: string;
   completedAt: string | null;
@@ -1008,10 +1015,33 @@ export async function getLatestGlobalRun(): Promise<{
   if (runRes.rows.length === 0) return { run: null, clusters: [] };
 
   const r = runRes.rows[0];
+  // Live counts off the actual table — always consistent even after
+  // partial writes (e.g. Node killed mid-bake), cleanup demotions, or
+  // empty-cluster deletes. The denorm columns on niche_tree_runs are
+  // set at python-output time and can drift from reality, so prefer
+  // these for anything user-facing.
+  const liveStats = await pool.query<{
+    assigned: string; noise: string; clusters: string;
+  }>(
+    `SELECT
+       (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NOT NULL) AS assigned,
+       (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NULL)     AS noise,
+       (SELECT COUNT(*)::text FROM niche_tree_clusters    WHERE run_id = $1 AND parent_cluster_id IS NULL) AS clusters`,
+    [r.id],
+  );
+  const numAssigned = parseInt(liveStats.rows[0]?.assigned ?? '0') || 0;
+  const numNoiseLive = parseInt(liveStats.rows[0]?.noise ?? '0') || 0;
+  const numClustersLive = parseInt(liveStats.rows[0]?.clusters ?? '0') || 0;
   const run = {
     id: r.id, kind: r.kind, parentClusterId: r.parent_cluster_id, level: r.level,
     source: r.source, status: r.status, params: r.params || {},
-    numClusters: r.num_clusters, numNoise: r.num_noise, totalVideos: r.total_videos,
+    // Use live counts so partial-write or post-cleanup drift doesn't
+    // leak into the UI. Falls back to denorm only if the queries return
+    // zero (e.g. run still mid-write — assignments not yet inserted).
+    numClusters: numClustersLive || r.num_clusters,
+    numNoise:    numNoiseLive    || r.num_noise,
+    totalVideos: r.total_videos,
+    numAssigned,
     errorMessage: r.error_message, startedAt: r.started_at, completedAt: r.completed_at,
     progress: (r.progress && typeof r.progress === 'object') ? r.progress as TreeProgress : null,
   };

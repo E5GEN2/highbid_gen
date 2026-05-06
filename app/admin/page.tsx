@@ -53,6 +53,8 @@ export default function AdminPage() {
   interface TreeRun {
     id: number; status: 'running' | 'done' | 'error';
     source: string; numClusters: number; numNoise: number; totalVideos: number;
+    /** Live count of videos still attached to a cluster (post-cleanup). */
+    numAssigned?: number;
     errorMessage: string | null; startedAt: string; completedAt: string | null;
     params: Record<string, unknown>;
     progress?: TreeProgress | null;
@@ -4676,16 +4678,34 @@ export default function AdminPage() {
                     'text-red-400 font-medium'
                   }>{treeData.run.status}</span>
                 </span>
-                {treeData.run.status === 'done' && (
-                  <>
-                    <span className="text-[#444]">·</span>
-                    <span><span className="text-white font-medium">{treeData.run.numClusters}</span> clusters</span>
-                    <span className="text-[#444]">·</span>
-                    <span>{treeData.run.numNoise} noise</span>
-                    <span className="text-[#444]">·</span>
-                    <span>{treeData.run.totalVideos.toLocaleString()} videos</span>
-                  </>
-                )}
+                {treeData.run.status === 'done' && (() => {
+                  // Prefer the live numAssigned (computed off the
+                  // assignments table) over the stored numNoise, since
+                  // the latter is the HDBSCAN-time figure and doesn't
+                  // reflect post-cleanup demotions. If numAssigned isn't
+                  // present (older run row), fall back to total - noise.
+                  const total    = treeData.run.totalVideos;
+                  const assigned = treeData.run.numAssigned ?? Math.max(0, total - (treeData.run.numNoise ?? 0));
+                  const unassigned = Math.max(0, total - assigned);
+                  const pct = total > 0 ? (assigned / total * 100) : 0;
+                  return (
+                    <>
+                      <span className="text-[#444]">·</span>
+                      <span><span className="text-white font-medium">{treeData.run.numClusters}</span> clusters</span>
+                      <span className="text-[#444]">·</span>
+                      <span title="Videos with cluster_id != NULL in niche_tree_assignments (post-cleanup)">
+                        <span className="text-green-400 font-medium">{assigned.toLocaleString()}</span> in clusters
+                        <span className="text-[#666] ml-1">({pct.toFixed(1)}%)</span>
+                      </span>
+                      <span className="text-[#444]">·</span>
+                      <span title="Videos with cluster_id NULL — HDBSCAN noise + IQR/cascade demotions">
+                        <span className="text-[#aaa]">{unassigned.toLocaleString()}</span> unassigned
+                      </span>
+                      <span className="text-[#444]">·</span>
+                      <span>{total.toLocaleString()} total</span>
+                    </>
+                  );
+                })()}
                 <span className="text-[#444]">·</span>
                 <span title={new Date(treeData.run.startedAt).toLocaleString()}>started {fmtAgo(treeData.run.startedAt)}</span>
                 {treeData.run.completedAt && (
