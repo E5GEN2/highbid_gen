@@ -10,7 +10,7 @@ import { upsertVector } from '@/lib/vector-db';
 const DEFAULT_BATCH_SIZE = 5;
 const DEFAULT_DELAY_MS = 1000;
 
-const VALID_TARGETS: EmbeddingTarget[] = ['title_v1', 'title_v2', 'thumbnail_v2'];
+const VALID_TARGETS: EmbeddingTarget[] = ['title_v1', 'title_v2', 'thumbnail_v2', 'combined_v2'];
 function isValidTarget(t: unknown): t is EmbeddingTarget {
   return typeof t === 'string' && (VALID_TARGETS as string[]).includes(t);
 }
