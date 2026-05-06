@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
   const limit = Math.min(parseInt(body.limit) || 2000, 10000);
   const batchSize = Math.min(parseInt(body.batchSize) || DEFAULT_BATCH_SIZE, 100);
   const delayMs = parseInt(body.delayMs) || DEFAULT_DELAY_MS;
-  const threads = Math.min(parseInt(body.threads) || 1, 10);
+  const threads = Math.min(parseInt(body.threads) || 1, 30);
   const target: EmbeddingTarget = isValidTarget(body.target) ? body.target : 'title_v1';
   const cfg = TARGET_CONFIG[target];
 

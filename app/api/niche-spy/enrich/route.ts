@@ -15,7 +15,7 @@ import { fetchChannelFirstUpload } from '@/lib/yt-channel-age';
 
 const DEFAULT_BATCH_SIZE = 50;   // YT videos.list / channels.list cap is 50 IDs
 const DEFAULT_DELAY_MS = 500;
-const MAX_THREADS = 10;
+const MAX_THREADS = 30;
 
 /**
  * POST /api/niche-spy/enrich
