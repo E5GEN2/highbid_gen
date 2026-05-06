@@ -48,11 +48,29 @@ interface YtStatsItem {
  * Returns the number of clips updated and any errors. The caller can pass
  * { force: true } to skip the staleness gate.
  */
+export interface RefreshClipViewsProgress {
+  /** Total batches we'll send (videos.list takes 50 ids each). */
+  totalBatches: number;
+  /** Batches finished so far. */
+  completedBatches: number;
+  /** Total clips we're refreshing this run. */
+  totalClips: number;
+  /** Clips with rows updated successfully. */
+  updated: number;
+  /** Batches that failed (429/403/etc.). */
+  errors: number;
+  /** API calls made so far. */
+  calls: number;
+}
+
 export async function refreshClipViewCounts(options?: {
   clipIds?: number[];
   staleMinutes?: number;
   force?: boolean;
-}): Promise<{ ok: true; updated: number; errors: number; calls: number } | { ok: false; error: string }> {
+  /** Optional progress callback fired after each batch. Lets the SSE
+   *  endpoint push updates to the admin UI in real time. */
+  onProgress?: (p: RefreshClipViewsProgress) => void;
+}): Promise<{ ok: true; updated: number; errors: number; calls: number; totalClips: number } | { ok: false; error: string }> {
   const pool = await getPool();
   const stale = Math.max(1, options?.staleMinutes ?? 60);
   const force = !!options?.force;
@@ -77,7 +95,8 @@ export async function refreshClipViewCounts(options?: {
   );
 
   if (rows.rows.length === 0) {
-    return { ok: true, updated: 0, errors: 0, calls: 0 };
+    options?.onProgress?.({ totalBatches: 0, completedBatches: 0, totalClips: 0, updated: 0, errors: 0, calls: 0 });
+    return { ok: true, updated: 0, errors: 0, calls: 0, totalClips: 0 };
   }
 
   // Build (clipId → videoId) map; backfill youtube_video_id when missing.
@@ -95,11 +114,18 @@ export async function refreshClipViewCounts(options?: {
   }
 
   const allVideoIds = Array.from(clipsByVideoId.keys());
+  const totalClips = rows.rows.length;
+  const totalBatches = Math.ceil(allVideoIds.length / 50);
   if (allVideoIds.length === 0) {
-    return { ok: true, updated: 0, errors: 0, calls: 0 };
+    options?.onProgress?.({ totalBatches: 0, completedBatches: 0, totalClips, updated: 0, errors: 0, calls: 0 });
+    return { ok: true, updated: 0, errors: 0, calls: 0, totalClips };
   }
 
-  let updated = 0, errors = 0, calls = 0;
+  // Initial progress emit so the UI can render the bar at 0% before the
+  // first batch round-trips.
+  options?.onProgress?.({ totalBatches, completedBatches: 0, totalClips, updated: 0, errors: 0, calls: 0 });
+
+  let updated = 0, errors = 0, calls = 0, completedBatches = 0;
   // YT Data API videos.list accepts up to 50 ids per call. Cost: 1 unit each.
   for (let i = 0; i < allVideoIds.length; i += 50) {
     const batch = allVideoIds.slice(i, i + 50);
@@ -115,6 +141,8 @@ export async function refreshClipViewCounts(options?: {
       // next batch picks a different one.
       if (res.status === 429 || res.status === 403) banYtKey(pair.key);
       console.warn(`[yt-clip-views] batch ${i / 50 + 1} failed: ${res.status} ${(res.error || '').slice(0, 120)}`);
+      completedBatches++;
+      options?.onProgress?.({ totalBatches, completedBatches, totalClips, updated, errors, calls });
       continue;
     }
     const data = res.data as { items?: YtStatsItem[] };
@@ -138,7 +166,9 @@ export async function refreshClipViewCounts(options?: {
         updated++;
       }
     }
+    completedBatches++;
+    options?.onProgress?.({ totalBatches, completedBatches, totalClips, updated, errors, calls });
   }
 
-  return { ok: true, updated, errors, calls };
+  return { ok: true, updated, errors, calls, totalClips };
 }

@@ -909,6 +909,82 @@ export default function AdminPage() {
     }
   };
 
+  // Streaming "refresh ALL view counts" — drives a progress bar by reading
+  // SSE events from /refresh-views/stream. force=true so the staleness
+  // gate doesn't skip recently-fetched rows. Reuses the existing endpoint
+  // pattern for per-project refreshes; this one just hits no clipIds so
+  // every uploaded clip is in scope.
+  const [refreshAllStatus, setRefreshAllStatus] = useState<{
+    running: boolean;
+    totalBatches: number;
+    completedBatches: number;
+    totalClips: number;
+    updated: number;
+    errors: number;
+    calls: number;
+    error: string | null;
+    finishedAt: number | null;
+  }>({ running: false, totalBatches: 0, completedBatches: 0, totalClips: 0, updated: 0, errors: 0, calls: 0, error: null, finishedAt: null });
+
+  const refreshAllClipViews = async () => {
+    if (refreshAllStatus.running) return;
+    setRefreshAllStatus({
+      running: true, totalBatches: 0, completedBatches: 0, totalClips: 0,
+      updated: 0, errors: 0, calls: 0, error: null, finishedAt: null,
+    });
+    try {
+      const res = await fetch('/api/admin/vizard/clips/refresh-views/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),  // ignore staleness; refresh everything
+      });
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => '');
+        setRefreshAllStatus(s => ({ ...s, running: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}`, finishedAt: Date.now() }));
+        return;
+      }
+
+      // Parse SSE stream. Each event has shape:
+      //   event: <name>\ndata: <json>\n\n
+      // We accumulate bytes in `buffer`, split on the blank-line delimiter,
+      // then route each event to the matching status update.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() ?? '';  // keep the trailing partial event
+        for (const ev of events) {
+          if (!ev.trim()) continue;
+          const eventLine = ev.split('\n').find(l => l.startsWith('event:'));
+          const dataLine  = ev.split('\n').find(l => l.startsWith('data:'));
+          if (!eventLine || !dataLine) continue;
+          const name = eventLine.slice('event:'.length).trim();
+          const data = JSON.parse(dataLine.slice('data:'.length).trim());
+          if (name === 'progress') {
+            setRefreshAllStatus(s => ({ ...s, ...data }));
+          } else if (name === 'done') {
+            setRefreshAllStatus(s => ({ ...s, ...data, running: false, finishedAt: Date.now() }));
+          } else if (name === 'error') {
+            setRefreshAllStatus(s => ({ ...s, running: false, error: data.error || 'unknown', finishedAt: Date.now() }));
+          }
+        }
+      }
+
+      // Re-pull projects so the new view counts show up on the cards.
+      const r = await fetch('/api/admin/vizard/projects');
+      const d = await r.json();
+      if (d.projects) setVizardProjects(d.projects);
+      refetchVizardUploads();
+    } catch (err) {
+      setRefreshAllStatus(s => ({ ...s, running: false, error: (err as Error).message, finishedAt: Date.now() }));
+    }
+  };
+
   // Per-clip delete — used when Vizard returned a bad source clip (wrong
   // video, corrupted file, etc.) and we want to drop it from our DB so it
   // stops appearing in the project list and skewing reports. Local-only:
@@ -3277,6 +3353,73 @@ export default function AdminPage() {
                 <p className="mt-2 text-xs text-red-400">{vizardSubmitError}</p>
               )}
             </div>
+
+            {/* Refresh-all bar — global "pull fresh YT view counts for
+                every uploaded clip" action. Hits the SSE stream so we
+                can render a real progress bar instead of a spinner.
+                One quota unit per 50 clips, so even a 1000-clip refresh
+                is 20 units total. */}
+            {(() => {
+              const ras = refreshAllStatus;
+              const pct = ras.totalBatches > 0
+                ? Math.round((ras.completedBatches / ras.totalBatches) * 100)
+                : 0;
+              const justFinished = !!ras.finishedAt && Date.now() - ras.finishedAt < 8000;
+              return (
+                <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-4">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={refreshAllClipViews}
+                      disabled={ras.running}
+                      className={`px-4 py-2 rounded-xl text-sm font-medium transition flex items-center gap-2 ${
+                        ras.running
+                          ? 'bg-pink-600/40 text-pink-100 cursor-not-allowed'
+                          : 'bg-pink-600 hover:bg-pink-500 text-white'
+                      }`}
+                      title="Pull fresh YT view/like/comment counts for every uploaded clip across all projects"
+                    >
+                      <svg className={`w-4 h-4 ${ras.running ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5}
+                              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      {ras.running ? 'Refreshing view counts…' : 'Refresh all view counts'}
+                    </button>
+                    <div className="text-xs text-gray-400 flex-1">
+                      {ras.running && ras.totalBatches > 0 && (
+                        <>Batch <span className="text-white">{ras.completedBatches}</span>/{ras.totalBatches} · clips updated <span className="text-white">{ras.updated}</span>/{ras.totalClips}{ras.errors > 0 && <> · <span className="text-red-400">{ras.errors} batch error{ras.errors === 1 ? '' : 's'}</span></>}</>
+                      )}
+                      {ras.running && ras.totalBatches === 0 && (
+                        <>Looking up uploaded clips…</>
+                      )}
+                      {!ras.running && justFinished && !ras.error && (
+                        <span className="text-green-400">
+                          Done — refreshed {ras.updated} of {ras.totalClips} clip{ras.totalClips === 1 ? '' : 's'} ({ras.calls} API call{ras.calls === 1 ? '' : 's'}{ras.errors > 0 ? `, ${ras.errors} batch error${ras.errors === 1 ? '' : 's'}` : ''})
+                        </span>
+                      )}
+                      {!ras.running && ras.error && (
+                        <span className="text-red-400">Error: {ras.error}</span>
+                      )}
+                      {!ras.running && !justFinished && !ras.error && (
+                        <>Refresh YouTube view/like/comment counts across every uploaded clip. Costs 1 quota unit per 50 clips.</>
+                      )}
+                    </div>
+                  </div>
+                  {/* Progress bar — only renders while running OR for a few
+                      seconds after to flash the 100% completion state. */}
+                  {(ras.running || (justFinished && !ras.error)) && (
+                    <div className="mt-3 h-1.5 bg-gray-900 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          ras.errors > 0 ? 'bg-amber-500' : 'bg-pink-500'
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Projects grid — one card per submitted URL. Each card holds
                 its clips inline so processing state is visible inline. */}
