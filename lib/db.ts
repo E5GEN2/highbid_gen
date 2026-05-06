@@ -786,6 +786,37 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_cluster ON niche_tree_assignments(cluster_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_video   ON niche_tree_assignments(video_id)`).catch(() => {});
 
+    // Google API key inventory — sourced from xgodo workers (the
+    // youtubeApiKeyJob / googleAiStudioKeyJob proofs) plus any legacy
+    // keys migrated out of the admin_config newline-string. One row per
+    // (service, key); `service` scopes which API the key targets.
+    //
+    // remote_device_id + worker are kept for provenance only — proxy
+    // routing uses the round-robin USA pool, not per-device pairing.
+    // Status drives scheduling:
+    //   active            → eligible for the round-robin pool
+    //   banned (with banned_until in future) → temporarily skipped (5-min 429/403 cooloff)
+    //   invalid           → key never worked (dropped permanently from rotation)
+    //   disabled          → operator-disabled; manual re-enable
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xgodo_api_keys (
+        id SERIAL PRIMARY KEY,
+        service TEXT NOT NULL CHECK (service IN ('youtube_data', 'google_ai_studio')),
+        key TEXT NOT NULL,
+        remote_device_id TEXT,
+        worker TEXT,
+        source TEXT NOT NULL DEFAULT 'xgodo',
+        status TEXT NOT NULL DEFAULT 'active',
+        banned_until TIMESTAMPTZ,
+        invalidated_at TIMESTAMPTZ,
+        last_used_at TIMESTAMPTZ,
+        added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (service, key)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xak_service_status ON xgodo_api_keys(service, status)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xak_banned_until ON xgodo_api_keys(banned_until) WHERE banned_until IS NOT NULL`).catch(() => {});
+
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_task_log (
