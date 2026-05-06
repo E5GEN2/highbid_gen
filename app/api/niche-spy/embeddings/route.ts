@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import {
   batchEmbedInputs, batchEmbed, getEmbeddingStats, getKeyStatus, getKeywordCoverage,
-  banKey, getLastUsedKey,
   TARGET_CONFIG, type EmbeddingTarget, type EmbedInput,
 } from '@/lib/embeddings';
 import { getProxyStats, getProxy } from '@/lib/xgodo-proxy';
@@ -241,7 +240,9 @@ async function runEmbeddingJob(
         try {
           const embedStart = Date.now();
           console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: calling model=${cfg.model} with ${inputs.length} inputs`);
-          const embeddings = await batchEmbedInputs(inputs, cfg.model, threadId - 1);
+          // No fixedPairIdx — picker now randomises across the active
+          // pair set per bench results (random > round-robin > pinned).
+          const embeddings = await batchEmbedInputs(inputs, cfg.model);
           const embedElapsed = Date.now() - embedStart;
           const lens = embeddings.map(e => e?.length || 0);
           console.log(`[embedding] T${threadId} batch ${batchNum}: got ${embeddings.length} embeddings in ${embedElapsed}ms, lengths=[${lens.join(',')}]`);
@@ -283,9 +284,13 @@ async function runEmbeddingJob(
           const isProxyError = errMsg.includes('curl exit') || errMsg.includes('Connection refused') || errMsg.includes('Tunnel') || errMsg.includes('socket');
 
           if (isGoogleRateLimit || isGoogleAuthDenied) {
-            const usedKey = getLastUsedKey();
-            banKey(usedKey);
-            console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: rate-limited/auth-denied, banned key`);
+            // Note: batchEmbedInputs already calls banKey(pair.key) on
+            // 429/403 internally — that ban is correct (knows the actual
+            // pair used). The old worker-side banKey(getLastUsedKey())
+            // call was racy under concurrent threads (T1's
+            // getLastUsedKey would return T2's key) and would ban the
+            // wrong key. Removed — internal ban is the source of truth.
+            console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: rate-limited/auth-denied (key auto-banned by lib)`);
           } else if (isProxyError) {
             console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: proxy error: ${errMsg.substring(0, 120)}`);
           } else {

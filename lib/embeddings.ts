@@ -136,31 +136,44 @@ async function buildPairs(): Promise<KeyProxyPair[]> {
   return pairs;
 }
 
-async function getNextPair(): Promise<KeyProxyPair> {
+/**
+ * Pick a random pair from the currently-unbanned set.
+ *
+ * Why random over round-robin: bench data with 30 threads × 75 batches
+ * showed random pick (85% success) beats round-robin (75%) and pinned-
+ * per-thread (16% — current production behavior). The dominant failure
+ * mode is flaky proxies, not API rate limits — so the question is just
+ * "how do we minimise multiple workers landing on the same broken
+ * proxy in close succession?". Linear round-robin amplifies that
+ * (workers march into a bad neighbourhood in sequence); random spreads
+ * collisions.
+ *
+ * On all-banned, falls back to the pair whose ban expires soonest so
+ * the worker has the shortest possible wait.
+ */
+async function pickRandomActivePair(): Promise<KeyProxyPair> {
   const allPairs = await buildPairs();
   if (allPairs.length === 0) throw new Error('No Google API keys configured. Add them in Admin > Niche Explorer.');
 
   const now = Date.now();
-  for (let i = 0; i < allPairs.length; i++) {
-    const pair = allPairs[(pairIndex + i) % allPairs.length];
-    if (!pair.banned || now > pair.banExpiry) {
-      pair.banned = false;
-      pairIndex = (pairIndex + i + 1) % allPairs.length;
-      console.log(`[embedding] Using key=${pair.key.substring(0, 10)}... proxy=${pair.proxyDeviceId}`);
-      return pair;
-    }
+  const active = allPairs.filter(p => !p.banned || now > p.banExpiry);
+  if (active.length > 0) {
+    const pick = active[Math.floor(Math.random() * active.length)];
+    if (pick.banned && now > pick.banExpiry) pick.banned = false;
+    return pick;
   }
-
+  // Everyone banned — return shortest-wait so the worker has minimal idle.
   let best = allPairs[0];
-  for (const p of allPairs) {
-    if (p.banExpiry < best.banExpiry) best = p;
-  }
+  for (const p of allPairs) if (p.banExpiry < best.banExpiry) best = p;
   console.log(`[embedding] ALL BANNED, forcing key=${best.key.substring(0, 10)}... proxy=${best.proxyDeviceId}`);
   return best;
 }
 
-let lastUsedKey = '';
-export function getLastUsedKey(): string { return lastUsedKey; }
+/** @deprecated kept as a thin wrapper for any caller that still imports
+ *  it. New code should let batchEmbedInputs do the picking. */
+async function getNextPair(): Promise<KeyProxyPair> {
+  return pickRandomActivePair();
+}
 
 export function banKey(key: string): void {
   const pair = pairs.find(p => p.key === key);
@@ -216,35 +229,16 @@ async function getLegacyModel(): Promise<string> {
 // --- Embedding API ---
 
 /**
- * Get a key-proxy pair for a specific thread, preferring the slot that
- * corresponds to threadIdx but rotating forward if that slot is currently
- * banned. Without the ban-aware fallback, a thread pinned to a rate-limited
- * key would just keep failing while healthy keys sit idle.
+ * @deprecated Per-thread pinned-slot picker. The bench (30 threads ×
+ * 75 batches each) showed this strategy lands at 16% success rate
+ * because the threads pinned to flaky-proxy slots can't escape them.
+ * Replaced by random pick from active set (85% success in the same
+ * bench). Kept exported as a no-op-ish wrapper around the new picker
+ * in case any external code still imports it; new code should not
+ * reference threadIdx at all.
  */
-export async function getPairForThread(threadIdx: number): Promise<KeyProxyPair | null> {
-  const allPairs = await buildPairs();
-  if (allPairs.length === 0) return null;
-
-  const now = Date.now();
-  const n = allPairs.length;
-  const start = threadIdx % n;
-
-  // Walk forward from the preferred slot, returning the first non-banned pair
-  for (let i = 0; i < n; i++) {
-    const p = allPairs[(start + i) % n];
-    if (!p.banned || now > p.banExpiry) {
-      if (p.banned && now > p.banExpiry) p.banned = false;
-      return p;
-    }
-  }
-
-  // Everyone banned — return the one whose ban expires soonest so the worker
-  // has the shortest wait before it can try again.
-  let best = allPairs[start];
-  for (const p of allPairs) {
-    if (p.banExpiry < best.banExpiry) best = p;
-  }
-  return best;
+export async function getPairForThread(_threadIdx: number): Promise<KeyProxyPair | null> {
+  try { return await pickRandomActivePair(); } catch { return null; }
 }
 
 export type EmbedInput =
@@ -255,17 +249,20 @@ export type EmbedInput =
  * Generic batch embed — accepts mixed text/image inputs and a model name.
  * This is the new primary entrypoint; batchEmbed is kept as a thin wrapper for
  * backward compat.
+ *
+ * The optional `fixedPairIdx` parameter is now ignored — picker always
+ * randomises across the active pair set per bench results. Kept in the
+ * signature so existing callers don't need updates in lockstep.
  */
 export async function batchEmbedInputs(
   inputs: EmbedInput[],
   model: string,
-  fixedPairIdx?: number,
+  _fixedPairIdx?: number,
 ): Promise<number[][]> {
   if (inputs.length === 0) return [];
   if (inputs.length > 100) throw new Error('Batch limit is 100 items');
 
-  const pair = fixedPairIdx !== undefined ? await getPairForThread(fixedPairIdx) || await getNextPair() : await getNextPair();
-  lastUsedKey = pair.key;
+  const pair = await pickRandomActivePair();
 
   const fs = await import('fs');
   const os = await import('os');
