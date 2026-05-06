@@ -17,9 +17,19 @@ import path from 'path';
 const execFileAsync = promisify(execFile);
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 
-// The three things we can embed — each one maps to a specific model + DB column
-// + pgvector table, so callers pick a target and we route everything accordingly.
-export type EmbeddingTarget = 'title_v1' | 'title_v2' | 'thumbnail_v2';
+// The four things we can embed. Each maps to a model + a niche_spy_videos
+// column + a stamp column. Callers pick a target and we route everything
+// accordingly.
+//   title_v1     — legacy text-only embedding (kept for back-compat)
+//   title_v2     — gemini v2 text embedding
+//   thumbnail_v2 — gemini v2 image embedding
+//   combined_v2  — gemini v2 multimodal embedding: title + thumbnail packed
+//                  into a single content with two parts, producing ONE
+//                  vector that captures both the visual style and the
+//                  promise of the title in one space. Better for "find
+//                  similar Shorts that pitch the same hook with the same
+//                  visual energy" than either signal alone.
+export type EmbeddingTarget = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2';
 
 export interface TargetConfig {
   model: string;
@@ -31,6 +41,7 @@ export const TARGET_CONFIG: Record<EmbeddingTarget, TargetConfig> = {
   title_v1:     { model: 'gemini-embedding-001',       column: 'title_embedding',        stampColumn: 'embedded_at' },
   title_v2:     { model: 'gemini-embedding-2-preview', column: 'title_embedding_v2',     stampColumn: 'title_embedded_v2_at' },
   thumbnail_v2: { model: 'gemini-embedding-2-preview', column: 'thumbnail_embedding_v2', stampColumn: 'thumbnail_embedded_v2_at' },
+  combined_v2:  { model: 'gemini-embedding-2-preview', column: 'combined_embedding_v2',  stampColumn: 'combined_embedded_v2_at' },
 };
 
 // --- Key-Proxy Pair Management ---
@@ -311,6 +322,63 @@ export async function batchEmbedInputs(
 }
 
 /**
+ * Grouped batch embed — each `group` is an array of EmbedInputs that
+ * become the `parts` of a single content, producing ONE embedding per
+ * group (vs `batchEmbedInputs` which produces one per input).
+ *
+ * Used by the `combined_v2` target: each video becomes a 2-part group
+ * (title text + thumbnail image), yielding one joint multimodal vector.
+ *
+ * Returns embeddings in the same order as the input groups.
+ */
+export async function batchEmbedGrouped(
+  groups: EmbedInput[][],
+  model: string,
+): Promise<number[][]> {
+  if (groups.length === 0) return [];
+  if (groups.length > 100) throw new Error('Batch limit is 100 groups');
+
+  const pair = await pickRandomActivePair();
+
+  const fs = await import('fs');
+  const os = await import('os');
+  const inputData = JSON.stringify({ groups, key: pair.key, model, proxy: pair.proxyUrl });
+  const tmpFile = path.join(os.tmpdir(), `embed_grouped_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+  fs.writeFileSync(tmpFile, inputData);
+
+  let rawOut: string | Buffer;
+  try {
+    const result = await execFileAsync(
+      'python3',
+      [path.join(SCRIPTS_DIR, 'embed-batch.py'), tmpFile],
+      { timeout: 90_000, maxBuffer: 200 * 1024 * 1024 }
+    );
+    rawOut = result.stdout;
+  } catch (err) {
+    fs.unlinkSync(tmpFile);
+    const e = err as { stderr?: string; stdout?: string; message?: string };
+    const detail = e.stdout?.substring(0, 300) || e.stderr?.substring(0, 300) || e.message?.substring(0, 300);
+    throw new Error(`Python embed (grouped) failed: ${detail}`);
+  }
+  fs.unlinkSync(tmpFile);
+  const stdout = String(rawOut);
+
+  let result: number[][] | { error: string };
+  try { result = JSON.parse(stdout); }
+  catch { throw new Error(`Failed to parse grouped embedding output: ${stdout.substring(0, 200)}`); }
+
+  if (!Array.isArray(result)) {
+    const errMsg = (result as { error: string }).error || 'Unknown embedding error';
+    if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED') ||
+        (errMsg.includes('API 403') && errMsg.includes('denied access'))) {
+      banKey(pair.key);
+    }
+    throw new Error(errMsg);
+  }
+  return result;
+}
+
+/**
  * Backward-compatible text-only batch embed. Uses the legacy
  * admin_config.niche_embedding_model (defaults to gemini-embedding-001).
  */
@@ -358,10 +426,14 @@ export async function getEmbeddingStats(): Promise<{
       COUNT(*) FILTER (WHERE title_embedding IS NOT NULL)          AS e_title_v1,
       COUNT(*) FILTER (WHERE title_embedding_v2 IS NOT NULL)       AS e_title_v2,
       COUNT(*) FILTER (WHERE thumbnail_embedding_v2 IS NOT NULL)   AS e_thumb_v2,
+      COUNT(*) FILTER (WHERE combined_embedding_v2 IS NOT NULL)    AS e_combined_v2,
       COUNT(*) FILTER (WHERE title_embedding IS NULL          AND title IS NOT NULL AND title != '') AS ne_title_v1,
       COUNT(*) FILTER (WHERE title_embedding_v2 IS NULL       AND title IS NOT NULL AND title != '') AS ne_title_v2,
       COUNT(*) FILTER (WHERE thumbnail_embedding_v2 IS NULL
-                       AND (thumbnail IS NOT NULL AND thumbnail != '' OR url IS NOT NULL AND url != '')) AS ne_thumb_v2
+                       AND (thumbnail IS NOT NULL AND thumbnail != '' OR url IS NOT NULL AND url != '')) AS ne_thumb_v2,
+      COUNT(*) FILTER (WHERE combined_embedding_v2 IS NULL
+                       AND title IS NOT NULL AND title != ''
+                       AND (thumbnail IS NOT NULL AND thumbnail != '' OR url IS NOT NULL AND url != '')) AS ne_combined_v2
     FROM niche_spy_videos
   `);
   const r = statsRes.rows[0];
@@ -371,9 +443,10 @@ export async function getEmbeddingStats(): Promise<{
     apiKeysConfigured: allPairs.length,
     legacyModel,
     targets: {
-      title_v1:     { totalVideos: total, embedded: parseInt(r.e_title_v1),  notEmbedded: parseInt(r.ne_title_v1) },
-      title_v2:     { totalVideos: total, embedded: parseInt(r.e_title_v2),  notEmbedded: parseInt(r.ne_title_v2) },
-      thumbnail_v2: { totalVideos: total, embedded: parseInt(r.e_thumb_v2),  notEmbedded: parseInt(r.ne_thumb_v2) },
+      title_v1:     { totalVideos: total, embedded: parseInt(r.e_title_v1),     notEmbedded: parseInt(r.ne_title_v1) },
+      title_v2:     { totalVideos: total, embedded: parseInt(r.e_title_v2),     notEmbedded: parseInt(r.ne_title_v2) },
+      thumbnail_v2: { totalVideos: total, embedded: parseInt(r.e_thumb_v2),     notEmbedded: parseInt(r.ne_thumb_v2) },
+      combined_v2:  { totalVideos: total, embedded: parseInt(r.e_combined_v2),  notEmbedded: parseInt(r.ne_combined_v2) },
     },
   };
 }

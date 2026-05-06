@@ -464,6 +464,11 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS title_embedded_v2_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS thumbnail_embedding_v2 REAL[]`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS thumbnail_embedded_v2_at TIMESTAMPTZ`).catch(() => {});
+    // combined_v2 — gemini multimodal embedding of (title text + thumbnail
+    // image) packed into a single content with two parts. One vector that
+    // captures the joint signal "this title delivered with this visual".
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS combined_embedding_v2 REAL[]`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS combined_embedded_v2_at TIMESTAMPTZ`).catch(() => {});
     // Novelty: mean K-NN cosine distance in the combined (title_v2 +
     // thumbnail_v2) space. Populated by /api/admin/novelty/recompute.
     // Higher = more unique. Used by the admin "Novelty" tab to surface

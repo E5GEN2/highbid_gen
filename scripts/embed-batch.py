@@ -5,12 +5,19 @@ using curl. Supports `gemini-embedding-001` (text-only) and
 `gemini-embedding-2-preview` (multimodal — text + inlineData images).
 
 Usage: python3 embed-batch.py <input.json>
-Input JSON:
+Input JSON: pick one of `texts` / `inputs` / `groups`.
   {
-    "texts": ["title A", "title B"],     # legacy text-only input (maps to parts.text)
-    "inputs": [                          # preferred — supports mixed text + image inputs
+    "texts": ["title A", "title B"],     # legacy text-only — one embedding per text
+    "inputs": [                          # one embedding per input (text OR image)
       { "type": "text", "text": "title A" },
       { "type": "image", "mimeType": "image/jpeg", "data": "<base64>" }
+    ],
+    "groups": [                          # one embedding per GROUP, with multiple
+      [                                  # parts merged into a single content. Used
+        { "type": "text", "text": "title A" },     # for combined text+image
+        { "type": "image", "mimeType": "image/jpeg", "data": "<base64>" }
+      ],
+      [ { "type": "text", "text": "title B" }, { "type": "image", "mimeType": "...", "data": "..." } ]
     ],
     "key": "...",
     "model": "gemini-embedding-2-preview",
@@ -18,6 +25,7 @@ Input JSON:
   }
 
 Output: JSON array of embedding vectors in input order, or {"error": "..."}.
+For `groups`, the output array has one entry per group (not per part).
 """
 import sys
 import json
@@ -40,13 +48,34 @@ def main():
     else:
         data = json.loads(sys.stdin.read())
 
-    # Build inputs list — prefer new "inputs" array, fall back to legacy "texts"
-    if 'inputs' in data and isinstance(data['inputs'], list):
-        inputs = data['inputs']
+    # Build the batch request body. Three input shapes are supported:
+    #   - "groups": array of [parts] — each group becomes ONE content with
+    #     multiple parts, producing one embedding per group. Used for
+    #     combined text+image embeddings.
+    #   - "inputs": flat list of single inputs — each input becomes one
+    #     content with one part, producing one embedding per input.
+    #   - "texts": legacy text-only shorthand for `inputs` of all type=text.
+    if 'groups' in data and isinstance(data['groups'], list):
+        groups = data['groups']
+        requests = [
+            {'model': f'models/{data.get("model","gemini-embedding-001")}',
+             'content': {'parts': [build_part(p) for p in group]}}
+            for group in groups
+        ]
+    elif 'inputs' in data and isinstance(data['inputs'], list):
+        requests = [
+            {'model': f'models/{data.get("model","gemini-embedding-001")}',
+             'content': {'parts': [build_part(inp)]}}
+            for inp in data['inputs']
+        ]
     elif 'texts' in data:
-        inputs = [{'type': 'text', 'text': t} for t in data['texts']]
+        requests = [
+            {'model': f'models/{data.get("model","gemini-embedding-001")}',
+             'content': {'parts': [{'text': t}]}}
+            for t in data['texts']
+        ]
     else:
-        print(json.dumps({'error': 'Missing "inputs" or "texts" in payload'}))
+        print(json.dumps({'error': 'Missing "inputs", "groups", or "texts" in payload'}))
         sys.exit(1)
 
     key = data['key']
@@ -54,12 +83,7 @@ def main():
     proxy_url = data.get('proxy', '')
 
     url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents?key={key}'
-    body = json.dumps({
-        'requests': [
-            {'model': f'models/{model}', 'content': {'parts': [build_part(inp)]}}
-            for inp in inputs
-        ]
-    })
+    body = json.dumps({'requests': requests})
 
     # Write body to temp file — some requests (image batches) can be many MB,
     # too big for curl's -d or shell arg length.

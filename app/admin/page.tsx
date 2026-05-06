@@ -2390,14 +2390,16 @@ export default function AdminPage() {
 
             {embeddingStats && (
               <div className="space-y-4">
-                {/* Per-target stats — 3 cards side-by-side for the three embedding spaces */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {/* Per-target stats — 4 cards side-by-side for the embedding spaces */}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
                   {([
                     { key: 'title_v1',     label: 'Title v1',     subtitle: 'gemini-embedding-001',       accent: 'text-gray-300', border: 'border-gray-700' },
                     { key: 'title_v2',     label: 'Title v2',     subtitle: 'gemini-embedding-2-preview', accent: 'text-cyan-300', border: 'border-cyan-800/40' },
                     { key: 'thumbnail_v2', label: 'Thumbnail v2', subtitle: 'gemini-embedding-2-preview (image)', accent: 'text-purple-300', border: 'border-purple-800/40' },
+                    { key: 'combined_v2',  label: 'Combined v2',  subtitle: 'gemini-embedding-2-preview (title + thumb, joint)', accent: 'text-pink-300', border: 'border-pink-800/40' },
                   ] as const).map(t => {
                     const s = embeddingStats.targets[t.key];
+                    if (!s) return null;  // gracefully handle pre-deploy stats payloads
                     const pct = s.totalVideos > 0 ? Math.round((s.embedded / s.totalVideos) * 100) : 0;
                     const isActiveSource = embeddingStats.similaritySource === t.key;
                     return (
@@ -2419,25 +2421,47 @@ export default function AdminPage() {
                         </div>
                         <div className="flex items-center justify-between mt-2 text-[10px]">
                           <span className="text-yellow-400">{s.notEmbedded.toLocaleString()} remaining</span>
-                          <button
-                            onClick={async () => {
-                              const res = await fetch('/api/niche-spy/embeddings', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize, threads: nicheThreads, target: t.key }),
-                              });
-                              if (!res.ok) {
-                                const data = await res.json().catch(() => ({}));
-                                alert(data.message || `Failed to start: ${res.status}`);
-                              }
-                            }}
-                            disabled={(embeddingStats.job?.status === 'running' && embeddingStats.job?.target !== t.key) || s.notEmbedded === 0}
-                            className="px-2.5 py-1 bg-amber-600 text-white font-semibold rounded-md hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs"
-                          >
-                            {embeddingStats.job?.status === 'running' && embeddingStats.job?.target === t.key ? 'Running...' :
-                             embeddingStats.job?.status === 'running' ? 'Other job running' :
-                             'Generate'}
-                          </button>
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={async () => {
+                                const res = await fetch('/api/niche-spy/embeddings', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize, threads: nicheThreads, target: t.key }),
+                                });
+                                if (!res.ok) {
+                                  const data = await res.json().catch(() => ({}));
+                                  alert(data.message || `Failed to start: ${res.status}`);
+                                }
+                              }}
+                              disabled={(embeddingStats.job?.status === 'running' && embeddingStats.job?.target !== t.key) || s.notEmbedded === 0}
+                              className="px-2.5 py-1 bg-amber-600 text-white font-semibold rounded-md hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs"
+                              title={`Generate one batch (up to ${nicheLimit.toLocaleString()} videos)`}
+                            >
+                              {embeddingStats.job?.status === 'running' && embeddingStats.job?.target === t.key ? 'Running...' :
+                               embeddingStats.job?.status === 'running' ? 'Other running' :
+                               'Generate'}
+                            </button>
+                            <button
+                              onClick={async () => {
+                                if (!confirm(`Run ${t.label} embeddings indefinitely until cancelled or all ${s.notEmbedded.toLocaleString()} remaining are done?`)) return;
+                                const res = await fetch('/api/niche-spy/embeddings', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ limit: nicheLimit, batchSize: nicheBatchSize, threads: nicheThreads, target: t.key, indefinite: true }),
+                                });
+                                if (!res.ok) {
+                                  const data = await res.json().catch(() => ({}));
+                                  alert(data.message || `Failed to start: ${res.status}`);
+                                }
+                              }}
+                              disabled={(embeddingStats.job?.status === 'running') || s.notEmbedded === 0}
+                              className="px-2.5 py-1 bg-pink-700 text-white font-semibold rounded-md hover:bg-pink-600 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs"
+                              title="Run until cancelled OR until every remaining video has this embedding"
+                            >
+                              ∞
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );

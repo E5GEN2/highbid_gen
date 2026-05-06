@@ -24,12 +24,13 @@ const vectorPool = new Pool({
   connectionTimeoutMillis: 10000,
 });
 
-export type EmbeddingSource = 'title_v1' | 'title_v2' | 'thumbnail_v2';
+export type EmbeddingSource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2';
 
 const TABLE_BY_SOURCE: Record<EmbeddingSource, string> = {
   title_v1: 'niche_video_vectors',
   title_v2: 'niche_video_vectors_title_v2',
   thumbnail_v2: 'niche_video_vectors_thumb_v2',
+  combined_v2: 'niche_video_vectors_combined_v2',
 };
 
 /** Idempotently create the v2 tables on first call. v1 (niche_video_vectors)
@@ -54,9 +55,19 @@ export async function ensureVectorTables(): Promise<void> {
         embedding vector(3072)
       )
     `);
+    // combined_v2 — joint title+thumbnail multimodal embedding.
+    await vectorPool.query(`
+      CREATE TABLE IF NOT EXISTS niche_video_vectors_combined_v2 (
+        video_id INTEGER PRIMARY KEY,
+        keyword TEXT,
+        title TEXT,
+        embedding vector(3072)
+      )
+    `);
     // Index for filtering by keyword (similar search is always scoped to same keyword)
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_nvv_t2_keyword ON niche_video_vectors_title_v2(keyword)`).catch(() => {});
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_nvv_th2_keyword ON niche_video_vectors_thumb_v2(keyword)`).catch(() => {});
+    await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_nvv_cb2_keyword ON niche_video_vectors_combined_v2(keyword)`).catch(() => {});
     tablesReady = true;
   } catch (err) {
     console.error('[vector-db] ensureVectorTables failed:', (err as Error).message);

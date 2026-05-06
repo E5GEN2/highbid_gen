@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import {
-  batchEmbedInputs, batchEmbed, getEmbeddingStats, getKeyStatus, getKeywordCoverage,
+  batchEmbedInputs, batchEmbedGrouped, batchEmbed, getEmbeddingStats, getKeyStatus, getKeywordCoverage,
   TARGET_CONFIG, type EmbeddingTarget, type EmbedInput,
 } from '@/lib/embeddings';
 import { getProxyStats, getProxy } from '@/lib/xgodo-proxy';
@@ -29,6 +29,11 @@ export async function POST(req: NextRequest) {
   const batchSize = Math.min(parseInt(body.batchSize) || DEFAULT_BATCH_SIZE, 100);
   const delayMs = parseInt(body.delayMs) || DEFAULT_DELAY_MS;
   const threads = Math.min(parseInt(body.threads) || 1, 30);
+  // When true, the worker re-queries for more videos after each round
+  // and keeps going until either (a) the operator cancels OR (b) the
+  // query returns zero rows (everything that needs this target is done).
+  // `limit` becomes the per-round batch size in this mode.
+  const indefinite = body.indefinite === true;
   const target: EmbeddingTarget = isValidTarget(body.target) ? body.target : 'title_v1';
   const cfg = TARGET_CONFIG[target];
 
@@ -56,6 +61,9 @@ export async function POST(req: NextRequest) {
   // URL/thumbnail to fetch, so we filter accordingly.
   const conditions: string[] = [`${cfg.column} IS NULL`];
   if (target === 'thumbnail_v2') {
+    conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
+  } else if (target === 'combined_v2') {
+    conditions.push(`title IS NOT NULL AND title != ''`);
     conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
   } else {
     conditions.push(`title IS NOT NULL AND title != ''`);
@@ -85,7 +93,7 @@ export async function POST(req: NextRequest) {
   );
   const jobId = jobRes.rows[0].id;
 
-  runEmbeddingJob(jobId, keyword, limit, batchSize, delayMs, threads, target).catch(async (err) => {
+  runEmbeddingJob(jobId, keyword, limit, batchSize, delayMs, threads, target, indefinite).catch(async (err) => {
     await pool.query(
       `UPDATE niche_spy_embedding_jobs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
       [(err as Error).message?.substring(0, 500), jobId]
@@ -124,12 +132,17 @@ async function runEmbeddingJob(
   delayMs: number = DEFAULT_DELAY_MS,
   threads: number = 1,
   target: EmbeddingTarget = 'title_v1',
+  indefinite: boolean = false,
 ) {
   const pool = await getPool();
   const cfg = TARGET_CONFIG[target];
 
   const conditions: string[] = [`${cfg.column} IS NULL`];
   if (target === 'thumbnail_v2') {
+    conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
+  } else if (target === 'combined_v2') {
+    // Combined needs BOTH a usable title AND a thumbnail source.
+    conditions.push(`title IS NOT NULL AND title != ''`);
     conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
   } else {
     conditions.push(`title IS NOT NULL AND title != ''`);
@@ -152,21 +165,21 @@ async function runEmbeddingJob(
   }
 
   // Fetch the rows to embed
-  const fields = target === 'thumbnail_v2' ? 'id, title, keyword, thumbnail, url' : 'id, title, keyword';
-  const videosRes = await pool.query(
-    `SELECT ${fields} FROM niche_spy_videos WHERE ${conditions.join(' AND ')} ORDER BY ${orderClause} LIMIT $${idx}`,
-    params
-  );
-  const videos = videosRes.rows as Array<{ id: number; title: string; keyword: string | null; thumbnail?: string | null; url?: string | null }>;
-  const totalBatches = Math.ceil(videos.length / batchSize);
+  const fields = (target === 'thumbnail_v2' || target === 'combined_v2')
+    ? 'id, title, keyword, thumbnail, url'
+    : 'id, title, keyword';
+
+  // State that's cumulative across rounds when in indefinite mode.
+  // In one-shot mode the loop runs exactly once and these behave the
+  // same as before.
   let globalProcessed = 0;
   let globalErrors = 0;
   let batchesDone = 0;
-
-  const batches: Array<{ batchNum: number; items: typeof videos }> = [];
-  for (let i = 0; i < videos.length; i += batchSize) {
-    batches.push({ batchNum: batches.length + 1, items: videos.slice(i, i + batchSize) });
-  }
+  let totalBatches = 0;
+  // Per-round shared state that the worker pulls from. Reset at the
+  // top of each round.
+  type VidRow = { id: number; title: string; keyword: string | null; thumbnail?: string | null; url?: string | null };
+  let batches: Array<{ batchNum: number; items: VidRow[] }> = [];
   let batchIdx = 0;
 
   // Async cancellation check — only bail out on EXPLICIT terminal statuses.
@@ -194,8 +207,13 @@ async function runEmbeddingJob(
       if (myIdx >= batches.length) break;
       const { batchNum, items } = batches[myIdx];
 
-      // Build inputs for this batch — for thumbnails we need to fetch + base64
+      // Build inputs for this batch. Three shapes depending on target:
+      //   thumbnail_v2 — image-only inputs (one per video)
+      //   combined_v2  — grouped [title text + thumbnail image] (one group per video,
+      //                  one joint embedding back per group)
+      //   else (title_*) — text-only inputs (one per video)
       let inputs: EmbedInput[] = [];
+      let groups: EmbedInput[][] = [];
       let droppedInBatch = 0;
       const batchStart = Date.now();
       if (target === 'thumbnail_v2') {
@@ -216,11 +234,34 @@ async function runEmbeddingJob(
         for (const { video } of kept) items.push(video);
         inputs = kept.map(p => p.input!) as EmbedInput[];
         console.log(`[embedding] T${threadId} batch ${batchNum}: fetched ${kept.length}/${pairs.length} thumbnails in ${Date.now() - batchStart}ms`);
+      } else if (target === 'combined_v2') {
+        // Per-video group of [title text, thumbnail image] — Gemini's
+        // multimodal encoder produces ONE embedding per group, jointly
+        // representing both signals.
+        const triples = await Promise.all(items.map(async (v) => {
+          const url = thumbnailUrlFor({ thumbnail: v.thumbnail ?? null, url: v.url ?? null });
+          if (!url) return { video: v, group: null as EmbedInput[] | null };
+          const img = await fetchImageBase64(url);
+          if (!img) return { video: v, group: null };
+          const group: EmbedInput[] = [
+            { type: 'text', text: v.title },
+            { type: 'image', mimeType: img.mimeType, data: img.data },
+          ];
+          return { video: v, group };
+        }));
+        const kept = triples.filter(t => t.group !== null);
+        droppedInBatch = triples.length - kept.length;
+        globalErrors += droppedInBatch;
+        items.length = 0;
+        for (const { video } of kept) items.push(video);
+        groups = kept.map(t => t.group!) as EmbedInput[][];
+        console.log(`[embedding] T${threadId} batch ${batchNum}: built ${kept.length}/${triples.length} combined groups in ${Date.now() - batchStart}ms`);
       } else {
         inputs = items.map(v => ({ type: 'text', text: v.title }));
       }
 
-      if (inputs.length === 0) {
+      const expectedCount = target === 'combined_v2' ? groups.length : inputs.length;
+      if (expectedCount === 0) {
         batchesDone++;
         await pool.query(
           `UPDATE niche_spy_embedding_jobs SET current_batch = $1, total_batches = $2, processed = $3, errors = $4, error_message = $5 WHERE id = $6`,
@@ -239,10 +280,12 @@ async function runEmbeddingJob(
         // broke the retry without processing or recording an error.)
         try {
           const embedStart = Date.now();
-          console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: calling model=${cfg.model} with ${inputs.length} inputs`);
+          console.log(`[embedding] T${threadId} batch ${batchNum} attempt ${attempt + 1}: calling model=${cfg.model} with ${expectedCount} ${target === 'combined_v2' ? 'groups' : 'inputs'}`);
           // No fixedPairIdx — picker now randomises across the active
           // pair set per bench results (random > round-robin > pinned).
-          const embeddings = await batchEmbedInputs(inputs, cfg.model);
+          const embeddings = target === 'combined_v2'
+            ? await batchEmbedGrouped(groups, cfg.model)
+            : await batchEmbedInputs(inputs, cfg.model);
           const embedElapsed = Date.now() - embedStart;
           const lens = embeddings.map(e => e?.length || 0);
           console.log(`[embedding] T${threadId} batch ${batchNum}: got ${embeddings.length} embeddings in ${embedElapsed}ms, lengths=[${lens.join(',')}]`);
@@ -250,8 +293,8 @@ async function runEmbeddingJob(
           // Google sometimes returns 200 with short / empty / zero-length
           // embeddings for content it couldn't process. Treat any of those as
           // an error so we retry rather than silently skipping.
-          if (embeddings.length < inputs.length) {
-            throw new Error(`Short response: got ${embeddings.length} embeddings for ${inputs.length} inputs`);
+          if (embeddings.length < expectedCount) {
+            throw new Error(`Short response: got ${embeddings.length} embeddings for ${expectedCount} ${target === 'combined_v2' ? 'groups' : 'inputs'}`);
           }
           const badIdx = embeddings.findIndex(e => !e || e.length === 0);
           if (badIdx !== -1) {
@@ -323,9 +366,44 @@ async function runEmbeddingJob(
     }
   }
 
-  console.log(`[embedding] Starting ${threads} threads for ${batches.length} batches (target=${target})`);
-  const workers = Array.from({ length: Math.min(threads, batches.length) }, (_, i) => worker(i + 1));
-  await Promise.all(workers);
+  // ── Round loop ──────────────────────────────────────────────
+  // One round = fetch up to `limit` videos that still need this target,
+  // build batches, run the worker pool to completion. In one-shot mode
+  // we do exactly one round. In indefinite mode we keep looping until
+  // either the operator cancels OR the query returns zero rows.
+  let roundNum = 0;
+  while (true) {
+    if (await isCancelled()) {
+      console.log(`[embedding] Job ${jobId} cancelled — exiting round loop after ${roundNum} round(s)`);
+      break;
+    }
+    roundNum++;
+
+    const videosRes = await pool.query(
+      `SELECT ${fields} FROM niche_spy_videos WHERE ${conditions.join(' AND ')} ORDER BY ${orderClause} LIMIT $${idx}`,
+      params,
+    );
+    const videos = videosRes.rows as VidRow[];
+    if (videos.length === 0) {
+      console.log(`[embedding] Round ${roundNum}: no more videos need ${target} embedding — done`);
+      break;
+    }
+
+    // Reset per-round state. batchNum is global so progress messages
+    // make sense in indefinite mode (round 2 batch 51, not "batch 1").
+    batches = [];
+    for (let i = 0; i < videos.length; i += batchSize) {
+      batches.push({ batchNum: batchesDone + Math.floor(i / batchSize) + 1, items: videos.slice(i, i + batchSize) });
+    }
+    batchIdx = 0;
+    totalBatches += batches.length;
+
+    console.log(`[embedding] Round ${roundNum} (${indefinite ? 'indefinite' : 'one-shot'}): ${threads} threads × ${batches.length} batches (${videos.length} videos, target=${target})`);
+    const workers = Array.from({ length: Math.min(threads, batches.length) }, (_, i) => worker(i + 1));
+    await Promise.all(workers);
+
+    if (!indefinite) break;
+  }
 
   // Only flip to done/partial if the job wasn't cancelled mid-flight.
   // 'done' requires at least one successful write; otherwise it's partial so
