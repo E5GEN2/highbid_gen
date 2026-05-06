@@ -49,13 +49,53 @@ let lastPairBuild = 0;
 const PAIR_CACHE_TTL = 60 * 1000;
 const BAN_DURATION = 5 * 60 * 1000;
 
+/** One-shot auto-migration: copy any keys from the legacy
+ *  niche_google_api_keys admin_config newline-string into the
+ *  xgodo_api_keys table (service='google_ai_studio'). Idempotent
+ *  via UNIQUE (service, key). Runs at most once per Node process. */
+let legacyMigrated = false;
+async function migrateLegacyOnce(): Promise<void> {
+  if (legacyMigrated) return;
+  legacyMigrated = true;
+  try {
+    const pool = await getPool();
+    const r = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_google_api_keys'");
+    const raw: string = r.rows[0]?.value || '';
+    const keys = raw.split('\n').map(k => k.trim()).filter(k => /^AIzaSy[A-Za-z0-9_-]{33}$/.test(k));
+    if (keys.length === 0) return;
+    let migrated = 0;
+    for (const k of keys) {
+      const ins = await pool.query(
+        `INSERT INTO xgodo_api_keys (service, key, source, status)
+         VALUES ('google_ai_studio', $1, 'legacy', 'active')
+         ON CONFLICT (service, key) DO NOTHING RETURNING id`,
+        [k],
+      );
+      if (ins.rowCount && ins.rowCount > 0) migrated += 1;
+    }
+    if (migrated > 0) console.log(`[embedding] Migrated ${migrated} legacy key(s) from niche_google_api_keys → xgodo_api_keys`);
+  } catch (err) {
+    console.error('[embedding] legacy migration failed:', (err as Error).message);
+  }
+}
+
 async function buildPairs(): Promise<KeyProxyPair[]> {
   if (Date.now() - lastPairBuild < PAIR_CACHE_TTL && pairs.length > 0) return pairs;
 
+  await migrateLegacyOnce();
   const pool = await getPool();
-  const res = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_google_api_keys'");
-  const raw = res.rows[0]?.value || '';
-  const keys = raw.split('\n').map((k: string) => k.trim()).filter((k: string) => k.length > 10);
+
+  // Active, not-currently-banned keys. The banned_until < NOW() test
+  // means temporarily-banned keys re-enter automatically on cooloff
+  // expiry — no separate unban job needed.
+  const tableRes = await pool.query<{ key: string; banned_until: Date | null }>(
+    `SELECT key, banned_until
+       FROM xgodo_api_keys
+      WHERE service = 'google_ai_studio'
+        AND status = 'active'
+      ORDER BY id ASC`,
+  );
+  const keys: string[] = tableRes.rows.map(r => r.key);
 
   const proxies = await getProxies();
 
@@ -65,16 +105,28 @@ async function buildPairs(): Promise<KeyProxyPair[]> {
     return pairs;
   }
 
+  // DB-side bans seeded into in-memory state so a key banned by another
+  // worker 2 minutes ago doesn't get picked again here.
+  const banMap = new Map<string, number>();
+  for (const r of tableRes.rows) {
+    if (r.banned_until && r.banned_until.getTime() > Date.now()) {
+      banMap.set(r.key, r.banned_until.getTime());
+    }
+  }
+
   const newPairs: KeyProxyPair[] = [];
   for (let i = 0; i < keys.length; i++) {
     const proxy = proxies.length > 0 ? proxies[i % proxies.length] : null;
     const existing = pairs.find(p => p.key === keys[i]);
+    const dbBanExpiry = banMap.get(keys[i]) ?? 0;
+    const inMemBanExpiry = (existing?.banned && existing.banExpiry > Date.now()) ? existing.banExpiry : 0;
+    const banExpiry = Math.max(dbBanExpiry, inMemBanExpiry);
     newPairs.push({
       key: keys[i],
       proxyUrl: proxy?.url || '',
       proxyDeviceId: proxy?.deviceId?.substring(0, 8) || 'direct',
-      banned: existing?.banned && existing.banExpiry > Date.now() ? true : false,
-      banExpiry: existing?.banExpiry || 0,
+      banned: banExpiry > Date.now(),
+      banExpiry,
     });
   }
 
@@ -112,11 +164,43 @@ export function getLastUsedKey(): string { return lastUsedKey; }
 
 export function banKey(key: string): void {
   const pair = pairs.find(p => p.key === key);
+  const expiry = Date.now() + BAN_DURATION;
   if (pair) {
     pair.banned = true;
-    pair.banExpiry = Date.now() + BAN_DURATION;
+    pair.banExpiry = expiry;
     console.log(`[embedding] Banned key=${key.substring(0, 10)}... proxy=${pair.proxyDeviceId} for 5min`);
   }
+  // Persist to DB so the cooloff survives Node restarts and is visible
+  // to siblings. Fire-and-forget — failure to persist isn't fatal.
+  (async () => {
+    try {
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE xgodo_api_keys
+            SET banned_until = to_timestamp($1 / 1000.0),
+                last_used_at = NOW()
+          WHERE service = 'google_ai_studio' AND key = $2`,
+        [expiry, key],
+      );
+    } catch (err) {
+      console.error('[embedding] persist ban failed:', (err as Error).message);
+    }
+  })();
+}
+
+/** Mark a key as permanently invalid (e.g. 400 invalid_api_key responses).
+ *  Drops it out of the rotation forever — operator can re-enable via SQL. */
+export async function invalidateKey(key: string, reason?: string): Promise<void> {
+  const pool = await getPool();
+  await pool.query(
+    `UPDATE xgodo_api_keys
+        SET status = 'invalid',
+            invalidated_at = NOW()
+      WHERE service = 'google_ai_studio' AND key = $1 AND status = 'active'`,
+    [key],
+  );
+  console.log(`[embedding] Invalidated key=${key.substring(0, 10)}...${reason ? ` reason="${reason}"` : ''}`);
+  lastPairBuild = 0;  // force rebuild on next call
 }
 
 /**
