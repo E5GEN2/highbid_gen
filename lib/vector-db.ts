@@ -74,15 +74,15 @@ export async function ensureVectorTables(): Promise<void> {
   }
 }
 
-/** Read the admin-configured similarity source, or default to title_v1. */
+/** Read the admin-configured similarity source, or default to combined_v2. */
 export async function getSimilaritySource(): Promise<EmbeddingSource> {
   try {
     const pool = await getPool();
     const res = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_similarity_source'");
     const v = res.rows[0]?.value;
-    if (v === 'title_v2' || v === 'thumbnail_v2') return v;
+    if (v === 'title_v1' || v === 'title_v2' || v === 'thumbnail_v2' || v === 'combined_v2') return v;
   } catch { /* fall through */ }
-  return 'title_v1';
+  return 'combined_v2';
 }
 
 /** Store a video embedding. `source` picks which table to write to. */

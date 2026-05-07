@@ -23,8 +23,8 @@ export async function GET(req: NextRequest) {
   if (!videoId) return NextResponse.json({ error: 'videoId required' }, { status: 400 });
   const vid = parseInt(videoId);
 
-  const sourceReq: 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined' | null =
-    sourceParam === 'title_v1' || sourceParam === 'title_v2' || sourceParam === 'thumbnail_v2' || sourceParam === 'combined'
+  const sourceReq: 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined' | 'combined_v2' | null =
+    sourceParam === 'title_v1' || sourceParam === 'title_v2' || sourceParam === 'thumbnail_v2' || sourceParam === 'combined' || sourceParam === 'combined_v2'
       ? sourceParam
       : null;
 

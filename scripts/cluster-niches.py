@@ -2,12 +2,14 @@
 """
 Sub-niche discovery via HDBSCAN clustering on video embeddings.
 
-Input JSON supports four embedding sources:
-  - title_v1     → niche_video_vectors           (gemini-embedding-001, titles)
-  - title_v2     → niche_video_vectors_title_v2  (gemini-embedding-2-preview, titles)
-  - thumbnail_v2 → niche_video_vectors_thumb_v2  (image embeddings)
-  - combined     → concatenation of title_v2 + thumbnail_v2 (L2-normalised halves)
-                   only videos present in BOTH spaces are clustered.
+Input JSON supports five embedding sources:
+  - title_v1     → niche_video_vectors              (gemini-embedding-001, titles)
+  - title_v2     → niche_video_vectors_title_v2     (gemini-embedding-2-preview, titles)
+  - thumbnail_v2 → niche_video_vectors_thumb_v2     (image embeddings)
+  - combined     → concatenation of title_v2 + thumbnail_v2 (L2-normalised halves);
+                   only videos present in BOTH spaces are clustered (6144D output).
+  - combined_v2  → niche_video_vectors_combined_v2  (joint title+image multimodal,
+                   one 3072D vector per video — preferred)
 
 Output: clusters, assignments, 2D coords, auto-labels via TF-IDF.
 """
@@ -21,6 +23,7 @@ TABLE_BY_SOURCE = {
     'title_v1':      'niche_video_vectors',
     'title_v2':      'niche_video_vectors_title_v2',
     'thumbnail_v2':  'niche_video_vectors_thumb_v2',
+    'combined_v2':   'niche_video_vectors_combined_v2',
 }
 
 
@@ -90,7 +93,7 @@ def main():
     source = config.get('source', 'title_v1')
 
     if source != 'combined' and source not in TABLE_BY_SOURCE:
-        print(json.dumps({'error': f"Invalid source '{source}'. Expected title_v1 | title_v2 | thumbnail_v2 | combined."}))
+        print(json.dumps({'error': f"Invalid source '{source}'. Expected title_v1 | title_v2 | thumbnail_v2 | combined | combined_v2."}))
         return
 
     conn = psycopg2.connect(db_url)

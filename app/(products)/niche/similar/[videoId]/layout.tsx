@@ -267,9 +267,9 @@ function PickerOrChildren({ children }: { children: React.ReactNode }) {
   if (basis) return <>{children}</>;
 
   const cards = [
+    { id: 'combined_v2' as const, label: 'Combined ✦', desc: 'Joint title + thumbnail embedding. Captures both what it pitches and how it looks — best for finding videos with the same energy.' },
     { id: 'title_v2' as const, label: 'Title', desc: 'Videos whose titles share the most meaning with this one.' },
     { id: 'thumbnail_v2' as const, label: 'Thumbnail', desc: 'Videos whose thumbnails look visually similar — same style, colors, composition.' },
-    { id: 'combined' as const, label: 'Both', desc: 'Averages title + thumbnail similarity. Best for finding the closest overall matches.' },
   ];
 
   return (

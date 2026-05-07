@@ -10,21 +10,23 @@ interface FavVideo {
   id: number; keyword: string; url: string; title: string; view_count: number;
   channel_name: string; posted_date: string; posted_at: string; score: number;
   channel_created_at: string;
-  // Three separate embedding flags so the Similar button can check the
+  // Per-target embedding flags so the Similar button can check the
   // right one for the active similarity source.
   embedded_at: string | null;                  // v1 legacy
   title_embedded_v2_at?: string | null;        // v2 title
   thumbnail_embedded_v2_at?: string | null;    // v2 thumbnail
+  combined_embedded_v2_at?: string | null;     // v2 combined (joint title+thumb)
   subscriber_count: number; like_count: number; comment_count: number;
   thumbnail: string; first_upload_at?: string | null; dormancy_days?: number | null;
   added_at: string;
 }
 
-type SimilaritySource = 'title_v1' | 'title_v2' | 'thumbnail_v2';
+type SimilaritySource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2';
 function favHasSimilarEmbedding(v: FavVideo, source: SimilaritySource): boolean {
   switch (source) {
     case 'title_v2':     return !!v.title_embedded_v2_at;
     case 'thumbnail_v2': return !!v.thumbnail_embedded_v2_at;
+    case 'combined_v2':  return !!v.combined_embedded_v2_at;
     default:             return !!v.embedded_at;
   }
 }
@@ -34,7 +36,7 @@ export default function FavouritesPage() {
   const { count, ids } = useFavourites();
   const [videos, setVideos] = useState<FavVideo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [similaritySource, setSimilaritySource] = useState<SimilaritySource>('title_v1');
+  const [similaritySource, setSimilaritySource] = useState<SimilaritySource>('combined_v2');
 
   // Re-fetch full video rows whenever the global favourites set changes.
   // Using `ids` instead of `count` in the dep so we also refresh on swaps.

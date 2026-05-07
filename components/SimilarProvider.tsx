@@ -32,7 +32,7 @@ export interface SimilarVideo {
 
 export interface SimilarSource { id: number; title: string; keyword: string; }
 
-type Basis = '' | 'title_v2' | 'thumbnail_v2' | 'combined';
+type Basis = '' | 'title_v2' | 'thumbnail_v2' | 'combined' | 'combined_v2';
 
 interface SimilarContextType {
   videoId: number;

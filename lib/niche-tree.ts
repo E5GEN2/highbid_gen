@@ -97,13 +97,19 @@ async function writeProgress(runId: number, patch: Partial<TreeProgress> & { sta
   ).catch(() => {});
 }
 
-export type TreeSource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined';
+// 'combined' (legacy) was the title_v2 + thumbnail_v2 vectors concatenated
+// (6144D) at the python side. 'combined_v2' is the new joint multimodal
+// embedding from gemini-embedding-2-preview — title and thumbnail packed
+// into one content with two parts, encoded jointly into a single 3072D
+// vector. combined_v2 is now the preferred source.
+export type TreeSource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined' | 'combined_v2';
 
 const SOURCE_FILTER: Record<TreeSource, string> = {
   title_v1:      'title_embedding IS NOT NULL',
   title_v2:      'title_embedding_v2 IS NOT NULL',
   thumbnail_v2:  'thumbnail_embedding_v2 IS NOT NULL',
   combined:      'title_embedding_v2 IS NOT NULL AND thumbnail_embedding_v2 IS NOT NULL',
+  combined_v2:   'combined_embedding_v2 IS NOT NULL',
 };
 
 export interface TreeClusterParams {
@@ -469,7 +475,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
   const pool = await getPool();
 
   try {
-    const source: TreeSource = params.source || 'thumbnail_v2';
+    const source: TreeSource = params.source || 'combined_v2';
     const filter = SOURCE_FILTER[source];
     const minScore = params.minScore ?? 0;
 
@@ -896,7 +902,7 @@ export async function runSubdivideClusteringJob(opts: {
        )`,
       [opts.parentClusterId],
     );
-    const source = sourceRes.rows[0]?.source || opts.params?.source || 'thumbnail_v2';
+    const source = sourceRes.rows[0]?.source || opts.params?.source || 'combined_v2';
 
     // Pull videos
     const subAssignRes = await pool.query<{ video_id: number }>(

@@ -13,18 +13,19 @@ interface NicheVideo {
   id: number; keyword: string; url: string; title: string; view_count: number;
   channel_name: string; posted_date: string; posted_at: string; score: number;
   channel_created_at: string;
-  // Three separate embedding flags — the Similar button gates on the one
+  // Per-target embedding flags — the Similar button gates on the one
   // that matches the active similarity source (see `similaritySource`).
   embedded_at: string | null;                // v1 (legacy)
   title_embedded_v2_at?: string | null;      // v2 title
   thumbnail_embedded_v2_at?: string | null;  // v2 thumbnail
+  combined_embedded_v2_at?: string | null;   // v2 combined (joint title+thumb)
   subscriber_count: number; like_count: number; comment_count: number;
   top_comment: string; thumbnail: string; fetched_at: string;
   first_upload_at?: string | null; dormancy_days?: number | null;
   _similarity?: number;
 }
 
-type SimilaritySource = 'title_v1' | 'title_v2' | 'thumbnail_v2';
+type SimilaritySource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2';
 
 /** Returns true if the video has an embedding in the currently-active
  *  similarity space, so the Similar button can produce real results. */
@@ -32,6 +33,7 @@ function hasSimilarEmbedding(v: NicheVideo, source: SimilaritySource): boolean {
   switch (source) {
     case 'title_v2':     return !!v.title_embedded_v2_at;
     case 'thumbnail_v2': return !!v.thumbnail_embedded_v2_at;
+    case 'combined_v2':  return !!v.combined_embedded_v2_at;
     case 'title_v1':
     default:             return !!v.embedded_at;
   }
@@ -59,7 +61,7 @@ function NicheVideosInner() {
   // Active similarity source, pulled from the same API response. Defaults to
   // title_v1 so the button behaves identically to the old code when the
   // config key is absent.
-  const [similaritySource, setSimilaritySource] = useState<SimilaritySource>('title_v1');
+  const [similaritySource, setSimilaritySource] = useState<SimilaritySource>('combined_v2');
   // stats + keywords state removed along with the redundant top plaque —
   // breadcrumbs + sidebar already show the active keyword.
 

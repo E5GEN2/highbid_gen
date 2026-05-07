@@ -89,7 +89,7 @@ export default function AdminPage() {
   // Cluster controls — sensible defaults for a global L1 run on
   // ~thousands of videos. Bigger min_cluster_size = fewer, broader niches.
   const [treeParams, setTreeParams] = useState({
-    source: 'thumbnail_v2' as 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined',
+    source: 'combined_v2' as 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined' | 'combined_v2',
     minClusterSize: 80,
     minSamples: 10,
     umapDims: 50,
@@ -427,7 +427,7 @@ export default function AdminPage() {
   // Which embedding space all similarity searches read from.
   // title_v1 = legacy text (gemini-embedding-001), title_v2 = text (gemini-embedding-2-preview),
   // thumbnail_v2 = image embedding (gemini-embedding-2-preview).
-  const [nicheSimilaritySource, setNicheSimilaritySource] = useState<'title_v1' | 'title_v2' | 'thumbnail_v2'>('title_v1');
+  const [nicheSimilaritySource, setNicheSimilaritySource] = useState<'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2'>('combined_v2');
   const [nicheBatchSize, setNicheBatchSize] = useState(50);
   const [nicheLimit, setNicheLimit] = useState(5000);
   const [nichePriorityKeywords, setNichePriorityKeywords] = useState('');
@@ -1211,8 +1211,8 @@ export default function AdminPage() {
         setNicheGoogleApiKeys(data.config.niche_google_api_keys || '');
         setNicheEmbeddingModel(data.config.niche_embedding_model || 'text-embedding-004');
         const src = data.config.niche_similarity_source;
-        if (src === 'title_v2' || src === 'thumbnail_v2') setNicheSimilaritySource(src);
-        else setNicheSimilaritySource('title_v1');
+        if (src === 'title_v1' || src === 'title_v2' || src === 'thumbnail_v2' || src === 'combined_v2') setNicheSimilaritySource(src);
+        else setNicheSimilaritySource('combined_v2');
         setNichePriorityKeywords(data.config.niche_priority_keywords || '');
         setNicheYtApiKeys(data.config.niche_yt_api_keys || '');
         setXgodoJobId(data.config.xgodo_shorts_spy_job_id || '');
@@ -2796,12 +2796,13 @@ export default function AdminPage() {
                 <label className="block text-sm font-medium text-gray-300 mb-1">Similarity Source</label>
                 <select
                   value={nicheSimilaritySource}
-                  onChange={(e) => setNicheSimilaritySource(e.target.value as 'title_v1' | 'title_v2' | 'thumbnail_v2')}
+                  onChange={(e) => setNicheSimilaritySource(e.target.value as 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2')}
                   className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
                 >
-                  <option value="title_v1">Title v1 — gemini-embedding-001 (legacy, default)</option>
+                  <option value="combined_v2">Combined v2 — gemini-embedding-2-preview (title + thumb, joint) ★ default</option>
                   <option value="title_v2">Title v2 — gemini-embedding-2-preview</option>
                   <option value="thumbnail_v2">Thumbnail v2 — gemini-embedding-2-preview (image)</option>
+                  <option value="title_v1">Title v1 — gemini-embedding-001 (legacy)</option>
                 </select>
                 <p className="text-xs text-gray-500 mt-1">Controls which embedding space ALL similarity searches read from. Only videos with an embedding in the selected space will appear in similar results.</p>
               </div>
@@ -4810,10 +4811,11 @@ export default function AdminPage() {
                       onChange={e => setTreeParams(p => ({ ...p, source: e.target.value as typeof treeParams.source }))}
                       className="bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500"
                     >
+                      <option value="combined_v2">Combined v2 ✦ (joint multimodal)</option>
                       <option value="thumbnail_v2">Thumbnail v2</option>
                       <option value="title_v2">Title v2</option>
                       <option value="title_v1">Title v1</option>
-                      <option value="combined">Combined (title+thumb v2)</option>
+                      <option value="combined">Combined legacy (title+thumb v2 concat)</option>
                     </select>
                   </div>
                   <div>
