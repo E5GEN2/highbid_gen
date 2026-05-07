@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useNiche } from '@/components/NicheProvider';
@@ -42,6 +42,11 @@ export default function NichesGrid() {
   const [semanticLoading, setSemanticLoading] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
   const [hitFromCache, setHitFromCache] = useState(false);
+  // Min-match % filter — same pattern as the Similar page header.
+  // Wide-fetch from the API (limit 500, no server threshold) and let the
+  // user dial in how strict the match needs to be without re-querying.
+  // Default 0 so users see the full result set first, then filter up.
+  const [minSimilarity, setMinSimilarity] = useState(0);
 
   const [sort, setSort] = useState('videos');
   const [kwLoading, setKwLoading] = useState(true);
@@ -81,7 +86,7 @@ export default function NichesGrid() {
       const res = await fetch('/api/niche-spy/search-semantic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed, limit: 60 }),
+        body: JSON.stringify({ query: trimmed, limit: 500, minSimilarity: 0 }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -105,6 +110,13 @@ export default function NichesGrid() {
     setSemanticResults(null);
     setSemanticError(null);
   };
+
+  // Same client-side filter pattern as the Similar page: API returns the
+  // wide set, the input only changes how much is shown.
+  const filteredResults = useMemo(
+    () => (semanticResults || []).filter(v => v.similarity >= minSimilarity),
+    [semanticResults, minSimilarity],
+  );
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto">
@@ -159,17 +171,45 @@ export default function NichesGrid() {
           identical to the Similar page so the grid feels familiar. */}
       {semanticQuery && (
         <div className="mb-6">
-          <div className="flex items-center gap-3 mb-4">
-            <span className="text-sm font-medium text-white">
-              {semanticLoading ? 'Searching…' : `${semanticResults?.length ?? 0} videos for "${semanticQuery}"`}
-            </span>
-            {hitFromCache && !semanticLoading && (
-              <span className="text-[10px] uppercase tracking-wider bg-[#1a1a1a] border border-[#333] text-[#888] px-1.5 py-0.5 rounded-full" title="Vector reused from a previous query — no Gemini call">
-                cache hit
+          <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium text-white">
+                {semanticLoading
+                  ? 'Searching…'
+                  : `${filteredResults.length} of ${semanticResults?.length ?? 0} videos for "${semanticQuery}"`}
               </span>
-            )}
-            {semanticError && (
-              <span className="text-xs text-red-400">Error: {semanticError}</span>
+              {hitFromCache && !semanticLoading && (
+                <span className="text-[10px] uppercase tracking-wider bg-[#1a1a1a] border border-[#333] text-[#888] px-1.5 py-0.5 rounded-full" title="Vector reused from a previous query — no Gemini call">
+                  cache hit
+                </span>
+              )}
+              {semanticError && (
+                <span className="text-xs text-red-400">Error: {semanticError}</span>
+              )}
+            </div>
+
+            {/* Min-match % — same control as the Similar page header.
+                Pure client-side filter over the already-fetched 500. */}
+            {(semanticResults && semanticResults.length > 0) && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-[#888]">Min match:</label>
+                <div className="flex items-center bg-[#0a0a0a] border border-[#1f1f1f] rounded focus-within:border-amber-500">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={Math.round(minSimilarity * 100)}
+                    onChange={e => {
+                      const raw = parseFloat(e.target.value);
+                      const pct = isNaN(raw) ? 0 : Math.max(0, Math.min(100, raw));
+                      setMinSimilarity(pct / 100);
+                    }}
+                    className="w-14 bg-transparent text-white text-xs px-2 py-1 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                  <span className="text-xs text-[#666] pr-2">%</span>
+                </div>
+              </div>
             )}
           </div>
 
@@ -186,9 +226,13 @@ export default function NichesGrid() {
             <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
               No videos match &ldquo;{semanticQuery}&rdquo;. Try a different phrasing or fewer specifics.
             </div>
+          ) : filteredResults.length === 0 ? (
+            <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
+              No videos at or above {Math.round(minSimilarity * 100)}% match. Lower the min match to see more.
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {semanticResults?.map(v => {
+              {filteredResults.map(v => {
                 const vidMatch = (v.url || '').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
                 const thumb = v.thumbnail || (vidMatch ? `https://img.youtube.com/vi/${vidMatch[1]}/hqdefault.jpg` : '');
                 return (

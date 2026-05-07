@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   // to preserve exact casing for accurate results.
   const normalised = raw.toLowerCase().replace(/\s+/g, ' ');
 
-  const limit = Math.min(Math.max(parseInt(String(body.limit ?? 60)) || 60, 1), 200);
+  const limit = Math.min(Math.max(parseInt(String(body.limit ?? 60)) || 60, 1), 500);
   const minSimilarity = Math.max(0, Math.min(1, body.minSimilarity ?? 0));
   const source: EmbeddingSource = (body.source && ['title_v1', 'title_v2', 'thumbnail_v2', 'combined_v2'].includes(body.source))
     ? body.source : 'combined_v2';
