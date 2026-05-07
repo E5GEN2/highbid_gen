@@ -139,6 +139,42 @@ export async function findSimilar(
   }));
 }
 
+/**
+ * Find videos most similar to an arbitrary embedding vector — used for
+ * semantic search where the user types a text query, we embed it via
+ * Gemini, and look for videos whose joint title+thumbnail embedding
+ * sits closest in the same multimodal space.
+ *
+ * Unlike findSimilar() this isn't keyword-scoped — semantic search
+ * spans the whole library by design (the whole point is "show me
+ * videos that match this idea regardless of which scrape keyword
+ * surfaced them").
+ */
+export async function findSimilarByVector(
+  embedding: number[],
+  options?: { limit?: number; minSimilarity?: number; source?: EmbeddingSource },
+): Promise<Array<{ videoId: number; similarity: number }>> {
+  const limit = options?.limit || 60;
+  const minSimilarity = options?.minSimilarity || 0;
+  const source = options?.source || await getSimilaritySource();
+  const table = TABLE_BY_SOURCE[source];
+  const embStr = '[' + embedding.join(',') + ']';
+
+  const result = await vectorPool.query(
+    `SELECT video_id, 1 - (embedding <=> $1::vector) AS similarity
+       FROM ${table}
+      WHERE 1 - (embedding <=> $1::vector) >= $3
+   ORDER BY embedding <=> $1::vector
+      LIMIT $2`,
+    [embStr, limit, minSimilarity],
+  );
+
+  return result.rows.map(r => ({
+    videoId: r.video_id,
+    similarity: Math.round(parseFloat(r.similarity) * 10000) / 10000,
+  }));
+}
+
 /** Vector DB row counts per source — used by the admin stats view. */
 export async function getVectorStats(): Promise<{
   title_v1: { totalVectors: number; keywords: number };

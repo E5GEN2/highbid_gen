@@ -872,6 +872,30 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_app_device  ON agent_planned_pins(device_name)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_app_created ON agent_planned_pins(created_at)`).catch(() => {});
 
+    // Semantic search query log — every text query that hits the
+    // /api/niche-spy/search-semantic endpoint gets stored here with its
+    // embedding. Two purposes:
+    //   1. Cache: same query string → reuse the cached vector instead of
+    //      re-embedding. Free-tier keys are abundant but query latency
+    //      drops from ~1s (Gemini call) to ~0ms (DB hit).
+    //   2. Analytics / future suggestions: cluster the saved queries to
+    //      find demand patterns, surface popular searches, etc.
+    // Embedding is stored as REAL[] in the main DB and mirrored to the
+    // pgvector DB if/when we want similarity-on-queries.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS search_queries (
+        id SERIAL PRIMARY KEY,
+        query TEXT NOT NULL UNIQUE,
+        embedding REAL[],
+        source TEXT NOT NULL DEFAULT 'combined_v2',
+        hit_count INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sq_last_seen ON search_queries(last_seen_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sq_hit_count ON search_queries(hit_count DESC)`).catch(() => {});
+
     // Vizard.ai clip generation — one project per submitted URL, many clips
     // per project. Polling is server-driven (see app/api/admin/vizard/tick),
     // so `status` tracks the lifecycle:
