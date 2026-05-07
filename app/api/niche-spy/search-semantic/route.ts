@@ -71,34 +71,51 @@ export async function POST(req: NextRequest) {
   }
 
   // 2) Cache miss — embed via Gemini through the existing key+proxy
-  //    rotation. The same embedding model the videos were generated
-  //    with, called text-only.
+  //    rotation. Random pair pick → single dead key (banned 5min by a
+  //    sibling, or revoked-403 right now) used to surface to the user
+  //    as a raw error. Retry up to 3 times so a transient bad pair
+  //    just rotates to a fresh one. The internal banKey/invalidateKey
+  //    in batchEmbedInputs ensures the dying pair doesn't get picked
+  //    again on the next attempt.
   if (!embedding) {
-    try {
-      const target: EmbeddingTarget = source === 'title_v1' ? 'title_v1' : source;
-      const cfg = TARGET_CONFIG[target];
-      const embeddings = await batchEmbedInputs([{ type: 'text', text: raw }], cfg.model);
-      if (embeddings.length === 0 || !embeddings[0] || embeddings[0].length === 0) {
-        return NextResponse.json({ error: 'embedding returned empty vector' }, { status: 500 });
+    const target: EmbeddingTarget = source === 'title_v1' ? 'title_v1' : source;
+    const cfg = TARGET_CONFIG[target];
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt < 3 && !embedding; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 500 * attempt));
+      try {
+        const embeddings = await batchEmbedInputs([{ type: 'text', text: raw }], cfg.model);
+        if (embeddings.length === 0 || !embeddings[0] || embeddings[0].length === 0) {
+          throw new Error('embedding returned empty vector');
+        }
+        embedding = embeddings[0];
+      } catch (err) {
+        lastErr = err as Error;
+        const m = lastErr.message || '';
+        // 403 / 429 / proxy errors are retryable (different pair next attempt);
+        // anything else is unlikely to fix itself with a retry — bail.
+        const retryable = m.includes('API 403') || m.includes('API 429') || m.includes('RESOURCE_EXHAUSTED')
+                        || m.includes('curl') || m.includes('Tunnel') || m.includes('Connection');
+        if (!retryable) break;
       }
-      embedding = embeddings[0];
-      // Upsert: same query string might race with another concurrent
-      // request, so handle the conflict by reading the existing row.
-      await pool.query(
-        `INSERT INTO search_queries (query, embedding, source)
-         VALUES ($1, $2::real[], $3)
-         ON CONFLICT (query) DO UPDATE
-            SET embedding = EXCLUDED.embedding,
-                source = EXCLUDED.source,
-                hit_count = search_queries.hit_count + 1,
-                last_seen_at = NOW()`,
-        [normalised, `{${embedding.join(',')}}`, source],
-      );
-    } catch (err) {
+    }
+    if (!embedding) {
       return NextResponse.json({
-        error: `embedding failed: ${(err as Error).message?.slice(0, 200) || 'unknown'}`,
+        error: `embedding failed after retries: ${lastErr?.message?.slice(0, 200) || 'unknown'}`,
       }, { status: 500 });
     }
+    // Upsert: same query string might race with another concurrent
+    // request, so handle the conflict by reading the existing row.
+    await pool.query(
+      `INSERT INTO search_queries (query, embedding, source)
+       VALUES ($1, $2::real[], $3)
+       ON CONFLICT (query) DO UPDATE
+          SET embedding = EXCLUDED.embedding,
+              source = EXCLUDED.source,
+              hit_count = search_queries.hit_count + 1,
+              last_seen_at = NOW()`,
+      [normalised, `{${embedding.join(',')}}`, source],
+    );
   }
 
   // 3) Cosine search against the chosen pgvector table — no keyword

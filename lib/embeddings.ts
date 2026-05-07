@@ -311,8 +311,14 @@ export async function batchEmbedInputs(
 
   if (!Array.isArray(result)) {
     const errMsg = (result as { error: string }).error || 'Unknown embedding error';
-    if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED') ||
-        (errMsg.includes('API 403') && errMsg.includes('denied access'))) {
+    // 403 "denied access" means Google permanently revoked the
+    // project/key (manual review failure, ToS, etc.) — it's not a
+    // transient 5-min ban, so flip the row to status='invalid' and
+    // drop it out of the rotation forever. 429 / RESOURCE_EXHAUSTED
+    // is the actual transient case → 5-min cooloff is right there.
+    if (errMsg.includes('API 403') && errMsg.includes('denied access')) {
+      invalidateKey(pair.key, '403 denied access').catch(() => { /* fire-and-forget */ });
+    } else if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
       banKey(pair.key);
     }
     throw new Error(errMsg);
@@ -369,8 +375,10 @@ export async function batchEmbedGrouped(
 
   if (!Array.isArray(result)) {
     const errMsg = (result as { error: string }).error || 'Unknown embedding error';
-    if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED') ||
-        (errMsg.includes('API 403') && errMsg.includes('denied access'))) {
+    // Same 403-vs-429 split as batchEmbedInputs above.
+    if (errMsg.includes('API 403') && errMsg.includes('denied access')) {
+      invalidateKey(pair.key, '403 denied access').catch(() => { /* fire-and-forget */ });
+    } else if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
       banKey(pair.key);
     }
     throw new Error(errMsg);
