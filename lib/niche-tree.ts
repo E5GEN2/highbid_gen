@@ -328,7 +328,43 @@ async function runOneClusteringPipeline(opts: {
 
     const insertedClusterIds: number[] = [];
 
-    // Insert clusters with the caller-provided parent + level.
+    // Pre-bucket assignments by cluster_index so each cluster's bulk
+    // insert is O(n) instead of an O(n²) .filter() per cluster across
+    // 100K+ rows. cluster_index === -1 holds noise.
+    type Assign = { video_id: number; cluster_index: number; x_2d: number; y_2d: number; distance: number };
+    const byClusterIdx = new Map<number, Assign[]>();
+    for (const a of result.assignments as Assign[]) {
+      const arr = byClusterIdx.get(a.cluster_index);
+      if (arr) arr.push(a); else byClusterIdx.set(a.cluster_index, [a]);
+    }
+
+    // 7-column multi-row INSERT for assignments. Postgres parameter
+    // cap is 65535 ($1..$65535). At 7 params/row we'd hit that at
+    // 9362 rows. Cap chunk size at 1000 to stay safely under and to
+    // keep memory + result-buffer pressure mild on Railway.
+    const ASSIGN_CHUNK = 1000;
+    const flushAssignChunk = async (rows: Assign[], clusterId: number | null) => {
+      if (rows.length === 0) return;
+      const placeholders: string[] = [];
+      const params: unknown[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const a = rows[i];
+        const b = i * 7;
+        placeholders.push(`($${b+1}, $${b+2}, $${b+3}, $${b+4}, $${b+5}, $${b+6}, $${b+7})`);
+        params.push(opts.runId, a.video_id, clusterId, a.cluster_index, a.x_2d, a.y_2d, a.distance);
+      }
+      await pool.query(
+        `INSERT INTO niche_tree_assignments
+           (run_id, video_id, cluster_id, cluster_index, x_2d, y_2d, distance_to_centroid)
+         VALUES ${placeholders.join(', ')}`,
+        params,
+      );
+    };
+
+    // Insert clusters with the caller-provided parent + level. Each
+    // cluster row is committed individually (no enclosing transaction)
+    // so the live polling UI can render new cards as they land —
+    // matches existing UX.
     for (const cluster of result.clusters) {
       const statsRes = await pool.query(
         `SELECT AVG(score) as avg_score, AVG(view_count) as avg_views, SUM(view_count) as total_views
@@ -364,24 +400,20 @@ async function runOneClusteringPipeline(opts: {
       const clusterId = insertRes.rows[0].id;
       insertedClusterIds.push(clusterId);
 
-      for (const a of result.assignments.filter((x: { cluster_index: number }) => x.cluster_index === cluster.cluster_index)) {
-        await pool.query(
-          `INSERT INTO niche_tree_assignments
-             (run_id, video_id, cluster_id, cluster_index, x_2d, y_2d, distance_to_centroid)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [opts.runId, a.video_id, clusterId, a.cluster_index, a.x_2d, a.y_2d, a.distance],
-        );
+      // Bulk-insert all this cluster's assignments in chunks. Typical
+      // cluster has 100–500 rows, so this is usually a single round
+      // trip per cluster instead of N round trips.
+      const assigns = byClusterIdx.get(cluster.cluster_index) ?? [];
+      for (let off = 0; off < assigns.length; off += ASSIGN_CHUNK) {
+        await flushAssignChunk(assigns.slice(off, off + ASSIGN_CHUNK), clusterId);
       }
     }
 
     // Noise — cluster_id NULL but still attached to the run for counting.
-    for (const a of result.assignments.filter((x: { cluster_index: number }) => x.cluster_index === -1)) {
-      await pool.query(
-        `INSERT INTO niche_tree_assignments
-           (run_id, video_id, cluster_id, cluster_index, x_2d, y_2d, distance_to_centroid)
-         VALUES ($1, $2, NULL, -1, $3, $4, $5)`,
-        [opts.runId, a.video_id, a.x_2d, a.y_2d, a.distance],
-      );
+    // Same chunked bulk insert pattern.
+    const noise = byClusterIdx.get(-1) ?? [];
+    for (let off = 0; off < noise.length; off += ASSIGN_CHUNK) {
+      await flushAssignChunk(noise.slice(off, off + ASSIGN_CHUNK), null);
     }
 
     return {
