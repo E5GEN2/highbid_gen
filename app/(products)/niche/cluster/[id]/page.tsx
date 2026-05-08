@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { fmtYT } from '@/lib/format';
 import { NicheClusterCard } from '@/components/NicheClusterCard';
+import { NicheVideoCard, type NicheVideoCardData } from '@/components/NicheVideoCard';
 
 interface PopularVideo {
   videoId: number;
@@ -217,7 +218,12 @@ export default function ClusterDetailPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {videos.map(v => <VideoCard key={v.videoId} video={v} />)}
+            {videos.map(v => (
+              <NicheVideoCard
+                key={v.videoId}
+                video={clusterVideoToCard(v)}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -225,47 +231,22 @@ export default function ClusterDetailPage() {
   );
 }
 
-function VideoCard({ video: v }: { video: ClusterVideo }) {
-  const score = v.score ?? 0;
-  const scoreBand = score >= 80 ? 'bg-green-500 text-white' :
-                    score >= 50 ? 'bg-yellow-500 text-black' :
-                                  'bg-red-500 text-white';
-  return (
-    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition">
-      <div className="relative aspect-video bg-[#0a0a0a]">
-        {v.thumbnail && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
-        )}
-        <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${scoreBand}`}>⚡ {score}</div>
-        {v.distanceToCentroid != null && (
-          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-[10px] font-bold bg-black/70 text-white border border-white/10">
-            d={v.distanceToCentroid.toFixed(2)}
-          </div>
-        )}
-      </div>
-      <div className="p-3">
-        <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title || '(no title)'}</h3>
-        <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
-          <span className="text-green-400">{fmtYT(v.viewCount ?? 0)} views</span>
-          {v.channelName && <span>· {v.channelName}</span>}
-        </div>
-        <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
-          {(v.likeCount ?? 0) > 0    && <span>👍 {fmtYT(v.likeCount ?? 0)}</span>}
-          {(v.commentCount ?? 0) > 0 && <span>💬 {fmtYT(v.commentCount ?? 0)}</span>}
-          {(v.subscriberCount ?? 0) > 0 && <span>👥 {fmtYT(v.subscriberCount ?? 0)}</span>}
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          {v.url && (
-            <a href={v.url} target="_blank" rel="noopener noreferrer"
-               className="text-[10px] text-blue-400 truncate min-w-0 flex-1">{v.url}</a>
-          )}
-          <Link href={`/niche/similar/${v.videoId}`}
-                className="flex-shrink-0 text-[10px] bg-green-600/20 text-green-400 border border-green-600/40 px-2 py-0.5 rounded-full hover:bg-green-600/30 transition font-medium">
-            Similar
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
+function clusterVideoToCard(v: ClusterVideo): NicheVideoCardData {
+  return {
+    id: v.videoId,
+    url: v.url,
+    title: v.title,
+    thumbnail: v.thumbnail,
+    channelName: v.channelName,
+    viewCount: v.viewCount,
+    likeCount: v.likeCount,
+    subscriberCount: v.subscriberCount,
+    channelCreatedAt: v.channelCreatedAt,
+    firstUploadAt: null,
+    dormancyDays: null,
+    postedAt: v.postedAt,
+    postedDate: v.postedDate,
+    score: v.score,
+    distanceToCentroid: v.distanceToCentroid,
+  };
 }

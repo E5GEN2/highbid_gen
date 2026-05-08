@@ -12,9 +12,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
-import { ChannelAgeChip } from '@/components/ChannelAgeChip';
-import { fmtYT } from '@/lib/format';
+import { NicheVideoCard, type NicheVideoCardData } from '@/components/NicheVideoCard';
 
 interface VideoRow {
   id: number;
@@ -35,6 +33,25 @@ interface VideoRow {
   dormancy_days: number | null;
 }
 
+function toCardData(v: VideoRow): NicheVideoCardData {
+  return {
+    id: v.id,
+    url: v.url,
+    title: v.title,
+    thumbnail: v.thumbnail,
+    channelName: v.channel_name,
+    viewCount: v.view_count,
+    likeCount: v.like_count,
+    subscriberCount: v.subscriber_count,
+    channelCreatedAt: v.channel_created_at,
+    firstUploadAt: v.first_upload_at,
+    dormancyDays: v.dormancy_days,
+    postedAt: v.posted_at,
+    postedDate: v.posted_date,
+    score: v.score,
+  };
+}
+
 export default function AllVideos() {
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -43,6 +60,7 @@ export default function AllVideos() {
   const [minScore, setMinScore] = useState(0);
   const [q, setQ] = useState('');
   const [searchInput, setSearchInput] = useState('');
+
   // Debounce the text input so every keystroke doesn't hit the API.
   useEffect(() => {
     const h = setTimeout(() => setQ(searchInput.trim()), 300);
@@ -119,61 +137,19 @@ export default function AllVideos() {
         </div>
       </div>
 
-      {/* Grid */}
+      {/* Grid — 3-col so each card has room for the title, channel,
+          stats and bottom action row. Same shape as the similar-page
+          video grid for visual consistency across the product. */}
       {loading && videos.length === 0 ? (
         <div className="text-center text-sm text-[#666] py-12">Loading…</div>
       ) : videos.length === 0 ? (
         <div className="text-center text-sm text-[#666] py-12">No matching videos.</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {videos.map(v => {
-              const scoreColor = v.score >= 80 ? 'text-green-400'
-                : v.score >= 50 ? 'text-yellow-400'
-                : 'text-red-400';
-              return (
-                <div key={v.id} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition flex flex-col">
-                  <a href={v.url} target="_blank" rel="noopener noreferrer" className="relative block aspect-video bg-[#0a0a0a]">
-                    {v.thumbnail ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
-                    ) : null}
-                    <span className={`absolute top-2 right-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm ${scoreColor}`}>
-                      ⚡ {v.score}
-                    </span>
-                  </a>
-                  <div className="p-3 flex-1 flex flex-col">
-                    <h3 className="text-sm font-medium text-white line-clamp-2 mb-1.5" title={v.title}>{v.title}</h3>
-                    <div className="text-xs text-[#888] mb-2 truncate">{v.channel_name || '—'}</div>
-                    <div className="flex items-center gap-3 text-[11px] text-[#888] mb-2">
-                      <span className="text-green-400 font-medium">{fmtYT(v.view_count)} views</span>
-                      {v.subscriber_count > 0 && <span>👥 {fmtYT(v.subscriber_count)}</span>}
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] text-[#666] mt-auto">
-                      {v.like_count > 0 && <span>👍 {fmtYT(v.like_count)}</span>}
-                      {v.comment_count > 0 && <span>💬 {fmtYT(v.comment_count)}</span>}
-                      <ChannelAgeChip
-                        firstUploadAt={v.first_upload_at}
-                        createdAt={v.channel_created_at}
-                        dormancyDays={v.dormancy_days}
-                        tooltipAlign="right"
-                      />
-                    </div>
-                    {v.keyword && (
-                      <div className="mt-2">
-                        {/* Clickable chip — jumps to the niche-scoped Videos page
-                            filtered by that keyword. Lets a user who lands on an
-                            orphan row quickly deep-dive the related niche. */}
-                        <Link href={`/niche/niches/${encodeURIComponent(v.keyword)}/videos`}
-                          className="inline-block text-[10px] bg-purple-600/20 text-purple-300 hover:bg-purple-600/30 px-1.5 py-0.5 rounded-full">
-                          {v.keyword}
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {videos.map(v => (
+              <NicheVideoCard key={v.id} video={toCardData(v)} />
+            ))}
           </div>
           {videos.length < total && (
             <div className="text-center mt-6">
