@@ -68,25 +68,41 @@ export default function NichesGrid() {
   const [minSimilarity, setMinSimilarity] = useState(0);
 
   // Load clusters from the latest HDBSCAN run (L1 only — drill into L2
-  // happens on the cluster detail page).
+  // happens on the cluster detail page). The payload is ~600 KB and
+  // can get truncated mid-stream during a Railway redeploy, so retry
+  // a couple of times on parse failure before showing the error.
   const fetchClusters = useCallback(async () => {
     setClustersLoading(true);
     setClustersError(null);
-    try {
-      const res = await fetch('/api/niche-spy/tree-clusters');
-      const data = await res.json();
-      if (!res.ok) {
-        setClustersError(data.error || `HTTP ${res.status}`);
-        setClusters([]);
-      } else {
-        setClusters(data.clusters || []);
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch('/api/niche-spy/tree-clusters');
+        // Read as text first so we can fall back gracefully on
+        // truncation — `res.json()` throws "Unexpected end of JSON
+        // input" with no recoverable info.
+        const text = await res.text();
+        if (!text) throw new Error('empty response');
+        const data = JSON.parse(text);
+        if (!res.ok) {
+          setClustersError(data.error || `HTTP ${res.status}`);
+          setClusters([]);
+        } else {
+          setClusters(data.clusters || []);
+          setClustersError(null);
+        }
+        setClustersLoading(false);
+        return;
+      } catch (err) {
+        lastErr = err as Error;
+        // Backoff before retry — first retry near-immediate, second
+        // gives Railway a moment if it's mid-deploy.
+        if (attempt < 2) await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
       }
-    } catch (err) {
-      setClustersError((err as Error).message);
-      setClusters([]);
-    } finally {
-      setClustersLoading(false);
     }
+    setClustersError(`Failed to load clusters: ${lastErr?.message || 'unknown'} (after 3 attempts — try again in a few seconds)`);
+    setClusters([]);
+    setClustersLoading(false);
   }, []);
 
   useEffect(() => { fetchClusters(); }, [fetchClusters]);

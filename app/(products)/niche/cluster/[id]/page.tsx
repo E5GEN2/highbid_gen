@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import { fmtYT } from '@/lib/format';
 import { NicheClusterCard } from '@/components/NicheClusterCard';
 import { NicheVideoCard, type NicheVideoCardData } from '@/components/NicheVideoCard';
+import { ClusterTabs } from '@/components/ClusterTabs';
 
 interface PopularVideo {
   videoId: number;
@@ -156,6 +157,8 @@ export default function ClusterDetailPage() {
           </div>
         </div>
       ) : null}
+
+      <ClusterTabs clusterId={clusterId} active="detail" />
 
       {/* L2 children — same wide-row card as the home grid */}
       {children.length > 0 && (

@@ -16,16 +16,29 @@ export async function GET(req: NextRequest) {
   const minScore = parseInt(req.nextUrl.searchParams.get('minScore') || '80');
   const clusterIdRaw = req.nextUrl.searchParams.get('clusterId');
   const clusterId = clusterIdRaw ? parseInt(clusterIdRaw) : null;
+  // treeClusterId reads from niche_tree_assignments (the new HDBSCAN
+  // tree-clusters), keeping the legacy keyword-niche branches alone.
+  // Used by /niche/cluster/[id]/insights.
+  const treeClusterIdRaw = req.nextUrl.searchParams.get('treeClusterId');
+  const treeClusterId = treeClusterIdRaw ? parseInt(treeClusterIdRaw) : null;
 
-  // When scoped to a cluster, join through the assignment table and filter by
-  // cluster_id. Otherwise, filter by keyword as before.
-  const scopeJoin = clusterId !== null
-    ? 'FROM niche_cluster_assignments a JOIN niche_spy_videos ON niche_spy_videos.id = a.video_id'
-    : 'FROM niche_spy_videos';
-  const scopeWhere = clusterId !== null
+  // Scope selection — three branches:
+  //   treeClusterId → join niche_tree_assignments (new tree clusters)
+  //   clusterId     → join niche_cluster_assignments (legacy keyword-niche clusters)
+  //   else          → filter by keyword on niche_spy_videos
+  const scopeJoin = treeClusterId !== null
+    ? 'FROM niche_tree_assignments a JOIN niche_spy_videos ON niche_spy_videos.id = a.video_id'
+    : clusterId !== null
+      ? 'FROM niche_cluster_assignments a JOIN niche_spy_videos ON niche_spy_videos.id = a.video_id'
+      : 'FROM niche_spy_videos';
+  const scopeWhere = (treeClusterId !== null || clusterId !== null)
     ? 'a.cluster_id = $1 AND score >= $2'
     : 'keyword = $1 AND score >= $2';
-  const scopeParams: (string | number)[] = clusterId !== null ? [clusterId, minScore] : [keyword, minScore];
+  const scopeParams: (string | number)[] = treeClusterId !== null
+    ? [treeClusterId, minScore]
+    : clusterId !== null
+      ? [clusterId, minScore]
+      : [keyword, minScore];
 
   const [subsRes, viewsRes, scatterRes] = await Promise.all([
     pool.query(`
@@ -127,7 +140,7 @@ export async function GET(req: NextRequest) {
   });
 
   return NextResponse.json(
-    { subsDist, viewsDist, scatter, clusterId },
+    { subsDist, viewsDist, scatter, clusterId, treeClusterId },
     { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } }
   );
 }

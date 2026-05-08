@@ -26,6 +26,10 @@ interface TimelineData {
 
 interface Props {
   keyword?: string;
+  /** Scope to a niche_tree_clusters cluster (the new HDBSCAN tree).
+   *  Mutually exclusive with `keyword` — when set, the API joins
+   *  niche_tree_assignments instead of filtering by keyword. */
+  treeClusterId?: number;
   minScore?: number;
   maxScore?: number;
   onRangeChange?: (from: string | null, to: string | null) => void;
@@ -43,7 +47,7 @@ function formatCount(n: number): string {
   return String(n);
 }
 
-export default function NicheTimeline({ keyword, minScore, maxScore, onRangeChange }: Props) {
+export default function NicheTimeline({ keyword, treeClusterId, minScore, maxScore, onRangeChange }: Props) {
   const [data, setData] = useState<TimelineData | null>(null);
   const [loading, setLoading] = useState(false);
   const [rangeFrom, setRangeFrom] = useState<string | null>(null);
@@ -57,7 +61,8 @@ export default function NicheTimeline({ keyword, minScore, maxScore, onRangeChan
   const fetchTimeline = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
-    if (keyword && keyword !== 'all') params.set('keyword', keyword);
+    if (treeClusterId != null) params.set('treeClusterId', String(treeClusterId));
+    else if (keyword && keyword !== 'all') params.set('keyword', keyword);
     if (rangeFrom) params.set('from', rangeFrom);
     if (rangeTo) params.set('to', rangeTo);
     if (minScore) params.set('minScore', String(minScore));
@@ -69,7 +74,7 @@ export default function NicheTimeline({ keyword, minScore, maxScore, onRangeChan
       setData(d);
     } catch (err) { console.error('Timeline fetch error:', err); }
     setLoading(false);
-  }, [keyword, rangeFrom, rangeTo, minScore, maxScore]);
+  }, [keyword, treeClusterId, rangeFrom, rangeTo, minScore, maxScore]);
 
   useEffect(() => { fetchTimeline(); }, [fetchTimeline]);
 

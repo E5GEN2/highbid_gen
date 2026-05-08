@@ -25,7 +25,20 @@ export const revalidate = 0;
  * Errors with empty clusters[] if no global run has finished yet.
  */
 export async function GET() {
-  const result = await getLatestGlobalRun();
+  let result;
+  try {
+    result = await getLatestGlobalRun();
+  } catch (err) {
+    // Always return JSON — a thrown 500 ends up as an HTML error
+    // page and the client gets "Unexpected token <" / "Unexpected
+    // end of JSON input" depending on what bytes leak out. Better
+    // to say "we failed, here's the message" so the UI can render
+    // a real error instead of a parse blowup.
+    return NextResponse.json(
+      { error: (err as Error).message?.slice(0, 500) || 'unknown', clusters: [] },
+      { status: 500 },
+    );
+  }
 
   if (!result.run) {
     return NextResponse.json({
