@@ -123,16 +123,20 @@ export async function refreshClipViewCounts(options?: {
     return { ok: true, updated: 0, errors: 0, calls: 0, totalClips };
   }
 
-  // Pre-slice into 50-id batches once, then deal them across threads
-  // round-robin. Each thread processes its own slice serially; threads
-  // run in parallel.
-  const batches: string[][] = [];
+  // Build a shared work queue of {batch, attempts} items. Workers shift
+  // off the queue; on transient failure (429/403/proxy), they push the
+  // batch back with attempts+1 so a different worker (with a different
+  // key+proxy) gets a fresh try. This was the bug behind "0 of 688
+  // clips updated" — pre-sliced thread-local lists meant any failed
+  // batch was permanently lost regardless of how many other keys were
+  // available. Cap attempts so a poison batch doesn't loop forever.
+  const MAX_ATTEMPTS = 3;
+  type QueueItem = { batch: string[]; attempts: number };
+  const queue: QueueItem[] = [];
   for (let i = 0; i < allVideoIds.length; i += 50) {
-    batches.push(allVideoIds.slice(i, i + 50));
+    queue.push({ batch: allVideoIds.slice(i, i + 50), attempts: 0 });
   }
-  const threadCount = Math.max(1, Math.min(requestedThreads, batches.length));
-  const slices: string[][][] = Array.from({ length: threadCount }, () => []);
-  batches.forEach((b, i) => slices[i % threadCount].push(b));
+  const threadCount = Math.max(1, Math.min(requestedThreads, queue.length));
 
   // Shared mutable counters — every worker writes here. JS is single-
   // threaded; the only async boundary is the await between batches, so
@@ -161,33 +165,42 @@ export async function refreshClipViewCounts(options?: {
     return false;
   };
 
-  async function worker(threadIdx: number, myBatches: string[][]) {
-    for (const batch of myBatches) {
+  async function worker(threadIdx: number) {
+    while (true) {
       if (await isCancelled()) return;
+      const item = queue.shift();
+      if (!item) return;  // queue empty — worker exits
+
       const pair = await getYtPairForThread(threadIdx);
       if (!pair) {
+        // No keys at all — count as final failure for this batch.
         errors++;
         completedBatches++;
         continue;
       }
 
-      const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${batch.join(',')}&key=${pair.key}`;
+      const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${item.batch.join(',')}&key=${pair.key}`;
+      let succeeded = false;
+      let retryable = false;
       try {
         const res = await ytFetchViaProxy(url, pair);
         calls++;
         if (!res.ok) {
-          errors++;
+          // 429/403/5xx are transient — different key+proxy may work.
+          // 400 is usually a bad request shape (won't fix on retry).
+          retryable = res.status === 429 || res.status === 403 || (res.status >= 500 && res.status < 600) || res.status === 0;
           if (res.status === 429 || res.status === 403) banYtKey(pair.key);
-          console.warn(`[yt-clip-views] thread ${threadIdx} batch failed: ${res.status} ${(res.error || '').slice(0, 120)}`);
+          console.warn(`[yt-clip-views] thread ${threadIdx} batch failed (attempt ${item.attempts + 1}): ${res.status} ${(res.error || '').slice(0, 120)}`);
         } else {
+          succeeded = true;
           const data = res.data as { items?: YtStatsItem[] };
-          for (const item of data.items || []) {
-            const id = item.id; if (!id) continue;
+          for (const item2 of data.items || []) {
+            const id = item2.id; if (!id) continue;
             const clipIds = clipsByVideoId.get(id);
             if (!clipIds) continue;
-            const v = parseInt(item.statistics?.viewCount    || '0') || 0;
-            const l = parseInt(item.statistics?.likeCount    || '0') || 0;
-            const c = parseInt(item.statistics?.commentCount || '0') || 0;
+            const v = parseInt(item2.statistics?.viewCount    || '0') || 0;
+            const l = parseInt(item2.statistics?.likeCount    || '0') || 0;
+            const c = parseInt(item2.statistics?.commentCount || '0') || 0;
             for (const clipId of clipIds) {
               await pool.query(
                 `UPDATE vizard_clips SET
@@ -203,22 +216,36 @@ export async function refreshClipViewCounts(options?: {
           }
         }
       } catch (err) {
-        errors++;
-        console.warn(`[yt-clip-views] thread ${threadIdx} batch threw:`, err instanceof Error ? err.message : err);
-      } finally {
+        // Network / proxy throw — retry with a fresh pair.
+        retryable = true;
+        console.warn(`[yt-clip-views] thread ${threadIdx} batch threw (attempt ${item.attempts + 1}):`, err instanceof Error ? err.message : err);
+      }
+
+      if (succeeded) {
         completedBatches++;
-        const snapshot: RefreshClipViewsProgress = { totalBatches, completedBatches, totalClips, updated, errors, calls };
-        options?.onProgress?.(snapshot);
-        if (options?.jobId) {
-          // Per-batch DB write is fine (10 threads × few batches each =
-          // tens of writes total, dwarfed by the YT API call latency).
-          persistProgress(options.jobId, totalClips, totalBatches, completedBatches, updated, errors, calls).catch(() => {});
-        }
+      } else if (retryable && item.attempts + 1 < MAX_ATTEMPTS) {
+        // Push back for another worker to pick up. Don't bump
+        // completedBatches — the batch isn't done yet.
+        queue.push({ batch: item.batch, attempts: item.attempts + 1 });
+      } else {
+        // Out of retries or non-retryable error — count it as a
+        // permanent batch error.
+        errors++;
+        completedBatches++;
+      }
+
+      const snapshot: RefreshClipViewsProgress = { totalBatches, completedBatches, totalClips, updated, errors, calls };
+      options?.onProgress?.(snapshot);
+      if (options?.jobId) {
+        // Per-batch DB write is fine (10 threads × few batches each =
+        // tens of writes total, dwarfed by the YT API call latency).
+        persistProgress(options.jobId, totalClips, totalBatches, completedBatches, updated, errors, calls).catch(() => {});
       }
     }
   }
 
-  await Promise.all(slices.map((rows, i) => worker(i, rows)));
+  // N parallel workers all pulling from the shared queue.
+  await Promise.all(Array.from({ length: threadCount }, (_, i) => worker(i)));
 
   if (cancelled) {
     if (options?.jobId) await markJobCancelled(options.jobId, totalClips, totalBatches, completedBatches, updated, errors, calls);
