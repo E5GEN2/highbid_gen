@@ -254,7 +254,7 @@ export async function getCombinedVectorForVideo(videoId: number): Promise<number
  */
 export async function findSimilarClustersByVector(
   embedding: number[],
-  options?: { limit?: number; minSimilarity?: number; level?: number },
+  options?: { limit?: number; minSimilarity?: number; level?: number; clusterIdAllowlist?: number[] },
 ): Promise<Array<{ clusterId: number; level: number; parentClusterId: number | null; similarity: number }>> {
   await ensureVectorTables();
   const limit = options?.limit || 60;
@@ -262,10 +262,17 @@ export async function findSimilarClustersByVector(
   const embStr = '[' + embedding.join(',') + ']';
 
   const where: string[] = [`1 - (embedding <=> $1::vector) >= $3`];
-  const params: (string | number)[] = [embStr, limit, minSimilarity];
+  const params: (string | number | number[])[] = [embStr, limit, minSimilarity];
   if (options?.level !== undefined) {
     where.push(`level = $${params.length + 1}`);
     params.push(options.level);
+  }
+  // Optional allowlist of cluster_ids — used by search-niches to scope
+  // results to the active niche tree (latest L1 run + its L2 subdivides),
+  // skipping zombie vectors left behind from old / cancelled runs.
+  if (options?.clusterIdAllowlist && options.clusterIdAllowlist.length > 0) {
+    where.push(`cluster_id = ANY($${params.length + 1}::int[])`);
+    params.push(options.clusterIdAllowlist);
   }
 
   const result = await vectorPool.query<{ cluster_id: number; level: number; parent_cluster_id: number | null; similarity: string }>(

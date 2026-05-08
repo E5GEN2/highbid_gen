@@ -123,6 +123,41 @@ export async function backfillClusterVectors(opts?: {
 }
 
 /**
+ * Find the cluster IDs that belong to the currently-active niche tree:
+ * the latest global L1 run + its L2 subdivides. Used to scope semantic
+ * search so zombie clusters from old / cancelled / incomplete runs
+ * don't leak into results (we saw the same niche show up twice
+ * because partial inserts from a cancelled run lived alongside the
+ * fresh run's clusters).
+ */
+export async function getActiveTreeClusterIds(): Promise<number[]> {
+  const pool = await getPool();
+  const r = await pool.query<{ id: number }>(
+    `WITH latest AS (
+       SELECT id FROM niche_tree_runs
+        WHERE kind = 'global' AND status = 'done'
+        ORDER BY started_at DESC
+        LIMIT 1
+     ),
+     l1 AS (
+       SELECT c.id
+         FROM niche_tree_clusters c
+         JOIN latest ON c.run_id = latest.id
+        WHERE c.parent_cluster_id IS NULL
+     ),
+     l2 AS (
+       SELECT c.id
+         FROM niche_tree_clusters c
+        WHERE c.parent_cluster_id IN (SELECT id FROM l1)
+     )
+     SELECT id FROM l1
+     UNION ALL
+     SELECT id FROM l2`,
+  );
+  return r.rows.map(row => row.id);
+}
+
+/**
  * Embed a text query then search cluster signatures. Returns top-N
  * cluster_id + similarity scores. Caller is responsible for hydrating
  * the cluster cards from main DB.
@@ -130,12 +165,17 @@ export async function backfillClusterVectors(opts?: {
  * Caches the query embedding via the same search_queries table the
  * video search uses — same query string + same source = no Gemini
  * round trip.
+ *
+ * Scoped to the active niche tree by default (latest L1 run + its L2
+ * children). Pass `includeAllRuns: true` if you need to search across
+ * historical / cancelled runs too.
  */
 export async function searchNichesByText(opts: {
   query: string;
   limit?: number;
   minSimilarity?: number;
   level?: number;
+  includeAllRuns?: boolean;
 }): Promise<{
   hitFromCache: boolean;
   results: Array<{ clusterId: number; level: number; parentClusterId: number | null; similarity: number }>;
@@ -183,10 +223,17 @@ export async function searchNichesByText(opts: {
     );
   }
 
+  // Scope to the active tree unless caller explicitly opts out. This
+  // is what eliminates the "duplicate niche cards" symptom — old run
+  // partials had real cluster vectors but shouldn't appear alongside
+  // the fresh run's results.
+  const allowlist = opts.includeAllRuns ? undefined : await getActiveTreeClusterIds();
+
   const results = await findSimilarClustersByVector(embedding!, {
     limit: opts.limit ?? 60,
     minSimilarity: opts.minSimilarity ?? 0,
     level: opts.level,
+    clusterIdAllowlist: allowlist,
   });
   return { hitFromCache, results };
 }
