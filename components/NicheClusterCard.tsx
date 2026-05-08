@@ -135,6 +135,14 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
           <h3 className="text-sm font-medium text-white group-hover:text-amber-400 transition line-clamp-1" title={label}>
             {label}
           </h3>
+          {/* Total views + total channels live as small inline stats
+              under the title — frees the main row for the heartbeat
+              chart and the larger opportunity pills, which are the
+              primary read for an operator scanning niches. */}
+          <div className="flex items-center gap-3 text-[11px] text-[#888] mt-1 flex-wrap">
+            {c.totalViews != null && <span><span className="text-green-400 font-medium">{fmtYT(c.totalViews)}</span> total views</span>}
+            {c.channelCount != null && <span><span className="text-blue-400 font-medium">{c.channelCount.toLocaleString()}</span> channels</span>}
+          </div>
         </div>
         {score != null && (
           <div className="text-right flex-shrink-0">
@@ -144,23 +152,13 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
         )}
       </div>
 
-      {/* 4-tile stats row. Video count lives in the header badge so
-          slot 4 shows total-channels; slot 2 swaps the static "Top
-          channels" count for an inline heartbeat sparkline of weekly
-          upload counts over the last year — lets the user instantly
-          see whether a niche is alive or has gone quiet. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 mb-3">
-        <Stat label="Avg views per video" value={c.avgViews != null ? fmtYT(c.avgViews) : '—'} />
+      {/* Heartbeat (left, full-width on its row) + 4 opportunity
+          pills underneath — same shape as the Insights tab cards but
+          fitted into the wider row layout. Bigger value type so OPP /
+          TOP / NEW / CEIL are readable at a glance. */}
+      <div className="px-4 mb-3">
         <HeartbeatTile histogram={c.uploadHistogram} />
-        <Stat label="Total views"         value={c.totalViews != null ? fmtYT(c.totalViews) : '—'} valueColor="text-green-400" />
-        <Stat label="Total channels"      value={c.channelCount != null ? c.channelCount.toLocaleString() : '—'} valueColor="text-blue-400" />
       </div>
-
-      {/* Opportunity indicators — same NOS / TOP-LEFT / NEWCOMER /
-          CEILING numbers as the Insights tab, just shrunk to 4
-          horizontal pills. Dimmed placeholders when the cluster has
-          fewer than 10 high-score videos with subs+views (sample
-          too small to compute stably). */}
       <OpportunityPillsRow opportunity={c.opportunity} />
 
       {/* Popular videos strip — 4 thumbs + title below each */}
@@ -216,14 +214,6 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
   );
 }
 
-function Stat({ label, value, valueColor = 'text-white' }: { label: string; value: string; valueColor?: string }) {
-  return (
-    <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
-      <div className="text-[10px] text-[#666] uppercase tracking-wider">{label}</div>
-      <div className={`text-base font-semibold ${valueColor} mt-0.5`}>{value}</div>
-    </div>
-  );
-}
 
 /**
  * Inline weekly-upload sparkline. 52 buckets, oldest → newest. The
@@ -280,9 +270,9 @@ function Pill({
   };
   return (
     <div className="relative group/pill" onClick={e => e.stopPropagation()}>
-      <div className={`flex items-center justify-between rounded-md border px-2 py-1 cursor-help ${colors[band]}`}>
-        <span className="text-[8px] uppercase tracking-wider opacity-70">{label}</span>
-        <span className="text-xs font-bold leading-tight">{value}</span>
+      <div className={`flex flex-col items-start rounded-lg border px-3 py-2 cursor-help ${colors[band]}`}>
+        <span className="text-[10px] uppercase tracking-wider opacity-70">{label}</span>
+        <span className="text-base font-bold leading-tight mt-0.5">{value}</span>
       </div>
       <div className="pointer-events-none absolute right-0 top-full mt-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/pill:opacity-100 transition-opacity z-50 text-left">
         {tooltip}

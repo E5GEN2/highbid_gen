@@ -3,9 +3,14 @@ import { Pool } from 'pg';
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  max: 10,
+  max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  // Bumped from 10s — getLatestGlobalRun fans out 6 queries in
+  // parallel and the niche-tree page can stack a few simultaneous
+  // requests during initial render. 10s was tight enough that Railway
+  // connection-pool churn surfaced as "timeout exceeded when trying
+  // to connect" in the UI.
+  connectionTimeoutMillis: 30000,
 });
 
 let schemaInitialized = false;
