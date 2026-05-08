@@ -1025,6 +1025,39 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vya_channel_id ON vizard_yt_accounts(channel_id) WHERE channel_id IS NOT NULL`).catch(() => {});
 
+    // Background-job tracking for the "refresh all view counts" admin
+    // action. Lets the threaded worker persist progress so the agent
+    // endpoint (and the UI) can poll instead of relying on a long-lived
+    // SSE stream that breaks on any network blip.
+    //
+    // Status state machine:
+    //   running    – worker pool is processing batches
+    //   done       – every batch finished (errors are counted, not fatal)
+    //   error      – fatal error before any batch ran (e.g. no keys)
+    //   cancelled  – DELETE on the agent endpoint flipped it; workers stop
+    //                between batches
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vizard_refresh_jobs (
+        id                 SERIAL PRIMARY KEY,
+        status             TEXT NOT NULL DEFAULT 'running',
+        threads            INTEGER NOT NULL DEFAULT 10,
+        total_clips        INTEGER NOT NULL DEFAULT 0,
+        total_batches      INTEGER NOT NULL DEFAULT 0,
+        completed_batches  INTEGER NOT NULL DEFAULT 0,
+        updated            INTEGER NOT NULL DEFAULT 0,
+        errors             INTEGER NOT NULL DEFAULT 0,
+        calls              INTEGER NOT NULL DEFAULT 0,
+        force              BOOLEAN NOT NULL DEFAULT FALSE,
+        stale_minutes      INTEGER,
+        clip_ids           INTEGER[],
+        error_message      TEXT,
+        started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at       TIMESTAMPTZ,
+        last_progress_at   TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vrj_status ON vizard_refresh_jobs(status, started_at DESC)`).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {

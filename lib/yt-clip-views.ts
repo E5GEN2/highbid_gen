@@ -4,11 +4,19 @@
  * Uses the existing YT Data API key + proxy infrastructure
  * (lib/yt-keys.ts, lib/yt-proxy-fetch.ts) to query
  * GET /youtube/v3/videos?part=statistics&id=<batch-of-50> — 1 quota unit
- * per call. For our typical 40-clip project, that's 1 call total.
+ * per call.
+ *
+ * Threading: batches of 50 ids are sliced across N worker threads
+ * (default 10). Each worker pulls a key+proxy pair pinned to its
+ * threadIdx so we don't hammer one key with N parallel calls.
+ *
+ * Progress reporting: an optional `jobId` writes per-batch updates to
+ * the vizard_refresh_jobs row, so callers can poll the DB for status
+ * instead of holding a long SSE connection.
  */
 
 import { getPool } from './db';
-import { getNextYtPair, banYtKey } from './yt-keys';
+import { getYtPairForThread, banYtKey } from './yt-keys';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
 
 /**
@@ -18,18 +26,13 @@ import { ytFetchViaProxy } from './yt-proxy-fetch';
  *   https://www.youtube.com/shorts/<id>
  *   https://youtu.be/<id>
  *   https://www.youtube.com/watch?v=<id>
- * Returns null when the URL doesn't look like a YouTube link or the id can't
- * be isolated.
  */
 export function extractYouTubeVideoId(url: string | null | undefined): string | null {
   if (!url) return null;
-  // youtu.be/<id>
   let m = url.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
   if (m) return m[1];
-  // /shorts/<id>
   m = url.match(/\/shorts\/([A-Za-z0-9_-]{11})/);
   if (m) return m[1];
-  // ?v=<id>
   m = url.match(/[?&]v=([A-Za-z0-9_-]{11})/);
   if (m) return m[1];
   return null;
@@ -40,50 +43,47 @@ interface YtStatsItem {
   statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
 }
 
-/**
- * Refresh view/like/comment counts for the given clip ids. If `clipIds` is
- * omitted, refreshes EVERY clip with an uploaded YT URL whose stats are stale
- * (older than `staleMinutes`, default 60).
- *
- * Returns the number of clips updated and any errors. The caller can pass
- * { force: true } to skip the staleness gate.
- */
 export interface RefreshClipViewsProgress {
-  /** Total batches we'll send (videos.list takes 50 ids each). */
   totalBatches: number;
-  /** Batches finished so far. */
   completedBatches: number;
-  /** Total clips we're refreshing this run. */
   totalClips: number;
-  /** Clips with rows updated successfully. */
   updated: number;
-  /** Batches that failed (429/403/etc.). */
   errors: number;
-  /** API calls made so far. */
   calls: number;
 }
 
+const DEFAULT_THREADS = 10;
+const MAX_THREADS = 30;
+
+/**
+ * Refresh view/like/comment counts for the given clip ids. If `clipIds`
+ * is omitted, refreshes EVERY clip with an uploaded YT URL whose stats
+ * are stale (older than `staleMinutes`, default 60). Pass `force: true`
+ * to skip the staleness gate.
+ */
 export async function refreshClipViewCounts(options?: {
   clipIds?: number[];
   staleMinutes?: number;
   force?: boolean;
-  /** Optional progress callback fired after each batch. Lets the SSE
-   *  endpoint push updates to the admin UI in real time. */
+  /** Number of parallel workers (default 10, capped at 30 and at the active key count). */
+  threads?: number;
+  /** If set, persist progress to vizard_refresh_jobs.<jobId> after every batch
+   *  AND check that row's status='running' before each batch (cancellation). */
+  jobId?: number;
+  /** Optional in-process progress callback for SSE / live UI. Fires after every batch. */
   onProgress?: (p: RefreshClipViewsProgress) => void;
-}): Promise<{ ok: true; updated: number; errors: number; calls: number; totalClips: number } | { ok: false; error: string }> {
+}): Promise<{ ok: true; updated: number; errors: number; calls: number; totalClips: number; cancelled?: boolean } | { ok: false; error: string }> {
   const pool = await getPool();
   const stale = Math.max(1, options?.staleMinutes ?? 60);
   const force = !!options?.force;
+  const requestedThreads = Math.max(1, Math.min(MAX_THREADS, options?.threads ?? DEFAULT_THREADS));
 
-  // Pull rows that need refreshing. youtube_url must be set (clip uploaded).
   const conditions: string[] = ['youtube_url IS NOT NULL'];
   const params: (string | number | number[])[] = [];
   if (options?.clipIds && options.clipIds.length > 0) {
     conditions.push(`id = ANY($${params.length + 1}::int[])`);
     params.push(options.clipIds);
   } else if (!force) {
-    // Bulk mode: only refresh stale rows. force=true bypasses this for the
-    // "refresh everything now" admin button.
     conditions.push(
       `(youtube_views_fetched_at IS NULL
         OR youtube_views_fetched_at < NOW() - INTERVAL '${stale} minutes')`
@@ -96,10 +96,11 @@ export async function refreshClipViewCounts(options?: {
 
   if (rows.rows.length === 0) {
     options?.onProgress?.({ totalBatches: 0, completedBatches: 0, totalClips: 0, updated: 0, errors: 0, calls: 0 });
+    if (options?.jobId) await markJobDone(options.jobId, 0, 0, 0, 0, 0);
     return { ok: true, updated: 0, errors: 0, calls: 0, totalClips: 0 };
   }
 
-  // Build (clipId → videoId) map; backfill youtube_video_id when missing.
+  // Build (videoId → clipIds[]) map; backfill youtube_video_id when missing.
   const clipsByVideoId = new Map<string, number[]>();
   const backfills: Array<{ clipId: number; videoId: string }> = [];
   for (const r of rows.rows) {
@@ -118,57 +119,163 @@ export async function refreshClipViewCounts(options?: {
   const totalBatches = Math.ceil(allVideoIds.length / 50);
   if (allVideoIds.length === 0) {
     options?.onProgress?.({ totalBatches: 0, completedBatches: 0, totalClips, updated: 0, errors: 0, calls: 0 });
+    if (options?.jobId) await markJobDone(options.jobId, totalClips, 0, 0, 0, 0);
     return { ok: true, updated: 0, errors: 0, calls: 0, totalClips };
   }
 
-  // Initial progress emit so the UI can render the bar at 0% before the
-  // first batch round-trips.
-  options?.onProgress?.({ totalBatches, completedBatches: 0, totalClips, updated: 0, errors: 0, calls: 0 });
-
-  let updated = 0, errors = 0, calls = 0, completedBatches = 0;
-  // YT Data API videos.list accepts up to 50 ids per call. Cost: 1 unit each.
+  // Pre-slice into 50-id batches once, then deal them across threads
+  // round-robin. Each thread processes its own slice serially; threads
+  // run in parallel.
+  const batches: string[][] = [];
   for (let i = 0; i < allVideoIds.length; i += 50) {
-    const batch = allVideoIds.slice(i, i + 50);
-    const pair = await getNextYtPair();
-    if (!pair) return { ok: false, error: 'no YT API key configured (set niche_yt_api_keys or youtube_api_key)' };
+    batches.push(allVideoIds.slice(i, i + 50));
+  }
+  const threadCount = Math.max(1, Math.min(requestedThreads, batches.length));
+  const slices: string[][][] = Array.from({ length: threadCount }, () => []);
+  batches.forEach((b, i) => slices[i % threadCount].push(b));
 
-    const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${batch.join(',')}&key=${pair.key}`;
-    const res = await ytFetchViaProxy(url, pair);
-    calls++;
-    if (!res.ok) {
-      errors++;
-      // 429/403 → ban this key/proxy pair for the cooldown window so the
-      // next batch picks a different one.
-      if (res.status === 429 || res.status === 403) banYtKey(pair.key);
-      console.warn(`[yt-clip-views] batch ${i / 50 + 1} failed: ${res.status} ${(res.error || '').slice(0, 120)}`);
-      completedBatches++;
-      options?.onProgress?.({ totalBatches, completedBatches, totalClips, updated, errors, calls });
-      continue;
-    }
-    const data = res.data as { items?: YtStatsItem[] };
-    for (const item of data.items || []) {
-      const id = item.id; if (!id) continue;
-      const clipIds = clipsByVideoId.get(id);
-      if (!clipIds) continue;
-      const v = parseInt(item.statistics?.viewCount    || '0') || 0;
-      const l = parseInt(item.statistics?.likeCount    || '0') || 0;
-      const c = parseInt(item.statistics?.commentCount || '0') || 0;
-      for (const clipId of clipIds) {
-        await pool.query(
-          `UPDATE vizard_clips SET
-             youtube_view_count = $1,
-             youtube_like_count = $2,
-             youtube_comment_count = $3,
-             youtube_views_fetched_at = NOW()
-           WHERE id = $4`,
-          [v, l, c, clipId]
-        );
-        updated++;
+  // Shared mutable counters — every worker writes here. JS is single-
+  // threaded; the only async boundary is the await between batches, so
+  // ordinary increment is safe.
+  let updated = 0, errors = 0, calls = 0, completedBatches = 0;
+  let cancelled = false;
+  const initial: RefreshClipViewsProgress = { totalBatches, completedBatches: 0, totalClips, updated: 0, errors: 0, calls: 0 };
+  options?.onProgress?.(initial);
+  if (options?.jobId) await persistProgress(options.jobId, totalClips, totalBatches, 0, 0, 0, 0);
+
+  // Cancel-check throttle: hit the DB at most once per second per
+  // worker so we don't drown the connection pool.
+  let lastCancelCheck = 0;
+  const isCancelled = async (): Promise<boolean> => {
+    if (!options?.jobId) return false;
+    if (cancelled) return true;
+    if (Date.now() - lastCancelCheck < 1000) return false;
+    lastCancelCheck = Date.now();
+    try {
+      const r = await pool.query<{ status: string }>(`SELECT status FROM vizard_refresh_jobs WHERE id = $1`, [options.jobId]);
+      if (r.rows[0]?.status === 'cancelled') {
+        cancelled = true;
+        return true;
+      }
+    } catch { /* transient — assume not cancelled */ }
+    return false;
+  };
+
+  async function worker(threadIdx: number, myBatches: string[][]) {
+    for (const batch of myBatches) {
+      if (await isCancelled()) return;
+      const pair = await getYtPairForThread(threadIdx);
+      if (!pair) {
+        errors++;
+        completedBatches++;
+        continue;
+      }
+
+      const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${batch.join(',')}&key=${pair.key}`;
+      try {
+        const res = await ytFetchViaProxy(url, pair);
+        calls++;
+        if (!res.ok) {
+          errors++;
+          if (res.status === 429 || res.status === 403) banYtKey(pair.key);
+          console.warn(`[yt-clip-views] thread ${threadIdx} batch failed: ${res.status} ${(res.error || '').slice(0, 120)}`);
+        } else {
+          const data = res.data as { items?: YtStatsItem[] };
+          for (const item of data.items || []) {
+            const id = item.id; if (!id) continue;
+            const clipIds = clipsByVideoId.get(id);
+            if (!clipIds) continue;
+            const v = parseInt(item.statistics?.viewCount    || '0') || 0;
+            const l = parseInt(item.statistics?.likeCount    || '0') || 0;
+            const c = parseInt(item.statistics?.commentCount || '0') || 0;
+            for (const clipId of clipIds) {
+              await pool.query(
+                `UPDATE vizard_clips SET
+                   youtube_view_count = $1,
+                   youtube_like_count = $2,
+                   youtube_comment_count = $3,
+                   youtube_views_fetched_at = NOW()
+                 WHERE id = $4`,
+                [v, l, c, clipId]
+              );
+              updated++;
+            }
+          }
+        }
+      } catch (err) {
+        errors++;
+        console.warn(`[yt-clip-views] thread ${threadIdx} batch threw:`, err instanceof Error ? err.message : err);
+      } finally {
+        completedBatches++;
+        const snapshot: RefreshClipViewsProgress = { totalBatches, completedBatches, totalClips, updated, errors, calls };
+        options?.onProgress?.(snapshot);
+        if (options?.jobId) {
+          // Per-batch DB write is fine (10 threads × few batches each =
+          // tens of writes total, dwarfed by the YT API call latency).
+          persistProgress(options.jobId, totalClips, totalBatches, completedBatches, updated, errors, calls).catch(() => {});
+        }
       }
     }
-    completedBatches++;
-    options?.onProgress?.({ totalBatches, completedBatches, totalClips, updated, errors, calls });
   }
 
+  await Promise.all(slices.map((rows, i) => worker(i, rows)));
+
+  if (cancelled) {
+    if (options?.jobId) await markJobCancelled(options.jobId, totalClips, totalBatches, completedBatches, updated, errors, calls);
+    return { ok: true, updated, errors, calls, totalClips, cancelled: true };
+  }
+  if (options?.jobId) await markJobDone(options.jobId, totalClips, totalBatches, updated, errors, calls);
   return { ok: true, updated, errors, calls, totalClips };
+}
+
+async function persistProgress(jobId: number, totalClips: number, totalBatches: number, completedBatches: number, updated: number, errors: number, calls: number): Promise<void> {
+  const pool = await getPool();
+  await pool.query(
+    `UPDATE vizard_refresh_jobs
+       SET total_clips = $1,
+           total_batches = $2,
+           completed_batches = $3,
+           updated = $4,
+           errors = $5,
+           calls = $6,
+           last_progress_at = NOW()
+     WHERE id = $7 AND status = 'running'`,
+    [totalClips, totalBatches, completedBatches, updated, errors, calls, jobId]
+  );
+}
+
+async function markJobDone(jobId: number, totalClips: number, totalBatches: number, updated: number, errors: number, calls: number): Promise<void> {
+  const pool = await getPool();
+  await pool.query(
+    `UPDATE vizard_refresh_jobs
+       SET status = 'done',
+           total_clips = $1,
+           total_batches = $2,
+           completed_batches = $2,
+           updated = $3,
+           errors = $4,
+           calls = $5,
+           completed_at = NOW(),
+           last_progress_at = NOW()
+     WHERE id = $6 AND status = 'running'`,
+    [totalClips, totalBatches, updated, errors, calls, jobId]
+  );
+}
+
+async function markJobCancelled(jobId: number, totalClips: number, totalBatches: number, completedBatches: number, updated: number, errors: number, calls: number): Promise<void> {
+  const pool = await getPool();
+  // Only flip if it's still 'running' — DELETE handler may have already set 'cancelled'.
+  await pool.query(
+    `UPDATE vizard_refresh_jobs
+       SET total_clips = $1,
+           total_batches = $2,
+           completed_batches = $3,
+           updated = $4,
+           errors = $5,
+           calls = $6,
+           completed_at = NOW(),
+           last_progress_at = NOW()
+     WHERE id = $7`,
+    [totalClips, totalBatches, completedBatches, updated, errors, calls, jobId]
+  );
 }
