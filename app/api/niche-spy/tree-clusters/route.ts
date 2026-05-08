@@ -43,22 +43,29 @@ export async function GET() {
   if (!result.run) {
     return NextResponse.json({
       runId: null, source: null, status: null,
-      totalVideos: 0, numClusters: 0, clusters: [],
+      totalVideos: 0, numClusters: 0, numL1: 0, numL2: 0, clusters: [],
     });
   }
 
-  // Only return L1 (parent_cluster_id IS NULL) for the home grid. L2
-  // children are fetched per-cluster on the detail page so the home
-  // payload stays small.
-  const l1 = result.clusters.filter(c => c.parentClusterId == null);
+  // Return BOTH L1 and L2 so the home grid can render parents first
+  // (sorted) followed by the L2 sub-niches. The page renders them in
+  // two sections so users can scroll through the full tree without
+  // drilling.
+  const all = result.clusters;
+  const numL1 = all.filter(c => c.parentClusterId == null).length;
+  const numL2 = all.filter(c => c.parentClusterId != null).length;
 
   return NextResponse.json({
     runId: result.run.id,
     source: result.run.source,
     status: result.run.status,
     totalVideos: result.run.totalVideos,
-    numClusters: result.run.numClusters,
-    clusters: l1.map(c => ({
+    // Combined L1+L2 count so the page header reads as the full
+    // niche universe rather than just the broad-niche count.
+    numClusters: numL1 + numL2,
+    numL1,
+    numL2,
+    clusters: all.map(c => ({
       id: c.id,
       level: c.level,
       parentClusterId: c.parentClusterId,
@@ -78,6 +85,7 @@ export async function GET() {
       popularVideos: c.popularVideos,
       channelCount: c.channelCount,
       uploadHistogram: c.uploadHistogram,
+      opportunity: c.opportunity,
       childrenCount: c.childrenCount,
     })),
   });

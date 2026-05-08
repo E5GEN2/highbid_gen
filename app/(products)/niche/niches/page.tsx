@@ -36,6 +36,14 @@ interface TreeClusterCard {
   repChannelName: string | null;
   popularVideos: PopularVideo[];
   uploadHistogram?: number[];
+  opportunity?: {
+    sample: number;
+    nos: number;
+    nosDisplay: number;
+    topLeftPct: number;
+    newcomerRate: number;
+    lowSubCeiling: number;
+  } | null;
   childrenCount: number;
 }
 
@@ -107,14 +115,19 @@ export default function NichesGrid() {
 
   useEffect(() => { fetchClusters(); }, [fetchClusters]);
 
-  // Sorted view — clusters API returns video-count-desc by default; we
-  // re-sort client-side when the user picks a different sort.
-  const sortedClusters = useMemo(() => {
-    const arr = clusters.slice();
-    if (clusterSort === 'views')  arr.sort((a, b) => (b.totalViews ?? 0) - (a.totalViews ?? 0));
-    if (clusterSort === 'score')  arr.sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0));
-    if (clusterSort === 'videos') arr.sort((a, b) => b.videoCount - a.videoCount);
-    return arr;
+  // Split + sort. The API ships L1 and L2 in one payload now; the
+  // page renders L1 first (top-level niches) then L2 underneath
+  // (sub-niches) in two sections so users can scan the whole tree
+  // without drilling.
+  const { l1Sorted, l2Sorted } = useMemo(() => {
+    const cmp = (a: TreeClusterCard, b: TreeClusterCard) => {
+      if (clusterSort === 'views')  return (b.totalViews ?? 0) - (a.totalViews ?? 0);
+      if (clusterSort === 'score')  return (b.avgScore ?? 0) - (a.avgScore ?? 0);
+      return b.videoCount - a.videoCount;
+    };
+    const l1 = clusters.filter(c => c.parentClusterId == null).sort(cmp);
+    const l2 = clusters.filter(c => c.parentClusterId != null).sort(cmp);
+    return { l1Sorted: l1, l2Sorted: l2 };
   }, [clusters, clusterSort]);
 
   // Fire semantic NICHE search — embeds the query and finds the
@@ -317,7 +330,11 @@ export default function NichesGrid() {
           ))}
         </div>
         {clusters.length > 0 && (
-          <span className="text-sm text-[#888]">{clusters.length} niches</span>
+          <span className="text-sm text-[#888]">
+            <span className="text-white font-medium">{l1Sorted.length}</span> niches
+            <span className="mx-1">:</span>
+            <span className="text-white font-medium">{l2Sorted.length}</span> sub-niches
+          </span>
         )}
       </div>
 
@@ -327,25 +344,50 @@ export default function NichesGrid() {
         </div>
       )}
 
-      {/* Cluster cards — wide rows so titles + thumbs stay legible */}
-      <div className="space-y-3">
-        {clustersLoading && clusters.length === 0 && Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 animate-pulse">
-            <div className="h-4 w-1/3 bg-[#1f1f1f] rounded mb-3" />
-            <div className="grid grid-cols-4 gap-3">
-              {[0,1,2,3].map(j => (
-                <div key={j}>
-                  <div className="aspect-video bg-[#1a1a1a] rounded-md" />
-                  <div className="h-3 w-3/4 bg-[#1f1f1f] rounded mt-2" />
-                </div>
-              ))}
+      {/* Skeleton placeholders during initial load */}
+      {clustersLoading && clusters.length === 0 && (
+        <div className="space-y-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 animate-pulse">
+              <div className="h-4 w-1/3 bg-[#1f1f1f] rounded mb-3" />
+              <div className="grid grid-cols-4 gap-3">
+                {[0,1,2,3].map(j => (
+                  <div key={j}>
+                    <div className="aspect-video bg-[#1a1a1a] rounded-md" />
+                    <div className="h-3 w-3/4 bg-[#1f1f1f] rounded mt-2" />
+                  </div>
+                ))}
+              </div>
             </div>
+          ))}
+        </div>
+      )}
+
+      {/* L1 niches — wide rows so titles + thumbs stay legible. */}
+      {l1Sorted.length > 0 && (
+        <div className="space-y-3">
+          {l1Sorted.map(c => (
+            <NicheClusterCard key={c.id} cluster={c} />
+          ))}
+        </div>
+      )}
+
+      {/* L2 sub-niches — same wide-row card stacked below the L1
+          section so an operator can scan the whole tree without
+          having to drill into each L1 cluster. */}
+      {l2Sorted.length > 0 && (
+        <div className="mt-10">
+          <div className="flex items-center gap-3 mb-4">
+            <h2 className="text-lg font-bold text-white">Sub-niches</h2>
+            <span className="text-xs text-[#666]">{l2Sorted.length} L2 clusters across all parents</span>
           </div>
-        ))}
-        {sortedClusters.map(c => (
-          <NicheClusterCard key={c.id} cluster={c} />
-        ))}
-      </div>
+          <div className="space-y-3">
+            {l2Sorted.map(c => (
+              <NicheClusterCard key={c.id} cluster={c} />
+            ))}
+          </div>
+        </div>
+      )}
       </>
       )}
     </div>

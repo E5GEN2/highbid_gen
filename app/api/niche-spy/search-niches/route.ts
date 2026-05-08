@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { searchNichesByText } from '@/lib/niche-search';
+import { fetchClusterOpportunities } from '@/lib/niche-tree';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -165,6 +166,9 @@ export async function POST(req: NextRequest) {
     arr[HISTOGRAM_WEEKS - 1 - wAgo] = row.cnt;
   }
 
+  // Per-cluster opportunity indicators (NOS / top-left / newcomer / ceiling).
+  const opportunityByCluster = await fetchClusterOpportunities(pool, { clusterIds: ids });
+
   const niches = clRes.rows
     .map(row => ({
       id: row.id,
@@ -186,6 +190,7 @@ export async function POST(req: NextRequest) {
       popularVideos: popByCluster.get(row.id) || [],
       channelCount: channelCountByCluster.get(row.id) ?? 0,
       uploadHistogram: histogramByCluster.get(row.id) || new Array(HISTOGRAM_WEEKS).fill(0),
+      opportunity: opportunityByCluster.get(row.id) ?? null,
       childrenCount: childrenByParent.get(row.id) ?? 0,
       similarity: simMap.get(row.id) ?? 0,
     }))

@@ -67,6 +67,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       popularVideos: c.popularVideos,
       channelCount: c.channelCount,
       uploadHistogram: c.uploadHistogram,
+      opportunity: c.opportunity,
       childrenCount: c.childrenCount,
     })),
     videos: videosRes.videos,

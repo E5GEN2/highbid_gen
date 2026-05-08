@@ -65,7 +65,11 @@ export function ChannelScatter({ dots, videoLookup }: Props) {
   const { openSimilar } = useSimilarModal();
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
-  const [onePerChannel, setOnePerChannel] = useState(false);
+  // Default ON — without dedupe, channels with many videos pile dots
+  // on top of each other and the scatter visually overweights them.
+  // Operators almost always want one dot per channel (their best-
+  // performing video) to compare niches fairly.
+  const [onePerChannel, setOnePerChannel] = useState(true);
   const [refreshingIds, setRefreshingIds] = useState<Set<number>>(new Set());
 
   const [minViews, setMinViews] = useState('');

@@ -47,6 +47,17 @@ export interface ClusterCardData {
    *  year. Drives the inline heartbeat sparkline that replaces the
    *  Top channels tile. */
   uploadHistogram?: number[];
+  /** Per-cluster opportunity indicators — null when sample size is
+   *  too low (under 10 high-score videos with subs+views). Renders
+   *  as a 4-pill row matching the Insights tab cards. */
+  opportunity?: {
+    sample: number;
+    nos: number;
+    nosDisplay: number;
+    topLeftPct: number;
+    newcomerRate: number;
+    lowSubCeiling: number;
+  } | null;
   childrenCount: number;
   /** Optional cosine similarity to a query — set when this card is
    *  rendered as a search result. Drives the "% match" pill. */
@@ -145,6 +156,13 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
         <Stat label="Total channels"      value={c.channelCount != null ? c.channelCount.toLocaleString() : '—'} valueColor="text-blue-400" />
       </div>
 
+      {/* Opportunity indicators — same NOS / TOP-LEFT / NEWCOMER /
+          CEILING numbers as the Insights tab, just shrunk to 4
+          horizontal pills. Dimmed placeholders when the cluster has
+          fewer than 10 high-score videos with subs+views (sample
+          too small to compute stably). */}
+      <OpportunityPillsRow opportunity={c.opportunity} />
+
       {/* Popular videos strip — 4 thumbs + title below each */}
       <div className="px-4 pb-4">
         <div className="flex items-center justify-between mb-2">
@@ -217,6 +235,62 @@ function Stat({ label, value, valueColor = 'text-white' }: { label: string; valu
  * trailing nine months — green when the niche is uptrending, red
  * when it's falling off, neutral when it's been steady.
  */
+function OpportunityPillsRow({ opportunity }: { opportunity?: ClusterCardData['opportunity'] }) {
+  const pills = [
+    { label: 'OPP', tooltip: 'Opportunity Score — median(log views / log subs). Higher = small creators get pushed.', accent: 'green' as const },
+    { label: 'TOP', tooltip: 'Top-Left Density — % of videos with above-median views and below-median subs.',         accent: 'green' as const },
+    { label: 'NEW', tooltip: 'Newcomer Success — median views of channels <6mo old, vs niche overall median.',         accent: 'green' as const },
+    { label: 'CEIL', tooltip: 'Low-Sub Ceiling — p90 views among channels with <10K subs.',                            accent: 'green' as const },
+  ];
+  if (!opportunity) {
+    return (
+      <div className="grid grid-cols-4 gap-1.5 px-4 pb-3">
+        {pills.map(p => (
+          <Pill key={p.label} label={p.label} value="—" band="empty" tooltip="Not enough high-score videos (need ≥10 with subs + views) to compute." />
+        ))}
+      </div>
+    );
+  }
+  const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}K` : `${Math.round(n)}`;
+  const items = [
+    { label: 'OPP',  value: `${opportunity.nosDisplay}`,  band: opportunity.nos >= 1.3 ? 'green' : opportunity.nos >= 1.0 ? 'yellow' : 'red',                  tooltip: <><div className="font-semibold text-white mb-1">Opportunity Score</div><div>Median <code className="text-amber-400">log(views)/log(subs)</code> across high-score videos. Raw NOS: {opportunity.nos.toFixed(2)} · {opportunity.sample} videos.</div></> },
+    { label: 'TOP',  value: `${opportunity.topLeftPct}%`, band: opportunity.topLeftPct >= 30 ? 'green' : opportunity.topLeftPct >= 10 ? 'yellow' : 'red',     tooltip: <><div className="font-semibold text-white mb-1">Top-Left Density</div><div>% of videos in the &quot;high views, low subs&quot; quadrant.</div></> },
+    { label: 'NEW',  value: `${opportunity.newcomerRate}%`, band: opportunity.newcomerRate >= 80 ? 'green' : opportunity.newcomerRate >= 50 ? 'yellow' : 'red', tooltip: <><div className="font-semibold text-white mb-1">Newcomer Success</div><div>Median views of channels &lt;6 months old as % of overall median.</div></> },
+    { label: 'CEIL', value: fmt(opportunity.lowSubCeiling), band: opportunity.lowSubCeiling >= 500_000 ? 'green' : opportunity.lowSubCeiling >= 100_000 ? 'yellow' : 'red', tooltip: <><div className="font-semibold text-white mb-1">Low-Sub Ceiling</div><div>p90 views among channels with &lt;10K subs.</div></> },
+  ] as const;
+  return (
+    <div className="grid grid-cols-4 gap-1.5 px-4 pb-3">
+      {items.map(p => <Pill key={p.label} label={p.label} value={p.value} band={p.band} tooltip={p.tooltip} />)}
+    </div>
+  );
+}
+
+function Pill({
+  label, value, band, tooltip,
+}: {
+  label: string; value: string;
+  band: 'green' | 'yellow' | 'red' | 'empty';
+  tooltip: React.ReactNode;
+}) {
+  const colors = {
+    green:  'text-green-400 bg-green-500/10 border-green-500/20',
+    yellow: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20',
+    red:    'text-red-400 bg-red-500/10 border-red-500/20',
+    empty:  'text-[#555] bg-[#1a1a1a]/40 border-[#1f1f1f] border-dashed',
+  };
+  return (
+    <div className="relative group/pill" onClick={e => e.stopPropagation()}>
+      <div className={`flex items-center justify-between rounded-md border px-2 py-1 cursor-help ${colors[band]}`}>
+        <span className="text-[8px] uppercase tracking-wider opacity-70">{label}</span>
+        <span className="text-xs font-bold leading-tight">{value}</span>
+      </div>
+      <div className="pointer-events-none absolute right-0 top-full mt-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/pill:opacity-100 transition-opacity z-50 text-left">
+        {tooltip}
+      </div>
+    </div>
+  );
+}
+
 function HeartbeatTile({ histogram }: { histogram?: number[] }) {
   const buckets = histogram && histogram.length > 0 ? histogram : new Array(52).fill(0);
   const total = buckets.reduce((a, b) => a + b, 0);

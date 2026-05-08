@@ -39,6 +39,14 @@ interface ClusterCard {
   repChannelName: string | null;
   popularVideos: PopularVideo[];
   uploadHistogram?: number[];
+  opportunity?: {
+    sample: number;
+    nos: number;
+    nosDisplay: number;
+    topLeftPct: number;
+    newcomerRate: number;
+    lowSubCeiling: number;
+  } | null;
   childrenCount: number;
 }
 interface ClusterVideo {
