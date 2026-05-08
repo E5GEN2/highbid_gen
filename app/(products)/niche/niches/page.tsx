@@ -2,8 +2,6 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { useNiche } from '@/components/NicheProvider';
 import { fmtYT } from '@/lib/format';
 
 // Shape returned by /api/niche-spy/search-semantic — matches the
@@ -19,20 +17,47 @@ interface SemanticHit {
   similarity: number;
 }
 
-export default function NichesGrid() {
-  const router = useRouter();
-  const { setSelectedKeyword } = useNiche();
+// Shape returned by /api/niche-spy/tree-clusters — auto-discovered
+// L1 niche clusters from the latest HDBSCAN run (combined_v2 space).
+interface PopularVideo {
+  videoId: number;
+  title: string | null;
+  thumbnail: string | null;
+  url: string | null;
+  viewCount: number | null;
+  channelName: string | null;
+  postedAt: string | null;
+  postedDate: string | null;
+  score: number | null;
+}
+interface TreeClusterCard {
+  id: number;
+  level: number;
+  parentClusterId: number | null;
+  autoLabel: string | null;
+  label: string | null;
+  videoCount: number;
+  avgScore: number | null;
+  avgViews: number | null;
+  totalViews: number | null;
+  topChannels: string[];
+  representativeVideoId: number | null;
+  repTitle: string | null;
+  repThumbnail: string | null;
+  repUrl: string | null;
+  repViewCount: number | null;
+  repChannelName: string | null;
+  popularVideos: PopularVideo[];
+  childrenCount: number;
+}
 
-  const [keywordCards, setKeywordCards] = useState<Array<{
-    keyword: string; videoCount: number; channelCount: number; avgScore: number;
-    totalViews: number; avgViews: number; highScoreCount: number;
-    newChannelCount: number; newestVideo: string | null;
-    saturation: { globalSaturation: number; runSaturation: number } | null;
-    opportunity: {
-      sample: number; nos: number; nosDisplay: number;
-      topLeftPct: number; newcomerRate: number; lowSubCeiling: number;
-    } | null;
-  }>>([]);
+type ClusterSort = 'videos' | 'views' | 'score';
+
+export default function NichesGrid() {
+  const [clusters, setClusters] = useState<TreeClusterCard[]>([]);
+  const [clustersLoading, setClustersLoading] = useState(true);
+  const [clustersError, setClustersError] = useState<string | null>(null);
+  const [clusterSort, setClusterSort] = useState<ClusterSort>('videos');
   // searchInput = live input value; semanticQuery = committed query
   // (the value that was actually sent to the API). Splitting them lets
   // the user type freely without firing a search per keystroke.
@@ -42,33 +67,45 @@ export default function NichesGrid() {
   const [semanticLoading, setSemanticLoading] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
   const [hitFromCache, setHitFromCache] = useState(false);
-  // Min-match % filter — same pattern as the Similar page header.
-  // Wide-fetch from the API (limit 500, no server threshold) and let the
-  // user dial in how strict the match needs to be without re-querying.
-  // Default 0 so users see the full result set first, then filter up.
+  // Min-match % filter — wide-fetch from the API (limit 500, no server
+  // threshold) and let the user dial in how strict the match needs to
+  // be without re-querying. Default 0 so users see the full result set
+  // first, then filter up.
   const [minSimilarity, setMinSimilarity] = useState(0);
 
-  const [sort, setSort] = useState('videos');
-  const [kwLoading, setKwLoading] = useState(true);
-
-  // Niche cards still load (used when no search query is active).
-  const fetchKeywords = useCallback(async () => {
-    setKwLoading(true);
+  // Load clusters from the latest HDBSCAN run (L1 only — drill into L2
+  // happens on the cluster detail page).
+  const fetchClusters = useCallback(async () => {
+    setClustersLoading(true);
+    setClustersError(null);
     try {
-      const params = new URLSearchParams({ sort, limit: '200' });
-      const res = await fetch(`/api/niche-spy/keywords?${params}`);
+      const res = await fetch('/api/niche-spy/tree-clusters');
       const data = await res.json();
-      setKeywordCards(data.keywords);
-    } catch (err) { console.error('Keyword fetch error:', err); }
-    setKwLoading(false);
-  }, [sort]);
+      if (!res.ok) {
+        setClustersError(data.error || `HTTP ${res.status}`);
+        setClusters([]);
+      } else {
+        setClusters(data.clusters || []);
+      }
+    } catch (err) {
+      setClustersError((err as Error).message);
+      setClusters([]);
+    } finally {
+      setClustersLoading(false);
+    }
+  }, []);
 
-  useEffect(() => { fetchKeywords(); }, [fetchKeywords]);
+  useEffect(() => { fetchClusters(); }, [fetchClusters]);
 
-  const selectKeyword = (kw: string) => {
-    setSelectedKeyword(kw);
-    router.push(`/niche/niches/${encodeURIComponent(kw)}/videos`);
-  };
+  // Sorted view — clusters API returns video-count-desc by default; we
+  // re-sort client-side when the user picks a different sort.
+  const sortedClusters = useMemo(() => {
+    const arr = clusters.slice();
+    if (clusterSort === 'views')  arr.sort((a, b) => (b.totalViews ?? 0) - (a.totalViews ?? 0));
+    if (clusterSort === 'score')  arr.sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0));
+    if (clusterSort === 'videos') arr.sort((a, b) => b.videoCount - a.videoCount);
+    return arr;
+  }, [clusters, clusterSort]);
 
   // Fire semantic search — embeds the query through Gemini and looks
   // up nearest videos in the combined_v2 multimodal space. ~1-2s on
@@ -111,8 +148,6 @@ export default function NichesGrid() {
     setSemanticError(null);
   };
 
-  // Same client-side filter pattern as the Similar page: API returns the
-  // wide set, the input only changes how much is shown.
   const filteredResults = useMemo(
     () => (semanticResults || []).filter(v => v.similarity >= minSimilarity),
     [semanticResults, minSimilarity],
@@ -123,7 +158,7 @@ export default function NichesGrid() {
       {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white mb-1">Niches</h1>
-        <p className="text-sm text-[#888]">Select a niche to explore videos, channels, and insights</p>
+        <p className="text-sm text-[#888]">Auto-discovered niche clusters from {clusters.length || '—'} groups</p>
       </div>
 
       {/* Search bar — semantic. Press Enter to fire. The query gets
@@ -166,7 +201,7 @@ export default function NichesGrid() {
         Press Enter or hit Search. Powered by combined v2 (joint title+thumbnail) multimodal embeddings — text queries match against both verbal and visual signal.
       </p>
 
-      {/* Semantic search results — replaces the niche cards while a
+      {/* Semantic search results — replaces the cluster cards while a
           query is active. Results carry a per-card "match %" badge
           identical to the Similar page so the grid feels familiar. */}
       {semanticQuery && (
@@ -188,8 +223,7 @@ export default function NichesGrid() {
               )}
             </div>
 
-            {/* Min-match % — same control as the Similar page header.
-                Pure client-side filter over the already-fetched 500. */}
+            {/* Min-match % — pure client-side filter over the already-fetched 500. */}
             {(semanticResults && semanticResults.length > 0) && (
               <div className="flex items-center gap-2">
                 <label className="text-xs text-[#888]">Min match:</label>
@@ -279,24 +313,22 @@ export default function NichesGrid() {
         </div>
       )}
 
-      {/* Niche cards mode — only shown when no semantic search is active */}
+      {/* Cluster cards — only rendered when no semantic search is active */}
       {!semanticQuery && (
       <>
-      {/* Sort pills + Sync */}
+      {/* Sort pills */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex gap-2 flex-wrap">
-          {[
+          {([
             { value: 'videos', label: 'Most Videos' },
-            { value: 'views', label: 'Most Views' },
-            { value: 'score', label: 'Highest Score' },
-            { value: 'channels', label: 'Most Channels' },
-            { value: 'newest', label: 'Most Recent' },
-          ].map(opt => (
+            { value: 'views',  label: 'Most Views' },
+            { value: 'score',  label: 'Highest Score' },
+          ] as const).map(opt => (
             <button
               key={opt.value}
-              onClick={() => setSort(opt.value)}
+              onClick={() => setClusterSort(opt.value)}
               className={`px-4 py-1.5 rounded-full text-sm transition ${
-                sort === opt.value
+                clusterSort === opt.value
                   ? 'bg-white text-black font-medium'
                   : 'text-[#888] border border-[#333] hover:border-[#555]'
               }`}
@@ -305,165 +337,30 @@ export default function NichesGrid() {
             </button>
           ))}
         </div>
+        {clusters.length > 0 && (
+          <span className="text-sm text-[#888]">{clusters.length} niches</span>
+        )}
       </div>
 
-      {/* Results count */}
-      {keywordCards.length > 0 && (
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-sm font-medium text-white">{keywordCards.length} niches</span>
+      {clustersError && (
+        <div className="bg-[#141414] border border-red-500/30 rounded-xl p-4 mb-4 text-sm text-red-400">
+          Failed to load clusters: {clustersError}
         </div>
       )}
 
-      {/* Keyword cards grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        {kwLoading && keywordCards.length === 0 && Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 animate-pulse">
-            <div className="flex items-start justify-between mb-3">
-              <div className="h-5 w-32 bg-[#1f1f1f] rounded" />
-              <div className="h-6 w-12 bg-[#1f1f1f] rounded-lg" />
-            </div>
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              {[1,2,3].map(j => <div key={j}><div className="h-5 w-10 bg-[#1f1f1f] rounded mb-1" /><div className="h-2.5 w-12 bg-[#1a1a1a] rounded" /></div>)}
-            </div>
-            <div className="flex gap-2">
-              <div className="h-2.5 w-14 bg-[#1f1f1f] rounded" />
-              <div className="h-2.5 w-16 bg-[#1f1f1f] rounded" />
+      {/* Cluster cards grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {clustersLoading && clusters.length === 0 && Array.from({ length: 9 }).map((_, i) => (
+          <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden animate-pulse">
+            <div className="aspect-video bg-[#1a1a1a]" />
+            <div className="p-4 space-y-2">
+              <div className="h-4 w-3/4 bg-[#1f1f1f] rounded" />
+              <div className="h-3 w-1/2 bg-[#1f1f1f] rounded" />
             </div>
           </div>
         ))}
-        {keywordCards.map(kw => (
-          <button
-            key={kw.keyword}
-            onClick={() => selectKeyword(kw.keyword)}
-            className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 text-left hover:border-amber-500/60 transition group"
-          >
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-white group-hover:text-amber-400 transition leading-tight">{kw.keyword}</h3>
-                <span className="text-[9px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-1.5 py-0.5 rounded-full">manual</span>
-              </div>
-              <span className={`text-xs px-2 py-1 rounded-lg font-bold ${
-                kw.avgScore >= 80 ? 'bg-green-500/20 text-green-400' :
-                kw.avgScore >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
-                'bg-red-500/20 text-red-400'
-              }`}>⚡ {kw.avgScore}</span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              <div>
-                <div className="text-lg font-bold text-white">{kw.videoCount}</div>
-                <div className="text-xs text-[#666]">videos</div>
-              </div>
-              <div>
-                <div className="text-lg font-bold text-blue-400">{kw.channelCount}</div>
-                <div className="text-xs text-[#666]">channels</div>
-              </div>
-              <div>
-                <div className="text-lg font-bold text-green-400">{fmtYT(kw.totalViews)}</div>
-                <div className="text-xs text-[#666]">views</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-[#666]">
-              {kw.newChannelCount > 0 && <span className="text-orange-400">{kw.newChannelCount} new ch</span>}
-              <span>{kw.highScoreCount} high score</span>
-              {kw.saturation && (
-                <span className={kw.saturation.globalSaturation >= 90 ? 'text-red-400' : kw.saturation.globalSaturation >= 70 ? 'text-yellow-400' : 'text-green-400'}>
-                  {kw.saturation.globalSaturation}% sat
-                </span>
-              )}
-            </div>
-
-            {/* Opportunity indicators — 4 compact pills with hover tooltips.
-                When not enough data (<10 high-score videos), render dimmed placeholder
-                pills so every card has the same height and the missing data is legible. */}
-            {kw.opportunity ? (
-              <div className="grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t border-[#1f1f1f]">
-                <IndicatorPill
-                  label="OPP"
-                  value={`${kw.opportunity.nosDisplay}`}
-                  band={kw.opportunity.nos >= 1.3 ? 'green' : kw.opportunity.nos >= 1.0 ? 'yellow' : 'red'}
-                  tooltip={
-                    <>
-                      <div className="font-semibold text-white mb-1">Opportunity Score</div>
-                      <div>Median of <code className="text-amber-400">log(views)/log(subs)</code> across high-score videos. Higher = small creators get pushed.</div>
-                      <div className="mt-1.5 text-[#888]">Raw NOS: {kw.opportunity.nos.toFixed(2)} · {kw.opportunity.sample} videos</div>
-                      <div className="mt-2 space-y-0.5">
-                        <div><span className="text-green-400">≥ 70</span> Low barrier, high reward</div>
-                        <div><span className="text-yellow-400">40–70</span> Normal — views scale with subs</div>
-                        <div><span className="text-red-400">&lt; 40</span> Saturated — big channels win</div>
-                      </div>
-                    </>
-                  }
-                />
-                <IndicatorPill
-                  label="TOP"
-                  value={`${kw.opportunity.topLeftPct}%`}
-                  band={kw.opportunity.topLeftPct >= 30 ? 'green' : kw.opportunity.topLeftPct >= 10 ? 'yellow' : 'red'}
-                  tooltip={
-                    <>
-                      <div className="font-semibold text-white mb-1">Top-Left Density</div>
-                      <div>% of videos with above-median views AND below-median subs — the goldmine quadrant of the scatter.</div>
-                      <div className="mt-2 space-y-0.5">
-                        <div><span className="text-green-400">≥ 30%</span> Lots of underdog wins</div>
-                        <div><span className="text-yellow-400">10–30%</span> Healthy mix</div>
-                        <div><span className="text-red-400">&lt; 10%</span> Views tightly coupled to subs</div>
-                      </div>
-                    </>
-                  }
-                />
-                <IndicatorPill
-                  label="NEW"
-                  value={`${kw.opportunity.newcomerRate}%`}
-                  band={kw.opportunity.newcomerRate >= 80 ? 'green' : kw.opportunity.newcomerRate >= 50 ? 'yellow' : 'red'}
-                  tooltip={
-                    <>
-                      <div className="font-semibold text-white mb-1">Newcomer Success</div>
-                      <div>Median views of channels &lt;6 months old, divided by the niche&apos;s overall median. 100% = newcomers land in the same ballpark as veterans.</div>
-                      <div className="mt-2 space-y-0.5">
-                        <div><span className="text-green-400">≥ 80%</span> Age doesn&apos;t matter</div>
-                        <div><span className="text-yellow-400">50–80%</span> Small established-channel bonus</div>
-                        <div><span className="text-red-400">&lt; 50%</span> Tough for new entrants</div>
-                      </div>
-                    </>
-                  }
-                />
-                <IndicatorPill
-                  label="CEIL"
-                  value={fmtYT(kw.opportunity.lowSubCeiling)}
-                  band={kw.opportunity.lowSubCeiling >= 500000 ? 'green' : kw.opportunity.lowSubCeiling >= 100000 ? 'yellow' : 'red'}
-                  tooltip={
-                    <>
-                      <div className="font-semibold text-white mb-1">Low-Sub Ceiling</div>
-                      <div>p90 of views among videos from channels with &lt;10K subs. Shows what a single video can realistically achieve before you have an audience.</div>
-                      <div className="mt-2 space-y-0.5">
-                        <div><span className="text-green-400">≥ 500K</span> Videos can explode with a tiny channel</div>
-                        <div><span className="text-yellow-400">100K–500K</span> Solid upside per video</div>
-                        <div><span className="text-red-400">&lt; 100K</span> Slow, linear growth</div>
-                      </div>
-                    </>
-                  }
-                />
-              </div>
-            ) : (
-              // Not enough data yet — render dimmed placeholder pills to keep
-              // card height consistent across the grid.
-              <div className="grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t border-[#1f1f1f]">
-                {(['OPP', 'TOP', 'NEW', 'CEIL'] as const).map(label => (
-                  <IndicatorPill
-                    key={label}
-                    label={label}
-                    value="—"
-                    band="empty"
-                    tooltip={
-                      <>
-                        <div className="font-semibold text-white mb-1">Not enough data yet</div>
-                        <div>Opportunity indicators need at least 10 high-score videos (score ≥ 80) in the niche to produce a reliable signal. Keep collecting and they&apos;ll populate automatically.</div>
-                      </>
-                    }
-                  />
-                ))}
-              </div>
-            )}
-          </button>
+        {sortedClusters.map(c => (
+          <ClusterCard key={c.id} cluster={c} />
         ))}
       </div>
       </>
@@ -472,35 +369,89 @@ export default function NichesGrid() {
   );
 }
 
-/** Small indicator pill with hover tooltip. Stops bubble so hovering doesn't trigger card click visuals. */
-function IndicatorPill({
-  label, value, band, tooltip,
-}: {
-  label: string;
-  value: string;
-  band: 'green' | 'yellow' | 'red' | 'empty';
-  tooltip: React.ReactNode;
-}) {
-  const colors = {
-    green: 'text-green-400 bg-green-500/10 border-green-500/20',
-    yellow: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20',
-    red: 'text-red-400 bg-red-500/10 border-red-500/20',
-    empty: 'text-[#555] bg-[#1a1a1a]/40 border-[#1f1f1f] border-dashed',
-  };
+/** Single cluster card — collage of 4 popular thumbnails, label, stats. */
+function ClusterCard({ cluster: c }: { cluster: TreeClusterCard }) {
+  // Popular videos are pre-sorted by distance-to-centroid (most central
+  // first). We render up to 4 in a 2×2 collage for the cover. Falls
+  // back to the rep video alone, then to a placeholder.
+  const tiles = c.popularVideos.slice(0, 4);
+  const heroOnly = tiles.length === 1;
+
+  // Score band coloring — same thresholds as the keyword cards used.
+  const score = c.avgScore ?? 0;
+  const scoreBand = score >= 80 ? 'bg-green-500/20 text-green-400' :
+                    score >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
+                                  'bg-red-500/20 text-red-400';
+
+  // Cluster level badge — L1 / L2 / L3 etc.
+  const levelBadge = `L${c.level}`;
+
   return (
-    <div
-      className="relative group/pill"
-      onClick={(e) => { e.stopPropagation(); }}
+    <Link
+      href={`/niche/cluster/${c.id}`}
+      className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-amber-500/60 transition group block"
     >
-      <div className={`flex flex-col items-center justify-center rounded-md border px-1.5 py-1 cursor-help ${colors[band]}`}>
-        <div className="text-[8px] uppercase tracking-wider opacity-70">{label}</div>
-        <div className="text-xs font-bold leading-tight">{value}</div>
+      {/* Cover collage */}
+      <div className={`relative bg-[#0a0a0a] ${heroOnly ? 'aspect-video' : 'aspect-[16/10]'}`}>
+        {tiles.length > 0 ? (
+          <div className={`grid w-full h-full gap-px ${tiles.length >= 2 ? 'grid-cols-2' : 'grid-cols-1'} ${tiles.length >= 3 ? 'grid-rows-2' : 'grid-rows-1'}`}>
+            {tiles.map((t, i) => (
+              <div key={t.videoId} className={`relative bg-[#0a0a0a] overflow-hidden ${tiles.length === 3 && i === 0 ? 'row-span-2' : ''}`}>
+                {t.thumbnail && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={t.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
+                )}
+              </div>
+            ))}
+          </div>
+        ) : c.repThumbnail ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={c.repThumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-[#333] text-xs">no thumbnail</div>
+        )}
+        {/* Top-right: avg score */}
+        <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${scoreBand}`}>
+          ⚡ {score}
+        </div>
+        {/* Top-left: level + L2 children badge */}
+        <div className="absolute top-2 left-2 flex items-center gap-1.5">
+          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-black/70 text-white border border-white/10">
+            {levelBadge}
+          </span>
+          {c.childrenCount > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/80 text-white">
+              {c.childrenCount} sub
+            </span>
+          )}
+        </div>
       </div>
-      {/* Tooltip — uses NAMED group so only this specific pill's hover triggers it,
-          not the outer card button (which also has `group` for title color). */}
-      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 p-3 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg text-[11px] text-[#ccc] leading-relaxed shadow-xl opacity-0 group-hover/pill:opacity-100 transition-opacity z-50 text-left">
-        {tooltip}
+
+      {/* Body */}
+      <div className="p-4">
+        <h3 className="text-sm font-bold text-white group-hover:text-amber-400 transition leading-snug line-clamp-2 mb-2">
+          {c.label || c.autoLabel || `Cluster ${c.id}`}
+        </h3>
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <Stat value={c.videoCount.toString()} label="videos" color="text-white" />
+          <Stat value={c.topChannels.length.toString()} label="top ch." color="text-blue-400" />
+          <Stat value={fmtYT(c.totalViews ?? 0)} label="views" color="text-green-400" />
+        </div>
+        {c.topChannels.length > 0 && (
+          <div className="text-[11px] text-[#777] truncate" title={c.topChannels.join(' · ')}>
+            {c.topChannels.slice(0, 3).join(' · ')}
+          </div>
+        )}
       </div>
+    </Link>
+  );
+}
+
+function Stat({ value, label, color }: { value: string; label: string; color: string }) {
+  return (
+    <div>
+      <div className={`text-base font-bold ${color}`}>{value}</div>
+      <div className="text-[10px] text-[#666] uppercase tracking-wider">{label}</div>
     </div>
   );
 }

@@ -128,6 +128,9 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
     segments.push({ label: 'Channels' });
   } else if (pathname.startsWith('/niche/outliers')) {
     segments.push({ label: 'Outliers' });
+  } else if (pathname.startsWith('/niche/cluster/')) {
+    segments.push({ label: 'Niches', href: '/niche/niches' });
+    segments.push({ label: 'Cluster' });
   } else if (pathname.startsWith('/niche/similar/') && similarVideoId) {
     segments.push({ label: 'Niches', href: '/niche/niches' });
     segments.push({ label: 'Similar video', href: `/niche/similar/${similarVideoId}/videos` });
