@@ -472,6 +472,11 @@ export default function AdminPage() {
   const [outlierLimit, setOutlierLimit] = useState(200);
   const [outlierThreads, setOutlierThreads] = useState(2);
   const [outlierMaxVideos, setOutlierMaxVideos] = useState(30);
+  // Indefinite mode for the outlier-pipeline button. When true, the
+  // server-side worker keeps re-fetching the pending queue and looping
+  // batches until cancelled or the source table is fully enriched.
+  const [outlierIndefinite, setOutlierIndefinite] = useState(false);
+  const [enrichIndefinite, setEnrichIndefinite] = useState(false);
 
   // Novelty tab state. This is the "blue ocean" experiment — uses
   // combined title+thumbnail embeddings to find unique-and-viral videos.
@@ -614,6 +619,57 @@ export default function AdminPage() {
   const runOutlierEnrich = async () => {
     setOutlierEnriching(true);
     setOutlierEnrichMsg(null);
+
+    // Indef mode: hand off to the server-side agent endpoint and poll
+    // its status until done/cancelled. Keeps the loop running even if
+    // the operator closes the tab.
+    if (outlierIndefinite) {
+      try {
+        const startRes = await fetch('/api/admin/outliers/enrich-channels/agent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            limit: outlierLimit,
+            threads: outlierThreads,
+            maxVideos: outlierMaxVideos,
+            indefinite: true,
+            cancelExisting: true,
+          }),
+        });
+        if (!startRes.ok) {
+          const d = await startRes.json().catch(() => ({}));
+          setOutlierEnrichMsg(`Error: ${d.error || `HTTP ${startRes.status}`}`);
+          setOutlierEnriching(false);
+          return;
+        }
+        // Poll until terminal state. Refresh both the agent status
+        // (for live progress text) and the outlier counts box.
+        for (;;) {
+          await new Promise(r => setTimeout(r, 4000));
+          const sRes = await fetch('/api/admin/outliers/enrich-channels/agent');
+          const s = await sRes.json();
+          if (s.status === 'done' || s.status === 'cancelled' || s.status === 'error') {
+            setOutlierEnrichMsg(
+              `${s.status === 'done' ? 'Done' : s.status === 'cancelled' ? 'Cancelled' : 'Error'}: ` +
+              `${s.processed} processed · ${s.withStats} with stats · ${s.errors} errors · ${s.loops} loops`
+            );
+            break;
+          }
+          setOutlierEnrichMsg(
+            `Loop ${s.loops + 1} · ${s.processed} processed · ${s.withStats} with stats · ` +
+            `${s.errors} errors · ${s.percentComplete}%`
+          );
+          fetch('/api/admin/outliers/enrich-channels').then(r => r.json()).then(setOutlierStats).catch(() => {});
+        }
+        // Final recompute so new unbiased avgs feed the score.
+        await runOutlierRecompute();
+      } catch (err) {
+        setOutlierEnrichMsg(`Error: ${err instanceof Error ? err.message : 'network'}`);
+      }
+      setOutlierEnriching(false);
+      return;
+    }
+
     let totalProcessed = 0, totalWithStats = 0, totalErrors = 0;
     try {
       // Loop batches of `limit` channels. Stops when the server returns
@@ -3005,11 +3061,23 @@ export default function AdminPage() {
                     </select>
                   </div>
                   <button
+                    type="button"
+                    onClick={() => setEnrichIndefinite(v => !v)}
+                    className={`px-3 py-2.5 rounded-xl text-sm font-semibold transition ${
+                      enrichIndefinite
+                        ? 'bg-amber-500 text-black border border-amber-500 hover:bg-amber-400'
+                        : 'bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700'
+                    }`}
+                    title="Indefinite mode: keep looping batches server-side until the queue is empty or you cancel."
+                  >
+                    ∞
+                  </button>
+                  <button
                     onClick={async () => {
                       const res = await fetch('/api/niche-spy/enrich', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ limit: enrichLimit, batchSize: enrichBatchSize, threads: enrichThreads }),
+                        body: JSON.stringify({ limit: enrichLimit, batchSize: enrichBatchSize, threads: enrichThreads, indefinite: enrichIndefinite }),
                       });
                       if (!res.ok) {
                         const d = await res.json().catch(() => ({}));
@@ -3019,7 +3087,7 @@ export default function AdminPage() {
                     disabled={nicheEnrichStats.job?.status === 'running'}
                     className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition"
                   >
-                    {nicheEnrichStats.job?.status === 'running' ? 'Running...' : 'Enrich Data'}
+                    {nicheEnrichStats.job?.status === 'running' ? 'Running...' : (enrichIndefinite ? 'Enrich Data ∞' : 'Enrich Data')}
                   </button>
                   {nicheEnrichStats.job?.status === 'running' && (
                     <button
@@ -3119,6 +3187,10 @@ export default function AdminPage() {
                   <option value={2}>2</option>
                   <option value={4}>4</option>
                   <option value={6}>6</option>
+                  <option value={10}>10</option>
+                  <option value={15}>15</option>
+                  <option value={20}>20</option>
+                  <option value={30}>30</option>
                 </select>
               </div>
               <div className="flex items-center gap-2">
@@ -3132,12 +3204,38 @@ export default function AdminPage() {
                 </select>
               </div>
               <button
+                type="button"
+                onClick={() => setOutlierIndefinite(v => !v)}
+                disabled={outlierEnriching || outlierRecomputing}
+                className={`px-3 py-2 rounded-xl text-sm font-medium transition ${
+                  outlierIndefinite
+                    ? 'bg-amber-500 text-black border border-amber-500 hover:bg-amber-400'
+                    : 'bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700'
+                } disabled:opacity-50`}
+                title="Indefinite mode: keep looping batches server-side until the pending queue stays empty for 60s, or you cancel."
+              >
+                ∞
+              </button>
+              <button
                 onClick={runOutlierEnrich}
                 disabled={outlierEnriching || outlierRecomputing}
                 className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-xl transition"
               >
-                {outlierEnriching ? 'Enriching…' : 'Enrich channels'}
+                {outlierEnriching
+                  ? (outlierIndefinite ? 'Looping…' : 'Enriching…')
+                  : (outlierIndefinite ? 'Enrich channels ∞' : 'Enrich channels')}
               </button>
+              {outlierEnriching && outlierIndefinite && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await fetch('/api/admin/outliers/enrich-channels/agent', { method: 'DELETE' });
+                  }}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-xl transition"
+                >
+                  Cancel
+                </button>
+              )}
               <button
                 onClick={runOutlierRecompute}
                 disabled={outlierEnriching || outlierRecomputing}

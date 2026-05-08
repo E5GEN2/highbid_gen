@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
   const batchSize = Math.min(Math.max(parseInt(body.batchSize) || DEFAULT_BATCH_SIZE, 1), 50);
   const threads = Math.min(Math.max(parseInt(body.threads) || 1, 1), MAX_THREADS);
   const delayMs = parseInt(body.delayMs) || DEFAULT_DELAY_MS;
+  const indefinite = !!body.indefinite;
 
   // Need at least one YT API key configured
   const multiKeyRes = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_yt_api_keys'");
@@ -102,21 +103,149 @@ export async function POST(req: NextRequest) {
 
   const totalBatches = Math.ceil(totalNeeded / batchSize);
   const jobRes = await pool.query(
-    `INSERT INTO niche_yt_enrich_jobs (status, keyword, threads, total_needed, total_batches, error_message)
-     VALUES ('running', $1, $2, $3, $4, $5) RETURNING id`,
-    [keyword, threads, totalNeeded, totalBatches, `threads=${threads} · batch=${batchSize} · starting`]
+    `INSERT INTO niche_yt_enrich_jobs (status, keyword, threads, total_needed, total_batches, indefinite, error_message)
+     VALUES ('running', $1, $2, $3, $4, $5, $6) RETURNING id`,
+    [keyword, threads, totalNeeded, totalBatches, indefinite, `threads=${threads} · batch=${batchSize} · starting${indefinite ? ' · indefinite' : ''}`]
   );
   const jobId = jobRes.rows[0].id;
 
-  // Fire-and-forget — run the job in the background
-  runEnrichJob(jobId, keyword, limit, batchSize, threads, delayMs).catch(async (err) => {
+  // Fire-and-forget. In indefinite mode, the wrapper keeps revisiting
+  // pending counts and re-running the worker until the queue drains
+  // for a sustained idle window or the user cancels. In one-shot mode,
+  // it just runs once and exits — same as before.
+  runEnrichWithIndef(jobId, keyword, limit, batchSize, threads, delayMs, indefinite).catch(async (err) => {
     await pool.query(
       `UPDATE niche_yt_enrich_jobs SET status = 'error', error_message = $1, completed_at = NOW() WHERE id = $2`,
       [(err as Error).message?.substring(0, 500), jobId]
     );
   });
 
-  return NextResponse.json({ ok: true, status: 'started', jobId, totalNeeded, totalBatches, threads });
+  return NextResponse.json({ ok: true, status: 'started', jobId, totalNeeded, totalBatches, threads, indefinite });
+}
+
+/**
+ * Outer wrapper. One-shot mode: just calls runEnrichJob once. Indef
+ * mode: after each pass, recomputes pending counts and revives the
+ * job row for another pass until cancelled or pending=0 for an
+ * idle window. Each pass bumps niche_yt_enrich_jobs.loops.
+ */
+async function runEnrichWithIndef(
+  jobId: number,
+  keyword: string | null,
+  limit: number,
+  batchSize: number,
+  threads: number,
+  delayMs: number,
+  indefinite: boolean,
+) {
+  const pool = await getPool();
+  const IDLE_WINDOW_MS = 60_000;
+  const PROBE_SLEEP_MS = 10_000;
+  let lastSawWork = Date.now();
+
+  while (true) {
+    await runEnrichJob(jobId, keyword, limit, batchSize, threads, delayMs);
+    if (!indefinite) return;
+
+    // After the pass, the job row is in 'done' / 'partial' / 'cancelled'.
+    // Cancellation propagates straight out — no more passes.
+    const stat = await pool.query<{ status: string }>(
+      `SELECT status FROM niche_yt_enrich_jobs WHERE id = $1`, [jobId]
+    );
+    const s = stat.rows[0]?.status;
+    if (s === 'cancelled' || s === 'error') return;
+
+    // Probe how much work is left. If nothing for a sustained window,
+    // mark fully done and exit.
+    const pending = await countPendingForEnrich(keyword, limit);
+    if (pending.totalNeeded === 0) {
+      if (Date.now() - lastSawWork >= IDLE_WINDOW_MS) {
+        await pool.query(
+          `UPDATE niche_yt_enrich_jobs SET status = 'done', completed_at = NOW(),
+              error_message = COALESCE(error_message, '') || ' · idle window reached'
+            WHERE id = $1`,
+          [jobId],
+        ).catch(() => {});
+        return;
+      }
+      await new Promise(r => setTimeout(r, PROBE_SLEEP_MS));
+      continue;
+    }
+    lastSawWork = Date.now();
+
+    // Revive job row for another pass — bump loops, reset batch
+    // counters and totals to reflect the fresh queue.
+    const totalBatches = Math.ceil(pending.totalNeeded / batchSize);
+    await pool.query(
+      `UPDATE niche_yt_enrich_jobs
+          SET status = 'running',
+              loops = COALESCE(loops, 0) + 1,
+              current_batch = 0,
+              total_batches = $1,
+              total_needed = $2,
+              error_message = $3
+        WHERE id = $4`,
+      [totalBatches, pending.totalNeeded,
+        `loop ${(await getLoops(jobId)) + 1} · threads=${threads} · batch=${batchSize}`, jobId],
+    );
+  }
+}
+
+async function getLoops(jobId: number): Promise<number> {
+  const pool = await getPool();
+  const r = await pool.query<{ loops: number | null }>(
+    `SELECT loops FROM niche_yt_enrich_jobs WHERE id = $1`, [jobId],
+  );
+  return r.rows[0]?.loops ?? 0;
+}
+
+/**
+ * Re-run the same pre-check counting that the POST handler uses, so
+ * the indef-mode wrapper can decide whether another pass is worth
+ * doing. Mirrors the conditions at the top of POST exactly.
+ */
+async function countPendingForEnrich(
+  keyword: string | null, limit: number,
+): Promise<{ totalNeeded: number; videoCount: number; channelCount: number }> {
+  const pool = await getPool();
+  const videoConds: string[] = [
+    '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
+  ];
+  const videoParams: (string | number)[] = [];
+  let vIdx = 1;
+  if (keyword && keyword !== 'all') { videoConds.push(`keyword = $${vIdx++}`); videoParams.push(keyword); }
+  videoParams.push(limit);
+  const videoCntRes = await pool.query(
+    `SELECT COUNT(*) as cnt FROM niche_spy_videos WHERE ${videoConds.join(' AND ')} LIMIT $${vIdx}`,
+    videoParams,
+  );
+  const videoCount = Math.min(parseInt(videoCntRes.rows[0].cnt), limit);
+
+  const chanParams: (string | number)[] = [];
+  let cIdx = 1;
+  let kwJoin = '';
+  if (keyword && keyword !== 'all') {
+    kwJoin = `AND v.keyword = $${cIdx++}`;
+    chanParams.push(keyword);
+  }
+  chanParams.push(limit);
+  const chanCntRes = await pool.query(
+    `SELECT COUNT(DISTINCT v.channel_id) as cnt
+     FROM niche_spy_videos v
+     LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+     WHERE v.channel_id IS NOT NULL ${kwJoin}
+       AND (
+         c.channel_id IS NULL
+         OR c.uploads_playlist_id IS NULL
+         OR (c.first_upload_at IS NULL
+             AND (c.video_count IS NULL OR c.video_count <= 200)
+             AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days'))
+       )
+     LIMIT $${cIdx}`,
+    chanParams,
+  );
+  const channelCount = Math.min(parseInt(chanCntRes.rows[0].cnt), limit);
+  return { totalNeeded: videoCount + channelCount, videoCount, channelCount };
 }
 
 async function runEnrichJob(

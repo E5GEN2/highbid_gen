@@ -34,18 +34,24 @@ interface ChannelRow {
 
 const MAX_ATTEMPTS = 3;
 
-export async function runOutlierEnrich(opts: {
+/**
+ * Run a single pass — picks up to `limit` pending channels and walks
+ * them. The exported `runOutlierEnrich` wraps this in an optional
+ * indefinite outer loop.
+ */
+async function runOutlierEnrichOnce(opts: {
   limit?: number;
   threads?: number;
   maxVideos?: number;
   staleDays?: number;
   force?: boolean;
-  /** When set, persist per-batch progress to outlier_enrich_jobs.<jobId>
-   *  AND check the row's status='running' before each unit (cancel). */
   jobId?: number;
-  /** Optional in-process progress callback for SSE / live UI. */
   onProgress?: (p: OutlierEnrichProgress) => void;
-}): Promise<OutlierEnrichProgress & { ok: true; cancelled?: boolean }> {
+  /** Counters carry across passes when running in indefinite mode so
+   *  the persisted job row reflects cumulative work rather than
+   *  resetting every loop. */
+  cumulative?: { processed: number; withStats: number; errors: number; calls: number };
+}): Promise<OutlierEnrichProgress & { ok: true; cancelled?: boolean; touchedAny: boolean }> {
   const pool = await getPool();
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 5000);
   const requestedThreads = Math.max(1, Math.min(opts.threads ?? 10, 30));
@@ -73,21 +79,31 @@ export async function runOutlierEnrich(opts: {
   const total = queue.length;
   const threadCount = Math.max(1, Math.min(requestedThreads, total));
 
+  // Per-pass counters. When the caller is the indefinite-mode loop,
+  // it passes a `cumulative` accumulator we add into so the persisted
+  // job row reflects total work across passes — and emits the
+  // running totals so the agent endpoint shows monotonically-growing
+  // numbers.
   let processed = 0, withStats = 0, errors = 0, calls = 0;
   let cancelled = false;
 
   const emit = () => {
-    const p: OutlierEnrichProgress = { total, processed, withStats, errors, calls };
+    const cumP = (opts.cumulative?.processed  ?? 0) + processed;
+    const cumS = (opts.cumulative?.withStats  ?? 0) + withStats;
+    const cumE = (opts.cumulative?.errors     ?? 0) + errors;
+    const cumC = (opts.cumulative?.calls      ?? 0) + calls;
+    // For UI: when in a single-pass run, total == this pass's queue size.
+    // In indef mode the wrapper recomputes the agent-visible totals.
+    const p: OutlierEnrichProgress = { total, processed: cumP, withStats: cumS, errors: cumE, calls: cumC };
     opts.onProgress?.(p);
     if (opts.jobId) {
-      persistProgress(opts.jobId, total, processed, withStats, errors, calls).catch(() => {});
+      persistProgress(opts.jobId, total, cumP, cumS, cumE, cumC).catch(() => {});
     }
   };
   emit();
 
   if (total === 0) {
-    if (opts.jobId) await markJobDone(opts.jobId, total, processed, withStats, errors, calls);
-    return { ok: true, total, processed, withStats, errors, calls };
+    return { ok: true, total, processed, withStats, errors, calls, touchedAny: false };
   }
 
   // Cancel-check throttle so we don't drown the connection pool.
@@ -198,12 +214,94 @@ export async function runOutlierEnrich(opts: {
 
   await Promise.all(Array.from({ length: threadCount }, () => worker()));
 
-  if (cancelled) {
-    if (opts.jobId) await markJobCancelled(opts.jobId, total, processed, withStats, errors, calls);
-    return { ok: true, total, processed, withStats, errors, calls, cancelled: true };
+  return { ok: true, total, processed, withStats, errors, calls, cancelled, touchedAny: total > 0 };
+}
+
+/**
+ * Public worker entrypoint. By default runs a single pass. Pass
+ * `indefinite: true` to keep re-fetching the pending queue and
+ * processing batches until cancelled or no more work is found for
+ * an idle window. Job row's `loops` counter ticks per pass.
+ */
+export async function runOutlierEnrich(opts: {
+  limit?: number;
+  threads?: number;
+  maxVideos?: number;
+  staleDays?: number;
+  force?: boolean;
+  jobId?: number;
+  onProgress?: (p: OutlierEnrichProgress) => void;
+  /** Loop until the pending queue is empty for `idleSecondsBeforeStop`
+   *  consecutive seconds OR the job row is flipped to 'cancelled'. */
+  indefinite?: boolean;
+  /** How long to wait when a pass returns 0 channels before doing
+   *  one more probe pass. Default 60s — long enough for a fresh
+   *  batch of channels to drift into staleness, short enough that a
+   *  cancel takes effect quickly. */
+  idleSecondsBeforeStop?: number;
+}): Promise<OutlierEnrichProgress & { ok: true; cancelled?: boolean; loops: number }> {
+  const cumulative = { processed: 0, withStats: 0, errors: 0, calls: 0 };
+  let loops = 0;
+  let lastTotal = 0;
+  const idleSecs = Math.max(10, opts.idleSecondsBeforeStop ?? 60);
+  // Track the last "saw work" moment so we can stop when the queue
+  // has been empty for a sustained idle window.
+  let lastSawWorkAt = Date.now();
+
+  while (true) {
+    const pass = await runOutlierEnrichOnce({
+      limit: opts.limit,
+      threads: opts.threads,
+      maxVideos: opts.maxVideos,
+      staleDays: opts.staleDays,
+      force: opts.force,
+      jobId: opts.jobId,
+      onProgress: opts.onProgress,
+      cumulative,
+    });
+    loops++;
+    cumulative.processed  += pass.processed;
+    cumulative.withStats  += pass.withStats;
+    cumulative.errors     += pass.errors;
+    cumulative.calls      += pass.calls;
+    lastTotal = pass.total;
+    if (pass.total > 0) lastSawWorkAt = Date.now();
+    if (opts.jobId) await persistLoopCount(opts.jobId, loops);
+
+    if (pass.cancelled) {
+      if (opts.jobId) await markJobCancelled(
+        opts.jobId, lastTotal, cumulative.processed, cumulative.withStats, cumulative.errors, cumulative.calls,
+      );
+      return { ok: true, total: lastTotal, ...cumulative, cancelled: true, loops };
+    }
+
+    if (!opts.indefinite) break;
+
+    // In indef mode: if the pass found nothing AND we've been idle
+    // for the configured window, stop. Otherwise wait briefly and
+    // probe again — channels can drift into staleness.
+    if (pass.total === 0) {
+      const idleMs = Date.now() - lastSawWorkAt;
+      if (idleMs >= idleSecs * 1000) break;
+      // Sleep then probe again. Re-check cancel status via the next
+      // pass's isCancelled — a 5s sleep is short enough that a
+      // cancel takes effect quickly.
+      await new Promise(r => setTimeout(r, 5000));
+    }
   }
-  if (opts.jobId) await markJobDone(opts.jobId, total, processed, withStats, errors, calls);
-  return { ok: true, total, processed, withStats, errors, calls };
+
+  if (opts.jobId) await markJobDone(
+    opts.jobId, lastTotal, cumulative.processed, cumulative.withStats, cumulative.errors, cumulative.calls,
+  );
+  return { ok: true, total: lastTotal, ...cumulative, loops };
+}
+
+async function persistLoopCount(jobId: number, loops: number): Promise<void> {
+  const pool = await getPool();
+  await pool.query(
+    `UPDATE outlier_enrich_jobs SET loops = $1, last_progress_at = NOW() WHERE id = $2`,
+    [loops, jobId],
+  ).catch(() => {});
 }
 
 async function persistProgress(

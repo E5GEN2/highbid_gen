@@ -34,6 +34,8 @@ interface AgentStatus {
   maxVideos: number;
   staleDays: number;
   force: boolean;
+  indefinite: boolean;
+  loops: number;
   targetChannels: number;
   processed: number;
   withStats: number;
@@ -55,6 +57,7 @@ async function buildStatus(): Promise<AgentStatus> {
   if (r.rows.length === 0) {
     return {
       jobId: null, status: null, threads: 0, maxVideos: 0, staleDays: 0, force: false,
+      indefinite: false, loops: 0,
       targetChannels: 0, processed: 0, withStats: 0, errors: 0, apiCalls: 0,
       percentComplete: 0, etaSeconds: null,
       startedAt: null, completedAt: null, lastProgressAt: null,
@@ -64,12 +67,21 @@ async function buildStatus(): Promise<AgentStatus> {
   const row = r.rows[0];
   const total = row.target_channels || 0;
   const processed = row.processed || 0;
-  let percent = total > 0 ? processed / total : 0;
-  if (row.status === 'done') percent = 1;
+  // Indef mode never reaches 100% by row count — show pass progress
+  // (current pass slot vs current pass target) instead. Fall back to
+  // 99% to keep the bar moving rather than pinning at 100%.
+  let percent: number;
+  if (row.status === 'done') {
+    percent = 1;
+  } else if (row.indefinite) {
+    percent = total > 0 ? Math.min(0.99, processed % Math.max(total, 1) / Math.max(total, 1)) : 0;
+  } else {
+    percent = total > 0 ? processed / total : 0;
+  }
   if (row.status === 'cancelled' || row.status === 'error') percent = Math.min(percent, 0.999);
 
   let etaSeconds: number | null = null;
-  if (row.status === 'running' && row.started_at && processed > 0 && processed < total) {
+  if (row.status === 'running' && !row.indefinite && row.started_at && processed > 0 && processed < total) {
     const elapsed = (Date.now() - new Date(row.started_at).getTime()) / 1000;
     const rate = processed / elapsed;
     if (rate > 0) etaSeconds = Math.round((total - processed) / rate);
@@ -82,6 +94,8 @@ async function buildStatus(): Promise<AgentStatus> {
     maxVideos: row.max_videos,
     staleDays: row.stale_days,
     force: row.force,
+    indefinite: !!row.indefinite,
+    loops: row.loops || 0,
     targetChannels: total,
     processed,
     withStats: row.with_stats,
@@ -107,7 +121,7 @@ export async function POST(req: NextRequest) {
   const pool = await getPool();
   let body: {
     limit?: number; threads?: number; maxVideos?: number; staleDays?: number;
-    force?: boolean; cancelExisting?: boolean;
+    force?: boolean; cancelExisting?: boolean; indefinite?: boolean;
   } = {};
   try { body = await req.json(); } catch { /* empty body ok */ }
 
@@ -134,18 +148,19 @@ export async function POST(req: NextRequest) {
   const maxVideos  = Math.max(5, Math.min(50, body.maxVideos ?? 30));
   const staleDays  = Math.max(0, body.staleDays ?? 7);
   const force      = !!body.force;
+  const indefinite = !!body.indefinite;
 
   const job = await pool.query<{ id: number }>(
-    `INSERT INTO outlier_enrich_jobs (status, threads, max_videos, stale_days, force)
-     VALUES ('running', $1, $2, $3, $4) RETURNING id`,
-    [threads, maxVideos, staleDays, force]
+    `INSERT INTO outlier_enrich_jobs (status, threads, max_videos, stale_days, force, indefinite)
+     VALUES ('running', $1, $2, $3, $4, $5) RETURNING id`,
+    [threads, maxVideos, staleDays, force, indefinite]
   );
   const jobId = job.rows[0].id;
 
   // Fire-and-forget. Errors not handled by the worker bubble up here
   // so the row gets flipped to 'error' instead of being stuck on
   // 'running' forever.
-  runOutlierEnrich({ limit, threads, maxVideos, staleDays, force, jobId }).catch(async err => {
+  runOutlierEnrich({ limit, threads, maxVideos, staleDays, force, jobId, indefinite }).catch(async err => {
     console.error('[outlier-enrich-agent] job', jobId, 'failed:', err);
     try {
       await pool.query(
@@ -155,7 +170,7 @@ export async function POST(req: NextRequest) {
     } catch { /* best effort */ }
   });
 
-  return NextResponse.json({ ok: true, jobId, threads, limit, maxVideos, staleDays, force, status: 'started' });
+  return NextResponse.json({ ok: true, jobId, threads, limit, maxVideos, staleDays, force, indefinite, status: 'started' });
 }
 
 export async function DELETE(req: NextRequest) {

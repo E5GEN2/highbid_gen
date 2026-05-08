@@ -570,6 +570,12 @@ export async function initSchema(): Promise<void> {
         completed_at TIMESTAMPTZ
       )
     `).catch(() => {});
+    // Indefinite mode: when true, the worker re-fetches the pending
+    // queue and keeps running batches until cancelled or the source
+    // table is fully enriched. `loops` tracks how many full passes
+    // have completed so the UI can show "loop 3 of ∞".
+    await client.query(`ALTER TABLE niche_yt_enrich_jobs ADD COLUMN IF NOT EXISTS indefinite BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    await client.query(`ALTER TABLE niche_yt_enrich_jobs ADD COLUMN IF NOT EXISTS loops INTEGER NOT NULL DEFAULT 0`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nyej_status ON niche_yt_enrich_jobs(status, started_at DESC)`).catch(() => {});
 
     // Embedding job progress (survives page reload)
@@ -1053,12 +1059,16 @@ export async function initSchema(): Promise<void> {
         with_stats         INTEGER NOT NULL DEFAULT 0,
         errors             INTEGER NOT NULL DEFAULT 0,
         api_calls          INTEGER NOT NULL DEFAULT 0,
+        indefinite         BOOLEAN NOT NULL DEFAULT FALSE,
+        loops              INTEGER NOT NULL DEFAULT 0,
         error_message      TEXT,
         started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         completed_at       TIMESTAMPTZ,
         last_progress_at   TIMESTAMPTZ
       )
     `);
+    await client.query(`ALTER TABLE outlier_enrich_jobs ADD COLUMN IF NOT EXISTS indefinite BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    await client.query(`ALTER TABLE outlier_enrich_jobs ADD COLUMN IF NOT EXISTS loops INTEGER NOT NULL DEFAULT 0`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_oej_status ON outlier_enrich_jobs(status, started_at DESC)`).catch(() => {});
 
     await client.query(`
