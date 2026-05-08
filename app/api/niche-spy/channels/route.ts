@@ -209,6 +209,54 @@ export async function GET(req: NextRequest) {
     `, params.slice(0, -2)),
   ]);
 
+  // Pull top-4 popular videos per channel to power the wide-row card's
+  // thumbnail strip. Group key has to match the main query exactly:
+  // channel_id when we have it, fallback to "name:<channel_name>".
+  // ROW_NUMBER over (group_key, view_count desc) gives ranks; keep ≤ 4.
+  // We dedupe one-per-channel-id is implicit since the partition is the
+  // channel itself.
+  const groupKeys: string[] = channelsRes.rows.map(r => r.channel_id ? r.channel_id : `name:${r.channel_name}`);
+  type PopRow = {
+    grp_key: string; video_id: number; title: string | null;
+    thumbnail: string | null; url: string | null;
+    view_count: string | null; posted_at: Date | null; posted_date: string | null; score: number | null;
+  };
+  const popByChannel = new Map<string, Array<{
+    videoId: number; title: string | null; thumbnail: string | null; url: string | null;
+    viewCount: number | null; postedAt: string | null; postedDate: string | null; score: number | null;
+  }>>();
+  if (groupKeys.length > 0) {
+    const popRes = await pool.query<PopRow>(
+      `WITH ranked AS (
+         SELECT
+           COALESCE(v.channel_id, 'name:' || v.channel_name) AS grp_key,
+           v.id AS video_id, v.title, v.thumbnail, v.url, v.view_count,
+           v.posted_at, v.posted_date, v.score,
+           ROW_NUMBER() OVER (
+             PARTITION BY COALESCE(v.channel_id, 'name:' || v.channel_name)
+             ORDER BY v.view_count DESC NULLS LAST
+           ) AS rn
+         FROM niche_spy_videos v
+         WHERE COALESCE(v.channel_id, 'name:' || v.channel_name) = ANY($1::text[])
+       )
+       SELECT grp_key, video_id, title, thumbnail, url, view_count, posted_at, posted_date, score
+         FROM ranked WHERE rn <= 4
+       ORDER BY grp_key, rn`,
+      [groupKeys],
+    );
+    for (const row of popRes.rows) {
+      const arr = popByChannel.get(row.grp_key) || [];
+      arr.push({
+        videoId: row.video_id, title: row.title, thumbnail: row.thumbnail, url: row.url,
+        viewCount: row.view_count != null ? parseInt(row.view_count) : null,
+        postedAt: row.posted_at?.toISOString() ?? null,
+        postedDate: row.posted_date,
+        score: row.score,
+      });
+      popByChannel.set(row.grp_key, arr);
+    }
+  }
+
   return NextResponse.json({
     channels: channelsRes.rows.map(r => ({
       channelName: r.channel_name,
@@ -237,6 +285,7 @@ export async function GET(req: NextRequest) {
       latestVideoAt: r.latest_video_at,
       earliestVideoAt: r.earliest_video_at,    // used as lower-bound fallback for active age
       keywords: r.keywords || [],
+      popularVideos: popByChannel.get(r.channel_id ? r.channel_id : `name:${r.channel_name}`) || [],
     })),
     total: parseInt(countRes.rows[0].cnt),
     stats: {

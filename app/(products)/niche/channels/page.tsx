@@ -16,31 +16,10 @@
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { fmtYT } from '@/lib/format';
+import { NicheChannelCard, type ChannelCardData } from '@/components/NicheChannelCard';
 
-interface DbChannel {
-  channelName: string;
-  videoCount: number;
-  videoCountInNiche: number;
-  totalVideoCount: number | null;
-  totalViews: number; avgViews: number; maxViews: number;
-  avgScore: number; maxScore: number; subscribers: number; totalLikes: number; totalComments: number;
-  channelCreatedAt: string | null; channelAgeDays: number | null;
-  latestVideoAt: string | null; earliestVideoAt: string | null;
-  channelAvatar: string | null; channelId: string | null; channelHandle: string | null;
-  firstUploadAt: string | null; dormancyDays: number | null;
-  keywords: string[];
-}
-
-function youtubeChannelUrl(ch: { channelHandle: string | null; channelId: string | null }): string | null {
-  if (ch.channelHandle) {
-    const h = ch.channelHandle.startsWith('@') ? ch.channelHandle : `@${ch.channelHandle}`;
-    return `https://www.youtube.com/${h}`;
-  }
-  if (ch.channelId) return `https://www.youtube.com/channel/${ch.channelId}`;
-  return null;
-}
+type DbChannel = ChannelCardData;
 
 export default function AllChannels() {
   const [channels, setChannels] = useState<DbChannel[]>([]);
@@ -231,98 +210,18 @@ export default function AllChannels() {
         </div>
       )}
 
-      {/* Channel grid */}
+      {/* Wide-row channel cards — same shape as the niche cluster cards
+          (avatar+meta header, 4-tile stat row, 4-thumb popular-videos
+          strip with titles) so the user gets a glimpse of what each
+          channel actually makes instead of just numbers. */}
       {loading && channels.length === 0 ? (
         <div className="text-center text-sm text-[#666] py-12">Loading…</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {channels.map(ch => {
-              const ytUrl = youtubeChannelUrl(ch);
-              return (
-                <div key={`${ch.channelId || ch.channelName}`} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 hover:border-[#333] transition">
-                  <div className="flex items-start gap-3 mb-3">
-                    <a
-                      href={ytUrl || '#'}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`w-10 h-10 rounded-full bg-[#1f1f1f] flex-shrink-0 overflow-hidden ${ytUrl ? 'hover:ring-2 hover:ring-red-500/50 transition' : 'pointer-events-none'}`}
-                      aria-label={ytUrl ? `Open ${ch.channelName} on YouTube` : undefined}
-                    >
-                      {ch.channelAvatar ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={ch.channelAvatar} alt="" className="w-full h-full object-cover" loading="lazy" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-[#666] text-sm font-bold">
-                          {(ch.channelName || '?').charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                    </a>
-                    <div className="min-w-0 flex-1">
-                      {ytUrl ? (
-                        <a href={ytUrl} target="_blank" rel="noopener noreferrer"
-                          className="text-sm font-semibold text-white hover:text-red-400 transition truncate block">
-                          {ch.channelName}
-                        </a>
-                      ) : (
-                        <h3 className="text-sm font-semibold text-white truncate">{ch.channelName}</h3>
-                      )}
-                      {ch.subscribers > 0 && <span className="text-xs text-[#888] block">{fmtYT(ch.subscribers)} subscribers</span>}
-                      {ch.channelHandle && <span className="text-[10px] text-[#555] block">{ch.channelHandle.startsWith('@') ? ch.channelHandle : `@${ch.channelHandle}`}</span>}
-                    </div>
-                    <span className="flex-shrink-0 text-xs">
-                      <ChannelAgeChip
-                        createdAt={ch.channelCreatedAt}
-                        firstUploadAt={ch.firstUploadAt}
-                        dormancyDays={ch.dormancyDays}
-                        tooltipAlign="right"
-                      />
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-0 mb-3 bg-[#0a0a0a] rounded-lg overflow-hidden">
-                    <div className="p-2.5 text-center border-r border-[#1f1f1f]">
-                      <div className="text-sm font-bold text-green-400">{fmtYT(ch.totalViews)}</div>
-                      <div className="text-[10px] text-[#666]">Total Views</div>
-                    </div>
-                    <div className="p-2.5 text-center border-r border-[#1f1f1f]"
-                      title={
-                        ch.totalVideoCount != null
-                          ? `${ch.totalVideoCount} total on YouTube · ${ch.videoCountInNiche} scraped`
-                          : `${ch.videoCountInNiche} scraped · channel not yet enriched`
-                      }>
-                      <div className="text-sm font-bold text-blue-400">{fmtYT(ch.videoCount)}</div>
-                      <div className="text-[10px] text-[#666]">
-                        Videos{ch.totalVideoCount == null && <span className="text-[#555]"> (partial)</span>}
-                      </div>
-                    </div>
-                    <div className="p-2.5 text-center">
-                      <div className="text-sm font-bold text-purple-400">{fmtYT(ch.avgViews)}</div>
-                      <div className="text-[10px] text-[#666]">Avg Views</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
-                    <span className={`font-medium ${ch.avgScore >= 80 ? 'text-green-400' : ch.avgScore >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
-                      ⚡ {ch.avgScore} avg score
-                    </span>
-                    {ch.totalLikes > 0 && <span>👍 {fmtYT(ch.totalLikes)}</span>}
-                    {ch.totalComments > 0 && <span>💬 {fmtYT(ch.totalComments)}</span>}
-                  </div>
-
-                  <div className="text-[10px] text-[#666]">Best: {fmtYT(ch.maxViews)} views · Max score: {ch.maxScore}</div>
-
-                  {ch.keywords.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {ch.keywords.slice(0, 3).map(kw => (
-                        <span key={kw} className="text-[9px] bg-purple-600/20 text-purple-300 px-1.5 py-0.5 rounded-full">{kw}</span>
-                      ))}
-                      {ch.keywords.length > 3 && <span className="text-[9px] text-[#444]">+{ch.keywords.length - 3}</span>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          <div className="space-y-3">
+            {channels.map(ch => (
+              <NicheChannelCard key={`${ch.channelId || ch.channelName}`} channel={ch} />
+            ))}
           </div>
 
           {channels.length < total && (
