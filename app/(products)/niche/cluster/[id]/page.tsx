@@ -25,6 +25,7 @@ interface ClusterCard {
   autoLabel: string | null;
   label: string | null;
   videoCount: number;
+  channelCount?: number;
   avgScore: number | null;
   avgViews: number | null;
   totalViews: number | null;

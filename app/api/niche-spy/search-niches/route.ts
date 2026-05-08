@@ -127,6 +127,19 @@ export async function POST(req: NextRequest) {
     popByCluster.set(row.cluster_id, arr);
   }
 
+  // Distinct-channel count per cluster (replaces the redundant
+  // "Videos" tile on the card — see NicheClusterCard).
+  const channelCountByCluster = new Map<number, number>();
+  const ccRes = await pool.query<{ cluster_id: number; cnt: string }>(
+    `SELECT a.cluster_id, COUNT(DISTINCT v.channel_name)::text AS cnt
+       FROM niche_tree_assignments a
+       JOIN niche_spy_videos v ON v.id = a.video_id
+      WHERE a.cluster_id = ANY($1::int[]) AND v.channel_name IS NOT NULL AND v.channel_name <> ''
+      GROUP BY a.cluster_id`,
+    [ids],
+  );
+  for (const row of ccRes.rows) channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
+
   const niches = clRes.rows
     .map(row => ({
       id: row.id,
@@ -146,6 +159,7 @@ export async function POST(req: NextRequest) {
       repViewCount: row.rep_view_count != null ? Number(row.rep_view_count) : null,
       repChannelName: row.rep_channel_name,
       popularVideos: popByCluster.get(row.id) || [],
+      channelCount: channelCountByCluster.get(row.id) ?? 0,
       childrenCount: childrenByParent.get(row.id) ?? 0,
       similarity: simMap.get(row.id) ?? 0,
     }))

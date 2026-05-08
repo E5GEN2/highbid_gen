@@ -1020,6 +1020,10 @@ export interface TreeClusterWithRep extends TreeCluster {
     postedDate: string | null;
     score: number | null;
   }>;
+  /** Number of distinct channels contributing videos to this cluster.
+   *  Distinct from topChannels.length (which is the array's display
+   *  cap, typically 5). */
+  channelCount: number;
   /** Count of direct children (L2 clusters whose parent_cluster_id is this cluster). */
   childrenCount: number;
   /** Status of the latest subdivide run for this cluster as parent. NULL = never subdivided. */
@@ -1185,6 +1189,23 @@ export async function getLatestGlobalRun(): Promise<{
     popularByCluster.set(row.cluster_id, arr);
   }
 
+  // Distinct-channel count per cluster. Cards used to show video_count
+  // twice (once as the badge, once as the "Videos" stat tile) — this
+  // replaces the redundant tile with something meaningful.
+  const channelCountByCluster = new Map<number, number>();
+  const channelCountRes = await pool.query<{ cluster_id: number; cnt: string }>(
+    `SELECT a.cluster_id, COUNT(DISTINCT v.channel_name)::text AS cnt
+       FROM niche_tree_assignments a
+       JOIN niche_spy_videos v ON v.id = a.video_id
+       JOIN niche_tree_clusters c ON c.id = a.cluster_id
+      WHERE c.run_id = $1 AND v.channel_name IS NOT NULL AND v.channel_name <> ''
+      GROUP BY a.cluster_id`,
+    [run.id],
+  );
+  for (const row of channelCountRes.rows) {
+    channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
+  }
+
   // Child-count + subdivide-status per L1 cluster — drives the L2 status
   // chip on each card. One row per L1 cluster id, joining the COUNT of
   // its children in niche_tree_clusters with the LATEST subdivide run's
@@ -1255,6 +1276,7 @@ export async function getLatestGlobalRun(): Promise<{
       repViewCount:         row.rep_view_count !== null ? Number(row.rep_view_count) : null,
       repChannelName:       row.rep_channel_name,
       popularVideos:        popularByCluster.get(row.id) || [],
+      channelCount:         channelCountByCluster.get(row.id) ?? 0,
       childrenCount:        cs?.childrenCount   ?? 0,
       subdivideStatus:      cs?.subdivideStatus ?? null,
       subdivideError:       cs?.subdivideError  ?? null,
@@ -1419,6 +1441,21 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
     });
   }
 
+  // Distinct-channel counts for the parent + every child cluster.
+  const channelIds = [parentClusterId, ...childIds];
+  const channelCountByCluster = new Map<number, number>();
+  if (channelIds.length > 0) {
+    const ccRes = await pool.query<{ cluster_id: number; cnt: string }>(
+      `SELECT a.cluster_id, COUNT(DISTINCT v.channel_name)::text AS cnt
+         FROM niche_tree_assignments a
+         JOIN niche_spy_videos v ON v.id = a.video_id
+        WHERE a.cluster_id = ANY($1::int[]) AND v.channel_name IS NOT NULL AND v.channel_name <> ''
+        GROUP BY a.cluster_id`,
+      [channelIds],
+    );
+    for (const row of ccRes.rows) channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
+  }
+
   const mapCluster = (row: typeof parentRow.rows[0], childStats?: ReturnType<typeof grandStatsByParent.get>): TreeClusterWithRep => ({
     id: row.id, runId: row.run_id, parentClusterId: row.parent_cluster_id, level: row.level,
     clusterIndex: row.cluster_index, autoLabel: row.auto_label, aiLabel: row.ai_label, label: row.label,
@@ -1432,6 +1469,7 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
     repViewCount: row.rep_view_count !== null ? Number(row.rep_view_count) : null,
     repChannelName: row.rep_channel_name,
     popularVideos: popByCluster.get(row.id) || [],
+    channelCount: channelCountByCluster.get(row.id) ?? 0,
     childrenCount: childStats?.childrenCount ?? 0,
     subdivideStatus: childStats?.subdivideStatus ?? null,
     subdivideError: childStats?.subdivideError ?? null,
@@ -1645,6 +1683,15 @@ export async function getClusterVideos(opts: {
 
   // Build a TreeClusterWithRep parent (no popularVideos / grandchild
   // stats — those are needed for the cluster grid, not the video grid).
+  const ccRes = await pool.query<{ cnt: string }>(
+    `SELECT COUNT(DISTINCT v.channel_name)::text AS cnt
+       FROM niche_tree_assignments a
+       JOIN niche_spy_videos v ON v.id = a.video_id
+      WHERE a.cluster_id = $1 AND v.channel_name IS NOT NULL AND v.channel_name <> ''`,
+    [opts.clusterId],
+  );
+  const channelCount = parseInt(ccRes.rows[0]?.cnt || '0') || 0;
+
   const parent: TreeClusterWithRep = {
     id: pr.id, runId: pr.run_id, parentClusterId: pr.parent_cluster_id, level: pr.level,
     clusterIndex: pr.cluster_index, autoLabel: pr.auto_label, aiLabel: pr.ai_label, label: pr.label,
@@ -1658,6 +1705,7 @@ export async function getClusterVideos(opts: {
     repViewCount: pr.rep_view_count !== null ? Number(pr.rep_view_count) : null,
     repChannelName: pr.rep_channel_name,
     popularVideos: [],
+    channelCount,
     childrenCount: 0,
     subdivideStatus: null,
     subdivideError: null,

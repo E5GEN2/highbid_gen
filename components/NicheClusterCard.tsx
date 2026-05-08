@@ -34,6 +34,10 @@ export interface ClusterCardData {
   autoLabel: string | null;
   label: string | null;
   videoCount: number;
+  /** Distinct channels contributing videos to the cluster — replaces
+   *  the redundant videoCount stat tile on the card (videoCount is
+   *  already shown as the orange badge in the header). */
+  channelCount?: number;
   avgScore: number | null;
   avgViews: number | null;
   totalViews: number | null;
@@ -125,12 +129,14 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
         )}
       </div>
 
-      {/* 4-tile stats row */}
+      {/* 4-tile stats row. Video count lives in the header badge so we
+          show the cluster's distinct-channel count here instead — gives
+          a sense of how concentrated vs spread-out the niche is. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 mb-3">
         <Stat label="Avg views per video" value={c.avgViews != null ? fmtYT(c.avgViews) : '—'} />
         <Stat label="Top channels"        value={c.topChannels.length > 0 ? String(c.topChannels.length) : '—'} />
         <Stat label="Total views"         value={c.totalViews != null ? fmtYT(c.totalViews) : '—'} valueColor="text-green-400" />
-        <Stat label="Videos"              value={c.videoCount.toLocaleString()} />
+        <Stat label="Total channels"      value={c.channelCount != null ? c.channelCount.toLocaleString() : '—'} valueColor="text-blue-400" />
       </div>
 
       {/* Popular videos strip — 4 thumbs + title below each */}
