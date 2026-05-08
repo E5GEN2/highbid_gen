@@ -46,7 +46,7 @@ export function NicheVideoCard({ video: v }: { video: NicheVideoCardData }) {
     : 'bg-red-500 text-white';
 
   return (
-    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
+    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden flex flex-col">
       <div className="relative aspect-video bg-[#0a0a0a]">
         {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -65,25 +65,35 @@ export function NicheVideoCard({ video: v }: { video: NicheVideoCardData }) {
           </div>
         ) : null}
       </div>
-      <div className="p-3">
+      {/* `flex-1 flex flex-col` so the action row can `mt-auto` to the
+          bottom — keeps Star/Similar fixed at the same vertical spot
+          across cards regardless of how long the title or channel
+          name is. min-w-0 on each row so truncate actually clips
+          inside the inner flex children. */}
+      <div className="p-3 flex-1 flex flex-col">
         <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title ?? '(no title)'}</h3>
-        <div className="flex items-center gap-2 text-xs text-[#888] mb-1 flex-wrap">
-          {v.viewCount != null && <span className="text-green-400">{fmtYT(v.viewCount)} views</span>}
-          {v.channelName && <span>· {v.channelName}</span>}
+        {/* Single-line meta rows — no flex-wrap. Channel name
+            specifically gets truncate so a long handle can't blow up
+            the row height. */}
+        <div className="flex items-center gap-2 text-xs text-[#888] mb-1 min-w-0">
+          {v.viewCount != null && <span className="text-green-400 flex-shrink-0">{fmtYT(v.viewCount)} views</span>}
+          {v.channelName && (
+            <span className="truncate min-w-0" title={v.channelName}>· {v.channelName}</span>
+          )}
           {(v.postedAt || v.postedDate) && (
-            <span>· {v.postedAt ? formatTimeAgo(v.postedAt) : v.postedDate}</span>
+            <span className="flex-shrink-0">· {v.postedAt ? formatTimeAgo(v.postedAt) : v.postedDate}</span>
           )}
         </div>
-        <div className="flex items-center gap-3 text-xs text-[#666] flex-wrap">
-          {(v.likeCount ?? 0) > 0 && <span>👍 {fmtYT(v.likeCount ?? 0)}</span>}
-          {(v.subscriberCount ?? 0) > 0 && <span>👥 {fmtYT(v.subscriberCount ?? 0)}</span>}
+        <div className="flex items-center gap-3 text-xs text-[#666] min-w-0">
+          {(v.likeCount ?? 0) > 0 && <span className="flex-shrink-0">👍 {fmtYT(v.likeCount ?? 0)}</span>}
+          {(v.subscriberCount ?? 0) > 0 && <span className="flex-shrink-0">👥 {fmtYT(v.subscriberCount ?? 0)}</span>}
           <ChannelAgeChip
             createdAt={v.channelCreatedAt}
             firstUploadAt={v.firstUploadAt}
             dormancyDays={v.dormancyDays}
           />
         </div>
-        <div className="flex items-center justify-between mt-2 gap-2">
+        <div className="flex items-center justify-between mt-auto pt-2 gap-2">
           {v.url ? (
             <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 truncate min-w-0 flex-1">{v.url}</a>
           ) : (
