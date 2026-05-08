@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { fmtYT } from '@/lib/format';
+import { NicheClusterCard } from '@/components/NicheClusterCard';
 
 interface PopularVideo {
   videoId: number;
@@ -153,12 +154,12 @@ export default function ClusterDetailPage() {
         </div>
       ) : null}
 
-      {/* L2 children grid (if any) */}
+      {/* L2 children — same wide-row card as the home grid */}
       {children.length > 0 && (
         <div className="mb-8">
           <h2 className="text-sm font-medium text-white mb-3">Sub-niches ({children.length})</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {children.map(c => <ChildCard key={c.id} cluster={c} />)}
+          <div className="space-y-3">
+            {children.map(c => <NicheClusterCard key={c.id} cluster={c} />)}
           </div>
         </div>
       )}
@@ -221,51 +222,6 @@ export default function ClusterDetailPage() {
         )}
       </div>
     </div>
-  );
-}
-
-function ChildCard({ cluster: c }: { cluster: ClusterCard }) {
-  const tiles = c.popularVideos.slice(0, 4);
-  const score = c.avgScore ?? 0;
-  const scoreBand = score >= 80 ? 'bg-green-500/20 text-green-400' :
-                    score >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
-                                  'bg-red-500/20 text-red-400';
-  return (
-    <Link
-      href={`/niche/cluster/${c.id}`}
-      className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-amber-500/60 transition group block"
-    >
-      <div className="relative aspect-[16/10] bg-[#0a0a0a]">
-        {tiles.length > 0 ? (
-          <div className={`grid w-full h-full gap-px ${tiles.length >= 2 ? 'grid-cols-2' : 'grid-cols-1'} ${tiles.length >= 3 ? 'grid-rows-2' : 'grid-rows-1'}`}>
-            {tiles.map((t, i) => (
-              <div key={t.videoId} className={`relative bg-[#0a0a0a] overflow-hidden ${tiles.length === 3 && i === 0 ? 'row-span-2' : ''}`}>
-                {t.thumbnail && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={t.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
-                )}
-              </div>
-            ))}
-          </div>
-        ) : c.repThumbnail ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={c.repThumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-[#333] text-xs">no thumbnail</div>
-        )}
-        <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${scoreBand}`}>⚡ {score}</div>
-        <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-black/70 text-white border border-white/10">L{c.level}</div>
-      </div>
-      <div className="p-4">
-        <h3 className="text-sm font-bold text-white group-hover:text-amber-400 transition leading-snug line-clamp-2 mb-2">
-          {c.label || c.autoLabel || `Cluster ${c.id}`}
-        </h3>
-        <div className="flex items-center gap-3 text-xs text-[#888]">
-          <span><span className="text-white font-medium">{c.videoCount}</span> videos</span>
-          <span><span className="text-green-400 font-medium">{fmtYT(c.totalViews ?? 0)}</span> views</span>
-        </div>
-      </div>
-    </Link>
   );
 }
 

@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { fmtYT } from '@/lib/format';
+import { NicheClusterCard } from '@/components/NicheClusterCard';
 
 // Shape returned by /api/niche-spy/search-semantic — matches the
 // similar-page video tile so the same render block works.
@@ -348,19 +349,23 @@ export default function NichesGrid() {
         </div>
       )}
 
-      {/* Cluster cards grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {clustersLoading && clusters.length === 0 && Array.from({ length: 9 }).map((_, i) => (
-          <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden animate-pulse">
-            <div className="aspect-video bg-[#1a1a1a]" />
-            <div className="p-4 space-y-2">
-              <div className="h-4 w-3/4 bg-[#1f1f1f] rounded" />
-              <div className="h-3 w-1/2 bg-[#1f1f1f] rounded" />
+      {/* Cluster cards — wide rows so titles + thumbs stay legible */}
+      <div className="space-y-3">
+        {clustersLoading && clusters.length === 0 && Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 animate-pulse">
+            <div className="h-4 w-1/3 bg-[#1f1f1f] rounded mb-3" />
+            <div className="grid grid-cols-4 gap-3">
+              {[0,1,2,3].map(j => (
+                <div key={j}>
+                  <div className="aspect-video bg-[#1a1a1a] rounded-md" />
+                  <div className="h-3 w-3/4 bg-[#1f1f1f] rounded mt-2" />
+                </div>
+              ))}
             </div>
           </div>
         ))}
         {sortedClusters.map(c => (
-          <ClusterCard key={c.id} cluster={c} />
+          <NicheClusterCard key={c.id} cluster={c} />
         ))}
       </div>
       </>
@@ -369,89 +374,3 @@ export default function NichesGrid() {
   );
 }
 
-/** Single cluster card — collage of 4 popular thumbnails, label, stats. */
-function ClusterCard({ cluster: c }: { cluster: TreeClusterCard }) {
-  // Popular videos are pre-sorted by distance-to-centroid (most central
-  // first). We render up to 4 in a 2×2 collage for the cover. Falls
-  // back to the rep video alone, then to a placeholder.
-  const tiles = c.popularVideos.slice(0, 4);
-  const heroOnly = tiles.length === 1;
-
-  // Score band coloring — same thresholds as the keyword cards used.
-  const score = c.avgScore ?? 0;
-  const scoreBand = score >= 80 ? 'bg-green-500/20 text-green-400' :
-                    score >= 50 ? 'bg-yellow-500/20 text-yellow-400' :
-                                  'bg-red-500/20 text-red-400';
-
-  // Cluster level badge — L1 / L2 / L3 etc.
-  const levelBadge = `L${c.level}`;
-
-  return (
-    <Link
-      href={`/niche/cluster/${c.id}`}
-      className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-amber-500/60 transition group block"
-    >
-      {/* Cover collage */}
-      <div className={`relative bg-[#0a0a0a] ${heroOnly ? 'aspect-video' : 'aspect-[16/10]'}`}>
-        {tiles.length > 0 ? (
-          <div className={`grid w-full h-full gap-px ${tiles.length >= 2 ? 'grid-cols-2' : 'grid-cols-1'} ${tiles.length >= 3 ? 'grid-rows-2' : 'grid-rows-1'}`}>
-            {tiles.map((t, i) => (
-              <div key={t.videoId} className={`relative bg-[#0a0a0a] overflow-hidden ${tiles.length === 3 && i === 0 ? 'row-span-2' : ''}`}>
-                {t.thumbnail && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={t.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
-                )}
-              </div>
-            ))}
-          </div>
-        ) : c.repThumbnail ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={c.repThumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-[#333] text-xs">no thumbnail</div>
-        )}
-        {/* Top-right: avg score */}
-        <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${scoreBand}`}>
-          ⚡ {score}
-        </div>
-        {/* Top-left: level + L2 children badge */}
-        <div className="absolute top-2 left-2 flex items-center gap-1.5">
-          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-black/70 text-white border border-white/10">
-            {levelBadge}
-          </span>
-          {c.childrenCount > 0 && (
-            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/80 text-white">
-              {c.childrenCount} sub
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Body */}
-      <div className="p-4">
-        <h3 className="text-sm font-bold text-white group-hover:text-amber-400 transition leading-snug line-clamp-2 mb-2">
-          {c.label || c.autoLabel || `Cluster ${c.id}`}
-        </h3>
-        <div className="grid grid-cols-3 gap-2 mb-3">
-          <Stat value={c.videoCount.toString()} label="videos" color="text-white" />
-          <Stat value={c.topChannels.length.toString()} label="top ch." color="text-blue-400" />
-          <Stat value={fmtYT(c.totalViews ?? 0)} label="views" color="text-green-400" />
-        </div>
-        {c.topChannels.length > 0 && (
-          <div className="text-[11px] text-[#777] truncate" title={c.topChannels.join(' · ')}>
-            {c.topChannels.slice(0, 3).join(' · ')}
-          </div>
-        )}
-      </div>
-    </Link>
-  );
-}
-
-function Stat({ value, label, color }: { value: string; label: string; color: string }) {
-  return (
-    <div>
-      <div className={`text-base font-bold ${color}`}>{value}</div>
-      <div className="text-[10px] text-[#666] uppercase tracking-wider">{label}</div>
-    </div>
-  );
-}
