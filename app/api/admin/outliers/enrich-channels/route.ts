@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
-import { getYtPairForThread, banYtKey } from '@/lib/yt-keys';
-import { fetchChannelRecentUploads } from '@/lib/yt-recent-uploads';
+import { runOutlierEnrich } from '@/lib/outlier-enrich';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
@@ -9,111 +8,50 @@ export const maxDuration = 120;
 /**
  * POST /api/admin/outliers/enrich-channels
  *
- * Walks each channel's OWN recent uploads via YouTube Data API and stores
- * unbiased view stats on niche_spy_channels. This fixes the core bias in
- * the peer-outlier score: right now avg_views is computed over whatever
- * videos xgodo happened to scrape, which skews toward viral niche hits.
- *
- * Pulls channels where last_recent_videos_fetched_at is null OR older than
- * staleDays days. Processes in parallel threads pinned to YT key-proxy
- * pairs (same pattern as the bulk enrich route).
+ * Synchronous channel enrichment — fires the worker pool, waits for
+ * completion, returns counters. Powered by lib/outlier-enrich.ts which
+ * uses a shared retry queue + random key+proxy pick. Same input/output
+ * as the legacy version so the existing admin UI button still works.
  *
  * Body (optional):
  *   { limit?: number, threads?: number, maxVideos?: number, staleDays?: number, force?: boolean }
- *     limit      = max channels to process this call (default 100; capped at 500)
- *     threads    = parallel workers (default 2, capped at number of keys)
+ *     limit      = max channels to process this call (default 100, cap 5000)
+ *     threads    = parallel workers (default 10, cap 30)
  *     maxVideos  = recent uploads to sample per channel (default 30, max 50)
  *     staleDays  = skip channels fetched within this window (default 7)
  *     force      = refetch everything regardless of freshness
+ *
+ * For long-running enrichment (thousands of channels) prefer the
+ * /agent route — it returns immediately, persists progress to
+ * outlier_enrich_jobs, and lets you poll until done.
  */
 export async function POST(req: NextRequest) {
-  const pool = await getPool();
   const body = await req.json().catch(() => ({})) as {
     limit?: number; threads?: number; maxVideos?: number; staleDays?: number; force?: boolean;
   };
 
-  const limit     = Math.min(Math.max(parseInt(String(body.limit     ?? 100)), 1), 500);
-  const threads   = Math.min(Math.max(parseInt(String(body.threads   ?? 2)),   1), 8);
-  const maxVideos = Math.min(Math.max(parseInt(String(body.maxVideos ?? 30)),  5), 50);
-  const staleDays = Math.max(parseInt(String(body.staleDays ?? 7)), 0);
-  const force     = !!body.force;
-
-  const staleCondition = force
-    ? ''
-    : `AND (last_recent_videos_fetched_at IS NULL
-           OR last_recent_videos_fetched_at < NOW() - INTERVAL '${staleDays} days')`;
-
-  // Pick channels needing refresh. Only channels with an uploads_playlist_id
-  // can be walked — that column is populated by the bulk enrich route's
-  // Phase 2 (channels.list contentDetails).
-  const dueRes = await pool.query<{ channel_id: string; uploads_playlist_id: string }>(
-    `SELECT channel_id, uploads_playlist_id
-     FROM niche_spy_channels
-     WHERE uploads_playlist_id IS NOT NULL
-       ${staleCondition}
-     ORDER BY last_recent_videos_fetched_at ASC NULLS FIRST
-     LIMIT $1`,
-    [limit]
-  );
-
   const startedAt = Date.now();
-  let processed = 0, withStats = 0, errors = 0;
-
-  // Simple round-robin across parallel threads. Each thread gets its own
-  // key-proxy pair so we don't hammer a single key with N concurrent calls.
-  async function worker(threadIdx: number, rows: typeof dueRes.rows) {
-    for (const row of rows) {
-      processed++;
-      try {
-        const pair = await getYtPairForThread(threadIdx);
-        if (!pair) { errors++; continue; }
-        const result = await fetchChannelRecentUploads(row.uploads_playlist_id, pair, { maxVideos });
-        if (result.error) {
-          // 429 / 403 => ban and move on; the next tick will retry via a
-          // different pair since `last_recent_videos_fetched_at` isn't bumped.
-          const isRateLimited = /429|403|quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(result.error);
-          if (isRateLimited) banYtKey(pair.key);
-          errors++;
-          await pool.query(
-            `UPDATE niche_spy_channels
-             SET error_message = $1
-             WHERE channel_id = $2`,
-            [result.error, row.channel_id]
-          );
-          continue;
-        }
-        await pool.query(
-          `UPDATE niche_spy_channels SET
-             recent_videos_avg_views      = $1,
-             recent_videos_median_views   = $2,
-             recent_videos_max_views      = $3,
-             recent_videos_count          = $4,
-             last_recent_videos_fetched_at = NOW(),
-             error_message                 = NULL
-           WHERE channel_id = $5`,
-          [result.avgViews, result.medianViews, result.maxViews, result.count, row.channel_id]
-        );
-        if (result.count > 0) withStats++;
-      } catch (err) {
-        errors++;
-        console.warn('[outliers/enrich-channels] worker err:', err instanceof Error ? err.message : err);
-      }
-    }
+  try {
+    const result = await runOutlierEnrich({
+      limit: body.limit,
+      threads: body.threads,
+      maxVideos: body.maxVideos,
+      staleDays: body.staleDays,
+      force: body.force,
+    });
+    return NextResponse.json({
+      ok: true,
+      processed: result.processed,
+      withStats: result.withStats,
+      errors: result.errors,
+      durationMs: Date.now() - startedAt,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { ok: false, error: (err as Error).message?.slice(0, 500) || 'unknown' },
+      { status: 500 },
+    );
   }
-
-  // Split rows across threads evenly. Each thread processes its slice
-  // sequentially; threads run in parallel.
-  const slices: (typeof dueRes.rows)[] = Array.from({ length: threads }, () => []);
-  dueRes.rows.forEach((r, i) => slices[i % threads].push(r));
-  await Promise.all(slices.map((rows, i) => worker(i, rows)));
-
-  return NextResponse.json({
-    ok: true,
-    processed,
-    withStats,
-    errors,
-    durationMs: Date.now() - startedAt,
-  });
 }
 
 /**

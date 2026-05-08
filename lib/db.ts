@@ -1036,6 +1036,31 @@ export async function initSchema(): Promise<void> {
     //   error      – fatal error before any batch ran (e.g. no keys)
     //   cancelled  – DELETE on the agent endpoint flipped it; workers stop
     //                between batches
+    // Background-job tracking for the Outlier Pipeline channel
+    // enrichment (playlistItems + videos.list per channel). Same shape
+    // as vizard_refresh_jobs so the agent endpoint can render and
+    // poll a single uniform status.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS outlier_enrich_jobs (
+        id                 SERIAL PRIMARY KEY,
+        status             TEXT NOT NULL DEFAULT 'running',
+        threads            INTEGER NOT NULL DEFAULT 10,
+        max_videos         INTEGER NOT NULL DEFAULT 30,
+        stale_days         INTEGER NOT NULL DEFAULT 7,
+        force              BOOLEAN NOT NULL DEFAULT FALSE,
+        target_channels    INTEGER NOT NULL DEFAULT 0,
+        processed          INTEGER NOT NULL DEFAULT 0,
+        with_stats         INTEGER NOT NULL DEFAULT 0,
+        errors             INTEGER NOT NULL DEFAULT 0,
+        api_calls          INTEGER NOT NULL DEFAULT 0,
+        error_message      TEXT,
+        started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at       TIMESTAMPTZ,
+        last_progress_at   TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_oej_status ON outlier_enrich_jobs(status, started_at DESC)`).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS vizard_refresh_jobs (
         id                 SERIAL PRIMARY KEY,
