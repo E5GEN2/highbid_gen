@@ -16,7 +16,7 @@
  */
 
 import { getPool } from './db';
-import { getYtPairForThread, banYtKey } from './yt-keys';
+import { pickRandomActiveYtPair, banYtKey } from './yt-keys';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
 
 /**
@@ -171,7 +171,7 @@ export async function refreshClipViewCounts(options?: {
       const item = queue.shift();
       if (!item) return;  // queue empty — worker exits
 
-      const pair = await getYtPairForThread(threadIdx);
+      const pair = await pickRandomActiveYtPair();
       if (!pair) {
         // No keys at all — count as final failure for this batch.
         errors++;

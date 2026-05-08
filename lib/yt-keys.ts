@@ -24,7 +24,7 @@
  */
 
 import { getPool } from './db';
-import { getProxies } from './xgodo-proxy';
+import { getProxies, getRandomProxy } from './xgodo-proxy';
 
 export interface YtKeyProxyPair {
   key: string;
@@ -152,6 +152,44 @@ export async function getNextYtPair(): Promise<YtKeyProxyPair | null> {
   let best = all[0];
   for (const p of all) if (p.banExpiry < best.banExpiry) best = p;
   return best;
+}
+
+/**
+ * Pick a random pair from the currently-unbanned set, with a freshly-
+ * picked random proxy. The static (key, proxy) coupling from buildPairs
+ * is intentionally broken here: failures are dominated by flaky
+ * proxies (curl exit 56 — "Failure with receiving network data" — was
+ * the top error mode in prod), and a per-key static proxy meant
+ * retries on the same key kept hitting the same broken proxy.
+ *
+ * By recombining a random key with a freshly-random proxy on every
+ * call, retries naturally land on different proxies, so a single bad
+ * proxy can't take down a 50-clip batch's worth of work permanently.
+ *
+ * Random pick across the active pool was bench-validated to outperform
+ * pinned-thread (85% vs 16% success in a 30-thread × 75-batch run on
+ * the embedding side).
+ */
+export async function pickRandomActiveYtPair(): Promise<YtKeyProxyPair | null> {
+  const all = await buildPairs();
+  if (all.length === 0) return null;
+  const now = Date.now();
+  const active = all.filter(p => !p.banned || now > p.banExpiry);
+  const basePair = active.length > 0
+    ? active[Math.floor(Math.random() * active.length)]
+    : all.reduce((a, b) => a.banExpiry < b.banExpiry ? a : b);
+  if (basePair.banned && now > basePair.banExpiry) basePair.banned = false;
+
+  // Re-pair with a fresh random proxy so retries decouple from the
+  // static key↔proxy mapping. Falls back to the pair's original proxy
+  // if the proxy pool is empty (shouldn't happen in prod).
+  const proxy = await getRandomProxy();
+  if (!proxy) return basePair;
+  return {
+    ...basePair,
+    proxyUrl: proxy.url,
+    proxyDeviceId: proxy.deviceId.substring(0, 8),
+  };
 }
 
 /**
