@@ -64,6 +64,7 @@ export async function GET() {
       repChannelName: c.repChannelName,
       popularVideos: c.popularVideos,
       channelCount: c.channelCount,
+      uploadHistogram: c.uploadHistogram,
       childrenCount: c.childrenCount,
     })),
   });

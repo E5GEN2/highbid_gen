@@ -43,6 +43,10 @@ export interface ClusterCardData {
   totalViews: number | null;
   topChannels: string[];
   popularVideos: ClusterCardPopularVideo[];
+  /** 52 weekly upload counts (oldest → newest) covering the last
+   *  year. Drives the inline heartbeat sparkline that replaces the
+   *  Top channels tile. */
+  uploadHistogram?: number[];
   childrenCount: number;
   /** Optional cosine similarity to a query — set when this card is
    *  rendered as a search result. Drives the "% match" pill. */
@@ -129,12 +133,14 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
         )}
       </div>
 
-      {/* 4-tile stats row. Video count lives in the header badge so we
-          show the cluster's distinct-channel count here instead — gives
-          a sense of how concentrated vs spread-out the niche is. */}
+      {/* 4-tile stats row. Video count lives in the header badge so
+          slot 4 shows total-channels; slot 2 swaps the static "Top
+          channels" count for an inline heartbeat sparkline of weekly
+          upload counts over the last year — lets the user instantly
+          see whether a niche is alive or has gone quiet. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 mb-3">
         <Stat label="Avg views per video" value={c.avgViews != null ? fmtYT(c.avgViews) : '—'} />
-        <Stat label="Top channels"        value={c.topChannels.length > 0 ? String(c.topChannels.length) : '—'} />
+        <HeartbeatTile histogram={c.uploadHistogram} />
         <Stat label="Total views"         value={c.totalViews != null ? fmtYT(c.totalViews) : '—'} valueColor="text-green-400" />
         <Stat label="Total channels"      value={c.channelCount != null ? c.channelCount.toLocaleString() : '—'} valueColor="text-blue-400" />
       </div>
@@ -197,6 +203,67 @@ function Stat({ label, value, valueColor = 'text-white' }: { label: string; valu
     <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2">
       <div className="text-[10px] text-[#666] uppercase tracking-wider">{label}</div>
       <div className={`text-base font-semibold ${valueColor} mt-0.5`}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * Inline weekly-upload sparkline. 52 buckets, oldest → newest. The
+ * "heartbeat" name comes from the visual: a steady stream of bars
+ * across the year reads as alive, while a flatlined right side reads
+ * as a niche that's gone quiet.
+ *
+ * Colors are derived from the most-recent quarter's volume vs the
+ * trailing nine months — green when the niche is uptrending, red
+ * when it's falling off, neutral when it's been steady.
+ */
+function HeartbeatTile({ histogram }: { histogram?: number[] }) {
+  const buckets = histogram && histogram.length > 0 ? histogram : new Array(52).fill(0);
+  const total = buckets.reduce((a, b) => a + b, 0);
+  const max = Math.max(1, ...buckets);
+  // Compare the last 13 weeks vs the prior 39 weeks to color the bar.
+  const recent = buckets.slice(-13).reduce((a, b) => a + b, 0);
+  const earlier = buckets.slice(0, -13).reduce((a, b) => a + b, 0);
+  const recentRate = recent / 13;
+  const earlierRate = earlier / 39 || 0.0001;
+  const trend = recentRate / earlierRate;
+  const fill =
+    total === 0          ? '#333'           // dead
+    : trend >= 1.3        ? '#34d399'        // uptrending — emerald-400
+    : trend <= 0.5        ? '#f87171'        // falling off — red-400
+                          : '#a78bfa';       // steady — violet-400
+  const badge =
+    total === 0          ? '— quiet'
+    : trend >= 1.3        ? '↑ trending'
+    : trend <= 0.5        ? '↓ slowing'
+                          : 'steady';
+
+  // SVG bars — fixed viewBox so it scales to the tile. 52 bars in
+  // 100 wide = 1.92 each, gap 0.3.
+  const W = 100, H = 28, gap = 0.3;
+  const barW = (W - gap * (buckets.length - 1)) / buckets.length;
+  return (
+    <div className="bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg px-3 py-2 overflow-hidden">
+      <div className="flex items-center justify-between gap-1">
+        <div className="text-[10px] text-[#666] uppercase tracking-wider truncate">Heartbeat (52w)</div>
+        <span className="text-[9px] text-[#888] flex-shrink-0">{badge}</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-7 mt-1 block">
+        {buckets.map((c, i) => {
+          const h = c === 0 ? 1 : Math.max(1, (c / max) * (H - 2));
+          return (
+            <rect
+              key={i}
+              x={i * (barW + gap)}
+              y={H - h}
+              width={barW}
+              height={h}
+              fill={c === 0 ? '#1f1f1f' : fill}
+              rx={0.4}
+            />
+          );
+        })}
+      </svg>
     </div>
   );
 }

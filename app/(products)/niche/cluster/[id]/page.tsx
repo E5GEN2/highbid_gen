@@ -37,6 +37,7 @@ interface ClusterCard {
   repViewCount: number | null;
   repChannelName: string | null;
   popularVideos: PopularVideo[];
+  uploadHistogram?: number[];
   childrenCount: number;
 }
 interface ClusterVideo {

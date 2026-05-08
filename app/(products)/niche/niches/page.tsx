@@ -35,6 +35,7 @@ interface TreeClusterCard {
   repViewCount: number | null;
   repChannelName: string | null;
   popularVideos: PopularVideo[];
+  uploadHistogram?: number[];
   childrenCount: number;
 }
 

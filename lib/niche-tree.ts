@@ -27,6 +27,66 @@ import fs from 'fs';
 
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 
+/** Upload-heartbeat bucket count. 52 weekly buckets = 1 year of
+ *  history. Index 0 = 51 weeks ago, index 51 = current week. */
+export const HISTOGRAM_WEEKS = 52;
+function zeroHistogram(): number[] { return new Array(HISTOGRAM_WEEKS).fill(0); }
+
+/**
+ * Compute weekly upload counts per cluster over the last
+ * HISTOGRAM_WEEKS weeks. Scope can be one global L1 run (all clusters
+ * in that run) OR an explicit cluster id list. Returns a Map keyed
+ * by cluster_id; missing clusters → undefined; missing weeks within
+ * a cluster's array → 0.
+ */
+async function fetchUploadHistograms(
+  pool: import('pg').Pool,
+  scope: { runId: number } | { clusterIds: number[] },
+): Promise<Map<number, number[]>> {
+  const histByCluster = new Map<number, number[]>();
+  let sql: string;
+  let params: (number | number[])[];
+  if ('runId' in scope) {
+    sql = `
+      SELECT a.cluster_id,
+             FLOOR(EXTRACT(EPOCH FROM (NOW() - v.posted_at)) / 604800)::int AS weeks_ago,
+             COUNT(*)::int AS cnt
+        FROM niche_tree_assignments a
+        JOIN niche_spy_videos v ON v.id = a.video_id
+        JOIN niche_tree_clusters c ON c.id = a.cluster_id
+       WHERE c.run_id = $1
+         AND v.posted_at IS NOT NULL
+         AND v.posted_at > NOW() - INTERVAL '${HISTOGRAM_WEEKS} weeks'
+    GROUP BY a.cluster_id, weeks_ago`;
+    params = [scope.runId];
+  } else {
+    if (scope.clusterIds.length === 0) return histByCluster;
+    sql = `
+      SELECT a.cluster_id,
+             FLOOR(EXTRACT(EPOCH FROM (NOW() - v.posted_at)) / 604800)::int AS weeks_ago,
+             COUNT(*)::int AS cnt
+        FROM niche_tree_assignments a
+        JOIN niche_spy_videos v ON v.id = a.video_id
+       WHERE a.cluster_id = ANY($1::int[])
+         AND v.posted_at IS NOT NULL
+         AND v.posted_at > NOW() - INTERVAL '${HISTOGRAM_WEEKS} weeks'
+    GROUP BY a.cluster_id, weeks_ago`;
+    params = [scope.clusterIds];
+  }
+
+  const r = await pool.query<{ cluster_id: number; weeks_ago: number; cnt: number }>(sql, params);
+  for (const row of r.rows) {
+    const wAgo = row.weeks_ago;
+    if (wAgo < 0 || wAgo >= HISTOGRAM_WEEKS) continue;
+    let arr = histByCluster.get(row.cluster_id);
+    if (!arr) { arr = zeroHistogram(); histByCluster.set(row.cluster_id, arr); }
+    // weeks_ago=0 (current week) lands at the rightmost slot.
+    arr[HISTOGRAM_WEEKS - 1 - wAgo] = row.cnt;
+  }
+  return histByCluster;
+}
+
+
 // ─────────────────────────────────────────────────────────────────
 // Cancel support
 //
@@ -1024,6 +1084,12 @@ export interface TreeClusterWithRep extends TreeCluster {
    *  Distinct from topChannels.length (which is the array's display
    *  cap, typically 5). */
   channelCount: number;
+  /** Upload heartbeat: 26 buckets, each = video count in that week,
+   *  oldest-to-newest. Index 25 = current week, index 0 = 25 weeks
+   *  ago. Lets the card show whether a niche is actively producing
+   *  content or has gone quiet. Always 26 entries, missing weeks
+   *  filled with 0. */
+  uploadHistogram: number[];
   /** Count of direct children (L2 clusters whose parent_cluster_id is this cluster). */
   childrenCount: number;
   /** Status of the latest subdivide run for this cluster as parent. NULL = never subdivided. */
@@ -1206,6 +1272,12 @@ export async function getLatestGlobalRun(): Promise<{
     channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
   }
 
+  // Upload heartbeat — 26 weekly buckets per cluster covering the
+  // last ~6 months. Drives the inline sparkline that replaces the
+  // "Top channels" tile, so an operator can spot dead niches at a
+  // glance (all-empty bars).
+  const histogramByCluster = await fetchUploadHistograms(pool, /*scope*/ { runId: run.id });
+
   // Child-count + subdivide-status per L1 cluster — drives the L2 status
   // chip on each card. One row per L1 cluster id, joining the COUNT of
   // its children in niche_tree_clusters with the LATEST subdivide run's
@@ -1277,6 +1349,7 @@ export async function getLatestGlobalRun(): Promise<{
       repChannelName:       row.rep_channel_name,
       popularVideos:        popularByCluster.get(row.id) || [],
       channelCount:         channelCountByCluster.get(row.id) ?? 0,
+      uploadHistogram:      histogramByCluster.get(row.id) || zeroHistogram(),
       childrenCount:        cs?.childrenCount   ?? 0,
       subdivideStatus:      cs?.subdivideStatus ?? null,
       subdivideError:       cs?.subdivideError  ?? null,
@@ -1441,20 +1514,24 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
     });
   }
 
-  // Distinct-channel counts for the parent + every child cluster.
-  const channelIds = [parentClusterId, ...childIds];
+  // Distinct-channel counts + upload heartbeats for the parent +
+  // every child cluster.
+  const allIds = [parentClusterId, ...childIds];
   const channelCountByCluster = new Map<number, number>();
-  if (channelIds.length > 0) {
+  if (allIds.length > 0) {
     const ccRes = await pool.query<{ cluster_id: number; cnt: string }>(
       `SELECT a.cluster_id, COUNT(DISTINCT v.channel_name)::text AS cnt
          FROM niche_tree_assignments a
          JOIN niche_spy_videos v ON v.id = a.video_id
         WHERE a.cluster_id = ANY($1::int[]) AND v.channel_name IS NOT NULL AND v.channel_name <> ''
         GROUP BY a.cluster_id`,
-      [channelIds],
+      [allIds],
     );
     for (const row of ccRes.rows) channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
   }
+  const histogramByCluster = allIds.length > 0
+    ? await fetchUploadHistograms(pool, { clusterIds: allIds })
+    : new Map<number, number[]>();
 
   const mapCluster = (row: typeof parentRow.rows[0], childStats?: ReturnType<typeof grandStatsByParent.get>): TreeClusterWithRep => ({
     id: row.id, runId: row.run_id, parentClusterId: row.parent_cluster_id, level: row.level,
@@ -1470,6 +1547,7 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
     repChannelName: row.rep_channel_name,
     popularVideos: popByCluster.get(row.id) || [],
     channelCount: channelCountByCluster.get(row.id) ?? 0,
+    uploadHistogram: histogramByCluster.get(row.id) || zeroHistogram(),
     childrenCount: childStats?.childrenCount ?? 0,
     subdivideStatus: childStats?.subdivideStatus ?? null,
     subdivideError: childStats?.subdivideError ?? null,
@@ -1691,6 +1769,8 @@ export async function getClusterVideos(opts: {
     [opts.clusterId],
   );
   const channelCount = parseInt(ccRes.rows[0]?.cnt || '0') || 0;
+  const histogramByCluster = await fetchUploadHistograms(pool, { clusterIds: [opts.clusterId] });
+  const uploadHistogram = histogramByCluster.get(opts.clusterId) || zeroHistogram();
 
   const parent: TreeClusterWithRep = {
     id: pr.id, runId: pr.run_id, parentClusterId: pr.parent_cluster_id, level: pr.level,
@@ -1706,6 +1786,7 @@ export async function getClusterVideos(opts: {
     repChannelName: pr.rep_channel_name,
     popularVideos: [],
     channelCount,
+    uploadHistogram,
     childrenCount: 0,
     subdivideStatus: null,
     subdivideError: null,

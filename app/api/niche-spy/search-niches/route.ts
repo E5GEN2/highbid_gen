@@ -140,6 +140,31 @@ export async function POST(req: NextRequest) {
   );
   for (const row of ccRes.rows) channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
 
+  // Upload heartbeat — 52 weekly buckets per cluster covering the
+  // last year. Same shape as the lib/niche-tree.ts helper but
+  // inlined here since we already have the cluster id allowlist.
+  const HISTOGRAM_WEEKS = 52;
+  const histogramByCluster = new Map<number, number[]>();
+  const hRes = await pool.query<{ cluster_id: number; weeks_ago: number; cnt: number }>(
+    `SELECT a.cluster_id,
+            FLOOR(EXTRACT(EPOCH FROM (NOW() - v.posted_at)) / 604800)::int AS weeks_ago,
+            COUNT(*)::int AS cnt
+       FROM niche_tree_assignments a
+       JOIN niche_spy_videos v ON v.id = a.video_id
+      WHERE a.cluster_id = ANY($1::int[])
+        AND v.posted_at IS NOT NULL
+        AND v.posted_at > NOW() - INTERVAL '${HISTOGRAM_WEEKS} weeks'
+   GROUP BY a.cluster_id, weeks_ago`,
+    [ids],
+  );
+  for (const row of hRes.rows) {
+    const wAgo = row.weeks_ago;
+    if (wAgo < 0 || wAgo >= HISTOGRAM_WEEKS) continue;
+    let arr = histogramByCluster.get(row.cluster_id);
+    if (!arr) { arr = new Array(HISTOGRAM_WEEKS).fill(0); histogramByCluster.set(row.cluster_id, arr); }
+    arr[HISTOGRAM_WEEKS - 1 - wAgo] = row.cnt;
+  }
+
   const niches = clRes.rows
     .map(row => ({
       id: row.id,
@@ -160,6 +185,7 @@ export async function POST(req: NextRequest) {
       repChannelName: row.rep_channel_name,
       popularVideos: popByCluster.get(row.id) || [],
       channelCount: channelCountByCluster.get(row.id) ?? 0,
+      uploadHistogram: histogramByCluster.get(row.id) || new Array(HISTOGRAM_WEEKS).fill(0),
       childrenCount: childrenByParent.get(row.id) ?? 0,
       similarity: simMap.get(row.id) ?? 0,
     }))
