@@ -40,6 +40,9 @@ export interface ClusterCardData {
   topChannels: string[];
   popularVideos: ClusterCardPopularVideo[];
   childrenCount: number;
+  /** Optional cosine similarity to a query — set when this card is
+   *  rendered as a search result. Drives the "% match" pill. */
+  similarity?: number;
 }
 
 export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
@@ -87,6 +90,11 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
       <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap mb-1">
+            {c.similarity !== undefined && (
+              <span className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded-full px-2 py-0.5 whitespace-nowrap font-medium">
+                {Math.round(c.similarity * 100)}% match
+              </span>
+            )}
             <span className="text-xs bg-amber-600/30 text-amber-300 border border-amber-600/50 rounded-full px-2 py-0.5 whitespace-nowrap">
               {c.videoCount.toLocaleString()} videos
             </span>

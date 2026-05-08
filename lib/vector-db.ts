@@ -68,6 +68,29 @@ export async function ensureVectorTables(): Promise<void> {
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_nvv_t2_keyword ON niche_video_vectors_title_v2(keyword)`).catch(() => {});
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_nvv_th2_keyword ON niche_video_vectors_thumb_v2(keyword)`).catch(() => {});
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_nvv_cb2_keyword ON niche_video_vectors_combined_v2(keyword)`).catch(() => {});
+
+    // Cluster signature vectors — one per niche_tree_cluster, holding
+    // the cluster's representative video's combined_v2 embedding. Used
+    // by the user-facing semantic-niche-search endpoint to map a text
+    // query → most-relevant niches across both L1 and L2.
+    //
+    // Why rep video instead of true centroid (avg of members): some
+    // clusters have very wide spread, so an averaged centroid drifts
+    // toward a "thematic average" that doesn't match any real video.
+    // The closest-to-centroid rep is already the tightest single point
+    // in the cluster — using its vector keeps the signature crisp and
+    // grounded in something a user can recognise.
+    await vectorPool.query(`
+      CREATE TABLE IF NOT EXISTS niche_tree_cluster_vectors (
+        cluster_id INTEGER PRIMARY KEY,
+        level INTEGER NOT NULL,
+        parent_cluster_id INTEGER,
+        embedding vector(3072)
+      )
+    `);
+    await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_ntcv_level ON niche_tree_cluster_vectors(level)`).catch(() => {});
+    await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_ntcv_parent ON niche_tree_cluster_vectors(parent_cluster_id)`).catch(() => {});
+
     tablesReady = true;
   } catch (err) {
     console.error('[vector-db] ensureVectorTables failed:', (err as Error).message);
@@ -173,6 +196,118 @@ export async function findSimilarByVector(
     videoId: r.video_id,
     similarity: Math.round(parseFloat(r.similarity) * 10000) / 10000,
   }));
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Cluster signature vectors — one per niche_tree_cluster row, holding
+// the rep video's combined_v2 embedding. Powers the "search niches by
+// query meaning" endpoint that returns niche cards (L1 + L2) ranked
+// by how close they sit to the user's text in the multimodal space.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Upsert one cluster's signature vector. Caller passes the cluster row's
+ * id, level, parent (for filtering), and the embedding to use as its
+ * signature (typically the rep video's combined_v2 vector).
+ */
+export async function upsertClusterVector(opts: {
+  clusterId: number;
+  level: number;
+  parentClusterId: number | null;
+  embedding: number[];
+}): Promise<void> {
+  await ensureVectorTables();
+  const embStr = '[' + opts.embedding.join(',') + ']';
+  await vectorPool.query(
+    `INSERT INTO niche_tree_cluster_vectors (cluster_id, level, parent_cluster_id, embedding)
+     VALUES ($1, $2, $3, $4::vector)
+     ON CONFLICT (cluster_id) DO UPDATE
+       SET level = EXCLUDED.level,
+           parent_cluster_id = EXCLUDED.parent_cluster_id,
+           embedding = EXCLUDED.embedding`,
+    [opts.clusterId, opts.level, opts.parentClusterId, embStr],
+  );
+}
+
+/**
+ * Pull a single video's combined_v2 vector by video_id. Used by the
+ * cluster-vector backfill: we look up each cluster's representative
+ * video and copy its vector as the cluster's signature.
+ */
+export async function getCombinedVectorForVideo(videoId: number): Promise<number[] | null> {
+  await ensureVectorTables();
+  const r = await vectorPool.query<{ embedding: string }>(
+    `SELECT embedding::text AS embedding FROM niche_video_vectors_combined_v2 WHERE video_id = $1`,
+    [videoId],
+  );
+  if (r.rows.length === 0 || !r.rows[0].embedding) return null;
+  // pgvector returns a string like '[0.012,-0.034,...]'.
+  return JSON.parse(r.rows[0].embedding) as number[];
+}
+
+/**
+ * Find clusters whose signature vector is closest to a given query
+ * embedding. Returns cluster_id + similarity (cosine), descending.
+ *
+ * Filters: optional level (e.g. 1 = only L1, 2 = only L2, omit = both),
+ * minSimilarity floor, limit.
+ */
+export async function findSimilarClustersByVector(
+  embedding: number[],
+  options?: { limit?: number; minSimilarity?: number; level?: number },
+): Promise<Array<{ clusterId: number; level: number; parentClusterId: number | null; similarity: number }>> {
+  await ensureVectorTables();
+  const limit = options?.limit || 60;
+  const minSimilarity = options?.minSimilarity || 0;
+  const embStr = '[' + embedding.join(',') + ']';
+
+  const where: string[] = [`1 - (embedding <=> $1::vector) >= $3`];
+  const params: (string | number)[] = [embStr, limit, minSimilarity];
+  if (options?.level !== undefined) {
+    where.push(`level = $${params.length + 1}`);
+    params.push(options.level);
+  }
+
+  const result = await vectorPool.query<{ cluster_id: number; level: number; parent_cluster_id: number | null; similarity: string }>(
+    `SELECT cluster_id, level, parent_cluster_id, 1 - (embedding <=> $1::vector) AS similarity
+       FROM niche_tree_cluster_vectors
+      WHERE ${where.join(' AND ')}
+   ORDER BY embedding <=> $1::vector
+      LIMIT $2`,
+    params,
+  );
+
+  return result.rows.map(r => ({
+    clusterId: r.cluster_id,
+    level: r.level,
+    parentClusterId: r.parent_cluster_id,
+    similarity: Math.round(parseFloat(r.similarity) * 10000) / 10000,
+  }));
+}
+
+/** Returns the set of cluster_ids that already have a signature vector
+ *  stored. Used by the backfill to skip clusters already done. */
+export async function getExistingClusterVectorIds(): Promise<Set<number>> {
+  await ensureVectorTables();
+  const r = await vectorPool.query<{ cluster_id: number }>(
+    `SELECT cluster_id FROM niche_tree_cluster_vectors`,
+  );
+  return new Set(r.rows.map(row => row.cluster_id));
+}
+
+/** Count of cluster signature vectors stored. Used by the backfill UI. */
+export async function getClusterVectorCount(): Promise<{ total: number; byLevel: Record<number, number> }> {
+  await ensureVectorTables();
+  const r = await vectorPool.query<{ level: number; cnt: string }>(
+    `SELECT level, COUNT(*)::text AS cnt FROM niche_tree_cluster_vectors GROUP BY level ORDER BY level`,
+  );
+  const byLevel: Record<number, number> = {};
+  let total = 0;
+  for (const row of r.rows) {
+    byLevel[row.level] = parseInt(row.cnt);
+    total += parseInt(row.cnt);
+  }
+  return { total, byLevel };
 }
 
 /** Vector DB row counts per source — used by the admin stats view. */

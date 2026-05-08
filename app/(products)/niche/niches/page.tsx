@@ -1,22 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import Link from 'next/link';
-import { fmtYT } from '@/lib/format';
 import { NicheClusterCard } from '@/components/NicheClusterCard';
-
-// Shape returned by /api/niche-spy/search-semantic — matches the
-// similar-page video tile so the same render block works.
-interface SemanticHit {
-  id: number; title: string; url: string; keyword: string;
-  viewCount: number; channelName: string;
-  postedAt: string | null; postedDate: string | null;
-  score: number; subscriberCount: number; likeCount: number;
-  commentCount: number; topComment: string | null;
-  thumbnail: string | null; channelCreatedAt: string | null;
-  firstUploadAt: string | null; dormancyDays: number | null;
-  similarity: number;
-}
 
 // Shape returned by /api/niche-spy/tree-clusters — auto-discovered
 // L1 niche clusters from the latest HDBSCAN run (combined_v2 space).
@@ -52,6 +37,12 @@ interface TreeClusterCard {
   childrenCount: number;
 }
 
+// Shape returned by /api/niche-spy/search-niches — same as cluster
+// card plus a `similarity` cosine score against the query.
+interface NicheSearchHit extends TreeClusterCard {
+  similarity: number;
+}
+
 type ClusterSort = 'videos' | 'views' | 'score';
 
 export default function NichesGrid() {
@@ -64,11 +55,11 @@ export default function NichesGrid() {
   // the user type freely without firing a search per keystroke.
   const [searchInput, setSearchInput] = useState('');
   const [semanticQuery, setSemanticQuery] = useState('');
-  const [semanticResults, setSemanticResults] = useState<SemanticHit[] | null>(null);
+  const [semanticResults, setSemanticResults] = useState<NicheSearchHit[] | null>(null);
   const [semanticLoading, setSemanticLoading] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
   const [hitFromCache, setHitFromCache] = useState(false);
-  // Min-match % filter — wide-fetch from the API (limit 500, no server
+  // Min-match % filter — wide-fetch from the API (limit 200, no server
   // threshold) and let the user dial in how strict the match needs to
   // be without re-querying. Default 0 so users see the full result set
   // first, then filter up.
@@ -108,9 +99,10 @@ export default function NichesGrid() {
     return arr;
   }, [clusters, clusterSort]);
 
-  // Fire semantic search — embeds the query through Gemini and looks
-  // up nearest videos in the combined_v2 multimodal space. ~1-2s on
-  // cache miss, near-instant on cache hit.
+  // Fire semantic NICHE search — embeds the query and finds the
+  // closest niche clusters across both L1 and L2. ~1-2s on cache miss,
+  // near-instant on cache hit (search_queries cache shared with the
+  // older video search).
   const runSemanticSearch = async (q: string) => {
     const trimmed = q.trim();
     if (!trimmed) {
@@ -121,17 +113,17 @@ export default function NichesGrid() {
     setSemanticError(null);
     setSemanticQuery(trimmed);
     try {
-      const res = await fetch('/api/niche-spy/search-semantic', {
+      const res = await fetch('/api/niche-spy/search-niches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed, limit: 500, minSimilarity: 0 }),
+        body: JSON.stringify({ query: trimmed, limit: 200, minSimilarity: 0 }),
       });
       const data = await res.json();
       if (!res.ok) {
         setSemanticError(data.error || `HTTP ${res.status}`);
         setSemanticResults([]);
       } else {
-        setSemanticResults(data.results || []);
+        setSemanticResults(data.niches || []);
         setHitFromCache(!!data.hitFromCache);
       }
     } catch (err) {
@@ -175,7 +167,7 @@ export default function NichesGrid() {
           value={searchInput}
           onChange={e => setSearchInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') runSemanticSearch(searchInput); }}
-          placeholder="Search videos by meaning — e.g. tired guy at desk, AI YouTube automation, dramatic scary stories…"
+          placeholder="Search niches by meaning — e.g. tired guy at desk, AI YouTube automation, dramatic scary stories…"
           className="flex-1 bg-transparent text-white text-sm placeholder-[#555] focus:outline-none"
           disabled={semanticLoading}
         />
@@ -199,12 +191,12 @@ export default function NichesGrid() {
         </button>
       </div>
       <p className="text-xs text-[#666] mb-6">
-        Press Enter or hit Search. Powered by combined v2 (joint title+thumbnail) multimodal embeddings — text queries match against both verbal and visual signal.
+        Press Enter or hit Search. Returns niches whose representative video sits closest to your query in the joint title+thumbnail multimodal space.
       </p>
 
-      {/* Semantic search results — replaces the cluster cards while a
-          query is active. Results carry a per-card "match %" badge
-          identical to the Similar page so the grid feels familiar. */}
+      {/* Semantic search results — niche cards (L1 + L2 mixed) ranked
+          by cosine similarity. Each card carries a "% match" pill via
+          NicheClusterCard's optional similarity field. */}
       {semanticQuery && (
         <div className="mb-6">
           <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
@@ -212,7 +204,7 @@ export default function NichesGrid() {
               <span className="text-sm font-medium text-white">
                 {semanticLoading
                   ? 'Searching…'
-                  : `${filteredResults.length} of ${semanticResults?.length ?? 0} videos for "${semanticQuery}"`}
+                  : `${filteredResults.length} of ${semanticResults?.length ?? 0} niches for "${semanticQuery}"`}
               </span>
               {hitFromCache && !semanticLoading && (
                 <span className="text-[10px] uppercase tracking-wider bg-[#1a1a1a] border border-[#333] text-[#888] px-1.5 py-0.5 rounded-full" title="Vector reused from a previous query — no Gemini call">
@@ -224,7 +216,7 @@ export default function NichesGrid() {
               )}
             </div>
 
-            {/* Min-match % — pure client-side filter over the already-fetched 500. */}
+            {/* Min-match % — pure client-side filter over the already-fetched results. */}
             {(semanticResults && semanticResults.length > 0) && (
               <div className="flex items-center gap-2">
                 <label className="text-xs text-[#888]">Min match:</label>
@@ -249,66 +241,34 @@ export default function NichesGrid() {
           </div>
 
           {semanticLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden animate-pulse">
-                  <div className="aspect-video bg-[#1a1a1a]" />
-                  <div className="p-3 space-y-2"><div className="h-4 w-3/4 bg-[#1f1f1f] rounded" /><div className="h-3 w-1/2 bg-[#1f1f1f] rounded" /></div>
+            <div className="space-y-3">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 animate-pulse">
+                  <div className="h-4 w-1/3 bg-[#1f1f1f] rounded mb-3" />
+                  <div className="grid grid-cols-4 gap-3">
+                    {[0,1,2,3].map(j => (
+                      <div key={j}>
+                        <div className="aspect-video bg-[#1a1a1a] rounded-md" />
+                        <div className="h-3 w-3/4 bg-[#1f1f1f] rounded mt-2" />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
           ) : (semanticResults && semanticResults.length === 0) ? (
             <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
-              No videos match &ldquo;{semanticQuery}&rdquo;. Try a different phrasing or fewer specifics.
+              No niches match &ldquo;{semanticQuery}&rdquo;. Try a different phrasing or fewer specifics.
             </div>
           ) : filteredResults.length === 0 ? (
             <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#888]">
-              No videos at or above {Math.round(minSimilarity * 100)}% match. Lower the min match to see more.
+              No niches at or above {Math.round(minSimilarity * 100)}% match. Lower the min match to see more.
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredResults.map(v => {
-                const vidMatch = (v.url || '').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/)([a-zA-Z0-9_-]{11})/);
-                const thumb = v.thumbnail || (vidMatch ? `https://img.youtube.com/vi/${vidMatch[1]}/hqdefault.jpg` : '');
-                return (
-                  <div key={v.id} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition">
-                    <div className="relative aspect-video bg-[#0a0a0a]">
-                      {thumb && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={thumb} alt="" className="w-full h-full object-cover" loading="lazy" />
-                      )}
-                      <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
-                        v.score >= 80 ? 'bg-green-500 text-white' : v.score >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
-                      }`}>⚡ {v.score}</div>
-                      <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-xs font-bold bg-purple-600 text-white">
-                        {Math.round(v.similarity * 100)}% match
-                      </div>
-                    </div>
-                    <div className="p-3">
-                      <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title}</h3>
-                      <div className="flex items-center gap-2 text-xs text-[#888] mb-1.5">
-                        <span className="text-green-400">{fmtYT(v.viewCount)} views</span>
-                        {v.channelName && <span>· {v.channelName}</span>}
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-[#666] mb-2">
-                        {v.likeCount > 0    && <span>👍 {fmtYT(v.likeCount)}</span>}
-                        {v.commentCount > 0 && <span>💬 {fmtYT(v.commentCount)}</span>}
-                        {v.subscriberCount > 0 && <span>👥 {fmtYT(v.subscriberCount)}</span>}
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        {v.url && (
-                          <a href={v.url} target="_blank" rel="noopener noreferrer"
-                             className="text-[10px] text-blue-400 truncate min-w-0 flex-1">{v.url}</a>
-                        )}
-                        <Link href={`/niche/similar/${v.id}`}
-                              className="flex-shrink-0 text-[10px] bg-green-600/20 text-green-400 border border-green-600/40 px-2 py-0.5 rounded-full hover:bg-green-600/30 transition font-medium">
-                          Similar
-                        </Link>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="space-y-3">
+              {filteredResults.map(c => (
+                <NicheClusterCard key={c.id} cluster={c} />
+              ))}
             </div>
           )}
         </div>
