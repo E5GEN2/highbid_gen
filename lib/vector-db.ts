@@ -14,16 +14,28 @@
 import { Pool } from 'pg';
 import { getPool } from './db';
 
-const VECTOR_DB_URL = process.env.VECTOR_DB_URL;
-if (!VECTOR_DB_URL) {
-  throw new Error('VECTOR_DB_URL env var is required (use the Railway internal hostname pgvector-railway-…railway.internal to avoid public-network egress charges).');
-}
-
-const vectorPool = new Pool({
-  connectionString: VECTOR_DB_URL,
-  max: 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+// Lazy: VECTOR_DB_URL is only read when something actually queries the
+// pool, not at module load. Next.js's "Collecting page data" build pass
+// imports this module without prod env vars, so eager throw breaks the
+// build. Real callers hit the error at request time with a clear message.
+let _vectorPool: Pool | null = null;
+const vectorPool: Pool = new Proxy({} as Pool, {
+  get(_t, prop) {
+    if (!_vectorPool) {
+      const url = process.env.VECTOR_DB_URL;
+      if (!url) {
+        throw new Error('VECTOR_DB_URL env var is required (use the Railway internal hostname pgvector-railway-….railway.internal to avoid public-network egress charges).');
+      }
+      _vectorPool = new Pool({
+        connectionString: url,
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+      });
+    }
+    const v = Reflect.get(_vectorPool, prop, _vectorPool);
+    return typeof v === 'function' ? v.bind(_vectorPool) : v;
+  },
 });
 
 export type EmbeddingSource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2';
