@@ -385,7 +385,7 @@ async function markJobCancelled(
  * channel_name is read from the channels row so the row matches the
  * grouping key used by /api/niche-spy/channels.
  */
-async function upsertRecentVideos(
+export async function upsertRecentVideos(
   pool: import('pg').Pool,
   channelId: string,
   videos: RecentUploadVideo[],

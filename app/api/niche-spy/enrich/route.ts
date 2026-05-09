@@ -4,6 +4,8 @@ import { getProxyStats } from '@/lib/xgodo-proxy';
 import { ytFetchViaProxy } from '@/lib/yt-proxy-fetch';
 import { getYtPairForThread, getYtKeyStatus, banYtKey } from '@/lib/yt-keys';
 import { fetchChannelFirstUpload } from '@/lib/yt-channel-age';
+import { fetchChannelRecentUploads } from '@/lib/yt-recent-uploads';
+import { upsertRecentVideos } from '@/lib/outlier-enrich';
 
 /**
  * YouTube Data API enrichment — fire-and-forget parallel job.
@@ -96,7 +98,36 @@ export async function POST(req: NextRequest) {
   );
   const channelCount = Math.min(parseInt(chanCntRes.rows[0].cnt), limit);
 
-  const totalNeeded = videoCount + channelCount;
+  // Phase 4 candidates: channels with uploads_playlist_id but <4 videos
+  // in niche_spy_videos. These don't need video-level enrichment (most
+  // already have a row), they need MORE rows. Counted separately so a
+  // run that's only filling video gaps still kicks off.
+  const vidParams2: (string | number)[] = [];
+  let vIdx2 = 1;
+  let vidKwJoin2 = '';
+  if (keyword && keyword !== 'all') {
+    vidKwJoin2 = `JOIN niche_spy_videos vk ON vk.channel_id = c.channel_id AND vk.keyword = $${vIdx2++}`;
+    vidParams2.push(keyword);
+  }
+  vidParams2.push(limit);
+  const phase4CntRes = await pool.query(`
+    WITH ch_video_counts AS (
+      SELECT channel_id, COUNT(*) AS cnt
+      FROM niche_spy_videos
+      WHERE channel_id IS NOT NULL AND channel_id != ''
+      GROUP BY channel_id
+    )
+    SELECT COUNT(DISTINCT c.channel_id) AS cnt
+    FROM niche_spy_channels c
+    ${vidKwJoin2}
+    LEFT JOIN ch_video_counts cvc ON cvc.channel_id = c.channel_id
+    WHERE c.uploads_playlist_id IS NOT NULL
+      AND COALESCE(cvc.cnt, 0) < 4
+    LIMIT $${vIdx2}
+  `, vidParams2);
+  const phase4Count = Math.min(parseInt(phase4CntRes.rows[0].cnt), limit);
+
+  const totalNeeded = videoCount + channelCount + phase4Count;
   if (totalNeeded === 0) {
     return NextResponse.json({ ok: true, status: 'done', message: 'Nothing needs enrichment' });
   }
@@ -630,6 +661,77 @@ async function runEnrichJob(
     }
   }
 
+  // --- Phase 4: top up channels with <4 videos in our DB ---
+  // Without this step the /niche/channels grid renders sparse cards
+  // (most channels show 0–1 thumbs) even though they're "fully
+  // enriched" by the Phase 1/2/3 metadata pass. We pull 10 most-
+  // recent uploads per under-supplied channel via fetchChannelRecent
+  // Uploads + upsertRecentVideos (the same helpers the Outlier
+  // Pipeline uses), so the card's 4-thumb strip can be drawn from
+  // real videos.
+  if (!(await isCancelled())) {
+    const vidParams: (string | number)[] = [];
+    let pIdx = 1;
+    let vidKwJoin = '';
+    if (keyword && keyword !== 'all') {
+      vidKwJoin = `JOIN niche_spy_videos vk ON vk.channel_id = c.channel_id AND vk.keyword = $${pIdx++}`;
+      vidParams.push(keyword);
+    }
+    vidParams.push(limit);
+    const needVidsRes = await pool.query(`
+      WITH ch_video_counts AS (
+        SELECT channel_id, COUNT(*) AS cnt
+        FROM niche_spy_videos
+        WHERE channel_id IS NOT NULL AND channel_id != ''
+        GROUP BY channel_id
+      )
+      SELECT DISTINCT c.channel_id, c.uploads_playlist_id
+      FROM niche_spy_channels c
+      ${vidKwJoin}
+      LEFT JOIN ch_video_counts cvc ON cvc.channel_id = c.channel_id
+      WHERE c.uploads_playlist_id IS NOT NULL
+        AND COALESCE(cvc.cnt, 0) < 4
+      ORDER BY COALESCE(cvc.cnt, 0) ASC
+      LIMIT $${pIdx}
+    `, vidParams);
+    const vidTargets = needVidsRes.rows as Array<{ channel_id: string; uploads_playlist_id: string }>;
+
+    if (vidTargets.length > 0) {
+      await logProgress(`Phase 4 — pulling 10 recent uploads for ${vidTargets.length} channels with <4 videos`);
+      let vidIdx = 0;
+
+      async function vidWorker(threadId: number) {
+        while (true) {
+          if (await isCancelled()) break;
+          const myIdx = vidIdx++;
+          if (myIdx >= vidTargets.length) break;
+          const t = vidTargets[myIdx];
+          const pair = await getYtPairForThread(threadId - 1);
+          if (!pair) break;
+          try {
+            const result = await fetchChannelRecentUploads(t.uploads_playlist_id, pair, { maxVideos: 10 });
+            if (result.error) {
+              const isRateLimited = /429|403|quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(result.error);
+              if (isRateLimited) banYtKey(pair.key);
+              globalErrors++;
+            } else if (result.videos.length > 0) {
+              await upsertRecentVideos(pool, t.channel_id, result.videos);
+              enrichedVideos += result.videos.length;
+            }
+          } catch (err) {
+            console.warn('[yt-enrich] Phase 4 error:', (err as Error).message);
+            globalErrors++;
+          }
+          await new Promise(r => setTimeout(r, Math.max(200, delayMs / 2)));
+        }
+      }
+
+      const vidWorkers = Array.from({ length: Math.min(threads, vidTargets.length) }, (_, i) => vidWorker(i + 1));
+      await Promise.all(vidWorkers);
+      await logProgress(`Phase 4 done — pulled videos for ${vidTargets.length} channels`);
+    }
+  }
+
   // Final status
   await pool.query(
     `UPDATE niche_yt_enrich_jobs
@@ -689,6 +791,16 @@ export async function GET(req: NextRequest) {
       SELECT DISTINCT v.channel_id AS cid
       FROM niche_spy_videos v
       WHERE v.channel_id IS NOT NULL AND v.channel_id != '' ${kwFilter}
+    ),
+    -- Per-channel count of how many videos we have stored. Joined
+    -- to the stat row so we can flag channels with <4 videos as
+    -- "needing more uploads pulled" — that's what gates whether a
+    -- channel card on /niche/channels can fill its 4-thumb strip.
+    ch_video_counts AS (
+      SELECT channel_id, COUNT(*) AS cnt
+      FROM niche_spy_videos
+      WHERE channel_id IS NOT NULL AND channel_id != ''
+      GROUP BY channel_id
     )
     SELECT
       COUNT(*) AS total,
@@ -701,9 +813,11 @@ export async function GET(req: NextRequest) {
       COUNT(*) FILTER (WHERE c.first_upload_at IS NULL
                          AND (c.video_count IS NULL OR c.video_count <= 200)
                          AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days')) AS missing_first_upload,
-      COUNT(*) FILTER (WHERE c.first_upload_at IS NULL AND c.video_count > 200) AS too_big_for_walk
+      COUNT(*) FILTER (WHERE c.first_upload_at IS NULL AND c.video_count > 200) AS too_big_for_walk,
+      COUNT(*) FILTER (WHERE c.uploads_playlist_id IS NOT NULL AND COALESCE(cvc.cnt, 0) < 4) AS need_more_videos
     FROM ch
     LEFT JOIN niche_spy_channels c ON c.channel_id = ch.cid
+    LEFT JOIN ch_video_counts cvc ON cvc.channel_id = ch.cid
   `;
 
   const [vStats, cStats, proxyStats, jobRes, keyStatus] = await Promise.all([
@@ -739,6 +853,7 @@ export async function GET(req: NextRequest) {
       missingVideoCount: parseInt(c.missing_video_count),
       missingFirstUpload: parseInt(c.missing_first_upload),
       tooBigForWalk:     parseInt(c.too_big_for_walk),
+      needMoreVideos:    parseInt(c.need_more_videos),
     },
     // Back-compat for any caller still reading the flat shape
     need_enrichment:  parseInt(v.never_enriched) + parseInt(v.missing_likes) + parseInt(c.missing_subs),

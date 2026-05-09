@@ -444,7 +444,7 @@ export default function AdminPage() {
     channels?: {
       total: number; missingRow: number; missingSubs: number; missingCreatedAt: number;
       missingPlaylistId: number; missingHandle: number; missingVideoCount: number;
-      missingFirstUpload: number; tooBigForWalk: number;
+      missingFirstUpload: number; tooBigForWalk: number; needMoreVideos: number;
     };
     proxyStats: { total: number; online: number };
     job: {
@@ -2938,7 +2938,7 @@ export default function AdminPage() {
                       <div className="text-[11px] text-gray-400 mb-1.5 uppercase tracking-wider">
                         Channels <span className="text-gray-200 normal-case">· {nicheEnrichStats.channels.total.toLocaleString()} total</span>
                       </div>
-                      <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+                      <div className="grid grid-cols-3 md:grid-cols-9 gap-2">
                         {([
                           ['No row',         nicheEnrichStats.channels.missingRow,         'text-red-400'],
                           ['Subs',           nicheEnrichStats.channels.missingSubs,        'text-red-400'],
@@ -2947,6 +2947,11 @@ export default function AdminPage() {
                           ['Playlist ID',    nicheEnrichStats.channels.missingPlaylistId,  'text-yellow-400'],
                           ['Video count',    nicheEnrichStats.channels.missingVideoCount,  'text-yellow-400'],
                           ['First upload',   nicheEnrichStats.channels.missingFirstUpload, 'text-amber-400'],
+                          // needMoreVideos = channels with <4 videos in
+                          // niche_spy_videos. Phase 4 walks these and pulls
+                          // 10 recent uploads each so the channel cards have
+                          // enough thumbs to render the 4-thumb strip.
+                          ['Need videos',    nicheEnrichStats.channels.needMoreVideos,     'text-amber-400'],
                           // tooBigForWalk = channels with >200 videos that we
                           // intentionally skip in Phase 3. Rendered dim because
                           // it's not a backlog, just a cap.
