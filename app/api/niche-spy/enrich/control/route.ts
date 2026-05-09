@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
+import {
+  GET as enrichGet,
+  POST as enrichPost,
+  DELETE as enrichDelete,
+} from '../route';
 
 /**
  * Admin-auth wrapper around /api/niche-spy/enrich for programmatic
@@ -8,12 +13,25 @@ import { isAdmin } from '@/lib/admin-auth';
  *   - Sensible "max speed" defaults on POST (threads=30, indefinite=true)
  *   - Terse status payload on GET, optimised for tailing in a terminal
  *
+ * We import the parent route handlers directly instead of doing an
+ * internal HTTPS self-fetch — Railway's SSL termination layer breaks
+ * `fetch(req.nextUrl.origin + …)` from inside the container with
+ * ERR_SSL_PACKET_LENGTH_TOO_LONG.
+ *
  * POST   /api/niche-spy/enrich/control     start (or no-op if already running)
  * GET    /api/niche-spy/enrich/control     job + key gap snapshot
  * DELETE /api/niche-spy/enrich/control     cancel current job
  */
 
-const BASE_PATH = '/api/niche-spy/enrich';
+function makeRequest(req: NextRequest, init: { method: string; body?: unknown; search?: URLSearchParams }) {
+  const url = new URL(`${req.nextUrl.origin}/api/niche-spy/enrich`);
+  if (init.search) for (const [k, v] of init.search) url.searchParams.set(k, v);
+  return new NextRequest(url, {
+    method: init.method,
+    headers: { 'content-type': 'application/json' },
+    body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+  });
+}
 
 export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) {
@@ -28,24 +46,20 @@ export async function POST(req: NextRequest) {
     delayMs: body.delayMs ?? 200,
     indefinite: body.indefinite ?? true,
   };
-  const res = await fetch(`${req.nextUrl.origin}${BASE_PATH}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json().catch(() => ({}));
-  return NextResponse.json({ ok: res.ok, sent: payload, response: data }, { status: res.status });
+  const innerRes = await enrichPost(makeRequest(req, { method: 'POST', body: payload }));
+  const data = await innerRes.json().catch(() => ({}));
+  return NextResponse.json({ ok: innerRes.ok, sent: payload, response: data }, { status: innerRes.status });
 }
 
 export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) {
     return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   }
+  const search = new URLSearchParams();
   const keyword = req.nextUrl.searchParams.get('keyword');
-  const url = new URL(`${req.nextUrl.origin}${BASE_PATH}`);
-  if (keyword) url.searchParams.set('keyword', keyword);
-  const res = await fetch(url.toString(), { method: 'GET' });
-  const d = await res.json().catch(() => ({}));
+  if (keyword) search.set('keyword', keyword);
+  const innerRes = await enrichGet(makeRequest(req, { method: 'GET', search }));
+  const d = await innerRes.json().catch(() => ({}));
 
   const job = d.job || null;
   const v = d.videos || {};
@@ -116,7 +130,7 @@ export async function DELETE(req: NextRequest) {
   if (!await isAdmin(req)) {
     return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   }
-  const res = await fetch(`${req.nextUrl.origin}${BASE_PATH}`, { method: 'DELETE' });
-  const data = await res.json().catch(() => ({}));
-  return NextResponse.json({ ok: res.ok, response: data }, { status: res.status });
+  const innerRes = await enrichDelete();
+  const data = await innerRes.json().catch(() => ({}));
+  return NextResponse.json({ ok: innerRes.ok, response: data }, { status: innerRes.status });
 }
