@@ -18,11 +18,38 @@ export interface RecentUploadsResult {
   medianViews: number | null;    // rounded integer
   maxViews: number | null;
   count: number;                 // how many videos we actually pulled stats for
+  /** Raw per-video records from the videos.list response. The
+   *  outlier-enrich worker upserts these into niche_spy_videos so
+   *  the channel cards have actual videos to render. Empty when the
+   *  underlying videos.list call failed or returned nothing. */
+  videos: RecentUploadVideo[];
   error?: string;
 }
 
+export interface RecentUploadVideo {
+  videoId: string;
+  title: string | null;
+  description: string | null;
+  thumbnail: string | null;
+  publishedAt: string | null;
+  viewCount: number;
+  likeCount: number;
+  commentCount: number;
+}
+
 interface PlaylistItem {
-  snippet?: { resourceId?: { videoId?: string } };
+  snippet?: {
+    resourceId?: { videoId?: string };
+    title?: string;
+    description?: string;
+    publishedAt?: string;
+    thumbnails?: {
+      maxres?: { url?: string };
+      high?: { url?: string };
+      medium?: { url?: string };
+      default?: { url?: string };
+    };
+  };
 }
 interface PlaylistPage {
   items?: PlaylistItem[];
@@ -30,7 +57,18 @@ interface PlaylistPage {
 }
 interface VideoItem {
   id?: string;
-  statistics?: { viewCount?: string };
+  snippet?: {
+    title?: string;
+    description?: string;
+    publishedAt?: string;
+    thumbnails?: {
+      maxres?: { url?: string };
+      high?: { url?: string };
+      medium?: { url?: string };
+      default?: { url?: string };
+    };
+  };
+  statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
 }
 interface VideosPage {
   items?: VideoItem[];
@@ -48,7 +86,7 @@ export async function fetchChannelRecentUploads(
   const maxVideos = Math.min(options?.maxVideos ?? 50, 50);
 
   if (!uploadsPlaylistId) {
-    return { avgViews: null, medianViews: null, maxViews: null, count: 0, error: 'no uploads playlist' };
+    return { avgViews: null, medianViews: null, maxViews: null, count: 0, videos: [], error: 'no uploads playlist' };
   }
 
   // Step 1: pull the first playlistItems page (newest uploads).
@@ -56,7 +94,7 @@ export async function fetchChannelRecentUploads(
   const plRes = await ytFetchViaProxy(plUrl, pair);
   if (!plRes.ok) {
     return {
-      avgViews: null, medianViews: null, maxViews: null, count: 0,
+      avgViews: null, medianViews: null, maxViews: null, count: 0, videos: [],
       error: `playlistItems ${plRes.status}: ${(plRes.error || '').slice(0, 120)}`,
     };
   }
@@ -66,27 +104,51 @@ export async function fetchChannelRecentUploads(
     .filter((v): v is string => !!v);
 
   if (videoIds.length === 0) {
-    return { avgViews: null, medianViews: null, maxViews: null, count: 0 };
+    return { avgViews: null, medianViews: null, maxViews: null, count: 0, videos: [] };
   }
 
-  // Step 2: videos.list with statistics, batched 50 at a time (only need one
-  // batch since we capped at 50 above).
+  // Step 2: videos.list with snippet + statistics. The snippet is a
+  // separate part with its own quota cost, but we need title +
+  // thumbnail to persist the videos to niche_spy_videos for the
+  // channel-card thumb strip. Same one batch (capped at 50 above).
   const idsParam = videoIds.join(',');
-  const vUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${idsParam}&key=${pair.key}`;
+  const vUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${idsParam}&key=${pair.key}`;
   const vRes = await ytFetchViaProxy(vUrl, pair);
   if (!vRes.ok) {
     return {
-      avgViews: null, medianViews: null, maxViews: null, count: 0,
+      avgViews: null, medianViews: null, maxViews: null, count: 0, videos: [],
       error: `videos.list ${vRes.status}: ${(vRes.error || '').slice(0, 120)}`,
     };
   }
   const vData = vRes.data as VideosPage;
-  const views = (vData.items || [])
-    .map(it => parseInt(it.statistics?.viewCount || '0'))
-    .filter(n => Number.isFinite(n) && n >= 0);
+
+  const videos: RecentUploadVideo[] = (vData.items || [])
+    .filter(it => it.id)
+    .map(it => {
+      const sn = it.snippet ?? {};
+      const stats = it.statistics ?? {};
+      const thumb =
+        sn.thumbnails?.maxres?.url ??
+        sn.thumbnails?.high?.url ??
+        sn.thumbnails?.medium?.url ??
+        sn.thumbnails?.default?.url ??
+        null;
+      return {
+        videoId: it.id!,
+        title: sn.title ?? null,
+        description: sn.description ?? null,
+        thumbnail: thumb,
+        publishedAt: sn.publishedAt ?? null,
+        viewCount: parseInt(stats.viewCount || '0') || 0,
+        likeCount: parseInt(stats.likeCount || '0') || 0,
+        commentCount: parseInt(stats.commentCount || '0') || 0,
+      };
+    });
+
+  const views = videos.map(v => v.viewCount).filter(n => Number.isFinite(n) && n >= 0);
 
   if (views.length === 0) {
-    return { avgViews: null, medianViews: null, maxViews: null, count: 0 };
+    return { avgViews: null, medianViews: null, maxViews: null, count: 0, videos };
   }
 
   const sum = views.reduce((a, b) => a + b, 0);
@@ -98,5 +160,5 @@ export async function fetchChannelRecentUploads(
     : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
   const max = sorted[sorted.length - 1];
 
-  return { avgViews: avg, medianViews: median, maxViews: max, count: views.length };
+  return { avgViews: avg, medianViews: median, maxViews: max, count: views.length, videos };
 }

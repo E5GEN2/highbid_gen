@@ -17,7 +17,7 @@
 
 import { getPool } from './db';
 import { pickRandomActiveYtPair, banYtKey, invalidateYtKey } from './yt-keys';
-import { fetchChannelRecentUploads } from './yt-recent-uploads';
+import { fetchChannelRecentUploads, type RecentUploadVideo } from './yt-recent-uploads';
 
 export interface OutlierEnrichProgress {
   total: number;
@@ -193,6 +193,17 @@ async function runOutlierEnrichOnce(opts: {
             [result.avgViews, result.medianViews, result.maxViews, result.count, item.channel.channel_id],
           );
           if ((result.count || 0) > 0) withStats++;
+
+          // Persist the recent uploads themselves into niche_spy_videos.
+          // Without this step the channel cards on /niche/channels can
+          // only show videos that came in via the keyword scrape — most
+          // channels end up with 0–1 thumbs in the strip even though
+          // the aggregate stats look great. We upsert ON CONFLICT
+          // (url) so existing rows aren't clobbered (preserves their
+          // keyword tag, embeddings, etc.). channel_name is sourced
+          // from the videos.list response when present, else falls
+          // back to the channels table.
+          await upsertRecentVideos(pool, item.channel.channel_id, result.videos);
         }
       } catch (err) {
         // Hard throw — proxy timeout, JSON parse, etc. Always retryable.
@@ -355,5 +366,91 @@ async function markJobCancelled(
             last_progress_at = NOW()
       WHERE id = $6`,
     [total, processed, withStats, errors, calls, jobId],
+  );
+}
+
+/**
+ * Upsert a batch of recent uploads into niche_spy_videos. Pulled
+ * during the Outlier Pipeline so every enriched channel ends up with
+ * its own videos in the DB — without this the channel cards on
+ * /niche/channels could only render videos that came in via the
+ * keyword scrape (most channels had 0–1).
+ *
+ * Uses ON CONFLICT (url) DO UPDATE so a video that already exists
+ * (e.g. originally scraped via a keyword) keeps its keyword tag +
+ * embedding fields, but gets fresh view/like/comment counts. New
+ * videos land with NULL keyword/score (they're not from a keyword
+ * scrape) and get marked as enriched right away.
+ *
+ * channel_name is read from the channels row so the row matches the
+ * grouping key used by /api/niche-spy/channels.
+ */
+async function upsertRecentVideos(
+  pool: import('pg').Pool,
+  channelId: string,
+  videos: RecentUploadVideo[],
+): Promise<void> {
+  if (videos.length === 0) return;
+
+  // Pull the channel's display info once so all the rows we insert
+  // share the same channel_name + avatar (the channels.list pass that
+  // populated niche_spy_channels already has these).
+  const chRes = await pool.query<{ channel_name: string | null; channel_avatar: string | null; channel_created_at: Date | null }>(
+    `SELECT channel_name, channel_avatar, channel_created_at FROM niche_spy_channels WHERE channel_id = $1 LIMIT 1`,
+    [channelId],
+  );
+  const channelName  = chRes.rows[0]?.channel_name  ?? null;
+  const channelAvatar = chRes.rows[0]?.channel_avatar ?? null;
+  const channelCreatedAt = chRes.rows[0]?.channel_created_at ?? null;
+
+  // Single multi-row INSERT keeps this to one round trip per channel
+  // instead of N. ~10 videos × 12 cols = 120 params, well under
+  // pg's 65535 cap.
+  const cols = 13;
+  const placeholders: string[] = [];
+  const params: (string | number | Date | null)[] = [];
+  let idx = 0;
+  for (const v of videos) {
+    const url = `https://youtu.be/${v.videoId}`;
+    const postedAt = v.publishedAt ? new Date(v.publishedAt) : null;
+    const row = [
+      url,                                  // 1 url (unique conflict target)
+      v.title,                              // 2 title
+      v.thumbnail,                          // 3 thumbnail
+      channelId,                            // 4 channel_id
+      channelName,                          // 5 channel_name
+      channelAvatar,                        // 6 channel_avatar
+      channelCreatedAt,                     // 7 channel_created_at
+      postedAt,                             // 8 posted_at
+      v.viewCount,                          // 9 view_count
+      v.likeCount,                          // 10 like_count
+      v.commentCount,                       // 11 comment_count
+      'outlier-enrich',                     // 12 task_id (provenance)
+      new Date(),                           // 13 enriched_at
+    ];
+    placeholders.push(`(${row.map(() => `$${++idx}`).join(', ')})`);
+    params.push(...row);
+  }
+
+  // Conflict target = url. On conflict, refresh the volatile fields
+  // (views/likes/comments + thumbnail in case it changed) and mark
+  // enriched_at, but DON'T overwrite keyword / score / posted_date /
+  // top_comment because those came from richer scrape sources.
+  await pool.query(
+    `INSERT INTO niche_spy_videos
+       (url, title, thumbnail, channel_id, channel_name, channel_avatar,
+        channel_created_at, posted_at, view_count, like_count, comment_count,
+        task_id, enriched_at)
+     VALUES ${placeholders.join(', ')}
+     ON CONFLICT (url) DO UPDATE SET
+       view_count    = EXCLUDED.view_count,
+       like_count    = EXCLUDED.like_count,
+       comment_count = EXCLUDED.comment_count,
+       thumbnail     = COALESCE(niche_spy_videos.thumbnail, EXCLUDED.thumbnail),
+       channel_id    = COALESCE(niche_spy_videos.channel_id, EXCLUDED.channel_id),
+       channel_name  = COALESCE(niche_spy_videos.channel_name, EXCLUDED.channel_name),
+       channel_avatar = COALESCE(niche_spy_videos.channel_avatar, EXCLUDED.channel_avatar),
+       enriched_at   = NOW()`,
+    params,
   );
 }
