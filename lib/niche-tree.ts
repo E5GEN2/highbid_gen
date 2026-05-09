@@ -397,8 +397,10 @@ async function runOneClusteringPipeline(opts: {
   | { ok: false; error: string }
 > {
   const pool = await getPool();
-  const vectorDbUrl = process.env.VECTOR_DB_URL ||
-    'postgresql://postgres:rLcWspOFJIPFDMbJSDdNlynLgcnupOfY@gondola.proxy.rlwy.net:10303/railway';
+  const vectorDbUrl = process.env.VECTOR_DB_URL;
+  if (!vectorDbUrl) {
+    return { ok: false, error: 'VECTOR_DB_URL env var is required (use the Railway internal hostname to avoid egress charges)' };
+  }
 
   const tmpFile = path.join(os.tmpdir(), `cluster-tree-${opts.runId}.json`);
   fs.writeFileSync(tmpFile, JSON.stringify({

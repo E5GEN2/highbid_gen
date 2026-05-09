@@ -69,9 +69,12 @@ export async function runClusteringJob(runId: number, keyword: string, params: C
   const pool = await getPool();
 
   try {
-    // Get pgvector DB URL
-    const vectorDbUrl = process.env.VECTOR_DB_URL ||
-      'postgresql://postgres:rLcWspOFJIPFDMbJSDdNlynLgcnupOfY@gondola.proxy.rlwy.net:10303/railway';
+    // Get pgvector DB URL — must be the Railway internal hostname
+    // (pgvector-railway-….railway.internal) to avoid public-network egress
+    // charges; the public proxy fallback used to be hardcoded here and
+    // silently routed every vector read/write through billable egress.
+    const vectorDbUrl = process.env.VECTOR_DB_URL;
+    if (!vectorDbUrl) throw new Error('VECTOR_DB_URL env var is required');
 
     // Source selects which embedding space to cluster on. Each has its own
     // main-DB column that must be non-null for the video to qualify.

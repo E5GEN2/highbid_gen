@@ -14,8 +14,10 @@
 import { Pool } from 'pg';
 import { getPool } from './db';
 
-const VECTOR_DB_URL = process.env.VECTOR_DB_URL ||
-  'postgresql://postgres:rLcWspOFJIPFDMbJSDdNlynLgcnupOfY@gondola.proxy.rlwy.net:10303/railway';
+const VECTOR_DB_URL = process.env.VECTOR_DB_URL;
+if (!VECTOR_DB_URL) {
+  throw new Error('VECTOR_DB_URL env var is required (use the Railway internal hostname pgvector-railway-…railway.internal to avoid public-network egress charges).');
+}
 
 const vectorPool = new Pool({
   connectionString: VECTOR_DB_URL,
