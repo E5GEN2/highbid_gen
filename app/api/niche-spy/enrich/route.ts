@@ -237,7 +237,7 @@ async function getLoops(jobId: number): Promise<number> {
  */
 async function countPendingForEnrich(
   keyword: string | null, limit: number,
-): Promise<{ totalNeeded: number; videoCount: number; channelCount: number }> {
+): Promise<{ totalNeeded: number; videoCount: number; channelCount: number; phase4Count: number }> {
   const pool = await getPool();
   const videoConds: string[] = [
     '(enriched_at IS NULL OR like_count IS NULL OR like_count = 0 OR subscriber_count IS NULL OR subscriber_count = 0)',
@@ -276,7 +276,34 @@ async function countPendingForEnrich(
     chanParams,
   );
   const channelCount = Math.min(parseInt(chanCntRes.rows[0].cnt), limit);
-  return { totalNeeded: videoCount + channelCount, videoCount, channelCount };
+
+  // Phase 4: channels with <4 videos. Same logic as POST handler.
+  const vidParams2: (string | number)[] = [];
+  let vIdx2 = 1;
+  let vidKwJoin2 = '';
+  if (keyword && keyword !== 'all') {
+    vidKwJoin2 = `JOIN niche_spy_videos vk ON vk.channel_id = c.channel_id AND vk.keyword = $${vIdx2++}`;
+    vidParams2.push(keyword);
+  }
+  vidParams2.push(limit);
+  const phase4CntRes = await pool.query(`
+    WITH ch_video_counts AS (
+      SELECT channel_id, COUNT(*) AS cnt
+      FROM niche_spy_videos
+      WHERE channel_id IS NOT NULL AND channel_id != ''
+      GROUP BY channel_id
+    )
+    SELECT COUNT(DISTINCT c.channel_id) AS cnt
+    FROM niche_spy_channels c
+    ${vidKwJoin2}
+    LEFT JOIN ch_video_counts cvc ON cvc.channel_id = c.channel_id
+    WHERE c.uploads_playlist_id IS NOT NULL
+      AND COALESCE(cvc.cnt, 0) < 4
+    LIMIT $${vIdx2}
+  `, vidParams2);
+  const phase4Count = Math.min(parseInt(phase4CntRes.rows[0].cnt), limit);
+
+  return { totalNeeded: videoCount + channelCount + phase4Count, videoCount, channelCount, phase4Count };
 }
 
 async function runEnrichJob(
@@ -685,16 +712,16 @@ async function runEnrichJob(
         WHERE channel_id IS NOT NULL AND channel_id != ''
         GROUP BY channel_id
       )
-      SELECT DISTINCT c.channel_id, c.uploads_playlist_id
+      SELECT DISTINCT c.channel_id, c.uploads_playlist_id, COALESCE(cvc.cnt, 0) AS vid_cnt
       FROM niche_spy_channels c
       ${vidKwJoin}
       LEFT JOIN ch_video_counts cvc ON cvc.channel_id = c.channel_id
       WHERE c.uploads_playlist_id IS NOT NULL
         AND COALESCE(cvc.cnt, 0) < 4
-      ORDER BY COALESCE(cvc.cnt, 0) ASC
+      ORDER BY vid_cnt ASC
       LIMIT $${pIdx}
     `, vidParams);
-    const vidTargets = needVidsRes.rows as Array<{ channel_id: string; uploads_playlist_id: string }>;
+    const vidTargets = needVidsRes.rows as Array<{ channel_id: string; uploads_playlist_id: string; vid_cnt: number }>;
 
     if (vidTargets.length > 0) {
       await logProgress(`Phase 4 — pulling 10 recent uploads for ${vidTargets.length} channels with <4 videos`);
