@@ -942,6 +942,22 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       });
     }
 
+    // ── Backfill centroid vectors for semantic search ───────────
+    // Without this, /api/niche-spy/search-niches has no signature
+    // vectors for the new run's clusters and returns empty / matches
+    // against zombie cluster_ids from old runs. Best-effort; errors
+    // are non-fatal so the run still gets marked done.
+    try {
+      const { backfillClusterVectors } = await import('./niche-search');
+      const r = await backfillClusterVectors({ mode: 'missing', threads: 20 });
+      console.log(
+        `[niche-tree] cluster vectors backfilled: ` +
+        `total=${r.total} upserted=${r.upserted} skipped=${r.skipped} errors=${r.errors}`,
+      );
+    } catch (err) {
+      console.warn('[niche-tree] cluster vector backfill failed (non-fatal):', (err as Error).message);
+    }
+
     // ── Mark L1 run done ────────────────────────────────────────
     // status='running' guard so that if the loop broke out due to
     // cancellation, the cancelled state stays intact.
@@ -1155,6 +1171,19 @@ export async function resumeL2Baking(l1RunId: number): Promise<void> {
       await writeProgress(l1RunId, {
         l2: { ...l2State, currentParentId: null, currentParentLabel: null, currentSubrunId: null },
       });
+    }
+
+    // Backfill centroid vectors so semantic search works for the new
+    // partition. Best-effort; non-fatal.
+    try {
+      const { backfillClusterVectors } = await import('./niche-search');
+      const r = await backfillClusterVectors({ mode: 'missing', threads: 20 });
+      console.log(
+        `[niche-tree] resume L2 cluster vectors backfilled: ` +
+        `total=${r.total} upserted=${r.upserted} skipped=${r.skipped} errors=${r.errors}`,
+      );
+    } catch (err) {
+      console.warn('[niche-tree] resume L2 cluster vector backfill failed (non-fatal):', (err as Error).message);
     }
 
     // Done — flip L1 row back to 'done'.
