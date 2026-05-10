@@ -786,6 +786,45 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntc_parent ON niche_tree_clusters(parent_cluster_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntc_level  ON niche_tree_clusters(level)`).catch(() => {});
 
+    // Stitching layer — stable identity for clusters across re-runs.
+    //
+    // Each row in niche_tree_clusters is one (run_id, cluster_index) pair, so
+    // the same logical niche has multiple rows over time. `stable_id` is the
+    // shared label that ties those rows together: it's minted once when a
+    // cluster is born and inherited by future runs whose member-set Jaccard
+    // overlap with the previous run is high enough.
+    //
+    //   stable_id          → identity that survives across runs
+    //   parent_stable_id   → for splits: which old stable_id this one came from
+    //
+    // niche_cluster_events logs every birth/death/split/merge/grew/shrank
+    // detected by the stitcher. Powers the lifecycle UI and the analytics
+    // endpoints under /api/niche-spy/cluster/control.
+    await client.query(`ALTER TABLE niche_tree_clusters ADD COLUMN IF NOT EXISTS stable_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_tree_clusters ADD COLUMN IF NOT EXISTS parent_stable_id TEXT`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntc_stable_id ON niche_tree_clusters(stable_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntc_parent_stable ON niche_tree_clusters(parent_stable_id)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_cluster_events (
+        id BIGSERIAL PRIMARY KEY,
+        run_id INTEGER NOT NULL REFERENCES niche_tree_runs(id) ON DELETE CASCADE,
+        stable_id TEXT NOT NULL,
+        parent_stable_id TEXT,
+        event TEXT NOT NULL,             -- born | grew | shrank | split | merged | died | same
+        level INTEGER NOT NULL,
+        size_before INTEGER,
+        size_after INTEGER,
+        jaccard REAL,                    -- match score against predecessor (NULL for born)
+        payload JSONB,
+        detected_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nce_run ON niche_cluster_events(run_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nce_stable ON niche_cluster_events(stable_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nce_event ON niche_cluster_events(event)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nce_detected ON niche_cluster_events(detected_at DESC)`).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_tree_assignments (
         id SERIAL PRIMARY KEY,

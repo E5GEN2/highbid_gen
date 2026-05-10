@@ -41,19 +41,33 @@ interface AgentStatus {
   etaSeconds: number | null;         // best-effort
   errorMessage: string | null;
   recentLogs: string[];
+  stitch: {
+    prevRunId: number | null;
+    same: number;
+    grew: number;
+    shrank: number;
+    split: number;
+    merged: number;
+    born: number;
+    died: number;
+    totalNewClusters: number;
+  } | null;
+  stitchError: string | null;
 }
 
-const STAGE_ORDER = ['starting', 'fetching', 'umap_cluster', 'hdbscan', 'labeling', 'writing', 'baking_l2', 'done'];
+const STAGE_ORDER = ['starting', 'fetching', 'umap_cluster', 'hdbscan', 'labeling', 'writing', 'stitching', 'baking_l2', 'done'];
 // Coarse stage weighting for an overall % bar. Empirical from the last
 // few runs: fetching+umap_cluster eat the lion's share, writing is now
-// fast post-bulk-insert, and baking_l2 is optional/skippable.
+// fast post-bulk-insert, stitching takes ~30s, and baking_l2 is
+// optional/skippable.
 const STAGE_FRACTION: Record<string, number> = {
   starting:     0,
   fetching:     0.05,
   umap_cluster: 0.55,
   hdbscan:      0.65,
   labeling:     0.70,
-  writing:      0.95,
+  writing:      0.92,
+  stitching:    0.95,
   baking_l2:    0.99,
   done:         1.00,
 };
@@ -71,6 +85,7 @@ async function buildStatus(): Promise<AgentStatus> {
       clustersWritten: 0, assignmentsWritten: 0, noiseWritten: 0,
       expectedAssignments: 0, percentComplete: 0, etaSeconds: null,
       errorMessage: null, recentLogs: [],
+      stitch: null, stitchError: null,
     };
   }
   const row = r.rows[0];
@@ -115,6 +130,20 @@ async function buildStatus(): Promise<AgentStatus> {
     }
   }
 
+  // Stitch summary (populated after the stitching stage runs)
+  const stitchProg = progress?.stitch;
+  const stitch = stitchProg ? {
+    prevRunId: stitchProg.prev_run_id,
+    same:   stitchProg.same,
+    grew:   stitchProg.grew,
+    shrank: stitchProg.shrank,
+    split:  stitchProg.split,
+    merged: stitchProg.merged,
+    born:   stitchProg.born,
+    died:   stitchProg.died,
+    totalNewClusters: stitchProg.total_new_clusters,
+  } : null;
+
   return {
     runId: row.id,
     status: row.status,
@@ -129,6 +158,8 @@ async function buildStatus(): Promise<AgentStatus> {
     etaSeconds,
     errorMessage: row.error_message ?? null,
     recentLogs: progress?.recentLogs ?? [],
+    stitch,
+    stitchError: progress?.stitch_error ?? null,
   };
 }
 

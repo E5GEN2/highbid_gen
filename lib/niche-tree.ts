@@ -247,6 +247,7 @@ export const TREE_STAGES = [
   'hdbscan',       // Python: HDBSCAN
   'labeling',      // Python: TF-IDF auto-labels
   'writing',       // Node: inserting clusters + assignments to DB
+  'stitching',     // Node: matching new clusters to previous run for stable_ids
   'baking_l2',     // Node: chained per-cluster subdivides for L2 children
   'done',
 ] as const;
@@ -276,6 +277,13 @@ export interface TreeProgress {
   numClusters?: number;       // populated as soon as HDBSCAN reports
   numNoise?: number;
   l2?: TreeBakeL2Progress;    // populated once stage transitions to 'baking_l2'
+  stitch?: {
+    prev_run_id: number | null;
+    same: number; grew: number; shrank: number; split: number; merged: number;
+    born: number; died: number;
+    total_new_clusters: number;
+  };
+  stitch_error?: string;
 }
 
 /** Persist a partial progress update without overwriting unrelated fields. */
@@ -756,6 +764,41 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     // and reported ok:false above. If we somehow reached here despite
     // a cancel, bail before starting L2 baking.
     if (cancelledL1Runs.has(runId)) return;
+
+    // ── Stitching phase ──────────────────────────────────────────
+    // Match the freshly-clustered L1 against the most recent prior L1
+    // run via member-set Jaccard overlap. Inherits stable_ids where
+    // overlap is high; mints fresh ones for born clusters; emits one
+    // niche_cluster_events row per resolution.
+    //
+    // Best-effort: if stitching throws, we still want the run marked
+    // 'done' and L2 baking to proceed — stable_ids can be reconciled
+    // post-hoc by re-running just the stitcher.
+    try {
+      const { stitchL1Run } = await import('./cluster-stitch');
+      await writeProgress(runId, {
+        stage: 'stitching',
+        stageStartedAt: new Date().toISOString(),
+      });
+      const stitch = await stitchL1Run(pool, runId);
+      console.log(
+        `[niche-tree] stitch run ${runId} vs prev=${stitch.prevRunId}: ` +
+        `same=${stitch.matched.same} grew=${stitch.matched.grew} shrank=${stitch.matched.shrank} ` +
+        `split=${stitch.matched.split} merged=${stitch.matched.merged} born=${stitch.born} died=${stitch.died}`,
+      );
+      await writeProgress(runId, {
+        stitch: {
+          prev_run_id: stitch.prevRunId,
+          ...stitch.matched,
+          born: stitch.born,
+          died: stitch.died,
+          total_new_clusters: stitch.totalNewClusters,
+        },
+      });
+    } catch (err) {
+      console.warn('[niche-tree] stitching failed (non-fatal):', (err as Error).message);
+      await writeProgress(runId, { stitch_error: (err as Error).message });
+    }
 
     // ── L2 baking phase ──────────────────────────────────────────
     // After L1 done, run a sub-cluster pass for each L1 cluster with
