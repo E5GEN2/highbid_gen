@@ -219,8 +219,16 @@ export async function stitchL1Run(
     }
   }
 
-  // Sort by sameScore descending — strongest matches resolved first.
-  matches.sort((a, b) => b.sameScore - a.sameScore);
+  // Sort by intersection size DESC, sameScore DESC as tiebreaker.
+  //
+  // Intersection size is the right "primary successor" signal: the new
+  // cluster that absorbed the most absolute members from the old is the
+  // natural semantic continuation. Sorting purely by sameScore (Jaccard
+  // / recall_old / recall_new) lets a tiny fragment cluster — say 100
+  // videos all from the old — steal inheritance from the real 2300-
+  // video successor whose recall_new only marginally lower (0.91 vs
+  // 0.91, but 91 inter vs 2104 inter).
+  matches.sort((a, b) => b.inter - a.inter || b.sameScore - a.sameScore);
 
   // Resolution state
   const oldClaimed = new Map<number, number>();     // oldId → newId (which new took this old's stable_id)
@@ -594,7 +602,7 @@ export async function stitchL2ForL1(
       }
     }
   }
-  matches.sort((a, b) => b.sameScore - a.sameScore);
+  matches.sort((a, b) => b.inter - a.inter || b.sameScore - a.sameScore);
 
   const oldClaimed = new Map<number, number>();
   const newAssigned = new Map<number, string>();
