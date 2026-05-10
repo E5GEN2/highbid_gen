@@ -52,6 +52,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       level: c.level,
       parentClusterId: c.parentClusterId,
       autoLabel: c.autoLabel,
+      aiLabel: c.aiLabel,
       label: c.label,
       videoCount: c.videoCount,
       avgScore: c.avgScore,

@@ -958,6 +958,28 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       console.warn('[niche-tree] cluster vector backfill failed (non-fatal):', (err as Error).message);
     }
 
+    // ── AI cluster labels (Gemini Flash) ─────────────────────────
+    // The TF-IDF auto_label is English-biased and produces nonsense
+    // for non-English niches. We run a Gemini Flash pass per cluster
+    // to populate ai_label in the dominant language. Scope = this run
+    // so we don't re-label every cluster ever made; mode='missing'
+    // keeps it idempotent (a re-trigger only labels what's still null).
+    // 10-15 min walltime for ~5K clusters at 10 threads. Non-fatal.
+    try {
+      const { backfillClusterAiLabels } = await import('./cluster-labels');
+      const r = await backfillClusterAiLabels({
+        mode: 'missing',
+        scope: { runId },
+        threads: 10,
+      });
+      console.log(
+        `[niche-tree] ai labels backfilled: ` +
+        `total=${r.total} upserted=${r.upserted} skipped=${r.skipped} errors=${r.errors}`,
+      );
+    } catch (err) {
+      console.warn('[niche-tree] ai label backfill failed (non-fatal):', (err as Error).message);
+    }
+
     // ── Mark L1 run done ────────────────────────────────────────
     // status='running' guard so that if the loop broke out due to
     // cancellation, the cancelled state stays intact.
@@ -1184,6 +1206,22 @@ export async function resumeL2Baking(l1RunId: number): Promise<void> {
       );
     } catch (err) {
       console.warn('[niche-tree] resume L2 cluster vector backfill failed (non-fatal):', (err as Error).message);
+    }
+
+    // AI labels (Gemini Flash) — same pass as the main bake path.
+    try {
+      const { backfillClusterAiLabels } = await import('./cluster-labels');
+      const r = await backfillClusterAiLabels({
+        mode: 'missing',
+        scope: { runId: l1RunId },
+        threads: 10,
+      });
+      console.log(
+        `[niche-tree] resume L2 ai labels backfilled: ` +
+        `total=${r.total} upserted=${r.upserted} skipped=${r.skipped} errors=${r.errors}`,
+      );
+    } catch (err) {
+      console.warn('[niche-tree] resume L2 ai label backfill failed (non-fatal):', (err as Error).message);
     }
 
     // Done — flip L1 row back to 'done'.

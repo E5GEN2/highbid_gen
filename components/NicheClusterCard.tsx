@@ -32,6 +32,10 @@ export interface ClusterCardData {
   id: number;
   level: number;
   autoLabel: string | null;
+  /** AI-generated label (Gemini Flash from top titles), preferred over
+   *  the TF-IDF auto_label which is English-biased and produces
+   *  nonsense for non-English niches. */
+  aiLabel?: string | null;
   label: string | null;
   videoCount: number;
   /** Distinct channels contributing videos to the cluster — replaces
@@ -81,7 +85,9 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
     router.push(href);
   };
 
-  const label = c.label || c.autoLabel || `Cluster #${c.id}`;
+  // Preference: human-set label (rare) > AI label (Gemini, language-aware)
+  // > TF-IDF auto_label (English-biased, often garbage for non-English).
+  const label = c.label || c.aiLabel || c.autoLabel || `Cluster #${c.id}`;
   const score = c.avgScore != null ? Math.round(c.avgScore) : null;
   const scoreColor =
     score == null ? 'text-[#666]' :

@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
   const clRes = await pool.query(
     `SELECT
        c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
-       c.auto_label, c.label, c.video_count, c.avg_score,
+       c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
        c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
        v.title         AS rep_title,
        v.thumbnail     AS rep_thumbnail,
@@ -175,6 +175,7 @@ export async function POST(req: NextRequest) {
       level: row.level,
       parentClusterId: row.parent_cluster_id,
       autoLabel: row.auto_label,
+      aiLabel: row.ai_label,
       label: row.label,
       videoCount: row.video_count,
       avgScore: row.avg_score != null ? Number(row.avg_score) : null,

@@ -70,6 +70,7 @@ export async function GET() {
       level: c.level,
       parentClusterId: c.parentClusterId,
       autoLabel: c.autoLabel,
+      aiLabel: c.aiLabel,
       label: c.label,
       videoCount: c.videoCount,
       avgScore: c.avgScore,
