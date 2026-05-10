@@ -9,16 +9,21 @@ export const maxDuration = 300;
 
 /**
  * POST /api/admin/niche-tree/agent/stitch
- * Body: { runId?: number, dryRun?: boolean }
+ * Body: { runId?: number, force?: boolean }
  *
  * Manually re-runs the stitcher for an L1 global run. Useful for:
- *   - Sanity tests: "stitch run 53 against itself" should produce all-same.
- *     (Pass {runId: 53, dryRun: true} — though dry-run isn't fully wired
- *     yet; with stable_ids already populated on 53, the stitcher will
- *     mostly no-op anyway.)
+ *   - Re-stitching after the matching algorithm has been improved
+ *     (pass force=true to clear existing events + stable_ids on the run
+ *     first, otherwise duplicate events accumulate).
  *   - Re-stitching after a failed run, or after a code-side bug fix.
  *   - Backfilling stable_ids onto an existing run that pre-dates the
  *     stitcher.
+ *
+ * force=true performs:
+ *   1. DELETE FROM niche_cluster_events WHERE run_id = $1 AND level = 1
+ *   2. UPDATE niche_tree_clusters SET stable_id=NULL, parent_stable_id=NULL
+ *      WHERE run_id = $1 AND level = 1
+ *   3. stitchL1Run(pool, runId)
  *
  * Returns the full StitchResult object (counts of same/grew/.../born/died).
  */
@@ -28,6 +33,7 @@ export async function POST(req: NextRequest) {
   const pool = await getPool();
   const body = await req.json().catch(() => ({}));
   let runId: number = body.runId;
+  const force: boolean = !!body.force;
   if (!runId) {
     const r = await pool.query<{ id: number }>(
       `SELECT id FROM niche_tree_runs WHERE kind='global' AND level=1 ORDER BY started_at DESC LIMIT 1`,
@@ -37,8 +43,21 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    let cleared: { events: number; clusters: number } | null = null;
+    if (force) {
+      const evDel = await pool.query(
+        `DELETE FROM niche_cluster_events WHERE run_id = $1 AND level = 1`,
+        [runId],
+      );
+      const clrUpd = await pool.query(
+        `UPDATE niche_tree_clusters SET stable_id = NULL, parent_stable_id = NULL
+          WHERE run_id = $1 AND level = 1`,
+        [runId],
+      );
+      cleared = { events: evDel.rowCount || 0, clusters: clrUpd.rowCount || 0 };
+    }
     const result = await stitchL1Run(pool, runId);
-    return NextResponse.json({ ok: true, runId, ...result });
+    return NextResponse.json({ ok: true, runId, force, cleared, ...result });
   } catch (err) {
     return NextResponse.json(
       { ok: false, error: (err as Error).message?.slice(0, 500) || 'unknown' },

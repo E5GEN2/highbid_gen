@@ -896,6 +896,31 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
              WHERE id=$1 AND status='running'`,
           [subRunId],
         );
+
+        // L2 stitching — match new L2 children of this L1 against the
+        // L2s under whichever prior L1 had the same stable_id. Best-
+        // effort: errors are non-fatal so a stitching bug doesn't kill
+        // the whole bake.
+        try {
+          const parentSidRes = await pool.query<{ stable_id: string | null }>(
+            `SELECT stable_id FROM niche_tree_clusters WHERE id = $1`,
+            [parent.id],
+          );
+          const parentSid = parentSidRes.rows[0]?.stable_id;
+          if (parentSid) {
+            const { stitchL2ForL1 } = await import('./cluster-stitch');
+            const r = await stitchL2ForL1(pool, runId, parent.id, parentSid);
+            console.log(
+              `[niche-tree] L2 stitch parent=${parent.id} (${parentSid}): ` +
+              `same=${r.matched.same} grew=${r.matched.grew} shrank=${r.matched.shrank} ` +
+              `split=${r.matched.split} merged=${r.matched.merged} born=${r.born} died=${r.died}`,
+            );
+          } else {
+            console.warn(`[niche-tree] L2 stitch skipped: parent ${parent.id} has no stable_id`);
+          }
+        } catch (err) {
+          console.warn('[niche-tree] L2 stitching failed (non-fatal):', (err as Error).message);
+        }
       } else {
         l2State.failed++;
         // status='running' guard: if cancelGlobalRun already flipped
@@ -1097,6 +1122,27 @@ export async function resumeL2Baking(l1RunId: number): Promise<void> {
              WHERE id=$1 AND status='running'`,
           [subRunId],
         );
+
+        // L2 stitching — same logic as the main bake path. Errors
+        // non-fatal.
+        try {
+          const parentSidRes = await pool.query<{ stable_id: string | null }>(
+            `SELECT stable_id FROM niche_tree_clusters WHERE id = $1`,
+            [parent.id],
+          );
+          const parentSid = parentSidRes.rows[0]?.stable_id;
+          if (parentSid) {
+            const { stitchL2ForL1 } = await import('./cluster-stitch');
+            const r = await stitchL2ForL1(pool, l1RunId, parent.id, parentSid);
+            console.log(
+              `[niche-tree] resume L2 stitch parent=${parent.id} (${parentSid}): ` +
+              `same=${r.matched.same} grew=${r.matched.grew} shrank=${r.matched.shrank} ` +
+              `split=${r.matched.split} merged=${r.matched.merged} born=${r.born} died=${r.died}`,
+            );
+          }
+        } catch (err) {
+          console.warn('[niche-tree] resume L2 stitching failed (non-fatal):', (err as Error).message);
+        }
       } else {
         l2State.failed++;
         await pool.query(

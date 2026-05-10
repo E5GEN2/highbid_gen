@@ -39,9 +39,12 @@ export async function GET(req: NextRequest) {
   }
   if (!runId) return NextResponse.json({ error: 'No global L1 run found' }, { status: 404 });
 
-  // Fetch events for this run, joined to the cluster (when one exists)
-  // for label / video_count enrichment. Note: 'died' events have no
-  // current row, so the join is LEFT and label may be null.
+  // Fetch events for this run, joined to the cluster row that owns the
+  // stable_id. For BORN/SAME/GREW/SHRANK/SPLIT/MERGED, the cluster lives
+  // in the current run. For DIED, the cluster lives in some PRIOR run
+  // (the predecessor whose identity vanished). DISTINCT ON (stable_id,
+  // most-recent run) picks the right row regardless of event type so the
+  // labels are always populated.
   const eventsRes = await pool.query<{
     event: string;
     stable_id: string;
@@ -55,12 +58,17 @@ export async function GET(req: NextRequest) {
     video_count: number | null;
     cluster_id: number | null;
   }>(
-    `SELECT e.event, e.stable_id, e.parent_stable_id, e.size_before, e.size_after,
+    `WITH latest_cluster_per_stable AS (
+       SELECT DISTINCT ON (stable_id) stable_id, id, label, auto_label, video_count
+         FROM niche_tree_clusters
+        WHERE stable_id IS NOT NULL
+        ORDER BY stable_id, run_id DESC
+     )
+     SELECT e.event, e.stable_id, e.parent_stable_id, e.size_before, e.size_after,
             e.jaccard, e.payload,
             c.label, c.auto_label, c.video_count, c.id AS cluster_id
        FROM niche_cluster_events e
-       LEFT JOIN niche_tree_clusters c
-              ON c.stable_id = e.stable_id AND c.run_id = e.run_id
+       LEFT JOIN latest_cluster_per_stable c ON c.stable_id = e.stable_id
       WHERE e.run_id = $1
       ORDER BY
         CASE e.event

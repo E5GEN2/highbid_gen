@@ -62,12 +62,17 @@ export async function GET(req: NextRequest) {
     label: string | null;
     auto_label: string | null;
   }>(
-    `SELECT e.id, e.run_id, e.stable_id, e.parent_stable_id, e.event, e.level,
+    `WITH latest_cluster_per_stable AS (
+       SELECT DISTINCT ON (stable_id) stable_id, id, label, auto_label
+         FROM niche_tree_clusters
+        WHERE stable_id IS NOT NULL
+        ORDER BY stable_id, run_id DESC
+     )
+     SELECT e.id, e.run_id, e.stable_id, e.parent_stable_id, e.event, e.level,
             e.size_before, e.size_after, e.jaccard, e.payload, e.detected_at,
             c.label, c.auto_label
        FROM niche_cluster_events e
-       LEFT JOIN niche_tree_clusters c
-              ON c.stable_id = e.stable_id AND c.run_id = e.run_id
+       LEFT JOIN latest_cluster_per_stable c ON c.stable_id = e.stable_id
        ${where}
        ORDER BY e.detected_at DESC
        LIMIT $${i}`,
