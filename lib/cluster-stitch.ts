@@ -219,16 +219,14 @@ export async function stitchL1Run(
     }
   }
 
-  // Sort by intersection size DESC, sameScore DESC as tiebreaker.
-  //
-  // Intersection size is the right "primary successor" signal: the new
-  // cluster that absorbed the most absolute members from the old is the
-  // natural semantic continuation. Sorting purely by sameScore (Jaccard
-  // / recall_old / recall_new) lets a tiny fragment cluster — say 100
-  // videos all from the old — steal inheritance from the real 2300-
-  // video successor whose recall_new only marginally lower (0.91 vs
-  // 0.91, but 91 inter vs 2104 inter).
-  matches.sort((a, b) => b.inter - a.inter || b.sameScore - a.sameScore);
+  // Sort by sameScore DESC. The tiered same-detection (jaccard /
+  // recall_old / recall_new) is the right primary signal — but on its
+  // own it lets a tiny fragment (recall_new=0.91 because it's 100
+  // videos all from old) narrowly outscore the real 2300-video
+  // successor (recall_new=0.907). The minimum-overlap floors below in
+  // the SAME pass fix that without making bigger clusters dominate the
+  // matching.
+  matches.sort((a, b) => b.sameScore - a.sameScore);
 
   // Resolution state
   const oldClaimed = new Map<number, number>();     // oldId → newId (which new took this old's stable_id)
@@ -243,11 +241,20 @@ export async function stitchL1Run(
     payload: Record<string, unknown>;
   }> = [];
 
-  // First pass: SAME — any of jaccard / recall_old / recall_new ≥ 0.5.
-  // The tiered metric is critical when the new partition has a very
-  // different noise rate from the old one (e.g. 25% → 44%); pure
-  // Jaccard misses real continuations because the union balloons with
-  // newly-noisy members. Greedy resolution: the strongest match wins.
+  // First pass: SAME — any of jaccard / recall_old / recall_new ≥ 0.5,
+  // BUT both directions must contribute non-trivial overlap (≥ 0.1).
+  //
+  // The minimum-overlap floors prevent the "tiny fragment with 91%
+  // recall_new" pathology: a 100-video new cluster whose members are
+  // 91 of an old 11K-cluster's members has recall_new=0.91 but
+  // recall_old=0.008. Without the floor, it greedily steals inheritance
+  // from the actual successor (a 2300-video cluster with recall_new=
+  // 0.907 but recall_old=0.186 — both directions reasonable).
+  //
+  // Floor applies symmetrically: a match needs to either be strong on
+  // both sides (≥ 0.1) or have a high jaccard (which is symmetric by
+  // definition).
+  const MIN_BOTH_SIDES = 0.10;
   for (const m of matches) {
     if (m.sameScore < SAME_THRESHOLD) break;
     if (oldClaimed.has(m.oldId)) continue;     // this old already inherited by another
@@ -255,6 +262,10 @@ export async function stitchL1Run(
     const oldC = oldClusters.get(m.oldId)!;
     const newC = newClusters.get(m.newId)!;
     if (!oldC.stable_id) continue;             // can't inherit a null
+    // Sanity floor: both sides must contribute, OR the match must be
+    // jaccard-strong (which inherently constrains both sides).
+    const bothSides = m.recallOld >= MIN_BOTH_SIDES && m.recallNew >= MIN_BOTH_SIDES;
+    if (!bothSides && m.jaccard < SAME_THRESHOLD) continue;
     oldClaimed.set(m.oldId, m.newId);
     newAssigned.set(m.newId, oldC.stable_id);
     const sizeDelta = newC.video_ids.size - oldC.video_ids.size;
@@ -602,7 +613,7 @@ export async function stitchL2ForL1(
       }
     }
   }
-  matches.sort((a, b) => b.inter - a.inter || b.sameScore - a.sameScore);
+  matches.sort((a, b) => b.sameScore - a.sameScore);
 
   const oldClaimed = new Map<number, number>();
   const newAssigned = new Map<number, string>();
@@ -616,7 +627,9 @@ export async function stitchL2ForL1(
     payload: Record<string, unknown>;
   }> = [];
 
-  // SAME pass
+  // SAME pass — with the same minimum-overlap floor as L1 stitching
+  // to prevent fragment-based theft of inheritance.
+  const MIN_BOTH_SIDES_L2 = 0.10;
   for (const m of matches) {
     if (m.sameScore < SAME_THRESHOLD) break;
     if (oldClaimed.has(m.oldId)) continue;
@@ -624,6 +637,8 @@ export async function stitchL2ForL1(
     const oldC = oldL2.get(m.oldId)!;
     const newC = newL2.get(m.newId)!;
     if (!oldC.stable_id) continue;
+    const bothSides = m.recallOld >= MIN_BOTH_SIDES_L2 && m.recallNew >= MIN_BOTH_SIDES_L2;
+    if (!bothSides && m.jaccard < SAME_THRESHOLD) continue;
     oldClaimed.set(m.oldId, m.newId);
     newAssigned.set(m.newId, oldC.stable_id);
     const sizeDelta = newC.video_ids.size - oldC.video_ids.size;
