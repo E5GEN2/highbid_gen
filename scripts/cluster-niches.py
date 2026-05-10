@@ -256,35 +256,24 @@ def main():
         min_samples = max(5, min(min_cluster_size, 15))
     sys.stderr.write(f"[cluster] min_cluster_size={min_cluster_size}, min_samples={min_samples}\n")
 
-    # --- PCA pre-reduction for large/high-dim datasets ---
-    # UMAP on raw 3072D × 400K+ vectors OOMs the Railway container
-    # (peak ~15-20 GB during graph construction). PCA pre-reduce to
-    # ~256D first: trades a tiny variance loss (typically >95% retained
-    # on dense embedding spaces like Gemini's) for a 12× memory drop.
-    #
-    # Only triggers when N*D exceeds ~200M cells — small/dev runs use the
-    # original direct-UMAP path so behaviour is unchanged below the
-    # threshold. Threshold is empirical: 114K × 3072 (~350M cells) ran
-    # fine on the existing container; 393K × 3072 (~1.2B cells) OOM'd.
-    PCA_TRIGGER_CELLS = 200_000_000
-    PCA_DIMS = 256
-    cells = n * dim
-    if cells > PCA_TRIGGER_CELLS:
-        from sklearn.decomposition import PCA
-        pca_dims = min(PCA_DIMS, n - 1, dim)
-        sys.stderr.write(f"[cluster] dataset {n}*{dim}={cells} cells > {PCA_TRIGGER_CELLS} threshold; PCA {dim}D -> {pca_dims}D\n")
-        pca = PCA(n_components=pca_dims, svd_solver='randomized', random_state=42)
-        X = pca.fit_transform(X).astype(np.float32)
-        evr = float(pca.explained_variance_ratio_.sum())
-        sys.stderr.write(f"[cluster] PCA done; retained variance = {evr:.4f} ({pca_dims}D)\n")
-        del pca
-        # Update dim so downstream logging is accurate
-        dim = X.shape[1]
-
     # --- UMAP to umap_dims for clustering ---
-    # Operates on either the raw embedding (small datasets) or the
-    # PCA-reduced one (large datasets). low_memory=True still halves
-    # peak RAM on the UMAP graph construction itself.
+    # Operates directly on the raw embedding (no PCA pre-reduction).
+    # The original concern about PCA — discarding subtle low-amplitude
+    # directions that distinguish near-cluster sub-niches — is real and
+    # measured (256D PCA only retained 73% variance on combined_v2,
+    # noticeably degrading the partition vs the May 7 run on full 3072D).
+    #
+    # The previous OOM was caused by the Python list-of-lists build
+    # path (~33 GB peak), not UMAP itself. With streaming row fetch +
+    # pre-allocated numpy matrix, peak RAM during build is ~5 GB and
+    # UMAP graph construction adds another ~10-15 GB on 393K × 3072D
+    # with low_memory=True and n_neighbors=5. Comfortably fits the
+    # 32 GB container.
+    #
+    # If UMAP itself ever OOMs in the future, the right fixes are
+    # (a) bump the container's cgroup memory.max, or (b) swap UMAP's
+    # NNDescent for FAISS HNSW (more memory-efficient but lossy on
+    # edge clusters). PCA pre-reduction stays off the table.
     from umap import UMAP
     n_neighbors = config.get('n_neighbors', 5)
     reducer_cluster = UMAP(
