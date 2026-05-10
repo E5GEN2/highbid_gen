@@ -37,6 +37,10 @@ def parse_embedding(raw):
 def fetch_single_source(cur, table, keyword, video_ids):
     """Pull (video_id, title, embedding) rows from one table.
 
+    Used for the deprecated 'combined' source path (small datasets only,
+    where holding all rows in memory is fine). The much-larger global
+    'combined_v2' path uses stream_single_source_into_matrix() below.
+
     Filter logic: if `video_ids` is provided, that's the precise filter
     we use — drop the keyword filter entirely, because the same video
     can live under multiple keywords (the same URL discovered via
@@ -71,6 +75,91 @@ def fetch_single_source(cur, table, keyword, video_ids):
     return cur.fetchall()
 
 
+def stream_single_source_into_matrix(conn, table, keyword, video_ids):
+    """Stream (video_id, title, embedding) rows directly into a
+    pre-allocated numpy matrix to avoid holding both the raw row list
+    AND the parsed X simultaneously.
+
+    For the global combined_v2 run (393K × 3072D), the naive fetchall +
+    list-comprehension build path peaks at ~35 GB and OOMs the
+    container. Streaming via a server-side named cursor keeps peak RAM
+    ≈ size_of(X) + tiny per-batch overhead.
+
+    Returns (video_ids, titles, X).
+    """
+    # Step 1: fast COUNT to size the matrix.
+    count_cur = conn.cursor()
+    if video_ids:
+        placeholders = ','.join(['%s'] * len(video_ids))
+        count_cur.execute(
+            f"SELECT COUNT(DISTINCT video_id) FROM {table} WHERE video_id IN ({placeholders})",
+            list(video_ids)
+        )
+    elif keyword == '__global__':
+        count_cur.execute(f"SELECT COUNT(DISTINCT video_id) FROM {table}")
+    else:
+        count_cur.execute(f"SELECT COUNT(*) FROM {table} WHERE keyword = %s", (keyword,))
+    total = count_cur.fetchone()[0]
+    count_cur.close()
+
+    sys.stderr.write(f"[cluster] {table}: total rows to stream = {total}\n")
+
+    if total == 0:
+        return [], [], np.empty((0, 0), dtype=np.float32)
+
+    # Step 2: server-side named cursor for true streaming. Without name=,
+    # psycopg2 uses a client-side cursor that buffers the entire result
+    # set up front — defeating the purpose.
+    stream_cur = conn.cursor(name='cluster_stream')
+    stream_cur.itersize = 1000   # rows per network round-trip
+    if video_ids:
+        placeholders = ','.join(['%s'] * len(video_ids))
+        stream_cur.execute(
+            f"SELECT DISTINCT ON (video_id) video_id, title, embedding FROM {table} "
+            f"WHERE video_id IN ({placeholders})",
+            list(video_ids)
+        )
+    elif keyword == '__global__':
+        stream_cur.execute(
+            f"SELECT DISTINCT ON (video_id) video_id, title, embedding FROM {table}"
+        )
+    else:
+        stream_cur.execute(
+            f"SELECT video_id, title, embedding FROM {table} WHERE keyword = %s",
+            (keyword,)
+        )
+
+    video_ids_out = []
+    titles_out = []
+    X = None   # allocated lazily once we see the first row's dimension
+    idx = 0
+    BATCH = 1000
+
+    while True:
+        chunk = stream_cur.fetchmany(BATCH)
+        if not chunk:
+            break
+        for vid, title, raw in chunk:
+            if isinstance(raw, str):
+                vec = np.fromstring(raw.strip('[]'), sep=',', dtype=np.float32)
+            else:
+                vec = np.array(list(raw), dtype=np.float32)
+            if X is None:
+                X = np.empty((total, vec.shape[0]), dtype=np.float32)
+            video_ids_out.append(vid)
+            titles_out.append(title or '')
+            X[idx] = vec
+            idx += 1
+
+    stream_cur.close()
+
+    # Trim if DB returned fewer rows than the count claimed (race on
+    # concurrent inserts) or if we're returning early.
+    if X is None:
+        return [], [], np.empty((0, 0), dtype=np.float32)
+    return video_ids_out, titles_out, X[:idx]
+
+
 def l2_normalize(v):
     n = np.linalg.norm(v)
     return v / n if n > 0 else v
@@ -97,50 +186,64 @@ def main():
         return
 
     conn = psycopg2.connect(db_url)
-    cur = conn.cursor()
 
     # --- Fetch embeddings based on source ---
+    #
+    # Non-combined sources stream directly into a pre-allocated numpy
+    # matrix via stream_single_source_into_matrix. This avoids the
+    # ~35 GB peak that the old "fetchall + list-comprehension build X"
+    # path hit on 393K × 3072D and OOM-killed the container.
+    #
+    # The deprecated 'combined' source still uses the in-memory path —
+    # only ever called for small per-keyword runs where it's harmless.
     if source == 'combined':
-        # Pull from both v2 tables, inner-join on video_id
+        cur = conn.cursor()
         title_rows = fetch_single_source(cur, TABLE_BY_SOURCE['title_v2'], keyword, video_ids)
         thumb_rows = fetch_single_source(cur, TABLE_BY_SOURCE['thumbnail_v2'], keyword, video_ids)
+        cur.close()
         title_map = {r[0]: (r[1], r[2]) for r in title_rows}
         thumb_map = {r[0]: r[2] for r in thumb_rows}
         common_ids = sorted(set(title_map.keys()) & set(thumb_map.keys()))
         sys.stderr.write(f"[cluster] combined: title={len(title_rows)} thumb={len(thumb_rows)} intersection={len(common_ids)}\n")
-        rows = []
-        for vid in common_ids:
-            title, title_emb = title_map[vid]
-            thumb_emb = thumb_map[vid]
-            rows.append((vid, title, (title_emb, thumb_emb)))
+        n_rows = len(common_ids)
+        if n_rows < 10:
+            conn.close()
+            print(json.dumps({
+                'error': f"Only {n_rows} embedded videos for '{keyword}' in combined. Need at least 10.",
+                'num_clusters': 0, 'num_noise': 0, 'total_videos': n_rows,
+                'clusters': [], 'assignments': []
+            }))
+            return
+        video_ids_final = list(common_ids)
+        titles = [title_map[vid][0] or '' for vid in common_ids]
+        # Probe dim on first row, build in place
+        t0_raw = title_map[common_ids[0]][1]
+        th0_raw = thumb_map[common_ids[0]]
+        t0 = np.fromstring(t0_raw.strip('[]'), sep=',', dtype=np.float32) if isinstance(t0_raw, str) else np.array(list(t0_raw), dtype=np.float32)
+        th0 = np.fromstring(th0_raw.strip('[]'), sep=',', dtype=np.float32) if isinstance(th0_raw, str) else np.array(list(th0_raw), dtype=np.float32)
+        X = np.empty((n_rows, t0.shape[0] + th0.shape[0]), dtype=np.float32)
+        for i, vid in enumerate(common_ids):
+            t_raw = title_map[vid][1]
+            th_raw = thumb_map[vid]
+            t_arr = np.fromstring(t_raw.strip('[]'), sep=',', dtype=np.float32) if isinstance(t_raw, str) else np.array(list(t_raw), dtype=np.float32)
+            th_arr = np.fromstring(th_raw.strip('[]'), sep=',', dtype=np.float32) if isinstance(th_raw, str) else np.array(list(th_raw), dtype=np.float32)
+            X[i, :t0.shape[0]] = l2_normalize(t_arr)
+            X[i, t0.shape[0]:] = l2_normalize(th_arr)
+        del title_rows, thumb_rows, title_map, thumb_map, common_ids
     else:
         table = TABLE_BY_SOURCE[source]
-        raw_rows = fetch_single_source(cur, table, keyword, video_ids)
-        sys.stderr.write(f"[cluster] {source}: fetched {len(raw_rows)} rows from {table}\n")
-        rows = raw_rows
+        video_ids_final, titles, X = stream_single_source_into_matrix(conn, table, keyword, video_ids)
+        n_rows = len(video_ids_final)
+        sys.stderr.write(f"[cluster] {source}: streamed {n_rows} rows from {table}\n")
+        if n_rows < 10:
+            conn.close()
+            print(json.dumps({
+                'error': f"Only {n_rows} embedded videos for '{keyword}' in {source}. Need at least 10.",
+                'num_clusters': 0, 'num_noise': 0, 'total_videos': n_rows,
+                'clusters': [], 'assignments': []
+            }))
+            return
     conn.close()
-
-    if len(rows) < 10:
-        print(json.dumps({
-            'error': f"Only {len(rows)} embedded videos for '{keyword}' in {source}. Need at least 10.",
-            'num_clusters': 0, 'num_noise': 0, 'total_videos': len(rows),
-            'clusters': [], 'assignments': []
-        }))
-        return
-
-    # Build the feature matrix
-    video_ids_final = [r[0] for r in rows]
-    titles = [r[1] or '' for r in rows]
-    if source == 'combined':
-        # Concat L2-normalised title + thumb halves — each half contributes equally
-        feats = []
-        for _, _, (t_raw, th_raw) in rows:
-            t = l2_normalize(np.array(parse_embedding(t_raw), dtype=np.float32))
-            th = l2_normalize(np.array(parse_embedding(th_raw), dtype=np.float32))
-            feats.append(np.concatenate([t, th]))
-        X = np.stack(feats)
-    else:
-        X = np.array([parse_embedding(r[2]) for r in rows], dtype=np.float32)
 
     n = X.shape[0]
     dim = X.shape[1]
@@ -153,13 +256,35 @@ def main():
         min_samples = max(5, min(min_cluster_size, 15))
     sys.stderr.write(f"[cluster] min_cluster_size={min_cluster_size}, min_samples={min_samples}\n")
 
+    # --- PCA pre-reduction for large/high-dim datasets ---
+    # UMAP on raw 3072D × 400K+ vectors OOMs the Railway container
+    # (peak ~15-20 GB during graph construction). PCA pre-reduce to
+    # ~256D first: trades a tiny variance loss (typically >95% retained
+    # on dense embedding spaces like Gemini's) for a 12× memory drop.
+    #
+    # Only triggers when N*D exceeds ~200M cells — small/dev runs use the
+    # original direct-UMAP path so behaviour is unchanged below the
+    # threshold. Threshold is empirical: 114K × 3072 (~350M cells) ran
+    # fine on the existing container; 393K × 3072 (~1.2B cells) OOM'd.
+    PCA_TRIGGER_CELLS = 200_000_000
+    PCA_DIMS = 256
+    cells = n * dim
+    if cells > PCA_TRIGGER_CELLS:
+        from sklearn.decomposition import PCA
+        pca_dims = min(PCA_DIMS, n - 1, dim)
+        sys.stderr.write(f"[cluster] dataset {n}*{dim}={cells} cells > {PCA_TRIGGER_CELLS} threshold; PCA {dim}D -> {pca_dims}D\n")
+        pca = PCA(n_components=pca_dims, svd_solver='randomized', random_state=42)
+        X = pca.fit_transform(X).astype(np.float32)
+        evr = float(pca.explained_variance_ratio_.sum())
+        sys.stderr.write(f"[cluster] PCA done; retained variance = {evr:.4f} ({pca_dims}D)\n")
+        del pca
+        # Update dim so downstream logging is accurate
+        dim = X.shape[1]
+
     # --- UMAP to umap_dims for clustering ---
-    # No PCA pre-reduction — operate directly on the full embedding so we
-    # don't risk discarding subtle low-amplitude directions that distinguish
-    # near-cluster sub-niches. Cost: significantly more wall time on
-    # high-dim sources (combined = 6144D → expect 10–30 min on 70K+ rows).
-    # We compensate with low_memory=True and (for global tree runs) by
-    # opting out of the secondary 2D-scatter UMAP pass below.
+    # Operates on either the raw embedding (small datasets) or the
+    # PCA-reduced one (large datasets). low_memory=True still halves
+    # peak RAM on the UMAP graph construction itself.
     from umap import UMAP
     n_neighbors = config.get('n_neighbors', 5)
     reducer_cluster = UMAP(
