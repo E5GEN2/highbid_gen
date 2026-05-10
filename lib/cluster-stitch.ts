@@ -387,28 +387,52 @@ export async function stitchL1Run(
     died++;
   }
 
-  // Persist: stable_ids onto current clusters, then events log
-  for (const [newId, stable_id] of newAssigned) {
-    const newC = newClusters.get(newId)!;
-    const ev = eventsToWrite.find(e => e.stable_id === stable_id);
-    const parent_stable_id = ev?.parent_stable_id ?? null;
+  // Persist: stable_ids in a single round-trip via UPDATE FROM VALUES.
+  // Per-row UPDATE on 800+ clusters was eating 5 minutes of network
+  // round trips; batched it's <1s.
+  if (newAssigned.size > 0) {
+    const updateRows: string[] = [];
+    const updateArgs: (string | number | null)[] = [];
+    let p = 1;
+    for (const [newId, stable_id] of newAssigned) {
+      const newC = newClusters.get(newId)!;
+      const ev = eventsToWrite.find(e => e.stable_id === stable_id);
+      const parent_stable_id = ev?.parent_stable_id ?? null;
+      updateRows.push(`($${p++}::int, $${p++}::text, $${p++}::text)`);
+      updateArgs.push(newC.cluster_id, stable_id, parent_stable_id);
+    }
     await pool.query(
-      `UPDATE niche_tree_clusters SET stable_id = $1, parent_stable_id = $2 WHERE id = $3`,
-      [stable_id, parent_stable_id, newC.cluster_id],
+      `UPDATE niche_tree_clusters c
+          SET stable_id = v.stable_id,
+              parent_stable_id = v.parent_stable_id
+         FROM (VALUES ${updateRows.join(', ')}) AS v(id, stable_id, parent_stable_id)
+        WHERE c.id = v.id`,
+      updateArgs,
     );
   }
 
-  // Bulk-insert events
-  for (const ev of eventsToWrite) {
-    await pool.query(
-      `INSERT INTO niche_cluster_events
-         (run_id, stable_id, parent_stable_id, event, level, size_before, size_after, jaccard, payload)
-       VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)`,
-      [
-        currentRunId, ev.stable_id, ev.parent_stable_id, ev.event,
-        ev.size_before, ev.size_after, ev.jaccard, ev.payload,
-      ],
-    );
+  // Bulk-insert events — same chunked-multi-row approach.
+  if (eventsToWrite.length > 0) {
+    const CHUNK = 500;
+    for (let off = 0; off < eventsToWrite.length; off += CHUNK) {
+      const chunk = eventsToWrite.slice(off, off + CHUNK);
+      const rows: string[] = [];
+      const args: (number | string | null | object)[] = [];
+      let p = 1;
+      for (const ev of chunk) {
+        rows.push(`($${p++}, $${p++}, $${p++}, $${p++}, 1, $${p++}, $${p++}, $${p++}, $${p++})`);
+        args.push(
+          currentRunId, ev.stable_id, ev.parent_stable_id, ev.event,
+          ev.size_before, ev.size_after, ev.jaccard, ev.payload,
+        );
+      }
+      await pool.query(
+        `INSERT INTO niche_cluster_events
+           (run_id, stable_id, parent_stable_id, event, level, size_before, size_after, jaccard, payload)
+         VALUES ${rows.join(', ')}`,
+        args,
+      );
+    }
   }
 
   // Tally
@@ -701,23 +725,41 @@ export async function stitchL2ForL1(
     died++;
   }
 
-  // Persist stable_ids onto current L2 rows
-  for (const [newId, sid] of newAssigned) {
-    const newC = newL2.get(newId)!;
+  // Persist stable_ids onto current L2 rows in one round trip
+  if (newAssigned.size > 0) {
+    const updateRows: string[] = [];
+    const updateArgs: (string | number)[] = [];
+    let p = 1;
+    for (const [newId, sid] of newAssigned) {
+      const newC = newL2.get(newId)!;
+      updateRows.push(`($${p++}::int, $${p++}::text)`);
+      updateArgs.push(newC.cluster_id, sid);
+    }
     await pool.query(
-      `UPDATE niche_tree_clusters SET stable_id = $1, parent_stable_id = $2 WHERE id = $3`,
-      [sid, currentL1StableId, newC.cluster_id],
+      `UPDATE niche_tree_clusters c
+          SET stable_id = v.stable_id,
+              parent_stable_id = $${p++}
+         FROM (VALUES ${updateRows.join(', ')}) AS v(id, stable_id)
+        WHERE c.id = v.id`,
+      [...updateArgs, currentL1StableId],
     );
   }
 
-  // Persist events
-  for (const ev of eventsToWrite) {
+  // Persist events in one round trip
+  if (eventsToWrite.length > 0) {
+    const rows: string[] = [];
+    const args: (number | string | null | object)[] = [];
+    let p = 1;
+    for (const ev of eventsToWrite) {
+      rows.push(`($${p++}, $${p++}, $${p++}, $${p++}, 2, $${p++}, $${p++}, $${p++}, $${p++})`);
+      args.push(currentRunId, ev.stable_id, ev.parent_stable_id, ev.event,
+                ev.size_before, ev.size_after, ev.jaccard, ev.payload);
+    }
     await pool.query(
       `INSERT INTO niche_cluster_events
          (run_id, stable_id, parent_stable_id, event, level, size_before, size_after, jaccard, payload)
-       VALUES ($1, $2, $3, $4, 2, $5, $6, $7, $8)`,
-      [currentRunId, ev.stable_id, ev.parent_stable_id, ev.event,
-       ev.size_before, ev.size_after, ev.jaccard, ev.payload],
+       VALUES ${rows.join(', ')}`,
+      args,
     );
   }
 
