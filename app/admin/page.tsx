@@ -30,7 +30,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1583,6 +1583,7 @@ export default function AdminPage() {
     { key: 'lifecycle',      label: 'Cluster Lifecycle', dot: 'bg-fuchsia-500/70' },
     { key: 'seed',           label: 'Video Seed',      dot: 'bg-emerald-500/70' },
     { key: 'docs',           label: 'Docs',            dot: 'bg-slate-400/70' },
+    { key: 'tools',          label: 'Tools',           dot: 'bg-yellow-500/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5720,6 +5721,12 @@ export default function AdminPage() {
         <div style={{ display: adminSection === 'docs' ? 'block' : 'none' }}>
           <DocsTab active={adminSection === 'docs'} />
         </div>
+
+        {/* Tools Tab — admin one-off operations. First tool: AI Studio
+            key import from xgodo. */}
+        <div style={{ display: adminSection === 'tools' ? 'block' : 'none' }}>
+          <ToolsTab active={adminSection === 'tools'} />
+        </div>
       </div>
     </div>
   );
@@ -6100,6 +6107,270 @@ function ClusterLifecycleTab({ active }: { active: boolean }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Tools Tab — admin one-off operations grouped into cards.
+//
+// First tool: AI Studio Keys Import. Pulls fresh Google AI Studio
+// keys from an xgodo job's pending tasks, tests each via residential
+// proxy, persists the good ones, and confirms / declines the xgodo
+// task accordingly.
+// ────────────────────────────────────────────────────────────────
+
+interface KeyImportEvent {
+  taskId: string;
+  workerName: string | null;
+  deviceName: string | null;
+  finishedAt: string | null;
+  key: string | null;
+  result: 'valid' | 'invalid' | 'no_key' | 'duplicate' | 'error';
+  reason: string | null;
+  latencyMs: number | null;
+  proxyUsed: string | null;
+  action: 'confirmed' | 'declined' | 'skipped' | null;
+  insertedId: number | null;
+  detectedAt: string;
+}
+
+interface KeyImportState {
+  running: boolean;
+  jobKey: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastError: string | null;
+  counts: {
+    total: number; processed: number; valid: number; invalid: number;
+    duplicate: number; noKey: number; errors: number;
+  };
+  events: KeyImportEvent[];
+  defaultJobId: string;
+}
+
+const RESULT_STYLES: Record<KeyImportEvent['result'], { label: string; bg: string; text: string }> = {
+  valid:     { label: 'VALID',     bg: 'bg-emerald-500/15', text: 'text-emerald-400' },
+  duplicate: { label: 'DUP',       bg: 'bg-blue-500/15',    text: 'text-blue-400' },
+  invalid:   { label: 'INVALID',   bg: 'bg-red-500/15',     text: 'text-red-400' },
+  no_key:    { label: 'NO KEY',    bg: 'bg-orange-500/15',  text: 'text-orange-400' },
+  error:     { label: 'ERROR',     bg: 'bg-yellow-500/15',  text: 'text-yellow-400' },
+};
+
+function ToolsTab({ active }: { active: boolean }) {
+  const [state, setState] = useState<KeyImportState | null>(null);
+  const [jobId, setJobId] = useState<string>('');
+  const [limit, setLimit] = useState<number>(50);
+  const [concurrency, setConcurrency] = useState<number>(5);
+  const [dryRun, setDryRun] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+
+  const fetchState = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/tools/ai-studio-keys');
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+      setState(d as KeyImportState);
+      if (!jobId && d.defaultJobId) setJobId(d.defaultJobId);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [jobId]);
+
+  useEffect(() => { if (active) fetchState(); }, [active, fetchState]);
+
+  // Poll every 2s while running OR while the tab is freshly opened.
+  useEffect(() => {
+    if (!active) return;
+    const running = state?.running ?? false;
+    const interval = running ? 2000 : 8000;
+    const t = setInterval(fetchState, interval);
+    return () => clearInterval(t);
+  }, [active, state?.running, fetchState]);
+
+  const start = async () => {
+    if (!confirm(dryRun
+      ? `Run a DRY RUN against xgodo job ${jobId || '<default>'} (no confirm/decline calls)?`
+      : `Pull up to ${limit} pending tasks from xgodo job ${jobId || '<default>'} and review them?`
+    )) return;
+    setStarting(true);
+    try {
+      const r = await fetch('/api/admin/tools/ai-studio-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: jobId || undefined, limit, concurrency, dryRun }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+      setError(null);
+      await fetchState();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+    setStarting(false);
+  };
+
+  const counts = state?.counts;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-bold text-white">Tools</h1>
+        <p className="text-[#888] text-xs mt-1 max-w-2xl">
+          One-off admin operations. Each card is self-contained: configure, run, watch the live output.
+        </p>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">{error}</div>
+      )}
+
+      {/* ─── Google AI Studio Keys Import ──────────────────────────── */}
+      <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-[#1f1f1f] flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-sm font-semibold text-white">Import Google AI Studio keys from xgodo</div>
+            <div className="text-[11px] text-[#888] mt-0.5 max-w-3xl">
+              Pulls tasks awaiting employer review from the xgodo AI Studio key job, tests each candidate against
+              <code className="text-yellow-400 text-[10px] mx-1">generativelanguage.googleapis.com</code>
+              via a residential proxy, persists the good ones into
+              <code className="text-yellow-400 text-[10px] mx-1">xgodo_api_keys</code>, and
+              confirms / declines each task back to xgodo.
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {state?.running ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-yellow-400">
+                <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                Running…
+              </span>
+            ) : state?.finishedAt ? (
+              <span className="text-xs text-[#888]">Last run: {new Date(state.finishedAt).toLocaleString()}</span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div className="px-4 py-3 border-b border-[#1f1f1f] grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">xgodo job id</label>
+            <input
+              type="text" value={jobId} onChange={e => setJobId(e.target.value)}
+              placeholder={state?.defaultJobId || '69f499d56730e5906b1eb576'}
+              className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded font-mono focus:outline-none focus:border-yellow-500"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">limit</label>
+            <input
+              type="number" min={1} max={500} value={limit} onChange={e => setLimit(parseInt(e.target.value) || 50)}
+              className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-yellow-500"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">parallel tests</label>
+            <input
+              type="number" min={1} max={20} value={concurrency} onChange={e => setConcurrency(parseInt(e.target.value) || 5)}
+              className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-yellow-500"
+            />
+          </div>
+          <label className="flex items-center gap-1.5 text-xs text-[#888] cursor-pointer mt-5 md:mt-0">
+            <input type="checkbox" checked={dryRun} onChange={e => setDryRun(e.target.checked)} className="accent-yellow-500" />
+            Dry run (skip xgodo review)
+          </label>
+          <button
+            onClick={start}
+            disabled={starting || (state?.running ?? false)}
+            className="px-4 h-8 bg-yellow-500 hover:bg-yellow-400 disabled:bg-[#222] disabled:text-[#666] text-black text-xs font-semibold rounded transition whitespace-nowrap"
+          >
+            {state?.running ? 'Running…' : starting ? 'Starting…' : 'Run import'}
+          </button>
+        </div>
+
+        {/* Summary tiles */}
+        {counts && counts.total > 0 && (
+          <div className="px-4 py-3 border-b border-[#1f1f1f] grid grid-cols-3 md:grid-cols-7 gap-2">
+            {[
+              { label: 'Total',     value: counts.total,     color: 'text-white' },
+              { label: 'Processed', value: counts.processed, color: 'text-white' },
+              { label: 'Valid',     value: counts.valid,     color: 'text-emerald-400' },
+              { label: 'Duplicate', value: counts.duplicate, color: 'text-blue-400' },
+              { label: 'Invalid',   value: counts.invalid,   color: 'text-red-400' },
+              { label: 'No key',    value: counts.noKey,     color: 'text-orange-400' },
+              { label: 'Errors',    value: counts.errors,    color: counts.errors > 0 ? 'text-yellow-400' : 'text-[#666]' },
+            ].map(s => (
+              <div key={s.label} className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg p-2 text-center">
+                <div className={`text-lg font-bold ${s.color}`}>{s.value.toLocaleString()}</div>
+                <div className="text-[10px] text-[#666] uppercase tracking-wider">{s.label}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {state?.lastError && (
+          <div className="px-4 py-2 border-b border-[#1f1f1f] bg-red-500/5 text-[11px] text-red-400">
+            Last error: {state.lastError}
+          </div>
+        )}
+
+        {/* Events table */}
+        {state && state.events.length === 0 ? (
+          <div className="p-8 text-center text-sm text-[#666]">
+            No events yet. Click <span className="text-yellow-400">Run import</span> to pull pending tasks from xgodo.
+          </div>
+        ) : state ? (
+          <div className="overflow-x-auto">
+            <div className="grid grid-cols-[140px_90px_180px_60px_70px_1fr_100px] gap-3 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
+              <div>Time</div>
+              <div>Result</div>
+              <div>Key (masked)</div>
+              <div className="text-right">Latency</div>
+              <div>Proxy</div>
+              <div>Detail</div>
+              <div>Task</div>
+            </div>
+            <div className="divide-y divide-[#1a1a1a]">
+              {state.events.map(e => {
+                const style = RESULT_STYLES[e.result];
+                const ts = e.detectedAt ? new Date(e.detectedAt) : null;
+                return (
+                  <div key={e.taskId + '|' + (e.key ?? 'nokey') + '|' + e.detectedAt}
+                       className="grid grid-cols-[140px_90px_180px_60px_70px_1fr_100px] gap-3 px-3 py-2 items-center hover:bg-[#181818] transition">
+                    <div className="text-[11px] text-[#888] font-mono">
+                      {ts ? `${ts.toLocaleTimeString()}` : '—'}
+                    </div>
+                    <div>
+                      <span className={`inline-block ${style.bg} ${style.text} rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wider`}>
+                        {style.label}
+                      </span>
+                    </div>
+                    <div className="text-xs text-white font-mono truncate" title={e.key ?? ''}>
+                      {e.key ?? '—'}
+                    </div>
+                    <div className="text-right text-xs text-[#aaa] font-mono">
+                      {e.latencyMs != null ? `${e.latencyMs}ms` : '—'}
+                    </div>
+                    <div className="text-[11px] text-[#888] truncate" title={e.proxyUsed ?? ''}>
+                      {e.proxyUsed ?? '—'}
+                    </div>
+                    <div className="text-[11px] text-[#ccc] truncate" title={e.reason ?? ''}>
+                      {e.reason ?? '—'}
+                      {e.workerName && <span className="text-[#666] ml-2">· {e.workerName}</span>}
+                    </div>
+                    <div className="text-[11px] text-[#888] font-mono truncate" title={e.taskId}>
+                      {e.taskId.slice(-10)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="p-8 text-center text-sm text-[#666]">Loading…</div>
+        )}
+      </div>
     </div>
   );
 }
