@@ -191,18 +191,28 @@ export async function backfillClusterAiLabels(opts?: {
   if (total > 0) {
     const ids = clusters.map(c => c.id);
     const titlesRes = await pool.query<{ cluster_id: number; title: string }>(
-      `SELECT a.cluster_id, v.title
-         FROM niche_tree_assignments a
-         JOIN niche_spy_videos v ON v.id = a.video_id
-        WHERE a.cluster_id = ANY($1)
-          AND v.title IS NOT NULL AND v.title != ''
-        ORDER BY a.cluster_id, v.view_count DESC NULLS LAST
-        LIMIT $2`,
-      [ids, ids.length * 50],   // 50 cap per cluster gives generous slack for the top-10 cut
+      // top-N per cluster via ROW_NUMBER. The naive
+      // `ORDER BY cluster_id, view_count DESC LIMIT N*10` collapsed the
+      // first few cluster_ids into the entire window — every cluster
+      // after the truncation got zero titles and skipped to BORN with no
+      // ai_label written. Window function gives a hard per-cluster cap.
+      `WITH ranked AS (
+         SELECT a.cluster_id, v.title,
+                ROW_NUMBER() OVER (
+                  PARTITION BY a.cluster_id
+                  ORDER BY v.view_count DESC NULLS LAST
+                ) AS rn
+           FROM niche_tree_assignments a
+           JOIN niche_spy_videos v ON v.id = a.video_id
+          WHERE a.cluster_id = ANY($1)
+            AND v.title IS NOT NULL AND v.title != ''
+       )
+       SELECT cluster_id, title FROM ranked WHERE rn <= 10`,
+      [ids],
     );
     for (const row of titlesRes.rows) {
       const arr = titlesByCluster.get(row.cluster_id) ?? [];
-      if (arr.length < 10) arr.push(row.title);
+      arr.push(row.title);
       titlesByCluster.set(row.cluster_id, arr);
     }
   }
