@@ -20,7 +20,7 @@
  */
 
 import { getPool } from './db';
-import { getProxy } from './xgodo-proxy';
+import { getRandomProxy } from './xgodo-proxy';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
@@ -115,12 +115,14 @@ async function fetchPendingTasks(token: string, jobId: string, limit: number): P
 }
 
 /** PUT /jobs/applicants with the review verdict — same call shape the
- *  data-collection sync uses to confirm processed tasks. */
+ *  data-collection sync uses to confirm processed tasks. Per the
+ *  operator: good keys go to 'satisfied'; bad/duplicate keys go to
+ *  'declined'. */
 async function reviewTasks(
   token: string,
   jobId: string,
   taskIds: string[],
-  status: 'confirmed' | 'declined',
+  status: 'satisfied' | 'declined',
   comment: string,
 ): Promise<{ ok: boolean; status: number; error?: string }> {
   if (taskIds.length === 0) return { ok: true, status: 200 };
@@ -301,7 +303,7 @@ async function runImport(opts: RunImportOpts): Promise<void> {
   // key AND emit a finished event before scheduling the xgodo review,
   // so we keep the per-task pipeline serial and only parallelise across
   // tasks (not within one task's steps).
-  const confirmedIds: string[] = [];
+  const satisfiedIds: string[] = [];
   const declinedTasks: Array<{ id: string; reason: string }> = [];
 
   let cursor = 0;
@@ -343,7 +345,10 @@ async function runImport(opts: RunImportOpts): Promise<void> {
           for (const key of keys) {
             evt.key = maskKey(key);
             evt.keyFull = key;
-            const proxy = await getProxy();
+            // Random proxy from the active pool — same selection strategy
+            // the niche-explorer embedding pipeline uses (random > round
+            // robin in the bench we ran on embeddings).
+            const proxy = await getRandomProxy();
             const test = await testKey(key, proxy?.url);
             evt.latencyMs = test.latencyMs;
             evt.proxyUsed = test.proxyUsed;
@@ -365,14 +370,14 @@ async function runImport(opts: RunImportOpts): Promise<void> {
             evt.result = 'valid';
             evt.reason = lastReason;
             evt.insertedId = firstInsertedId;
-            confirmedIds.push(task._id);
+            satisfiedIds.push(task._id);
             state.valid++;
           } else if (anyDuplicate) {
             evt.result = 'duplicate';
-            evt.reason = 'all keys already in inventory';
-            // We still CONFIRM these tasks — the worker did the work,
-            // and from our side we already have the value.
-            confirmedIds.push(task._id);
+            evt.reason = 'already in inventory';
+            // Duplicates get DECLINED per operator policy — we don't pay
+            // for keys we already have.
+            declinedTasks.push({ id: task._id, reason: 'duplicate key — already in inventory' });
             state.duplicate++;
           } else {
             evt.result = 'invalid';
@@ -402,15 +407,22 @@ async function runImport(opts: RunImportOpts): Promise<void> {
   if (!dryRun) {
     const stamp = new Date().toISOString().slice(0, 19);
     const suffix = opts.commentSuffix ? ` ${opts.commentSuffix}` : '';
-    if (confirmedIds.length > 0) {
-      const r = await reviewTasks(token, jobId, confirmedIds, 'confirmed',
+    if (satisfiedIds.length > 0) {
+      const r = await reviewTasks(token, jobId, satisfiedIds, 'satisfied',
         `rofe.ai AI Studio key import @ ${stamp}${suffix}`);
-      if (!r.ok) state.lastError = `confirm batch failed: ${r.error}`;
+      if (!r.ok) state.lastError = `satisfied batch failed: ${r.error}`;
+      // Annotate the events with the action that was taken so the UI
+      // can show satisfied/declined per row.
+      for (const e of state.events) {
+        if (satisfiedIds.includes(e.taskId)) e.action = 'confirmed';   // 'confirmed' kept as the UI's affirmative label
+      }
     }
     for (const d of declinedTasks) {
       const r = await reviewTasks(token, jobId, [d.id], 'declined',
         `rofe.ai rejected: ${d.reason}${suffix}`.slice(0, 250));
       if (!r.ok) state.lastError = `decline failed: ${r.error}`;
+      const evt = state.events.find(e => e.taskId === d.id);
+      if (evt) evt.action = 'declined';
     }
   }
 }
