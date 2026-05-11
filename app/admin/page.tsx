@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Markdown } from '@/components/Markdown';
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -29,7 +30,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1581,6 +1582,7 @@ export default function AdminPage() {
     { key: 'tree',           label: 'Niche Tree',      dot: 'bg-amber-500/70' },
     { key: 'lifecycle',      label: 'Cluster Lifecycle', dot: 'bg-fuchsia-500/70' },
     { key: 'seed',           label: 'Video Seed',      dot: 'bg-emerald-500/70' },
+    { key: 'docs',           label: 'Docs',            dot: 'bg-slate-400/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5711,6 +5713,13 @@ export default function AdminPage() {
         <div style={{ display: adminSection === 'seed' ? 'block' : 'none' }}>
           <VideoSeedTab active={adminSection === 'seed'} />
         </div>
+
+        {/* Docs Tab — renders markdown files from /docs in the repo.
+            Reads via /api/admin/docs. Same admin styling as the other
+            tabs; sidebar lists docs, main area renders the selected one. */}
+        <div style={{ display: adminSection === 'docs' ? 'block' : 'none' }}>
+          <DocsTab active={adminSection === 'docs'} />
+        </div>
       </div>
     </div>
   );
@@ -6091,6 +6100,118 @@ function ClusterLifecycleTab({ active }: { active: boolean }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Docs Tab — renders markdown from /docs via /api/admin/docs.
+// Sidebar lists available docs, main area renders the selected one.
+// ────────────────────────────────────────────────────────────────
+
+interface DocListEntry {
+  slug: string;
+  title: string;
+  description: string;
+  mtime: string;
+}
+
+function DocsTab({ active }: { active: boolean }) {
+  const [docs, setDocs] = useState<DocListEntry[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [content, setContent] = useState<string | null>(null);
+  const [contentMeta, setContentMeta] = useState<{ title: string; mtime: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    setLoading(true);
+    fetch('/api/admin/docs')
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) throw new Error(d.error);
+        setDocs(d.docs || []);
+        // Auto-select the first doc on first open if nothing is chosen yet.
+        setSelected(prev => prev ?? (d.docs?.[0]?.slug || null));
+      })
+      .catch(err => setError((err as Error).message))
+      .finally(() => setLoading(false));
+  }, [active]);
+
+  useEffect(() => {
+    if (!selected) return;
+    setError(null);
+    fetch(`/api/admin/docs?slug=${encodeURIComponent(selected)}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) throw new Error(d.error);
+        setContent(d.content || '');
+        setContentMeta({ title: d.title || selected, mtime: d.mtime });
+      })
+      .catch(err => setError((err as Error).message));
+  }, [selected]);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-bold text-white">Docs</h1>
+        <p className="text-[#888] text-xs mt-1 max-w-2xl">
+          Architecture notes and API references for the major systems —
+          rendered live from <code className="text-slate-400 text-[11px]">/docs/*.md</code> in the repo, so
+          edits to the markdown files show up here on the next deploy.
+        </p>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">{error}</div>
+      )}
+
+      <div className="grid grid-cols-[260px_1fr] gap-6 items-start">
+        {/* Sidebar */}
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-2 space-y-1">
+          {loading && docs.length === 0 && (
+            <div className="text-xs text-[#666] p-3">Loading…</div>
+          )}
+          {docs.length === 0 && !loading && (
+            <div className="text-xs text-[#666] p-3">No docs found in /docs.</div>
+          )}
+          {docs.map(d => (
+            <button
+              key={d.slug}
+              onClick={() => setSelected(d.slug)}
+              className={`w-full text-left rounded-lg px-3 py-2 transition ${
+                selected === d.slug
+                  ? 'bg-slate-700/40 text-white'
+                  : 'hover:bg-[#1a1a1a] text-[#ccc]'
+              }`}
+            >
+              <div className="text-xs font-medium truncate">{d.title}</div>
+              <div className="text-[10px] text-[#666] truncate mt-0.5">{d.description}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-6 min-h-[400px]">
+          {!selected ? (
+            <div className="text-sm text-[#666] text-center py-12">
+              Pick a doc from the sidebar.
+            </div>
+          ) : content == null ? (
+            <div className="text-sm text-[#666] text-center py-12">Loading…</div>
+          ) : (
+            <>
+              <Markdown source={content} />
+              {contentMeta?.mtime && (
+                <div className="mt-8 pt-4 border-t border-[#222] text-[10px] text-[#555]">
+                  Last modified: {new Date(contentMeta.mtime).toLocaleString()}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
