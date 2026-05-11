@@ -425,52 +425,115 @@ export async function computeCombinedNovelty(
 }
 
 /**
- * Batch novelty — returns {video_id: novelty} for every video that has an
- * embedding in title_v2 or thumbnail_v2. Used by the recompute job.
+ * Single-space novelty against the combined_v2 multimodal embedding.
  *
- * Rather than doing N+1 per-video queries (too slow for 15k+ videos), we
- * pull every embedding once, compute KNN in memory. 3072-dim × ~15k rows
- * = ~180MB per space. Acceptable for a nightly batch.
+ * This is the preferred novelty path now — combined_v2 is at 99% coverage
+ * (vs 25% each for title_v2 / thumbnail_v2), so a video almost always has
+ * a score. The combined_v2 space also matches what HDBSCAN clusters on,
+ * so "novelty" maps to "distance from clusters" in the same geometric
+ * basis — same signal, no axis mismatch.
  *
- * Strategy: loop each video, query pgvector for its K nearest neighbors
- * in each space. Still 2 × N queries per space but every query hits the
- * HNSW index so each is O(log N). Much simpler than hand-rolling cosine
- * in Node, and pgvector is faster at it anyway.
+ * novelty = mean cosine distance to the K nearest neighbors in
+ *           niche_video_vectors_combined_v2 (excluding self).
+ */
+export async function computeCombinedV2Novelty(
+  videoId: number,
+  options?: { k?: number },
+): Promise<number | null> {
+  const k = Math.max(1, Math.min(50, options?.k ?? 10));
+  const src = await vectorPool.query(
+    `SELECT embedding FROM niche_video_vectors_combined_v2 WHERE video_id = $1`,
+    [videoId],
+  );
+  if (src.rows.length === 0) return null;
+  const neighbors = await vectorPool.query<{ dist: string }>(
+    `SELECT embedding <=> $1::vector AS dist
+       FROM niche_video_vectors_combined_v2
+      WHERE video_id != $2
+      ORDER BY embedding <=> $1::vector
+      LIMIT $3`,
+    [src.rows[0].embedding, videoId, k],
+  );
+  if (neighbors.rows.length === 0) return null;
+  const distances = neighbors.rows.map(r => parseFloat(r.dist));
+  return distances.reduce((a, b) => a + b, 0) / distances.length;
+}
+
+/**
+ * Batch novelty — writes novelty_score for every video with a
+ * combined_v2 embedding.
+ *
+ * Previously this used title_v2 + thumbnail_v2 (each at ~25% coverage)
+ * via TWO KNN queries per video. That capped novelty at ~11% of the
+ * dataset and ran out of time on big runs. Switched to combined_v2 —
+ * 99% coverage, single KNN per video, half the round trips.
+ *
+ * mode='missing' (default): only score videos with NULL novelty_score.
+ *                           Cheap re-runs after partial failures.
+ * mode='all':               re-score everything. Use after a new
+ *                           clustering run if you want fresh values.
+ *
+ * Parallelized with a small worker pool — each worker pulls from a
+ * shared queue and writes one row at a time. pgvector handles the
+ * concurrent KNN queries fine via HNSW.
  */
 export async function recomputeAllNovelty(
-  options?: { k?: number; limit?: number },
-): Promise<{ scored: number; titleCovered: number; thumbCovered: number }> {
+  options?: { k?: number; limit?: number; mode?: 'missing' | 'all'; threads?: number },
+): Promise<{ scored: number; total: number; mode: string; durationMs: number }> {
+  const started = Date.now();
   const k = Math.max(1, Math.min(50, options?.k ?? 10));
-  const limit = options?.limit ?? 50_000;
+  const limit = options?.limit ?? 1_000_000;
+  const mode = options?.mode ?? 'missing';
+  const threads = Math.max(1, Math.min(options?.threads ?? 20, 50));
 
-  // Union of ids that have ANY v2 embedding. If a video is only in v1
-  // (legacy) it can't contribute to combined novelty and is skipped.
-  const idsRes = await vectorPool.query<{ video_id: number }>(
-    `SELECT video_id FROM niche_video_vectors_title_v2
-     UNION
-     SELECT video_id FROM niche_video_vectors_thumb_v2
-     LIMIT $1`,
+  const mainPool = await getPool();
+
+  // Pull the target list from the MAIN db: videos with combined_v2
+  // embedded, optionally filtered to those without a novelty_score yet.
+  // Using the main db because the vector db doesn't know which videos
+  // already have novelty written.
+  const targetRes = await mainPool.query<{ id: number }>(
+    mode === 'missing'
+      ? `SELECT id FROM niche_spy_videos
+          WHERE combined_embedded_v2_at IS NOT NULL
+            AND novelty_score IS NULL
+          ORDER BY id
+          LIMIT $1`
+      : `SELECT id FROM niche_spy_videos
+          WHERE combined_embedded_v2_at IS NOT NULL
+          ORDER BY id
+          LIMIT $1`,
     [limit],
   );
 
-  let scored = 0, titleCovered = 0, thumbCovered = 0;
-  const mainPool = await getPool();
+  const total = targetRes.rows.length;
+  if (total === 0) return { scored: 0, total: 0, mode, durationMs: Date.now() - started };
 
-  for (const row of idsRes.rows) {
-    const r = await computeCombinedNovelty(row.video_id, { k });
-    if (r.titleNovelty != null) titleCovered++;
-    if (r.thumbNovelty != null) thumbCovered++;
-    if (r.novelty == null) continue;
-    await mainPool.query(
-      `UPDATE niche_spy_videos
-       SET novelty_score = $1, novelty_updated_at = NOW()
-       WHERE id = $2`,
-      [r.novelty, row.video_id],
-    );
-    scored++;
+  let scored = 0;
+  let idx = 0;
+  async function worker() {
+    while (true) {
+      const myIdx = idx++;
+      if (myIdx >= total) return;
+      const videoId = targetRes.rows[myIdx].id;
+      try {
+        const novelty = await computeCombinedV2Novelty(videoId, { k });
+        if (novelty == null) continue;
+        await mainPool.query(
+          `UPDATE niche_spy_videos
+             SET novelty_score = $1, novelty_updated_at = NOW()
+           WHERE id = $2`,
+          [novelty, videoId],
+        );
+        scored++;
+      } catch (err) {
+        console.warn(`[novelty] video ${videoId} failed:`, (err as Error).message);
+      }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(threads, total) }, () => worker()));
 
-  return { scored, titleCovered, thumbCovered };
+  return { scored, total, mode, durationMs: Date.now() - started };
 }
 
 export { vectorPool };
