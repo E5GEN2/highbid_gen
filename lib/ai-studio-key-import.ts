@@ -95,12 +95,16 @@ async function getXgodoToken(): Promise<string> {
   return process.env.XGODO_API_TOKEN || '';
 }
 
-/** Fetch tasks awaiting employer review for the given xgodo job. */
+/** Fetch tasks awaiting employer review for the given xgodo job.
+ *  Note: status='pending' (worker submitted, awaiting review). The
+ *  niche-spy sync uses 'processing' — different jobs use different
+ *  status semantics on xgodo. Empirically the AI Studio keys job
+ *  puts submissions in 'pending'. */
 async function fetchPendingTasks(token: string, jobId: string, limit: number): Promise<XgodoTask[]> {
   const res = await fetch(`${XGODO_API}/jobs/applicants`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: jobId, status: 'processing', limit }),
+    body: JSON.stringify({ job_id: jobId, status: 'pending', limit }),
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
