@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -29,7 +29,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1579,6 +1579,7 @@ export default function AdminPage() {
       ) : null },
     { key: 'novelty',        label: 'Novelty',         dot: 'bg-indigo-500/70' },
     { key: 'tree',           label: 'Niche Tree',      dot: 'bg-amber-500/70' },
+    { key: 'lifecycle',      label: 'Cluster Lifecycle', dot: 'bg-fuchsia-500/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5693,6 +5694,14 @@ export default function AdminPage() {
             )}
           </div>
         </div>
+
+        {/* Cluster Lifecycle Tab — reads niche_cluster_events written by
+            the L1 + L2 stitchers. Per-run diff: what was born, died,
+            grew, shrank, split, merged between the previous global run
+            and this one. Hits /api/admin/niche-tree/agent/diff. */}
+        <div style={{ display: adminSection === 'lifecycle' ? 'block' : 'none' }}>
+          <ClusterLifecycleTab active={adminSection === 'lifecycle'} />
+        </div>
       </div>
     </div>
   );
@@ -5739,6 +5748,342 @@ function fmtAgo(iso: string | null | undefined): string {
 interface DeployConfig {
   keyword: string; threads: number; apiKey: string; loopNumber: number;
   maxSearchResults: number; maxSuggestedResults: number; rofeAPIKey: string;
+}
+
+// ────────────────────────────────────────────────────────────────
+// Cluster Lifecycle Tab — reads /api/admin/niche-tree/agent/diff,
+// renders born / died / grew / shrank / split / merged events for a
+// given run as filterable cards. Powered by niche_cluster_events
+// rows written by the L1 + L2 stitchers.
+// ────────────────────────────────────────────────────────────────
+
+interface LifecycleEvent {
+  event: 'born' | 'died' | 'grew' | 'shrank' | 'same' | 'split' | 'merged';
+  stable_id: string;
+  parent_stable_id: string | null;
+  size_before: number | null;
+  size_after: number | null;
+  delta: number | null;
+  jaccard: number | null;
+  label: string | null;
+  auto_label: string | null;
+  ai_label?: string | null;
+  video_count: number | null;
+  cluster_id: number | null;
+  payload: Record<string, unknown> | null;
+}
+
+const EVENT_COLORS: Record<LifecycleEvent['event'], { bg: string; text: string; border: string; emoji: string }> = {
+  born:   { bg: 'bg-green-500/10',   text: 'text-green-400',   border: 'border-green-500/30',   emoji: '✨' },
+  grew:   { bg: 'bg-blue-500/10',    text: 'text-blue-400',    border: 'border-blue-500/30',    emoji: '↑' },
+  shrank: { bg: 'bg-orange-500/10',  text: 'text-orange-400',  border: 'border-orange-500/30',  emoji: '↓' },
+  same:   { bg: 'bg-gray-500/10',    text: 'text-gray-400',    border: 'border-gray-500/30',    emoji: '=' },
+  split:  { bg: 'bg-purple-500/10',  text: 'text-purple-400',  border: 'border-purple-500/30',  emoji: '⤴' },
+  merged: { bg: 'bg-cyan-500/10',    text: 'text-cyan-400',    border: 'border-cyan-500/30',    emoji: '⤵' },
+  died:   { bg: 'bg-red-500/10',     text: 'text-red-400',     border: 'border-red-500/30',     emoji: '✕' },
+};
+
+function ClusterLifecycleTab({ active }: { active: boolean }) {
+  const [runId, setRunId] = useState<number | null>(null);
+  const [runInput, setRunInput] = useState<string>('');     // text input override for runId
+  const [prevRunId, setPrevRunId] = useState<number | null>(null);
+  const [events, setEvents] = useState<LifecycleEvent[]>([]);
+  const [totals, setTotals] = useState<Partial<Record<LifecycleEvent['event'], number>>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | LifecycleEvent['event']>('all');
+  const [level, setLevel] = useState<'all' | 1 | 2>('all');
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<'abs_delta' | 'size_after' | 'size_before' | 'jaccard'>('abs_delta');
+
+  const fetchDiff = useCallback(async (id?: number) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const qs = id ? `?runId=${id}` : '';
+      const r = await fetch(`/api/admin/niche-tree/agent/diff${qs}`);
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+      setRunId(d.runId);
+      setPrevRunId(d.prevRunId);
+      setEvents(d.events || []);
+      setTotals(d.totals || {});
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (active && runId == null) fetchDiff();
+  }, [active, runId, fetchDiff]);
+
+  // Derive an event's level from the cluster_id row (via payload or
+  // parent_stable_id presence). Simpler: split / merged events have
+  // parent_stable_id set when L1; L2 events also have parent_stable_id
+  // (the L1 they live under). Use the payload's prev_cluster_index path
+  // when present.
+  // Pragmatic shortcut — backend always writes level=1 or level=2 on
+  // niche_cluster_events but the /diff endpoint doesn't surface it.
+  // For now we apply the level filter via the `payload.level` field if
+  // present, else show everything.
+  const filteredEvents = useMemo(() => {
+    let arr = events;
+    if (filter !== 'all') arr = arr.filter(e => e.event === filter);
+    if (level !== 'all') {
+      arr = arr.filter(e => {
+        const lvl = (e.payload?.level as number | undefined) ?? null;
+        // Fallback: parent_stable_id presence on an L2-only event row.
+        if (lvl != null) return lvl === level;
+        return true;
+      });
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      arr = arr.filter(e =>
+        (e.label || '').toLowerCase().includes(q) ||
+        (e.auto_label || '').toLowerCase().includes(q) ||
+        (e.ai_label || '').toLowerCase().includes(q) ||
+        e.stable_id.toLowerCase().includes(q),
+      );
+    }
+    const sortKey = sortBy;
+    return [...arr].sort((a, b) => {
+      const av = sortKey === 'abs_delta' ? Math.abs(a.delta ?? 0)
+        : sortKey === 'jaccard' ? (a.jaccard ?? 0)
+        : sortKey === 'size_before' ? (a.size_before ?? 0)
+        : (a.size_after ?? 0);
+      const bv = sortKey === 'abs_delta' ? Math.abs(b.delta ?? 0)
+        : sortKey === 'jaccard' ? (b.jaccard ?? 0)
+        : sortKey === 'size_before' ? (b.size_before ?? 0)
+        : (b.size_after ?? 0);
+      return bv - av;
+    });
+  }, [events, filter, level, search, sortBy]);
+
+  const grandTotal = Object.values(totals).reduce((a, b) => a + (b || 0), 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-xl font-bold text-white">Cluster Lifecycle</h1>
+          <p className="text-[#888] text-xs mt-1 max-w-2xl">
+            Per-run diff of cluster lifecycle events (born / died / grew / shrank / split / merged) computed by the
+            stitcher when a new global clustering run lands. Powered by
+            <code className="text-fuchsia-400 text-[11px] mx-1">niche_cluster_events</code>.
+            {runId != null && (
+              <> Showing run <span className="text-white font-medium">{runId}</span>
+                {prevRunId != null && (
+                  <> vs predecessor <span className="text-white font-medium">{prevRunId}</span></>
+                )}
+                .
+              </>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="number"
+            placeholder="Run ID"
+            value={runInput}
+            onChange={e => setRunInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                const v = parseInt(runInput);
+                if (Number.isFinite(v)) fetchDiff(v);
+              }
+            }}
+            className="w-24 px-2 h-8 bg-[#141414] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-fuchsia-500"
+          />
+          <button
+            onClick={() => {
+              const v = parseInt(runInput);
+              if (Number.isFinite(v)) fetchDiff(v);
+              else fetchDiff();
+            }}
+            disabled={loading}
+            className="px-3 h-8 bg-fuchsia-500/15 hover:bg-fuchsia-500/25 text-fuchsia-400 border border-fuchsia-500/30 text-xs font-medium rounded transition disabled:opacity-50"
+          >
+            {loading ? 'Loading…' : runInput ? 'Load' : 'Latest'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
+      {/* Summary tiles */}
+      {runId != null && grandTotal > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+          {(['born', 'grew', 'shrank', 'same', 'split', 'merged', 'died'] as const).map(ev => {
+            const c = EVENT_COLORS[ev];
+            const count = totals[ev] || 0;
+            const isActive = filter === ev;
+            return (
+              <button
+                key={ev}
+                onClick={() => setFilter(isActive ? 'all' : ev)}
+                className={`text-center rounded-xl p-3 border transition ${
+                  isActive ? `${c.bg} ${c.border}` : `bg-[#141414] border-[#1f1f1f] hover:border-[#2a2a2a]`
+                }`}
+              >
+                <div className={`text-lg font-bold ${count === 0 ? 'text-[#444]' : c.text}`}>
+                  {c.emoji} {count.toLocaleString()}
+                </div>
+                <div className="text-[10px] text-[#888] uppercase tracking-wider">{ev}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Filter row */}
+      {runId != null && (
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wider text-[#666]">Filter:</span>
+            <button
+              onClick={() => setFilter('all')}
+              className={`px-3 py-1 rounded-full text-xs transition ${
+                filter === 'all' ? 'bg-white text-black font-medium' : 'text-[#888] border border-[#333] hover:border-[#555]'
+              }`}
+            >
+              All ({grandTotal.toLocaleString()})
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wider text-[#666]">Level:</span>
+            {(['all', 1, 2] as const).map(l => (
+              <button
+                key={l}
+                onClick={() => setLevel(l)}
+                className={`px-2 py-1 rounded-full text-xs transition ${
+                  level === l ? 'bg-white text-black font-medium' : 'text-[#888] border border-[#333] hover:border-[#555]'
+                }`}
+              >
+                {l === 'all' ? 'Both' : `L${l}`}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wider text-[#666]">Sort:</span>
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value as typeof sortBy)}
+              className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-fuchsia-500"
+            >
+              <option value="abs_delta">Biggest change</option>
+              <option value="size_after">Size after</option>
+              <option value="size_before">Size before</option>
+              <option value="jaccard">Strongest match (jaccard)</option>
+            </select>
+          </div>
+          <input
+            type="text"
+            placeholder="Search label / stable_id"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="flex-1 min-w-[200px] px-3 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-fuchsia-500"
+          />
+          <span className="text-xs text-[#666]">
+            {filteredEvents.length.toLocaleString()} match{filteredEvents.length === 1 ? '' : 'es'}
+          </span>
+        </div>
+      )}
+
+      {/* Event cards */}
+      {runId != null && filteredEvents.length === 0 && !loading && (
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#666]">
+          No events match the current filters.
+        </div>
+      )}
+
+      {filteredEvents.length > 0 && (
+        <div className="space-y-2">
+          {filteredEvents.slice(0, 500).map(e => {
+            const c = EVENT_COLORS[e.event];
+            const label = e.label || e.ai_label || e.auto_label || '(no label)';
+            const matchMetric = e.payload?.match_metric as string | undefined;
+            return (
+              <div
+                key={`${e.stable_id}-${e.event}`}
+                className={`bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 flex items-center gap-3 hover:border-[#2a2a2a] transition`}
+              >
+                <div className={`flex-shrink-0 w-16 text-center rounded-md py-1 ${c.bg} ${c.text} ${c.border} border text-xs font-medium uppercase tracking-wider`}>
+                  {c.emoji} {e.event}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {e.cluster_id ? (
+                      <a
+                        href={`/niche/cluster/${e.cluster_id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm text-white font-medium truncate hover:text-fuchsia-400 transition"
+                      >
+                        {label}
+                      </a>
+                    ) : (
+                      <span className="text-sm text-white font-medium truncate">{label}</span>
+                    )}
+                    <code className="text-[10px] text-[#555] font-mono">{e.stable_id.slice(0, 14)}</code>
+                    {e.parent_stable_id && (
+                      <span className="text-[10px] text-[#555]">
+                        ← <code className="font-mono">{e.parent_stable_id.slice(0, 14)}</code>
+                      </span>
+                    )}
+                  </div>
+                  {(e.size_before != null || e.size_after != null) && (
+                    <div className="text-xs text-[#888] mt-0.5">
+                      {e.size_before != null && <span>{e.size_before.toLocaleString()}</span>}
+                      {e.size_before != null && e.size_after != null && <span> → </span>}
+                      {e.size_after != null && <span>{e.size_after.toLocaleString()}</span>}
+                      {e.delta != null && e.delta !== 0 && (
+                        <span className={`ml-1 ${e.delta > 0 ? 'text-green-400' : 'text-orange-400'}`}>
+                          ({e.delta > 0 ? '+' : ''}{e.delta.toLocaleString()})
+                        </span>
+                      )}
+                      {e.jaccard != null && (
+                        <span className="ml-2 text-[#666]">
+                          · jaccard {(e.jaccard * 100).toFixed(0)}%
+                          {matchMetric && matchMetric !== 'jaccard' && (
+                            <span className="text-fuchsia-400/80"> (via {matchMetric})</span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {e.video_count != null && (
+                  <div className="flex-shrink-0 text-[10px] text-[#666] tabular-nums">
+                    {e.video_count.toLocaleString()} vids
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {filteredEvents.length > 500 && (
+            <div className="text-center text-xs text-[#666] py-3">
+              Showing top 500 of {filteredEvents.length.toLocaleString()} — refine filters to see more.
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading && events.length === 0 && (
+        <div className="space-y-2">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl h-14 animate-pulse" />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDeploy, deployMsg, setDeployMsg, onRefresh, active }: {
