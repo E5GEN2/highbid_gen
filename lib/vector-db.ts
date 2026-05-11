@@ -446,11 +446,15 @@ export async function computeCombinedV2Novelty(
     [videoId],
   );
   if (src.rows.length === 0) return null;
+  // Cast both sides to halfvec(3072) — pgvector's HNSW index requires
+  // dims ≤ 2000 on the native vector type, so we index/query the halfvec
+  // representation (16-bit fp). The precision loss is negligible for
+  // cosine distance; the index speedup is 100-1000×.
   const neighbors = await vectorPool.query<{ dist: string }>(
-    `SELECT embedding <=> $1::vector AS dist
+    `SELECT (embedding::halfvec(3072)) <=> $1::halfvec(3072) AS dist
        FROM niche_video_vectors_combined_v2
       WHERE video_id != $2
-      ORDER BY embedding <=> $1::vector
+      ORDER BY (embedding::halfvec(3072)) <=> $1::halfvec(3072)
       LIMIT $3`,
     [src.rows[0].embedding, videoId, k],
   );
