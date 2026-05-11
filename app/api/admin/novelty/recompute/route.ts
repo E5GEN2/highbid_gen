@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
     started: true,
     jobKey,
     mode: body.mode ?? 'missing',
-    threads: body.threads ?? 20,
+    threads: body.threads ?? 8,
   });
 }
 

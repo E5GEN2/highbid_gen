@@ -484,7 +484,10 @@ export async function recomputeAllNovelty(
   const k = Math.max(1, Math.min(50, options?.k ?? 10));
   const limit = options?.limit ?? 1_000_000;
   const mode = options?.mode ?? 'missing';
-  const threads = Math.max(1, Math.min(options?.threads ?? 20, 50));
+  // Cap default threads well below the main pool's max=20 so the
+  // recompute doesn't starve admin / page queries that share the pool.
+  // Empirically 8 still drains 390K videos in ~12-15 min.
+  const threads = Math.max(1, Math.min(options?.threads ?? 8, 16));
 
   const mainPool = await getPool();
 
