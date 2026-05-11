@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { fmtYT } from '@/lib/format';
@@ -80,16 +80,26 @@ export default function ClusterDetailPage() {
   const [children, setChildren] = useState<ClusterCard[]>([]);
   const [videos, setVideos] = useState<ClusterVideo[]>([]);
   const [totalVideos, setTotalVideos] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);          // initial header+first-page load
+  const [loadingMore, setLoadingMore] = useState(false); // subsequent infinite-scroll pages
   const [error, setError] = useState<string | null>(null);
   const [videoSort, setVideoSort] = useState<VideoSort>('centroid');
-  const [videoLimit, setVideoLimit] = useState(60);
+  // Page size = how many videos we fetch per scroll page. Was the
+  // hard cap with no "load more" UI. Now we fetch this many at a time
+  // and append on scroll until totalVideos is reached.
+  const [pageSize, setPageSize] = useState(60);
 
+  // First page (resets when clusterId / sort / pageSize change).
   useEffect(() => {
     if (!clusterId) return;
     setLoading(true);
     setError(null);
-    const qs = new URLSearchParams({ videoSort, videoLimit: String(videoLimit) });
+    setVideos([]);
+    const qs = new URLSearchParams({
+      videoSort,
+      videoLimit: String(pageSize),
+      videoOffset: '0',
+    });
     fetch(`/api/niche-spy/tree-clusters/${clusterId}?${qs}`)
       .then(r => r.json())
       .then(d => {
@@ -102,7 +112,51 @@ export default function ClusterDetailPage() {
       })
       .catch(err => setError((err as Error).message))
       .finally(() => setLoading(false));
-  }, [clusterId, videoSort, videoLimit]);
+  }, [clusterId, videoSort, pageSize]);
+
+  // Load the next page of videos. Called when the sentinel scrolls into
+  // view (or as a manual "Load more" fallback). No-ops if already loading,
+  // if the initial fetch hasn't completed, or if we've fetched everything.
+  const loadMore = useCallback(async () => {
+    if (!clusterId || loading || loadingMore) return;
+    if (videos.length >= totalVideos) return;
+    setLoadingMore(true);
+    try {
+      const qs = new URLSearchParams({
+        videoSort,
+        videoLimit: String(pageSize),
+        videoOffset: String(videos.length),
+        skipChildren: '1',
+      });
+      const r = await fetch(`/api/niche-spy/tree-clusters/${clusterId}?${qs}`);
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      setVideos(prev => [...prev, ...(d.videos || [])]);
+      // Refresh total in case the cluster grew between paginations
+      if (typeof d.totalVideos === 'number') setTotalVideos(d.totalVideos);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [clusterId, loading, loadingMore, videos.length, totalVideos, videoSort, pageSize]);
+
+  // IntersectionObserver — triggers loadMore when the sentinel comes
+  // within 600px of the viewport. Ref re-created when loadMore changes
+  // so it always closes over fresh state.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: '600px 0px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [loadMore]);
 
   const breadcrumbItems = useMemo(() => {
     const items: Ancestor[] = [...ancestors].reverse();
@@ -199,10 +253,10 @@ export default function ClusterDetailPage() {
               <option value="date">Newest</option>
               <option value="oldest">Oldest</option>
             </select>
-            <label className="text-xs text-[#888] ml-2">Show:</label>
+            <label className="text-xs text-[#888] ml-2">Page size:</label>
             <select
-              value={videoLimit}
-              onChange={e => setVideoLimit(parseInt(e.target.value))}
+              value={pageSize}
+              onChange={e => setPageSize(parseInt(e.target.value))}
               className="bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-amber-500"
             >
               <option value={30}>30</option>
@@ -210,6 +264,11 @@ export default function ClusterDetailPage() {
               <option value={120}>120</option>
               <option value={200}>200</option>
             </select>
+            {totalVideos > 0 && (
+              <span className="text-xs text-[#666] ml-1">
+                {videos.length} / {totalVideos.toLocaleString()}
+              </span>
+            )}
           </div>
         </div>
 
@@ -230,14 +289,35 @@ export default function ClusterDetailPage() {
             No videos in this cluster.
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {videos.map(v => (
-              <NicheVideoCard
-                key={v.videoId}
-                video={clusterVideoToCard(v)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {videos.map(v => (
+                <NicheVideoCard
+                  key={v.videoId}
+                  video={clusterVideoToCard(v)}
+                />
+              ))}
+            </div>
+            {/* Infinite-scroll sentinel — observed by IntersectionObserver
+                in the page effect; loads the next page when scrolled into
+                view. Manual "Load more" link is a fallback for users who
+                navigate via keyboard or screen reader. */}
+            <div ref={sentinelRef} aria-hidden="true" />
+            {videos.length < totalVideos && (
+              <div className="flex justify-center mt-6">
+                {loadingMore ? (
+                  <div className="text-xs text-[#666]">Loading more…</div>
+                ) : (
+                  <button
+                    onClick={() => loadMore()}
+                    className="text-xs text-[#888] hover:text-white border border-[#1f1f1f] hover:border-[#333] rounded px-3 py-1.5 transition"
+                  >
+                    Load more ({(totalVideos - videos.length).toLocaleString()} remaining)
+                  </button>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
