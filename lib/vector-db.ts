@@ -28,7 +28,13 @@ const vectorPool: Pool = new Proxy({} as Pool, {
       }
       _vectorPool = new Pool({
         connectionString: url,
-        max: 5,
+        // Bumped from 5 → 15. The novelty recompute fires up to 12
+        // parallel KNN workers; with the old cap of 5 they spent most
+        // of their time queueing for a connection (effective rate ~700
+        // /min instead of the ~6000/min the index can support).
+        // Vector DB itself defaults to 100 connections so 15 is well
+        // within budget.
+        max: 15,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 10000,
       });
