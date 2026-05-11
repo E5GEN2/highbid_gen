@@ -6157,7 +6157,208 @@ const RESULT_STYLES: Record<KeyImportEvent['result'], { label: string; bg: strin
   error:     { label: 'ERROR',     bg: 'bg-yellow-500/15',  text: 'text-yellow-400' },
 };
 
+type ToolsSection = 'import-ai-keys' | 'download-ai-keys';
+
+const TOOLS_SECTIONS: Array<{ key: ToolsSection; label: string; group: 'AI Studio keys' }> = [
+  { key: 'import-ai-keys',   label: 'Import from xgodo',   group: 'AI Studio keys' },
+  { key: 'download-ai-keys', label: 'Download inventory',  group: 'AI Studio keys' },
+];
+
 function ToolsTab({ active }: { active: boolean }) {
+  const [section, setSection] = useState<ToolsSection>('import-ai-keys');
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-bold text-white">Tools</h1>
+        <p className="text-[#888] text-xs mt-1 max-w-2xl">
+          One-off admin operations. Sections grouped by purpose; each section is self-contained.
+        </p>
+      </div>
+
+      {/* Section selector — grouped pills */}
+      <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3">
+        {Array.from(new Set(TOOLS_SECTIONS.map(s => s.group))).map(group => (
+          <div key={group} className="flex items-center gap-2 flex-wrap [&+&]:mt-2">
+            <span className="text-[10px] uppercase tracking-wider text-[#666] mr-1">{group}:</span>
+            {TOOLS_SECTIONS.filter(s => s.group === group).map(s => (
+              <button
+                key={s.key}
+                onClick={() => setSection(s.key)}
+                className={`px-3 py-1.5 rounded-full text-xs transition ${
+                  section === s.key
+                    ? 'bg-yellow-500 text-black font-medium'
+                    : 'text-[#888] border border-[#333] hover:border-[#555]'
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      {section === 'import-ai-keys'   && <AIStudioImportCard active={active} />}
+      {section === 'download-ai-keys' && <AIStudioDownloadCard active={active} />}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Download inventory — exports all google_ai_studio keys via
+// /api/admin/tools/ai-studio-keys/export. Status / source / format
+// configurable. Browser receives a Content-Disposition: attachment.
+// ────────────────────────────────────────────────────────────────
+
+interface AIStudioInventory {
+  bySource: Array<{ source: string; status: string; count: number }>;
+  total: number;
+}
+
+function AIStudioDownloadCard({ active }: { active: boolean }) {
+  const [format, setFormat] = useState<'txt' | 'csv' | 'json'>('txt');
+  const [status, setStatus] = useState<'active' | 'invalid' | 'banned' | 'all'>('active');
+  const [source, setSource] = useState<string>('');
+  const [inv, setInv] = useState<AIStudioInventory | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Show counts in the UI by sniffing the same endpoint with format=json
+  // and counting on the client. Cheap — Railway pg returns 600 rows
+  // instantly.
+  useEffect(() => {
+    if (!active) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/admin/tools/ai-studio-keys/export?format=json&status=all`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json() as { keys: Array<{ source: string; status: string }> };
+        if (cancel) return;
+        const counts = new Map<string, number>();
+        for (const k of d.keys) {
+          const key = `${k.source}|${k.status}`;
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        const bySource = Array.from(counts.entries()).map(([k, count]) => {
+          const [src, st] = k.split('|');
+          return { source: src, status: st, count };
+        }).sort((a, b) => b.count - a.count);
+        setInv({ bySource, total: d.keys.length });
+        setError(null);
+      } catch (err) {
+        if (!cancel) setError((err as Error).message);
+      }
+    })();
+    return () => { cancel = true; };
+  }, [active]);
+
+  const matching = useMemo(() => {
+    if (!inv) return null;
+    let rows = inv.bySource;
+    if (status !== 'all') rows = rows.filter(r => r.status === status);
+    if (source.trim()) rows = rows.filter(r => r.source === source.trim());
+    return rows.reduce((s, r) => s + r.count, 0);
+  }, [inv, status, source]);
+
+  const download = () => {
+    const sp = new URLSearchParams({ format, status });
+    if (source.trim()) sp.set('source', source.trim());
+    // Open in same tab — browser handles Content-Disposition: attachment.
+    window.location.href = `/api/admin/tools/ai-studio-keys/export?${sp.toString()}`;
+  };
+
+  return (
+    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-[#1f1f1f]">
+        <div className="text-sm font-semibold text-white">Download Google AI Studio key inventory</div>
+        <div className="text-[11px] text-[#888] mt-0.5 max-w-3xl">
+          Exports all keys from <code className="text-yellow-400 text-[10px] mx-1">xgodo_api_keys</code> where
+          <code className="text-yellow-400 text-[10px] mx-1">service=&apos;google_ai_studio&apos;</code>. Filter by
+          status / source, pick format, browser downloads the file. <code className="text-yellow-400 text-[10px] mx-1">txt</code>
+          gives one key per line for piping into other systems.
+        </div>
+      </div>
+
+      {error && (
+        <div className="px-4 py-2 border-b border-[#1f1f1f] bg-red-500/5 text-[11px] text-red-400">{error}</div>
+      )}
+
+      {/* Inventory breakdown */}
+      {inv && (
+        <div className="px-4 py-3 border-b border-[#1f1f1f]">
+          <div className="text-[10px] uppercase tracking-wider text-[#666] mb-2">
+            Inventory ({inv.total.toLocaleString()} total)
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {inv.bySource.map(r => (
+              <div
+                key={`${r.source}|${r.status}`}
+                className={`bg-[#0a0a0a] border rounded-lg px-3 py-1.5 text-[11px] ${
+                  r.status === 'active' ? 'border-emerald-500/30 text-emerald-400' :
+                  r.status === 'invalid' ? 'border-red-500/30 text-red-400' :
+                                           'border-[#333] text-[#888]'
+                }`}
+              >
+                <span className="font-semibold text-white">{r.count.toLocaleString()}</span>{' '}
+                <span className="text-[#888]">{r.source}</span> · {r.status}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Controls */}
+      <div className="px-4 py-3 grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+        <div>
+          <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">format</label>
+          <select
+            value={format} onChange={e => setFormat(e.target.value as typeof format)}
+            className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-yellow-500"
+          >
+            <option value="txt">txt — one key per line</option>
+            <option value="csv">csv — with metadata</option>
+            <option value="json">json — full records</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">status</label>
+          <select
+            value={status} onChange={e => setStatus(e.target.value as typeof status)}
+            className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-yellow-500"
+          >
+            <option value="active">active</option>
+            <option value="invalid">invalid</option>
+            <option value="banned">banned</option>
+            <option value="all">all</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">source (optional)</label>
+          <input
+            type="text" placeholder="any (e.g. xgodo-import)"
+            value={source} onChange={e => setSource(e.target.value)}
+            className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-yellow-500"
+          />
+        </div>
+        <button
+          onClick={download}
+          disabled={!matching}
+          className="px-4 h-8 bg-yellow-500 hover:bg-yellow-400 disabled:bg-[#222] disabled:text-[#666] text-black text-xs font-semibold rounded transition whitespace-nowrap"
+        >
+          Download {matching != null ? `(${matching.toLocaleString()})` : ''}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Import card — pulls pending tasks from the xgodo AI Studio key job
+// and reviews them. Originally the only Tools card; now one section
+// under the AI Studio keys group.
+// ────────────────────────────────────────────────────────────────
+
+function AIStudioImportCard({ active }: { active: boolean }) {
   const [state, setState] = useState<KeyImportState | null>(null);
   const [jobId, setJobId] = useState<string>('');
   const [limit, setLimit] = useState<number>(50);
@@ -6215,14 +6416,7 @@ function ToolsTab({ active }: { active: boolean }) {
   const counts = state?.counts;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-bold text-white">Tools</h1>
-        <p className="text-[#888] text-xs mt-1 max-w-2xl">
-          One-off admin operations. Each card is self-contained: configure, run, watch the live output.
-        </p>
-      </div>
-
+    <>
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">{error}</div>
       )}
@@ -6371,7 +6565,7 @@ function ToolsTab({ active }: { active: boolean }) {
           <div className="p-8 text-center text-sm text-[#666]">Loading…</div>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
