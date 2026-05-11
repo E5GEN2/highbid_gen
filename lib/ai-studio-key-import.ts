@@ -115,14 +115,15 @@ async function fetchPendingTasks(token: string, jobId: string, limit: number): P
 }
 
 /** PUT /jobs/applicants with the review verdict — same call shape the
- *  data-collection sync uses to confirm processed tasks. Per the
- *  operator: good keys go to 'satisfied'; bad/duplicate keys go to
- *  'declined'. */
+ *  data-collection sync uses. xgodo's valid statuses are
+ *  'confirmed' | 'notcomplete' | 'declined' | 'pending' (verified by
+ *  hitting the API live; 'satisfied' was rejected). 'confirmed' is
+ *  xgodo's term for the operator-satisfied verdict. */
 async function reviewTasks(
   token: string,
   jobId: string,
   taskIds: string[],
-  status: 'satisfied' | 'declined',
+  status: 'confirmed' | 'declined',
   comment: string,
 ): Promise<{ ok: boolean; status: number; error?: string }> {
   if (taskIds.length === 0) return { ok: true, status: 200 };
@@ -181,39 +182,52 @@ function maskKey(key: string): string {
   return `${key.slice(0, 8)}…${key.slice(-4)}`;
 }
 
-/** Hit Google AI Studio's models list via xgodo proxy. 200 + .models[]
- *  = valid. 4xx with PERMISSION_DENIED / API key not valid = invalid.
- *  Any other failure = "error" (not the same as "invalid"). */
-async function testKey(key: string, proxyUrl?: string): Promise<{
-  valid: boolean;
+type KeyTestVerdict = 'valid' | 'invalid' | 'error';
+
+/** Hit Google AI Studio's models list via xgodo proxy.
+ *
+ *   200 + models[] populated   → 'valid'
+ *   400 / 401 / 403 (auth msg) → 'invalid'  (real key rejection by Google)
+ *   network / timeout / 5xx    → 'error'    (proxy or transient — don't
+ *                                            burn an xgodo verdict on this)
+ */
+async function testKey(key: string, proxy?: { url: string; deviceId: string }): Promise<{
+  verdict: KeyTestVerdict;
   reason: string;
   latencyMs: number;
   proxyUsed: string;
 }> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
   const t0 = Date.now();
-  // Build a pair-like object so ytFetchViaProxy uses the supplied proxy.
-  const pair = proxyUrl ? {
-    key: '',                 // not used by the fetch; only the proxy is
-    proxyUrl,
-    proxyDeviceId: 'ai-studio-test',
+  const pair = proxy ? {
+    key: '',                          // unused by ytFetchViaProxy
+    proxyUrl: proxy.url,
+    proxyDeviceId: proxy.deviceId,    // real xgodo device id — surfaced in events
     banned: false,
     banExpiry: 0,
   } : undefined;
   const res = await ytFetchViaProxy(url, pair);
   const latencyMs = Date.now() - t0;
+  const proxyUsed = res.proxyUsed || proxy?.deviceId || '?';
   const data = res.data as { models?: Array<{ name?: string }>; error?: { code?: number; message?: string; status?: string } } | null;
 
+  // Happy path
   if (res.ok && Array.isArray(data?.models) && data.models.length > 0) {
-    return { valid: true, reason: `${data.models.length} models accessible`, latencyMs, proxyUsed: res.proxyUsed || '?' };
+    return { verdict: 'valid', reason: `${data.models.length} models accessible`, latencyMs, proxyUsed };
   }
-  if (res.status === 400 || res.status === 401 || res.status === 403) {
-    const msg = data?.error?.message || res.error || `HTTP ${res.status}`;
-    return { valid: false, reason: msg.slice(0, 200), latencyMs, proxyUsed: res.proxyUsed || '?' };
+  // Google authoritative reject (auth error envelope present)
+  if ((res.status === 400 || res.status === 401 || res.status === 403) && data?.error?.message) {
+    return { verdict: 'invalid', reason: data.error.message.slice(0, 200), latencyMs, proxyUsed };
   }
-  // Anything else (timeout, network failure, weird response) — treat as
-  // ERROR not invalid. Don't burn an xgodo task verdict on a transient.
-  return { valid: false, reason: `inconclusive: ${res.error || res.status || 'no response'}`, latencyMs, proxyUsed: res.proxyUsed || '?' };
+  // Network-side curl errors come back through ytFetchViaProxy as
+  // {ok:false, status:0, error:'curl exit N: ...'} — those are PROXY
+  // failures, not key invalidations. Treat as 'error' and let the
+  // operator re-run later.
+  if (res.error && /curl exit \d+/.test(res.error)) {
+    return { verdict: 'error', reason: `proxy/network: ${res.error.slice(0, 160)}`, latencyMs, proxyUsed };
+  }
+  // Timeout / no response / unexpected payload — also inconclusive.
+  return { verdict: 'error', reason: `inconclusive: ${res.error || (res.status ? `HTTP ${res.status}` : 'no response')}`, latencyMs, proxyUsed };
 }
 
 /** Insert one validated key into our inventory. Idempotent via
@@ -336,33 +350,38 @@ async function runImport(opts: RunImportOpts): Promise<void> {
           declinedTasks.push({ id: task._id, reason: 'no key in submission' });
           state.noKey++;
         } else {
-          // If a worker submits multiple keys in one task, treat ANY good
-          // one as confirming the task. We persist every valid key.
+          // Test each candidate key against Google. We accumulate the
+          // strongest verdict across multiple keys in a single task
+          // (workers sometimes submit several): valid > duplicate >
+          // invalid > error. A network error on one key shouldn't
+          // demote a valid one.
           let anyValid = false;
-          let lastReason = 'no valid key';
-          let firstInsertedId: number | null = null;
           let anyDuplicate = false;
+          let anyInvalid = false;
+          let anyNetError = false;
+          let lastReason = 'no test completed';
+          let firstInsertedId: number | null = null;
           for (const key of keys) {
             evt.key = maskKey(key);
             evt.keyFull = key;
             // Random proxy from the active pool — same selection strategy
-            // the niche-explorer embedding pipeline uses (random > round
-            // robin in the bench we ran on embeddings).
+            // the niche-explorer embedding pipeline uses (bench: random
+            // outperforms round-robin on flaky-proxy success rate).
             const proxy = await getRandomProxy();
-            const test = await testKey(key, proxy?.url);
+            const test = await testKey(key, proxy ? { url: proxy.url, deviceId: proxy.deviceId } : undefined);
             evt.latencyMs = test.latencyMs;
             evt.proxyUsed = test.proxyUsed;
             lastReason = test.reason;
-            if (test.valid) {
+            if (test.verdict === 'valid') {
               const p = await persistKey(key, {
                 taskId: task._id, jobId, worker: task.worker_name, device: task.device_name,
               });
-              if (p.duplicate) {
-                anyDuplicate = true;
-              } else {
-                anyValid = true;
-                firstInsertedId = firstInsertedId ?? p.insertedId;
-              }
+              if (p.duplicate) anyDuplicate = true;
+              else { anyValid = true; firstInsertedId = firstInsertedId ?? p.insertedId; }
+            } else if (test.verdict === 'invalid') {
+              anyInvalid = true;
+            } else {
+              anyNetError = true;
             }
           }
 
@@ -375,15 +394,24 @@ async function runImport(opts: RunImportOpts): Promise<void> {
           } else if (anyDuplicate) {
             evt.result = 'duplicate';
             evt.reason = 'already in inventory';
-            // Duplicates get DECLINED per operator policy — we don't pay
-            // for keys we already have.
             declinedTasks.push({ id: task._id, reason: 'duplicate key — already in inventory' });
             state.duplicate++;
-          } else {
+          } else if (anyInvalid && !anyNetError) {
+            // Only decline as INVALID when Google authoritatively
+            // rejected the key. Mixed signals (1 invalid + 1 net err)
+            // are too noisy — leave the task pending for retry.
             evt.result = 'invalid';
             evt.reason = lastReason;
             declinedTasks.push({ id: task._id, reason: lastReason.slice(0, 100) });
             state.invalid++;
+          } else {
+            // Pure network error or mixed inconclusive — count it but
+            // DO NOT review the task. It stays pending on xgodo; next
+            // run will re-pull and re-test.
+            evt.result = 'error';
+            evt.reason = lastReason;
+            evt.action = 'skipped';
+            state.errors++;
           }
         }
       } catch (err) {
@@ -408,13 +436,11 @@ async function runImport(opts: RunImportOpts): Promise<void> {
     const stamp = new Date().toISOString().slice(0, 19);
     const suffix = opts.commentSuffix ? ` ${opts.commentSuffix}` : '';
     if (satisfiedIds.length > 0) {
-      const r = await reviewTasks(token, jobId, satisfiedIds, 'satisfied',
+      const r = await reviewTasks(token, jobId, satisfiedIds, 'confirmed',
         `rofe.ai AI Studio key import @ ${stamp}${suffix}`);
-      if (!r.ok) state.lastError = `satisfied batch failed: ${r.error}`;
-      // Annotate the events with the action that was taken so the UI
-      // can show satisfied/declined per row.
+      if (!r.ok) state.lastError = `confirm batch failed: ${r.error}`;
       for (const e of state.events) {
-        if (satisfiedIds.includes(e.taskId)) e.action = 'confirmed';   // 'confirmed' kept as the UI's affirmative label
+        if (satisfiedIds.includes(e.taskId)) e.action = 'confirmed';
       }
     }
     for (const d of declinedTasks) {
