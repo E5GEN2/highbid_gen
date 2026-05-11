@@ -3,7 +3,12 @@ import { Pool } from 'pg';
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  max: 20,
+  // Bumped 20 → 50. The novelty + ai-labels backfills run with 10-12
+  // worker threads each, plus video-seed requests need their own
+  // connections. At max=20, those jobs together starved the pool and
+  // page requests got "timeout exceeded when trying to connect".
+  // Railway pg default max_connections=100, so 50 is half the budget.
+  max: 50,
   idleTimeoutMillis: 30000,
   // Bumped from 10s — getLatestGlobalRun fans out 6 queries in
   // parallel and the niche-tree page can stack a few simultaneous
