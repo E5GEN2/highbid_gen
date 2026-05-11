@@ -35,15 +35,18 @@ export async function GET(req: NextRequest) {
   const minSim = sp.get('minSim');
   const limit = Math.min(parseInt(sp.get('limit') || '200') || 200, 1000);
 
+  // Prefix every column with `e.` (niche_seed_expansions) — niche_spy_videos
+  // shares column names (keyword, task_id) so bare references are ambiguous
+  // after the LEFT JOIN below.
   const conds: string[] = [];
   const args: (string | number | boolean)[] = [];
   let p = 1;
-  if (since)   { conds.push(`detected_at > $${p++}`); args.push(since); }
-  if (taskId)  { conds.push(`task_id = $${p++}`); args.push(taskId); }
-  if (keyword) { conds.push(`keyword = $${p++}`); args.push(keyword); }
-  if (matched === 'true')  { conds.push(`matched = TRUE`); }
-  if (matched === 'false') { conds.push(`matched = FALSE`); }
-  if (minSim)  { conds.push(`similarity >= $${p++}`); args.push(parseFloat(minSim)); }
+  if (since)   { conds.push(`e.detected_at > $${p++}`); args.push(since); }
+  if (taskId)  { conds.push(`e.task_id = $${p++}`); args.push(taskId); }
+  if (keyword) { conds.push(`e.keyword = $${p++}`); args.push(keyword); }
+  if (matched === 'true')  { conds.push(`e.matched = TRUE`); }
+  if (matched === 'false') { conds.push(`e.matched = FALSE`); }
+  if (minSim)  { conds.push(`e.similarity >= $${p++}`); args.push(parseFloat(minSim)); }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   args.push(limit);
 
@@ -94,12 +97,12 @@ export async function GET(req: NextRequest) {
   }>(
     `SELECT
        COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE matched) AS matched_count,
-       COUNT(*) FILTER (WHERE error_message IS NOT NULL) AS error_count,
-       AVG(similarity) FILTER (WHERE similarity IS NOT NULL) AS avg_sim,
-       COUNT(DISTINCT seed_video_id) AS distinct_seeds,
-       COUNT(DISTINCT task_id) FILTER (WHERE task_id IS NOT NULL) AS distinct_tasks
-     FROM niche_seed_expansions
+       COUNT(*) FILTER (WHERE e.matched) AS matched_count,
+       COUNT(*) FILTER (WHERE e.error_message IS NOT NULL) AS error_count,
+       AVG(e.similarity) FILTER (WHERE e.similarity IS NOT NULL) AS avg_sim,
+       COUNT(DISTINCT e.seed_video_id) AS distinct_seeds,
+       COUNT(DISTINCT e.task_id) FILTER (WHERE e.task_id IS NOT NULL) AS distinct_tasks
+     FROM niche_seed_expansions e
      ${where}`,
     args.slice(0, -1),
   );
