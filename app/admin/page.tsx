@@ -29,7 +29,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1580,6 +1580,7 @@ export default function AdminPage() {
     { key: 'novelty',        label: 'Novelty',         dot: 'bg-indigo-500/70' },
     { key: 'tree',           label: 'Niche Tree',      dot: 'bg-amber-500/70' },
     { key: 'lifecycle',      label: 'Cluster Lifecycle', dot: 'bg-fuchsia-500/70' },
+    { key: 'seed',           label: 'Video Seed',      dot: 'bg-emerald-500/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5702,6 +5703,14 @@ export default function AdminPage() {
         <div style={{ display: adminSection === 'lifecycle' ? 'block' : 'none' }}>
           <ClusterLifecycleTab active={adminSection === 'lifecycle'} />
         </div>
+
+        {/* Video Seed Tab — live feed of niche_seed_expansions written
+            by the new /api/niche-spy/video-seed/expand endpoint (which
+            xgodo agents call instead of the keyword + Gemini scoring
+            path). Polls /api/admin/niche-spy/seed-feed every 3s. */}
+        <div style={{ display: adminSection === 'seed' ? 'block' : 'none' }}>
+          <VideoSeedTab active={adminSection === 'seed'} />
+        </div>
       </div>
     </div>
   );
@@ -6080,6 +6089,257 @@ function ClusterLifecycleTab({ active }: { active: boolean }) {
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl h-14 animate-pulse" />
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// Video Seed Tab — live feed of niche_seed_expansions rows written
+// by /api/niche-spy/video-seed/expand. xgodo agents POST seed +
+// candidate URLs there; we render every (seed, candidate, similarity)
+// tuple as it lands, newest-first.
+// ────────────────────────────────────────────────────────────────
+
+interface SeedFeedRow {
+  id: string;
+  seedVideoId: number | null;
+  seedUrl: string | null;
+  seedTitle: string | null;
+  seedThumbnail: string | null;
+  candidateVideoId: number | null;
+  candidateUrl: string;
+  candidateTitle: string | null;
+  candidateThumbnail: string | null;
+  similarity: number | null;
+  matched: boolean;
+  threshold: number | null;
+  rankInBatch: number | null;
+  taskId: string | null;
+  keyword: string | null;
+  errorMessage: string | null;
+  detectedAt: string | null;
+}
+
+interface SeedFeedStats {
+  total: number;
+  matched: number;
+  errors: number;
+  avgSimilarity: number | null;
+  distinctSeeds: number;
+  distinctTasks: number;
+}
+
+function VideoSeedTab({ active }: { active: boolean }) {
+  const [rows, setRows] = useState<SeedFeedRow[]>([]);
+  const [stats, setStats] = useState<SeedFeedStats | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [taskFilter, setTaskFilter] = useState('');
+  const [keywordFilter, setKeywordFilter] = useState('');
+  const [matchedOnly, setMatchedOnly] = useState(false);
+  const [minSimFilter, setMinSimFilter] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const seenIds = useRef<Set<string>>(new Set());
+
+  const fetchFeed = useCallback(async () => {
+    try {
+      const sp = new URLSearchParams();
+      sp.set('limit', '200');
+      if (taskFilter.trim()) sp.set('taskId', taskFilter.trim());
+      if (keywordFilter.trim()) sp.set('keyword', keywordFilter.trim());
+      if (matchedOnly) sp.set('matched', 'true');
+      if (minSimFilter.trim()) sp.set('minSim', minSimFilter.trim());
+      const r = await fetch(`/api/admin/niche-spy/seed-feed?${sp.toString()}`);
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+      setRows(d.rows ?? []);
+      setStats(d.stats ?? null);
+      seenIds.current = new Set((d.rows ?? []).map((row: SeedFeedRow) => row.id));
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [taskFilter, keywordFilter, matchedOnly, minSimFilter]);
+
+  // Initial load + filter-change reload.
+  useEffect(() => {
+    if (!active) return;
+    fetchFeed();
+  }, [active, fetchFeed]);
+
+  // Auto-poll every 3s while the tab is open + autoRefresh on.
+  useEffect(() => {
+    if (!active || !autoRefresh) return;
+    const t = setInterval(fetchFeed, 3000);
+    return () => clearInterval(t);
+  }, [active, autoRefresh, fetchFeed]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-xl font-bold text-white">Video Seed</h1>
+          <p className="text-[#888] text-xs mt-1 max-w-2xl">
+            Live feed of <code className="text-emerald-400 text-[11px]">niche_seed_expansions</code> —
+            every (seed, candidate, cosine similarity) tuple xgodo agents submit via
+            <code className="text-emerald-400 text-[11px] mx-1">/api/niche-spy/video-seed/expand</code>.
+            Each candidate is compared against its seed video in the combined_v2 multimodal embedding
+            space; the &quot;matched&quot; flag reflects whether it passed the request&apos;s topK / threshold.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="flex items-center gap-1.5 text-xs text-[#888] cursor-pointer">
+            <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} className="accent-emerald-500" />
+            Auto refresh (3s)
+          </label>
+          <button
+            onClick={fetchFeed}
+            className="px-3 h-8 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 text-xs font-medium rounded transition"
+          >
+            Refresh now
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">{error}</div>
+      )}
+
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+          {[
+            { label: 'Total events', value: stats.total.toLocaleString(), color: 'text-white' },
+            { label: 'Matched', value: stats.matched.toLocaleString(), color: 'text-emerald-400' },
+            { label: 'Errors', value: stats.errors.toLocaleString(), color: stats.errors > 0 ? 'text-red-400' : 'text-[#666]' },
+            { label: 'Avg sim', value: stats.avgSimilarity != null ? stats.avgSimilarity.toFixed(3) : '—', color: 'text-blue-400' },
+            { label: 'Distinct seeds', value: stats.distinctSeeds.toLocaleString(), color: 'text-[#888]' },
+            { label: 'Distinct tasks', value: stats.distinctTasks.toLocaleString(), color: 'text-[#888]' },
+          ].map((s, i) => (
+            <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+              <div className={`text-lg font-bold ${s.color}`}>{s.value}</div>
+              <div className="text-[10px] text-[#666] uppercase tracking-wider">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-[#666]">Task:</span>
+          <input
+            type="text" placeholder="any" value={taskFilter}
+            onChange={e => setTaskFilter(e.target.value)}
+            className="w-32 px-2 h-7 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-[#666]">Keyword:</span>
+          <input
+            type="text" placeholder="any" value={keywordFilter}
+            onChange={e => setKeywordFilter(e.target.value)}
+            className="w-40 px-2 h-7 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-[#666]">Min sim:</span>
+          <input
+            type="number" min={0} max={1} step={0.05} placeholder="0.00" value={minSimFilter}
+            onChange={e => setMinSimFilter(e.target.value)}
+            className="w-20 px-2 h-7 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+        <label className="flex items-center gap-1.5 text-xs text-[#888] cursor-pointer">
+          <input type="checkbox" checked={matchedOnly} onChange={e => setMatchedOnly(e.target.checked)} className="accent-emerald-500" />
+          Matched only
+        </label>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-8 text-center text-sm text-[#666]">
+          No expansions yet. xgodo agents will populate this as they call
+          <code className="text-emerald-400 text-[11px] mx-1">/api/niche-spy/video-seed/expand</code>.
+        </div>
+      ) : (
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
+          <div className="grid grid-cols-[160px_2fr_24px_2fr_90px_70px_120px_90px] gap-3 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
+            <div>Time</div>
+            <div>Seed</div>
+            <div></div>
+            <div>Candidate</div>
+            <div className="text-right">Similarity</div>
+            <div className="text-center">Matched</div>
+            <div>Task</div>
+            <div>Keyword</div>
+          </div>
+          <div className="divide-y divide-[#1a1a1a]">
+            {rows.map(r => {
+              const simPct = r.similarity != null ? (r.similarity * 100).toFixed(1) : null;
+              const ts = r.detectedAt ? new Date(r.detectedAt) : null;
+              return (
+                <div key={r.id} className="grid grid-cols-[160px_2fr_24px_2fr_90px_70px_120px_90px] gap-3 px-3 py-2 items-center hover:bg-[#181818] transition">
+                  <div className="text-[11px] text-[#888] font-mono">
+                    {ts ? `${ts.toLocaleTimeString()}.${String(ts.getMilliseconds()).padStart(3,'0')}` : '—'}
+                  </div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    {r.seedThumbnail ? (
+                      <img src={r.seedThumbnail} alt="" className="w-10 h-6 object-cover rounded flex-shrink-0" />
+                    ) : (
+                      <div className="w-10 h-6 bg-[#222] rounded flex-shrink-0" />
+                    )}
+                    <div className="text-xs text-white truncate" title={r.seedTitle || r.seedUrl || ''}>
+                      {r.seedTitle || r.seedUrl || `#${r.seedVideoId}`}
+                    </div>
+                  </div>
+                  <div className="text-[#444] text-center">→</div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    {r.candidateThumbnail ? (
+                      <img src={r.candidateThumbnail} alt="" className="w-10 h-6 object-cover rounded flex-shrink-0" />
+                    ) : (
+                      <div className="w-10 h-6 bg-[#222] rounded flex-shrink-0" />
+                    )}
+                    <a
+                      href={r.candidateUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-white hover:text-emerald-400 truncate"
+                      title={r.candidateTitle || r.candidateUrl}
+                    >
+                      {r.candidateTitle || r.candidateUrl}
+                    </a>
+                  </div>
+                  <div className={`text-right text-xs font-mono ${
+                    r.similarity == null ? 'text-[#444]' :
+                    r.similarity >= 0.5  ? 'text-emerald-400' :
+                    r.similarity >= 0.3  ? 'text-yellow-400' :
+                                           'text-[#666]'
+                  }`}>
+                    {r.errorMessage ? <span className="text-red-400" title={r.errorMessage}>err</span> :
+                     simPct != null ? `${simPct}%` : '—'}
+                  </div>
+                  <div className="text-center">
+                    {r.matched ? (
+                      <span className="inline-block bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                        match
+                      </span>
+                    ) : r.errorMessage ? (
+                      <span className="inline-block bg-red-500/15 text-red-400 border border-red-500/30 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                        err
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-[#444]">—</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-[#888] font-mono truncate" title={r.taskId ?? ''}>
+                    {r.taskId ? r.taskId.slice(-12) : '—'}
+                  </div>
+                  <div className="text-[11px] text-[#888] truncate" title={r.keyword ?? ''}>
+                    {r.keyword ?? '—'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

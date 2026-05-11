@@ -825,6 +825,36 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nce_event ON niche_cluster_events(event)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nce_detected ON niche_cluster_events(detected_at DESC)`).catch(() => {});
 
+    // Video-seed niche discovery — replacement for the per-keyword Gemini
+    // scoring loop. xgodo agents POST a seed video + candidate URLs
+    // (typically pulled from the seed's YT "suggested" panel); we fetch
+    // their titles/thumbnails, embed via combined_v2, cosine-compare
+    // against the seed, and log every (seed, candidate, similarity)
+    // tuple here. The admin UI polls this table to render a live feed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_seed_expansions (
+        id BIGSERIAL PRIMARY KEY,
+        seed_video_id INTEGER,                -- niche_spy_videos.id of the seed (null until ingested)
+        seed_url TEXT,                        -- canonical seed URL (always set)
+        candidate_video_id INTEGER,           -- niche_spy_videos.id of the candidate (null on fail)
+        candidate_url TEXT NOT NULL,
+        candidate_title TEXT,
+        candidate_thumbnail TEXT,
+        similarity REAL,                      -- cosine(seed, candidate) in combined_v2; null if either failed to embed
+        matched BOOLEAN NOT NULL DEFAULT FALSE, -- passed the threshold/topK of the originating request
+        threshold REAL,                       -- the threshold used for this request (null if topK)
+        rank_in_batch INTEGER,                -- 1-based rank within the candidate set
+        task_id TEXT,                         -- xgodo task that submitted this (for filtering in the admin feed)
+        keyword TEXT,                         -- optional niche label the operator supplies for grouping
+        error_message TEXT,                   -- non-null if we couldn't fetch/embed the candidate
+        detected_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_detected ON niche_seed_expansions(detected_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_task ON niche_seed_expansions(task_id, detected_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_seed ON niche_seed_expansions(seed_video_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_matched ON niche_seed_expansions(matched, detected_at DESC)`).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_tree_assignments (
         id SERIAL PRIMARY KEY,
