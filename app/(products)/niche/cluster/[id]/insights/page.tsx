@@ -19,6 +19,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { fmtYT } from '@/lib/format';
 import { ClusterTabs } from '@/components/ClusterTabs';
+import { ClusterHeader } from '@/components/ClusterHeader';
 import NicheTimeline from '@/components/NicheTimeline';
 import { OpportunityIndicators, OpportunityIndicatorsSkeleton } from '@/components/OpportunityIndicators';
 import { ChannelScatter, type ScatterDot } from '@/components/ChannelScatter';
@@ -84,53 +85,12 @@ export default function ClusterInsightsPage() {
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto">
-      {/* Back link */}
-      <Link href="/niche/niches" className="inline-flex items-center gap-1.5 text-xs text-[#888] hover:text-white transition mb-3">
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-        </svg>
-        Back to niches
-      </Link>
-
-      {/* Ancestors */}
-      {breadcrumbItems.length > 0 && (
-        <div className="flex items-center gap-1.5 text-xs text-[#666] mb-3 flex-wrap">
-          {breadcrumbItems.map((a, i) => (
-            <React.Fragment key={a.id}>
-              <Link href={`/niche/cluster/${a.id}`} className="hover:text-amber-400 transition">
-                L{a.level}: {a.label || a.autoLabel || `Cluster ${a.id}`}
-              </Link>
-              {i < breadcrumbItems.length - 1 && <span className="text-[#444]">›</span>}
-            </React.Fragment>
-          ))}
-        </div>
-      )}
-
-      {/* Cluster header — same shape as detail page but read-only here. */}
-      {parentLoading && !parent ? (
-        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-6 mb-6 animate-pulse">
-          <div className="h-6 w-72 bg-[#1f1f1f] rounded mb-3" />
-          <div className="h-4 w-48 bg-[#1f1f1f] rounded" />
-        </div>
-      ) : parentError ? (
-        <div className="bg-[#141414] border border-red-500/30 rounded-xl p-6 mb-6 text-sm text-red-400">
-          Failed to load cluster: {parentError}
-        </div>
-      ) : parent ? (
-        <div className="mb-6">
-          <div className="text-[10px] text-[#666] uppercase tracking-wider mb-1">
-            L{parent.level} cluster · {parent.videoCount} videos
-          </div>
-          <h1 className="text-2xl font-bold text-white leading-tight mb-2">
-            {parent.label || parent.autoLabel || `Cluster ${parent.id}`}
-          </h1>
-          <div className="flex items-center gap-4 flex-wrap text-xs text-[#888]">
-            <span><span className="text-green-400">{fmtYT(parent.totalViews ?? 0)}</span> total views</span>
-            <span><span className="text-blue-400">{fmtYT(parent.avgViews ?? 0)}</span> avg / video</span>
-            <span>⚡ <span className="text-white">{parent.avgScore ?? 0}</span> avg score</span>
-          </div>
-        </div>
-      ) : null}
+      <ClusterHeader
+        parent={parent ? { ...parent, topChannels: [] } : null}
+        ancestors={ancestors}
+        loading={parentLoading}
+        error={parentError}
+      />
 
       <ClusterTabs clusterId={clusterId} active="insights" />
 

@@ -1,12 +1,10 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import Link from 'next/link';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams } from 'next/navigation';
-import { fmtYT } from '@/lib/format';
-import { NicheClusterCard } from '@/components/NicheClusterCard';
 import { NicheVideoCard, type NicheVideoCardData } from '@/components/NicheVideoCard';
 import { ClusterTabs } from '@/components/ClusterTabs';
+import { ClusterHeader } from '@/components/ClusterHeader';
 
 interface PopularVideo {
   videoId: number;
@@ -162,75 +160,21 @@ export default function ClusterDetailPage() {
     const items: Ancestor[] = [...ancestors].reverse();
     return items;
   }, [ancestors]);
+  void breadcrumbItems;   // kept for backward-compat references; ClusterHeader owns rendering now
 
   if (!clusterId) return <div className="px-8 py-8 text-red-400">Invalid cluster id</div>;
 
   return (
     <div className="px-8 py-8 max-w-7xl mx-auto">
-      {/* Back link */}
-      <Link href="/niche/niches" className="inline-flex items-center gap-1.5 text-xs text-[#888] hover:text-white transition mb-3">
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-        </svg>
-        Back to niches
-      </Link>
+      <ClusterHeader
+        parent={parent}
+        ancestors={ancestors}
+        childrenCount={children.length}
+        loading={loading}
+        error={error}
+      />
 
-      {/* Ancestor chain — clickable so users can step back up the tree */}
-      {breadcrumbItems.length > 0 && (
-        <div className="flex items-center gap-1.5 text-xs text-[#666] mb-3 flex-wrap">
-          {breadcrumbItems.map((a, i) => (
-            <React.Fragment key={a.id}>
-              <Link href={`/niche/cluster/${a.id}`} className="hover:text-amber-400 transition">
-                L{a.level}: {a.label || a.autoLabel || `Cluster ${a.id}`}
-              </Link>
-              {i < breadcrumbItems.length - 1 && <span className="text-[#444]">›</span>}
-            </React.Fragment>
-          ))}
-        </div>
-      )}
-
-      {/* Cluster header */}
-      {loading && !parent ? (
-        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-6 mb-6 animate-pulse">
-          <div className="h-6 w-72 bg-[#1f1f1f] rounded mb-3" />
-          <div className="h-4 w-48 bg-[#1f1f1f] rounded" />
-        </div>
-      ) : error ? (
-        <div className="bg-[#141414] border border-red-500/30 rounded-xl p-6 mb-6 text-sm text-red-400">
-          Failed to load cluster: {error}
-        </div>
-      ) : parent ? (
-        <div className="mb-6">
-          <div className="text-[10px] text-[#666] uppercase tracking-wider mb-1">
-            L{parent.level} cluster · {parent.videoCount} videos · {children.length} sub-niche{children.length === 1 ? '' : 's'}
-          </div>
-          <h1 className="text-2xl font-bold text-white leading-tight mb-2">
-            {parent.label || parent.autoLabel || `Cluster ${parent.id}`}
-          </h1>
-          <div className="flex items-center gap-4 flex-wrap text-xs text-[#888]">
-            <span><span className="text-green-400">{fmtYT(parent.totalViews ?? 0)}</span> total views</span>
-            <span><span className="text-blue-400">{fmtYT(parent.avgViews ?? 0)}</span> avg / video</span>
-            <span>⚡ <span className="text-white">{parent.avgScore ?? 0}</span> avg score</span>
-            {parent.topChannels.length > 0 && (
-              <span className="truncate" title={parent.topChannels.join(' · ')}>
-                top: {parent.topChannels.slice(0, 3).join(' · ')}
-              </span>
-            )}
-          </div>
-        </div>
-      ) : null}
-
-      <ClusterTabs clusterId={clusterId} active="detail" />
-
-      {/* L2 children — same wide-row card as the home grid */}
-      {children.length > 0 && (
-        <div className="mb-8">
-          <h2 className="text-sm font-medium text-white mb-3">Sub-niches ({children.length})</h2>
-          <div className="space-y-3">
-            {children.map(c => <NicheClusterCard key={c.id} cluster={c} />)}
-          </div>
-        </div>
-      )}
+      <ClusterTabs clusterId={clusterId} active="videos" childrenCount={children.length} />
 
       {/* Videos in this cluster */}
       <div>
