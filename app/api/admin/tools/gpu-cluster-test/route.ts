@@ -50,6 +50,12 @@ interface TestState {
   error: string | null;
   delayMs: number | null;
   executionMs: number | null;
+  /** Every line the dispatcher's onProgress callback fires — RunPod
+   *  status transitions ("[runpod] status → ...") and (now) every
+   *  [cluster] / [bake] line the container streams via the PG log
+   *  sink. Used to verify the log-streaming path end-to-end without
+   *  having to grep Railway service logs. */
+  logs: string[];
 }
 
 // Module-scoped state lets a single GET poll the in-flight test from
@@ -57,7 +63,7 @@ interface TestState {
 let state: TestState = {
   startedAt: null, finishedAt: null, running: false, jobId: null,
   videoIds: 0, source: 'combined_v2', result: null, error: null,
-  delayMs: null, executionMs: null,
+  delayMs: null, executionMs: null, logs: [],
 };
 let inFlight = false;
 
@@ -155,6 +161,7 @@ export async function POST(req: NextRequest) {
     error:      null,
     delayMs:    null,
     executionMs: null,
+    logs:       [],
   };
 
   // Fire and forget — the dispatcher's poll loop runs in this async
@@ -175,7 +182,13 @@ export async function POST(req: NextRequest) {
         },
         timeoutMs: 15 * 60 * 1000, // 15 min cap — anything longer means something's wrong for a 5k test.
         onJobStart: (jid) => { state.jobId = jid; },
-        onProgress: (msg) => console.log(`[gpu-test] ${msg}`),
+        onProgress: (msg) => {
+          console.log(`[gpu-test] ${msg}`);
+          // Append to in-memory state so a GET can verify the full
+          // log stream after the run. Cap at 1000 lines for safety.
+          state.logs.push(msg);
+          if (state.logs.length > 1000) state.logs.splice(0, state.logs.length - 1000);
+        },
       });
       const out = r.result as { num_clusters?: number; num_noise?: number; runtime?: Record<string, unknown> };
       state.result = {
