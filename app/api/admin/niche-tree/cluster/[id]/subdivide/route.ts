@@ -28,7 +28,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ error: 'invalid cluster id' }, { status: 400 });
   }
 
-  let body: { source?: TreeSource; minClusterSize?: number; minSamples?: number; umapDims?: number } = {};
+  let body: {
+    source?: TreeSource;
+    minClusterSize?: number;
+    minSamples?: number;
+    umapDims?: number;
+    executionMode?: 'cpu' | 'gpu';
+  } = {};
   try { body = await req.json(); } catch { /* empty body ok */ }
 
   const pool = await getPool();
@@ -81,6 +87,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     minClusterSize: body.minClusterSize,
     minSamples:     body.minSamples,
     umapDims:       body.umapDims,
+    executionMode:  body.executionMode === 'gpu' ? 'gpu' as const : undefined,
   };
 
   const runRes = await pool.query<{ id: number }>(

@@ -42,6 +42,7 @@ export async function POST(req: NextRequest) {
     minSamples?: number;
     umapDims?: number;
     minScore?: number;
+    executionMode?: 'cpu' | 'gpu';
   } = {};
   try { body = await req.json(); } catch { /* empty body ok */ }
 
@@ -75,6 +76,9 @@ export async function POST(req: NextRequest) {
     minSamples:     body.minSamples     ?? 10,
     umapDims:       body.umapDims       ?? 50,
     minScore:       body.minScore       ?? 0,
+    // Persisted into niche_tree_runs.params so resumeL2Baking can
+    // inherit it later without the caller having to remember.
+    executionMode:  body.executionMode === 'gpu' ? 'gpu' as const : undefined,
   };
 
   const runRes = await pool.query<{ id: number }>(

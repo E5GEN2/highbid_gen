@@ -24,6 +24,12 @@ import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import {
+  dispatchClusterToRunPod,
+  getRunPodCreds,
+  GPU_DISPATCH_MIN_VIDEOS,
+  type ClusterExecutionMode,
+} from './runpod-cluster';
 
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 
@@ -323,6 +329,14 @@ export interface TreeClusterParams {
   umapDims?: number;
   minScore?: number;
   source?: TreeSource;
+  /**
+   * 'cpu' (default) runs UMAP+HDBSCAN as a local subprocess on the
+   * Railway worker. 'gpu' dispatches to the cuML RunPod Serverless
+   * worker — same script, same I/O, ~10-15× faster. Requires both
+   * admin_config.runpod_api_key and .runpod_cluster_endpoint_id to
+   * be set. Tiny subdivides auto-fall-back to CPU.
+   */
+  executionMode?: ClusterExecutionMode;
 }
 
 export interface TreeRun {
@@ -400,6 +414,14 @@ async function runOneClusteringPipeline(opts: {
   outlierIqrMult?: number;
   scriptKeyword: string;     // sentinel for Python's logging/labeling path
   pyTimeoutMs?: number;      // default 90 min
+  /**
+   * Where to execute the UMAP+HDBSCAN. 'cpu' (default) shells out to
+   * the local Python subprocess on Railway; 'gpu' dispatches to the
+   * cuML RunPod Serverless worker. Tiny runs (< GPU_DISPATCH_MIN_VIDEOS)
+   * fall back to CPU automatically because RunPod cold-start dwarfs
+   * their CPU runtime.
+   */
+  executionMode?: ClusterExecutionMode;
 }): Promise<
   | { ok: true; numClusters: number; numNoise: number; insertedClusterIds: number[] }
   | { ok: false; error: string }
@@ -410,8 +432,24 @@ async function runOneClusteringPipeline(opts: {
     return { ok: false, error: 'VECTOR_DB_URL env var is required (use the Railway internal hostname to avoid egress charges)' };
   }
 
-  const tmpFile = path.join(os.tmpdir(), `cluster-tree-${opts.runId}.json`);
-  fs.writeFileSync(tmpFile, JSON.stringify({
+  // Resolve execution mode: caller override takes precedence, else
+  // default 'cpu' (no admin-config global toggle — operator opts in
+  // explicitly per dispatch via the route's executionMode param).
+  // Tiny runs fall back to CPU regardless because the ~30s RunPod
+  // cold-start dwarfs the local CPU runtime for sub-5k video sets.
+  const requestedMode: ClusterExecutionMode = opts.executionMode ?? 'cpu';
+  const sizeGated = requestedMode === 'gpu' && opts.videoIds.length < GPU_DISPATCH_MIN_VIDEOS;
+  const effectiveMode: ClusterExecutionMode = sizeGated ? 'cpu' : requestedMode;
+  if (sizeGated) {
+    console.log(
+      `[niche-tree] run ${opts.runId}: GPU requested but |videoIds|=${opts.videoIds.length}` +
+      ` < ${GPU_DISPATCH_MIN_VIDEOS}; falling back to CPU`,
+    );
+  }
+
+  // Same payload shape regardless of execution mode — the GPU handler
+  // forwards it verbatim to cluster-niches.py inside the container.
+  const scriptPayload = {
     db_url: vectorDbUrl,
     keyword: opts.scriptKeyword,
     video_ids: opts.videoIds,
@@ -421,7 +459,12 @@ async function runOneClusteringPipeline(opts: {
     umap_dims:        opts.umapDims,
     compute_2d:       false,
     outlier_iqr_mult: opts.outlierIqrMult ?? 3.0,
-  }));
+  };
+
+  const tmpFile = path.join(os.tmpdir(), `cluster-tree-${opts.runId}.json`);
+  if (effectiveMode === 'cpu') {
+    fs.writeFileSync(tmpFile, JSON.stringify(scriptPayload));
+  }
 
   const startedAt = new Date().toISOString();
   let currentStage: TreeStage = 'starting';
@@ -459,65 +502,124 @@ async function runOneClusteringPipeline(opts: {
     return null;
   };
 
-  try {
-    const py = spawn('python3', [
-      path.join(SCRIPTS_DIR, 'cluster-niches.py'), tmpFile,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-    activePyProcesses.set(opts.runId, py);
-    const timer = setTimeout(() => py.kill('SIGTERM'), opts.pyTimeoutMs ?? 5_400_000);
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let stderrBuf = '';
-
-    py.stdout.on('data', (c: Buffer) => stdoutChunks.push(c));
-    py.stderr.on('data', async (c: Buffer) => {
-      stderrChunks.push(c);
-      stderrBuf += c.toString();
-      const lines = stderrBuf.split('\n');
-      stderrBuf = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        recentLogs.push(line);
-        if (recentLogs.length > 12) recentLogs.shift();
-
-        const next = detectStage(line);
-        if (next) {
-          if (currentStage === 'starting' && next !== 'fetching') {
-            stagesElapsedMs['fetching'] = Date.now() - new Date(stageStartedAt).getTime();
-            currentStage = 'fetching';
-            stageStartedAt = new Date().toISOString();
-          }
-          let extra: Partial<TreeProgress> | undefined;
-          const m = /\[cluster\] HDBSCAN:\s*(\d+)\s*clusters,\s*(\d+)\s*noise/.exec(line);
-          if (m) extra = { numClusters: parseInt(m[1]), numNoise: parseInt(m[2]) };
-          await transitionTo(next, extra);
-        } else {
-          await writeProgress(opts.runId, { recentLogs: [...recentLogs] });
-        }
+  // Reusable stderr-line ingestion — drives the same progress UI
+  // regardless of which backend produced the line. Returned by the
+  // dispatch helpers as `result` (parsed JSON) ready for downstream
+  // PG-write code.
+  const ingestLine = async (line: string) => {
+    if (!line.trim()) return;
+    recentLogs.push(line);
+    if (recentLogs.length > 12) recentLogs.shift();
+    const next = detectStage(line);
+    if (next) {
+      if (currentStage === 'starting' && next !== 'fetching') {
+        stagesElapsedMs['fetching'] = Date.now() - new Date(stageStartedAt).getTime();
+        currentStage = 'fetching';
+        stageStartedAt = new Date().toISOString();
       }
-    });
-
-    await transitionTo('fetching');
-
-    const exitCode: number = await new Promise((resolve, reject) => {
-      py.on('close', (code) => resolve(code ?? -1));
-      py.on('error', reject);
-    });
-    clearTimeout(timer);
-    activePyProcesses.delete(opts.runId);
-    try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
-
-    const stdout = Buffer.concat(stdoutChunks).toString();
-    const stderr = Buffer.concat(stderrChunks).toString();
-    if (exitCode !== 0) {
-      throw Object.assign(new Error(`python exit ${exitCode}`), {
-        stderr, signal: py.signalCode, killed: py.killed,
-      });
+      let extra: Partial<TreeProgress> | undefined;
+      const m = /\[cluster\] HDBSCAN:\s*(\d+)\s*clusters,\s*(\d+)\s*noise/.exec(line);
+      if (m) extra = { numClusters: parseInt(m[1]), numNoise: parseInt(m[2]) };
+      await transitionTo(next, extra);
+    } else {
+      await writeProgress(opts.runId, { recentLogs: [...recentLogs] });
     }
-    if (stderr) console.log(`[niche-tree] run ${opts.runId} stderr tail:`, stderr.slice(-400));
+  };
 
-    const result = JSON.parse(stdout);
+  try {
+    // The downstream code (cluster + assignment inserts below) reads
+    // many fields off cluster-niches.py's output dynamically; widening
+    // the type to a record keeps it compatible without forcing a full
+    // schema mirror on the TS side.
+    interface ScriptCluster {
+      cluster_index: number;
+      auto_label: string;
+      video_count: number;
+      video_ids: number[];
+      representative_video_id: number | null;
+      centroid_2d: number[];
+    }
+    interface ScriptAssign {
+      video_id: number;
+      cluster_index: number;
+      x_2d: number;
+      y_2d: number;
+      distance: number;
+    }
+    let result: {
+      error?: string;
+      num_clusters: number;
+      num_noise: number;
+      clusters: ScriptCluster[];
+      assignments: ScriptAssign[];
+    };
+
+    if (effectiveMode === 'gpu') {
+      // RunPod dispatch path. Same script, same payload, same JSON
+      // result — just executed on a CUDA box. ~10-15× wall-time
+      // speedup on UMAP+HDBSCAN.
+      const creds = await getRunPodCreds();
+      if (!creds) {
+        return {
+          ok: false,
+          error: 'GPU execution requested but admin_config.runpod_api_key or .runpod_cluster_endpoint_id is not set',
+        };
+      }
+      await transitionTo('fetching');
+      const dispatch = await dispatchClusterToRunPod(creds, {
+        payload: scriptPayload,
+        timeoutMs: opts.pyTimeoutMs ?? 5_400_000,
+        onJobStart: (jobId) => {
+          console.log(`[niche-tree] run ${opts.runId}: RunPod job ${jobId}`);
+        },
+        onProgress: ingestLine,
+      });
+      console.log(
+        `[niche-tree] run ${opts.runId}: RunPod completed (execMs=${dispatch.executionMs}, delayMs=${dispatch.delayMs})`,
+      );
+      result = dispatch.result as typeof result;
+    } else {
+      // Local CPU subprocess path — historical, unchanged.
+      const py = spawn('python3', [
+        path.join(SCRIPTS_DIR, 'cluster-niches.py'), tmpFile,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      activePyProcesses.set(opts.runId, py);
+      const timer = setTimeout(() => py.kill('SIGTERM'), opts.pyTimeoutMs ?? 5_400_000);
+
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let stderrBuf = '';
+
+      py.stdout.on('data', (c: Buffer) => stdoutChunks.push(c));
+      py.stderr.on('data', async (c: Buffer) => {
+        stderrChunks.push(c);
+        stderrBuf += c.toString();
+        const lines = stderrBuf.split('\n');
+        stderrBuf = lines.pop() ?? '';
+        for (const line of lines) await ingestLine(line);
+      });
+
+      await transitionTo('fetching');
+
+      const exitCode: number = await new Promise((resolve, reject) => {
+        py.on('close', (code) => resolve(code ?? -1));
+        py.on('error', reject);
+      });
+      clearTimeout(timer);
+      activePyProcesses.delete(opts.runId);
+      try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
+
+      const stdout = Buffer.concat(stdoutChunks).toString();
+      const stderr = Buffer.concat(stderrChunks).toString();
+      if (exitCode !== 0) {
+        throw Object.assign(new Error(`python exit ${exitCode}`), {
+          stderr, signal: py.signalCode, killed: py.killed,
+        });
+      }
+      if (stderr) console.log(`[niche-tree] run ${opts.runId} stderr tail:`, stderr.slice(-400));
+      result = JSON.parse(stdout);
+    }
+
     if (result.error) {
       return { ok: false, error: result.error };
     }
@@ -745,6 +847,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       minSamples:     params.minSamples     || 10,
       umapDims:       params.umapDims       || 50,
       scriptKeyword:  '__global__',
+      executionMode:  params.executionMode,
     });
 
     if (l1.ok === false) {
@@ -887,6 +990,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
         // Subdivides on smaller subsets are much faster — give 30 min
         // each rather than the full 90 used for L1 on the whole dataset.
         pyTimeoutMs: 1_800_000,
+        executionMode: params.executionMode,
       });
 
       if (subResult.ok === true) {
@@ -1042,6 +1146,8 @@ export async function resumeL2Baking(l1RunId: number): Promise<void> {
       return;
     }
     const source = runRes.rows[0].source;
+    const inheritedExecMode: ClusterExecutionMode | undefined =
+      (runRes.rows[0].params?.executionMode === 'gpu' ? 'gpu' : undefined);
 
     // Find L1 clusters in this run that don't already have children.
     // Eligibility: ≥50 videos. Order by video_count DESC so the biggest
@@ -1151,6 +1257,7 @@ export async function resumeL2Baking(l1RunId: number): Promise<void> {
         umapDims:       50,
         scriptKeyword:  `subdivide:${parent.id}`,
         pyTimeoutMs: 1_800_000,
+        executionMode: inheritedExecMode,
       });
 
       if (subResult.ok === true) {
@@ -1328,6 +1435,7 @@ export async function runSubdivideClusteringJob(opts: {
       umapDims:       opts.params?.umapDims || 50,
       scriptKeyword:  `subdivide:${opts.parentClusterId}`,
       pyTimeoutMs: 1_800_000,
+      executionMode:  opts.params?.executionMode,
     });
 
     if (result.ok === false) {
