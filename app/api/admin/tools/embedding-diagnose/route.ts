@@ -97,6 +97,11 @@ export async function GET(req: NextRequest) {
   const target = ((sp.get('target') || 'combined_v2') as Target);
   const limit = Math.min(parseInt(sp.get('limit') || '50') || 50, 500);
   const concurrency = Math.min(parseInt(sp.get('concurrency') || '10') || 10, 30);
+  // `worker` = mimic the live embedding job's score-based ordering
+  // (highest-score-first). `newest` = ORDER BY id DESC (default before).
+  // `random` = TABLESAMPLE-ish sample. Use 'worker' to reproduce what the
+  // job is actually chewing through.
+  const order = (sp.get('order') || 'newest').toLowerCase();
 
   const pool = await getPool();
 
@@ -112,10 +117,22 @@ export async function GET(req: NextRequest) {
     conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
   }
 
+  let orderClause: string;
+  if (order === 'worker') {
+    // Match the live worker's ORDER BY (score-based) so we sample the
+    // exact rows it's currently trying. High-score rows tend to be
+    // older content where YouTube has revoked thumbnails for deleted /
+    // privated / age-restricted videos — that's where failures cluster.
+    orderClause = 'score DESC NULLS LAST';
+  } else if (order === 'random') {
+    orderClause = 'random()';
+  } else {
+    orderClause = 'id DESC';
+  }
   const sampleRes = await pool.query<{ id: number; thumbnail: string | null; url: string | null }>(
     `SELECT id, thumbnail, url FROM niche_spy_videos
       WHERE ${conditions.join(' AND ')}
-      ORDER BY id DESC
+      ORDER BY ${orderClause}
       LIMIT $1`,
     [limit],
   );
@@ -184,6 +201,7 @@ export async function GET(req: NextRequest) {
   const okCount = samples.filter(s => s.fetch_ok).length;
   return NextResponse.json({
     target,
+    order,
     sample_size: samples.length,
     ok: okCount,
     failed: samples.length - okCount,
