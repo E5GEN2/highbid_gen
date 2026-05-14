@@ -102,13 +102,22 @@ export async function GET(req: NextRequest) {
   // `random` = TABLESAMPLE-ish sample. Use 'worker' to reproduce what the
   // job is actually chewing through.
   const order = (sp.get('order') || 'newest').toLowerCase();
+  // `dead` mode probes only rows already flagged thumbnail_dead_at —
+  // gives the operator a sample of marked URLs to spot-check
+  // ("did the sweep classify these correctly?").
+  const mode = (sp.get('mode') || 'unembedded').toLowerCase();
 
   const pool = await getPool();
 
   // Exact same SELECT the live worker uses for combined_v2 — so the
   // sample is representative of the actual work queue.
+  // `mode=dead` ignores the embedding-target gates and just samples
+  // rows already flagged thumbnail_dead_at, for spot-checking the
+  // sweep's classification.
   const conditions: string[] = [];
-  if (target === 'combined_v2') {
+  if (mode === 'dead') {
+    conditions.push(`thumbnail_dead_at IS NOT NULL`);
+  } else if (target === 'combined_v2') {
     conditions.push(`combined_embedded_v2_at IS NULL`);
     conditions.push(`title IS NOT NULL AND title != ''`);
     conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
@@ -202,6 +211,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     target,
     order,
+    mode,
     sample_size: samples.length,
     ok: okCount,
     failed: samples.length - okCount,
