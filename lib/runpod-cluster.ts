@@ -21,6 +21,7 @@
  */
 
 import { getPool } from './db';
+import { fetchRunpodLogs } from './vector-db';
 
 const RUNPOD_API = 'https://api.runpod.ai/v2';
 
@@ -161,12 +162,41 @@ export async function dispatchClusterToRunPod(
   opts.onJobStart?.(startJson.id);
   opts.onProgress?.(`[runpod] job ${startJson.id} queued`);
 
+  // --- Log poller --------------------------------------------------
+  // Container writes every stderr line into runpod_job_logs (in the
+  // pgvector DB) tagged with this job id. We poll that table on a
+  // separate loop so the dispatcher's status-poll cadence (1–10s) and
+  // the log-fetch cadence (3s) can run independently. Anything new
+  // since `lastLogId` gets handed to onProgress — same machinery the
+  // CPU subprocess path uses for stderr line ingestion.
+  let lastLogId = 0;
+  let logPollerStopped = false;
+  async function logPoller() {
+    while (!logPollerStopped) {
+      try {
+        const rows = await fetchRunpodLogs(startJson.id, lastLogId, 500);
+        for (const r of rows) {
+          opts.onProgress?.(r.line);
+          if (r.id > lastLogId) lastLogId = r.id;
+        }
+      } catch (e) {
+        // Best-effort — don't let log polling kill the dispatcher.
+        // The status-loop is the source of truth for completion.
+        console.warn('[runpod] log poller error:', (e as Error).message);
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  // Fire and forget — completes when logPollerStopped flips true.
+  const logPollerPromise = logPoller();
+
   // --- Poll loop ---------------------------------------------------
   // Start aggressive (1s) to catch fast jobs cheaply; back off to 10s
   // once we've waited ~30s — keeps RunPod API request count under the
   // free quota for typical 5–30 min runs.
   let intervalMs = 1000;
   let lastStatus: string | null = null;
+  try {
   while (true) {
     if (Date.now() > deadline) {
       throw new Error(`RunPod job ${startJson.id} exceeded timeout of ${timeoutMs}ms`);
@@ -191,6 +221,18 @@ export async function dispatchClusterToRunPod(
     }
 
     if (status.status === 'COMPLETED') {
+      // Final drain — the container's PgLogSink batches with ~500ms
+      // latency, so trailing lines may not be in the table at the
+      // moment /status flips. One last poll + 200ms breathing room
+      // catches them.
+      logPollerStopped = true;
+      await new Promise(r => setTimeout(r, 200));
+      try {
+        const rows = await fetchRunpodLogs(startJson.id, lastLogId, 500);
+        for (const r of rows) opts.onProgress?.(r.line);
+      } catch { /* best-effort drain */ }
+      await logPollerPromise.catch(() => { /* swallow */ });
+
       if (!status.output || typeof status.output !== 'object') {
         throw new Error(`RunPod job ${startJson.id} completed without output`);
       }
@@ -206,11 +248,19 @@ export async function dispatchClusterToRunPod(
       };
     }
     if (status.status === 'FAILED' || status.status === 'CANCELLED' || status.status === 'TIMED_OUT') {
+      logPollerStopped = true;
+      await logPollerPromise.catch(() => { /* swallow */ });
       throw new Error(
         `RunPod job ${startJson.id} ended ${status.status}: ${String(status.error || status.output || '').slice(0, 400)}`,
       );
     }
     // IN_QUEUE / IN_PROGRESS → keep polling
+  }
+  } finally {
+    // Ensure the log poller is stopped on ANY exit path (timeout
+    // throw, completion, etc.) — otherwise it'd run forever on the
+    // detached promise.
+    logPollerStopped = true;
   }
 }
 

@@ -111,10 +111,51 @@ export async function ensureVectorTables(): Promise<void> {
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_ntcv_level ON niche_tree_cluster_vectors(level)`).catch(() => {});
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_ntcv_parent ON niche_tree_cluster_vectors(parent_cluster_id)`).catch(() => {});
 
+    // Live progress sink for off-Railway GPU workers (RunPod cuML).
+    // The container can't stream stderr back to Node via RunPod's API
+    // (no public endpoint for serverless job logs), so it appends each
+    // [cluster] line into this table. Node polls by (job_id, id > $last)
+    // and pipes new lines into the niche-tree run's recentLogs tail.
+    // Lives in the vector DB because the container only knows that URL
+    // (passed via the dispatch payload) — putting it next to the
+    // embeddings avoids needing a second public DB URL.
+    await vectorPool.query(`
+      CREATE TABLE IF NOT EXISTS runpod_job_logs (
+        id BIGSERIAL PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        line TEXT NOT NULL,
+        written_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_rpjl_job_id ON runpod_job_logs(job_id, id)`).catch(() => {});
+    // Periodic clean-out anchor — anything older than 7 days is dead
+    // weight (we already pulled what we needed). Cheap GiST not needed;
+    // a btree on written_at handles range scans for the trim job.
+    await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_rpjl_age ON runpod_job_logs(written_at)`).catch(() => {});
+
     tablesReady = true;
   } catch (err) {
     console.error('[vector-db] ensureVectorTables failed:', (err as Error).message);
   }
+}
+
+/**
+ * Pull any new log rows for a RunPod job since `sinceId`. Used by the
+ * niche-tree dispatcher to stream container stderr back into the run's
+ * recentLogs tail without polling RunPod's API (which has no public
+ * serverless log endpoint). Returns rows ordered by id ascending so
+ * callers can keep a single monotonic cursor.
+ */
+export async function fetchRunpodLogs(jobId: string, sinceId: number, limit = 200): Promise<Array<{ id: number; line: string }>> {
+  await ensureVectorTables();
+  const res = await vectorPool.query<{ id: string; line: string }>(
+    `SELECT id, line FROM runpod_job_logs
+       WHERE job_id = $1 AND id > $2
+       ORDER BY id ASC
+       LIMIT $3`,
+    [jobId, sinceId, limit],
+  );
+  return res.rows.map(r => ({ id: parseInt(r.id, 10), line: r.line }));
 }
 
 /** Read the admin-configured similarity source, or default to combined_v2. */

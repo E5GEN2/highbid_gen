@@ -45,20 +45,104 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
 import runpod
+import psycopg2
 
 
 SCRIPT_PATH = '/app/cluster-niches.py'
 
 
-def _run_one_clustering(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str, list[str], float]:
+class PgLogSink:
+    """Background writer that ships subprocess stderr lines to the
+    Railway pgvector DB so the Node side can stream them into the
+    niche-tree run's recentLogs without polling RunPod (which has no
+    public log endpoint for serverless jobs).
+
+    Lazy-opens one psycopg2 connection. Buffers lines; flushes every
+    ~500ms or when the buffer hits 20 lines. Errors are swallowed —
+    losing a few log lines must never break the actual clustering job.
+    """
+
+    def __init__(self, db_url: Optional[str], job_id: Optional[str]) -> None:
+        self.db_url = db_url
+        self.job_id = job_id
+        self.enabled = bool(db_url and job_id)
+        self._buf: list[str] = []
+        self._lock = threading.Lock()
+        self._stopped = False
+        self._conn = None  # psycopg2 connection, lazy
+        self._thread = threading.Thread(target=self._flush_loop, daemon=True) if self.enabled else None
+        if self._thread:
+            self._thread.start()
+
+    def write(self, line: str) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._buf.append(line)
+
+    def _ensure_conn(self):
+        if self._conn is None:
+            self._conn = psycopg2.connect(self.db_url, connect_timeout=15)
+            self._conn.autocommit = True
+        return self._conn
+
+    def _flush_once(self):
+        with self._lock:
+            if not self._buf:
+                return
+            lines = self._buf[:]
+            self._buf.clear()
+        try:
+            conn = self._ensure_conn()
+            with conn.cursor() as cur:
+                # Multi-row insert keeps round-trips low when the
+                # subprocess emits a burst (e.g. UMAP done + HDBSCAN
+                # results + per-cluster labels back-to-back).
+                vals = b','.join(
+                    cur.mogrify('(%s, %s)', (self.job_id, line)) for line in lines
+                )
+                cur.execute(b'INSERT INTO runpod_job_logs (job_id, line) VALUES ' + vals)
+        except Exception as e:
+            sys.stderr.write(f'[pg-log] flush failed: {e}\n')
+            # Tear down the connection so the next attempt reopens.
+            try:
+                if self._conn is not None:
+                    self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def _flush_loop(self):
+        while not self._stopped:
+            time.sleep(0.5)
+            self._flush_once()
+        # Final flush on stop so trailing lines aren't dropped.
+        self._flush_once()
+
+    def stop(self):
+        self._stopped = True
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+        try:
+            if self._conn is not None:
+                self._conn.close()
+        except Exception:
+            pass
+
+
+def _run_one_clustering(payload: dict[str, Any], log_sink: Optional[PgLogSink] = None) -> tuple[dict[str, Any] | None, str, list[str], float]:
     """Subprocess one invocation of cluster-niches.py with `payload`.
 
     Returns (result_dict, error_str, stderr_tail, elapsed_seconds).
     On success: result_dict is the parsed JSON, error_str is ''.
     On failure: result_dict is None, error_str describes the failure.
+
+    When `log_sink` is provided, every stderr line is also forwarded
+    to it (PG insert) — that's how the Node side gets live progress
+    during a global_bake.
     """
     payload = {**payload, 'use_gpu': True}
     payload.setdefault('keyword', 'global')
@@ -87,6 +171,8 @@ def _run_one_clustering(payload: dict[str, Any]) -> tuple[dict[str, Any] | None,
                 stderr_tail.append(line)
                 if len(stderr_tail) > 400:
                     del stderr_tail[: len(stderr_tail) - 400]
+                if log_sink is not None:
+                    log_sink.write(line)
 
         t = threading.Thread(target=drain_stderr, daemon=True)
         t.start()
@@ -123,9 +209,9 @@ def _run_one_clustering(payload: dict[str, Any]) -> tuple[dict[str, Any] | None,
             pass
 
 
-def _handle_cluster(payload: dict[str, Any]) -> dict[str, Any]:
+def _handle_cluster(payload: dict[str, Any], log_sink: Optional[PgLogSink] = None) -> dict[str, Any]:
     """Existing single-cluster mode — payload is forwarded verbatim."""
-    result, err, stderr_tail, elapsed = _run_one_clustering(payload)
+    result, err, stderr_tail, elapsed = _run_one_clustering(payload, log_sink=log_sink)
     if result is None:
         return {
             'error': err,
@@ -141,7 +227,7 @@ def _handle_cluster(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _handle_global_bake(payload: dict[str, Any]) -> dict[str, Any]:
+def _handle_global_bake(payload: dict[str, Any], log_sink: Optional[PgLogSink] = None) -> dict[str, Any]:
     """L1 + L2 in one container session.
 
     Input shape:
@@ -184,7 +270,7 @@ def _handle_global_bake(payload: dict[str, Any]) -> dict[str, Any]:
         'outlier_iqr_mult': l1_cfg.get('outlier_iqr_mult', 3.0),
     }
     sys.stderr.write(f"[bake] L1 starting (min_cluster_size={l1_payload['min_cluster_size']})\n")
-    l1_result, l1_err, l1_stderr, l1_elapsed = _run_one_clustering(l1_payload)
+    l1_result, l1_err, l1_stderr, l1_elapsed = _run_one_clustering(l1_payload, log_sink=log_sink)
     if l1_result is None:
         return {
             'error': f'L1 failed: {l1_err}',
@@ -244,7 +330,7 @@ def _handle_global_bake(payload: dict[str, Any]) -> dict[str, Any]:
             'outlier_iqr_mult': float(l2_cfg.get('outlier_iqr_mult', 3.0)),
         }
         sys.stderr.write(f"[bake] L2 cluster {cluster_idx} ({len(video_ids)} vids) starting\n")
-        sub_result, sub_err, sub_stderr, sub_elapsed = _run_one_clustering(l2_payload)
+        sub_result, sub_err, sub_stderr, sub_elapsed = _run_one_clustering(l2_payload, log_sink=log_sink)
         if sub_result is None:
             errors += 1
             error_details.append({
@@ -290,9 +376,27 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         return {'error': f'expected dict input, got {type(payload).__name__}'}
 
     mode = (payload.get('mode') or 'cluster').lower()
-    if mode == 'global_bake':
-        return _handle_global_bake(payload)
-    return _handle_cluster(payload)
+
+    # Open a PG sink for live progress streaming to Node. job_id comes
+    # from the RunPod event envelope (event["id"]); the DB URL is the
+    # same one the script uses to fetch embeddings, so no extra config.
+    # If db_url is missing we skip silently — Node side will get no
+    # progress but the actual clustering still works.
+    job_id = event.get('id')
+    db_url = payload.get('db_url')
+    sink = PgLogSink(db_url=db_url if isinstance(db_url, str) else None,
+                     job_id=job_id if isinstance(job_id, str) else None)
+    if sink.enabled:
+        sink.write(f'[handler] mode={mode} job_id={job_id}')
+
+    try:
+        if mode == 'global_bake':
+            return _handle_global_bake(payload, log_sink=sink)
+        return _handle_cluster(payload, log_sink=sink)
+    finally:
+        # Final flush so trailing per-stage lines reach Node before
+        # the worker scales down (idle_timeout=5s).
+        sink.stop()
 
 
 if __name__ == '__main__':
