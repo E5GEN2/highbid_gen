@@ -6,6 +6,7 @@ import {
 } from '@/lib/embeddings';
 import { getProxyStats, getProxy } from '@/lib/xgodo-proxy';
 import { upsertVector } from '@/lib/vector-db';
+import { probeThumbnail, markThumbnailDead } from '@/lib/thumbnail-validate';
 
 const DEFAULT_BATCH_SIZE = 5;
 const DEFAULT_DELAY_MS = 1000;
@@ -140,10 +141,13 @@ async function runEmbeddingJob(
   const conditions: string[] = [`${cfg.column} IS NULL`];
   if (target === 'thumbnail_v2') {
     conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
+    // Skip rows we already know have no fetchable thumbnail.
+    conditions.push(`thumbnail_dead_at IS NULL`);
   } else if (target === 'combined_v2') {
     // Combined needs BOTH a usable title AND a thumbnail source.
     conditions.push(`title IS NOT NULL AND title != ''`);
     conditions.push(`((thumbnail IS NOT NULL AND thumbnail != '') OR (url IS NOT NULL AND url != ''))`);
+    conditions.push(`thumbnail_dead_at IS NULL`);
   } else {
     conditions.push(`title IS NOT NULL AND title != ''`);
   }
@@ -217,19 +221,27 @@ async function runEmbeddingJob(
       let droppedInBatch = 0;
       const batchStart = Date.now();
       if (target === 'thumbnail_v2') {
-        // Fetch thumbnails in parallel
+        // Fetch thumbnails in parallel. probeThumbnail does the same
+        // GET as the old fetchImageBase64 helper but returns a
+        // terminal/transient classification — terminal failures (404/
+        // 410/451, sub-1KB placeholders) mark the row dead so we never
+        // re-attempt that video.
         const pairs = await Promise.all(items.map(async (v) => {
-          const url = thumbnailUrlFor({ thumbnail: v.thumbnail ?? null, url: v.url ?? null });
-          if (!url) return { video: v, input: null as EmbedInput | null };
-          const img = await fetchImageBase64(url);
-          if (!img) return { video: v, input: null };
-          return { video: v, input: { type: 'image', mimeType: img.mimeType, data: img.data } as EmbedInput };
+          const picked = thumbnailUrlFor({ thumbnail: v.thumbnail ?? null, url: v.url ?? null });
+          if (!picked) return { video: v, input: null as EmbedInput | null };
+          const p = await probeThumbnail(picked);
+          if (!p.ok) {
+            if (p.terminal) markThumbnailDead(v.id, p.reason ?? 'terminal').catch(() => { /* fire-and-forget */ });
+            return { video: v, input: null };
+          }
+          return {
+            video: v,
+            input: { type: 'image', mimeType: p.mime ?? 'image/jpeg', data: p.body!.toString('base64') } as EmbedInput,
+          };
         }));
-        // Drop items where the image couldn't be fetched — we record them as errors
         const kept = pairs.filter(p => p.input !== null);
         droppedInBatch = pairs.length - kept.length;
         globalErrors += droppedInBatch;
-        // Replace items with the kept subset (aligned with inputs)
         items.length = 0;
         for (const { video } of kept) items.push(video);
         inputs = kept.map(p => p.input!) as EmbedInput[];
@@ -239,13 +251,16 @@ async function runEmbeddingJob(
         // multimodal encoder produces ONE embedding per group, jointly
         // representing both signals.
         const triples = await Promise.all(items.map(async (v) => {
-          const url = thumbnailUrlFor({ thumbnail: v.thumbnail ?? null, url: v.url ?? null });
-          if (!url) return { video: v, group: null as EmbedInput[] | null };
-          const img = await fetchImageBase64(url);
-          if (!img) return { video: v, group: null };
+          const picked = thumbnailUrlFor({ thumbnail: v.thumbnail ?? null, url: v.url ?? null });
+          if (!picked) return { video: v, group: null as EmbedInput[] | null };
+          const p = await probeThumbnail(picked);
+          if (!p.ok) {
+            if (p.terminal) markThumbnailDead(v.id, p.reason ?? 'terminal').catch(() => { /* fire-and-forget */ });
+            return { video: v, group: null };
+          }
           const group: EmbedInput[] = [
             { type: 'text', text: v.title },
-            { type: 'image', mimeType: img.mimeType, data: img.data },
+            { type: 'image', mimeType: p.mime ?? 'image/jpeg', data: p.body!.toString('base64') },
           ];
           return { video: v, group };
         }));

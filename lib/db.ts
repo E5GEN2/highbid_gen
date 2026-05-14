@@ -486,6 +486,18 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS novelty_score DOUBLE PRECISION`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS novelty_updated_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsv_novelty ON niche_spy_videos(novelty_score DESC NULLS LAST)`).catch(() => {});
+    // Marks a video whose thumbnail cannot be retrieved (HTTP 404/410/451,
+    // or img.youtube.com returns the ~120B placeholder for a deleted /
+    // privated / region-blocked video). Set on first failed fetch by the
+    // embedding worker so the v2/combined_v2 SELECTs can skip the row
+    // permanently. Once we observe a 404 the video is never coming back
+    // (YouTube doesn't restore thumbnails); marking sidesteps an endless
+    // re-fetch loop that previously dominated the embedding error budget.
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS thumbnail_dead_at TIMESTAMPTZ`).catch(() => {});
+    // Partial index so the "v2 embedding queue" SELECTs find live-thumbnail
+    // rows fast without scanning the whole table — small index since most
+    // rows are alive (the dead set is in the ~5-10% range).
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsv_thumb_dead ON niche_spy_videos(thumbnail_dead_at) WHERE thumbnail_dead_at IS NOT NULL`).catch(() => {});
     // Remember which target a job was for — so the admin UI can tell the user
     // "you clicked Thumbnail but there's already a Title v2 job running".
     await client.query(`ALTER TABLE niche_spy_embedding_jobs ADD COLUMN IF NOT EXISTS target TEXT`).catch(() => {});
