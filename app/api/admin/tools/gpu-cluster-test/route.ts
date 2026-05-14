@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { isAdmin } from '@/lib/admin-auth';
-import { getRunPodCreds, dispatchClusterToRunPod } from '@/lib/runpod-cluster';
+import { getRunPodCreds, getExternalVectorDbUrl, dispatchClusterToRunPod } from '@/lib/runpod-cluster';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -63,16 +63,21 @@ let inFlight = false;
 
 export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
-  const vectorDbUrl = process.env.VECTOR_DB_URL;
+  const resolved = await getExternalVectorDbUrl();
   return NextResponse.json({
     ...state,
     env: {
-      VECTOR_DB_URL_set: !!vectorDbUrl,
-      // Surface ONLY the hostname (not credentials) so the operator
-      // can confirm the URL is external-reachable without leaking
-      // password into the response. Internal hosts end in
-      // .railway.internal — RunPod can't reach those.
-      VECTOR_DB_URL_host: vectorDbUrl ? new URL(vectorDbUrl).hostname : null,
+      // Surface only the hostname so the operator can verify
+      // reachability without leaking credentials. *.railway.internal
+      // = not reachable from RunPod; need a *.proxy.rlwy.net or
+      // similar public hostname.
+      vector_db_url_resolved: !!resolved,
+      vector_db_url_host:     resolved ? new URL(resolved).hostname : null,
+      // Show which source contributed.
+      from_admin_config:      !!(await (async () => {
+        const r = await (await getPool()).query("SELECT value FROM admin_config WHERE key = 'vector_db_url_external'");
+        return r.rows[0]?.value;
+      })()),
     },
   });
 }
@@ -94,12 +99,21 @@ export async function POST(req: NextRequest) {
   const minSamples = parseInt(String(body.minSamples ?? 10)) || 10;
   const umapDims = parseInt(String(body.umapDims ?? 50)) || 50;
 
-  const vectorDbUrl = process.env.VECTOR_DB_URL;
+  const vectorDbUrl = await getExternalVectorDbUrl();
   if (!vectorDbUrl) {
     return NextResponse.json({
       ok: false,
-      error: 'VECTOR_DB_URL env var not set on Railway',
+      error: 'No DB URL resolved (set admin_config.vector_db_url_external to a publicly-reachable Railway pgvector hostname)',
     }, { status: 500 });
+  }
+  // Guard against the common footgun: pasting the internal URL,
+  // which the container will fail to resolve.
+  if (vectorDbUrl.includes('.railway.internal')) {
+    return NextResponse.json({
+      ok: false,
+      error: 'Resolved DB URL is a Railway internal hostname (*.railway.internal). RunPod containers cannot reach it. Set admin_config.vector_db_url_external to the public/proxy URL.',
+      host: new URL(vectorDbUrl).hostname,
+    }, { status: 400 });
   }
 
   const creds = await getRunPodCreds();

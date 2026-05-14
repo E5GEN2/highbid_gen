@@ -27,6 +27,7 @@ import fs from 'fs';
 import {
   dispatchClusterToRunPod,
   dispatchGlobalBakeToRunPod,
+  getExternalVectorDbUrl,
   getRunPodCreds,
   GPU_DISPATCH_MIN_VIDEOS,
   type ClusterExecutionMode,
@@ -872,11 +873,18 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
         );
         return;
       }
-      const vectorDbUrl = process.env.VECTOR_DB_URL;
+      const vectorDbUrl = await getExternalVectorDbUrl();
       if (!vectorDbUrl) {
         await pool.query(
           `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
-          ['VECTOR_DB_URL env var is required for GPU dispatch', runId],
+          ['No DB URL resolved for GPU dispatch — set admin_config.vector_db_url_external to a public Railway pgvector URL', runId],
+        );
+        return;
+      }
+      if (vectorDbUrl.includes('.railway.internal')) {
+        await pool.query(
+          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+          ['Resolved DB URL is .railway.internal — RunPod cannot reach it. Set admin_config.vector_db_url_external to the public/proxy hostname.', runId],
         );
         return;
       }

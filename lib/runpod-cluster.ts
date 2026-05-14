@@ -46,6 +46,23 @@ export async function getRunPodCreds(): Promise<RunPodCreds | null> {
   return { apiKey, endpointId };
 }
 
+/** Resolve the DB URL to hand to the RunPod container. RunPod is off-
+ *  network so a Railway internal hostname (*.railway.internal) won't
+ *  resolve — we need the public/proxy URL. Operators paste it into
+ *  admin_config.vector_db_url_external; we prefer that if set, else
+ *  fall back to the process env (mostly useful in dev). */
+export async function getExternalVectorDbUrl(): Promise<string | null> {
+  const pool = await getPool();
+  const r = await pool.query<{ value: string }>(
+    `SELECT value FROM admin_config WHERE key = 'vector_db_url_external'`,
+  );
+  const fromConfig = r.rows[0]?.value?.trim();
+  if (fromConfig) return fromConfig;
+  // Fallback — only useful if the process env happens to be the public
+  // URL (e.g. local dev). In Railway prod the env var is internal.
+  return process.env.VECTOR_DB_URL ?? null;
+}
+
 /** Read the current execution mode. Default = 'cpu' (existing
  *  behaviour). Operator flips this to 'gpu' in admin_config to route
  *  everything through RunPod. */
