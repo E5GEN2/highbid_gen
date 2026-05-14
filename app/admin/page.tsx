@@ -6157,12 +6157,57 @@ const RESULT_STYLES: Record<KeyImportEvent['result'], { label: string; bg: strin
   error:     { label: 'ERROR',     bg: 'bg-yellow-500/15',  text: 'text-yellow-400' },
 };
 
-type ToolsSection = 'import-ai-keys' | 'download-ai-keys';
+type ToolsSection =
+  | 'import-ai-keys'
+  | 'download-ai-keys'
+  | 'import-yt-keys'
+  | 'download-yt-keys';
 
-const TOOLS_SECTIONS: Array<{ key: ToolsSection; label: string; group: 'AI Studio keys' }> = [
-  { key: 'import-ai-keys',   label: 'Import from xgodo',   group: 'AI Studio keys' },
-  { key: 'download-ai-keys', label: 'Download inventory',  group: 'AI Studio keys' },
+type ToolsGroup = 'AI Studio keys' | 'YouTube Data keys';
+
+const TOOLS_SECTIONS: Array<{ key: ToolsSection; label: string; group: ToolsGroup }> = [
+  { key: 'import-ai-keys',    label: 'Import from xgodo',   group: 'AI Studio keys' },
+  { key: 'download-ai-keys',  label: 'Download inventory',  group: 'AI Studio keys' },
+  { key: 'import-yt-keys',    label: 'Import from xgodo',   group: 'YouTube Data keys' },
+  { key: 'download-yt-keys',  label: 'Download inventory',  group: 'YouTube Data keys' },
 ];
+
+interface KeyServiceConfig {
+  /** Path to the import controller (GET state, POST start). */
+  apiPath: string;
+  /** Path to the export endpoint (GET ?format=...&status=...). */
+  exportPath: string;
+  /** Display name for the service (e.g. 'Google AI Studio'). */
+  displayName: string;
+  /** Short name for the inventory ("Google AI Studio key inventory"). */
+  inventoryLabel: string;
+  /** Value of xgodo_api_keys.service for this kind of key. */
+  serviceColumn: string;
+  /** Host shown in the import card's blurb. */
+  validationHost: string;
+  /** Default xgodo job id placeholder. */
+  defaultJobIdPlaceholder: string;
+}
+
+const AI_STUDIO_KEYS_CFG: KeyServiceConfig = {
+  apiPath: '/api/admin/tools/ai-studio-keys',
+  exportPath: '/api/admin/tools/ai-studio-keys/export',
+  displayName: 'Google AI Studio',
+  inventoryLabel: 'Google AI Studio key inventory',
+  serviceColumn: 'google_ai_studio',
+  validationHost: 'generativelanguage.googleapis.com',
+  defaultJobIdPlaceholder: '69f499d56730e5906b1eb576',
+};
+
+const YT_DATA_KEYS_CFG: KeyServiceConfig = {
+  apiPath: '/api/admin/tools/yt-data-keys',
+  exportPath: '/api/admin/tools/yt-data-keys/export',
+  displayName: 'YouTube Data API',
+  inventoryLabel: 'YouTube Data API key inventory',
+  serviceColumn: 'youtube_data',
+  validationHost: 'www.googleapis.com/youtube/v3',
+  defaultJobIdPlaceholder: '69f49af26730e5906b239f36',
+};
 
 function ToolsTab({ active }: { active: boolean }) {
   const [section, setSection] = useState<ToolsSection>('import-ai-keys');
@@ -6198,8 +6243,10 @@ function ToolsTab({ active }: { active: boolean }) {
         ))}
       </div>
 
-      {section === 'import-ai-keys'   && <AIStudioImportCard active={active} />}
-      {section === 'download-ai-keys' && <AIStudioDownloadCard active={active} />}
+      {section === 'import-ai-keys'    && <KeyImportCard   active={active} cfg={AI_STUDIO_KEYS_CFG} />}
+      {section === 'download-ai-keys'  && <KeyDownloadCard active={active} cfg={AI_STUDIO_KEYS_CFG} />}
+      {section === 'import-yt-keys'    && <KeyImportCard   active={active} cfg={YT_DATA_KEYS_CFG}    />}
+      {section === 'download-yt-keys'  && <KeyDownloadCard active={active} cfg={YT_DATA_KEYS_CFG}    />}
     </div>
   );
 }
@@ -6210,27 +6257,28 @@ function ToolsTab({ active }: { active: boolean }) {
 // configurable. Browser receives a Content-Disposition: attachment.
 // ────────────────────────────────────────────────────────────────
 
-interface AIStudioInventory {
+interface KeyInventory {
   bySource: Array<{ source: string; status: string; count: number }>;
   total: number;
 }
 
-function AIStudioDownloadCard({ active }: { active: boolean }) {
+function KeyDownloadCard({ active, cfg }: { active: boolean; cfg: KeyServiceConfig }) {
   const [format, setFormat] = useState<'txt' | 'csv' | 'json'>('txt');
   const [status, setStatus] = useState<'active' | 'invalid' | 'banned' | 'all'>('active');
   const [source, setSource] = useState<string>('');
-  const [inv, setInv] = useState<AIStudioInventory | null>(null);
+  const [inv, setInv] = useState<KeyInventory | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Show counts in the UI by sniffing the same endpoint with format=json
-  // and counting on the client. Cheap — Railway pg returns 600 rows
-  // instantly.
+  // Show counts in the UI by sniffing the export endpoint with
+  // format=json&status=all and counting on the client. Railway pg
+  // returns the rows fast enough that doing this on every section
+  // open is fine.
   useEffect(() => {
     if (!active) return;
     let cancel = false;
     (async () => {
       try {
-        const r = await fetch(`/api/admin/tools/ai-studio-keys/export?format=json&status=all`);
+        const r = await fetch(`${cfg.exportPath}?format=json&status=all`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d = await r.json() as { keys: Array<{ source: string; status: string }> };
         if (cancel) return;
@@ -6250,7 +6298,7 @@ function AIStudioDownloadCard({ active }: { active: boolean }) {
       }
     })();
     return () => { cancel = true; };
-  }, [active]);
+  }, [active, cfg.exportPath]);
 
   const matching = useMemo(() => {
     if (!inv) return null;
@@ -6264,16 +6312,16 @@ function AIStudioDownloadCard({ active }: { active: boolean }) {
     const sp = new URLSearchParams({ format, status });
     if (source.trim()) sp.set('source', source.trim());
     // Open in same tab — browser handles Content-Disposition: attachment.
-    window.location.href = `/api/admin/tools/ai-studio-keys/export?${sp.toString()}`;
+    window.location.href = `${cfg.exportPath}?${sp.toString()}`;
   };
 
   return (
     <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-[#1f1f1f]">
-        <div className="text-sm font-semibold text-white">Download Google AI Studio key inventory</div>
+        <div className="text-sm font-semibold text-white">Download {cfg.inventoryLabel}</div>
         <div className="text-[11px] text-[#888] mt-0.5 max-w-3xl">
           Exports all keys from <code className="text-yellow-400 text-[10px] mx-1">xgodo_api_keys</code> where
-          <code className="text-yellow-400 text-[10px] mx-1">service=&apos;google_ai_studio&apos;</code>. Filter by
+          <code className="text-yellow-400 text-[10px] mx-1">service=&apos;{cfg.serviceColumn}&apos;</code>. Filter by
           status / source, pick format, browser downloads the file. <code className="text-yellow-400 text-[10px] mx-1">txt</code>
           gives one key per line for piping into other systems.
         </div>
@@ -6353,12 +6401,13 @@ function AIStudioDownloadCard({ active }: { active: boolean }) {
 }
 
 // ────────────────────────────────────────────────────────────────
-// Import card — pulls pending tasks from the xgodo AI Studio key job
-// and reviews them. Originally the only Tools card; now one section
-// under the AI Studio keys group.
+// Import card — pulls pending tasks from the xgodo key job for the
+// configured service and reviews them. Used for both Google AI Studio
+// keys and YouTube Data API keys, swapping endpoints / labels via the
+// `cfg` prop.
 // ────────────────────────────────────────────────────────────────
 
-function AIStudioImportCard({ active }: { active: boolean }) {
+function KeyImportCard({ active, cfg }: { active: boolean; cfg: KeyServiceConfig }) {
   const [state, setState] = useState<KeyImportState | null>(null);
   const [jobId, setJobId] = useState<string>('');
   const [limit, setLimit] = useState<number>(50);
@@ -6367,9 +6416,17 @@ function AIStudioImportCard({ active }: { active: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
+  // Reset transient UI state when the service changes — otherwise the
+  // YT card would hydrate with the AI Studio job id / state.
+  useEffect(() => {
+    setState(null);
+    setJobId('');
+    setError(null);
+  }, [cfg.apiPath]);
+
   const fetchState = useCallback(async () => {
     try {
-      const r = await fetch('/api/admin/tools/ai-studio-keys');
+      const r = await fetch(cfg.apiPath);
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
       setState(d as KeyImportState);
@@ -6378,7 +6435,7 @@ function AIStudioImportCard({ active }: { active: boolean }) {
     } catch (err) {
       setError((err as Error).message);
     }
-  }, [jobId]);
+  }, [jobId, cfg.apiPath]);
 
   useEffect(() => { if (active) fetchState(); }, [active, fetchState]);
 
@@ -6398,7 +6455,7 @@ function AIStudioImportCard({ active }: { active: boolean }) {
     )) return;
     setStarting(true);
     try {
-      const r = await fetch('/api/admin/tools/ai-studio-keys', {
+      const r = await fetch(cfg.apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId: jobId || undefined, limit, concurrency, dryRun }),
@@ -6421,14 +6478,13 @@ function AIStudioImportCard({ active }: { active: boolean }) {
         <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">{error}</div>
       )}
 
-      {/* ─── Google AI Studio Keys Import ──────────────────────────── */}
       <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-[#1f1f1f] flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <div className="text-sm font-semibold text-white">Import Google AI Studio keys from xgodo</div>
+            <div className="text-sm font-semibold text-white">Import {cfg.displayName} keys from xgodo</div>
             <div className="text-[11px] text-[#888] mt-0.5 max-w-3xl">
-              Pulls tasks awaiting employer review from the xgodo AI Studio key job, tests each candidate against
-              <code className="text-yellow-400 text-[10px] mx-1">generativelanguage.googleapis.com</code>
+              Pulls tasks awaiting employer review from the xgodo {cfg.displayName} key job, tests each candidate against
+              <code className="text-yellow-400 text-[10px] mx-1">{cfg.validationHost}</code>
               via a residential proxy, persists the good ones into
               <code className="text-yellow-400 text-[10px] mx-1">xgodo_api_keys</code>, and
               confirms / declines each task back to xgodo.
@@ -6452,7 +6508,7 @@ function AIStudioImportCard({ active }: { active: boolean }) {
             <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">xgodo job id</label>
             <input
               type="text" value={jobId} onChange={e => setJobId(e.target.value)}
-              placeholder={state?.defaultJobId || '69f499d56730e5906b1eb576'}
+              placeholder={state?.defaultJobId || cfg.defaultJobIdPlaceholder}
               className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded font-mono focus:outline-none focus:border-yellow-500"
             />
           </div>
