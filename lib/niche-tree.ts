@@ -26,6 +26,7 @@ import os from 'os';
 import fs from 'fs';
 import {
   dispatchClusterToRunPod,
+  dispatchGlobalBakeToRunPod,
   getRunPodCreds,
   GPU_DISPATCH_MIN_VIDEOS,
   type ClusterExecutionMode,
@@ -422,6 +423,15 @@ async function runOneClusteringPipeline(opts: {
    * their CPU runtime.
    */
   executionMode?: ClusterExecutionMode;
+  /**
+   * Pre-computed cluster result. Used by the combined global_bake
+   * path: a single RunPod dispatch produces BOTH the L1 result and
+   * every qualifying L2 subdivide result up-front; this lets each
+   * subsequent runOneClusteringPipeline call skip the expensive
+   * UMAP+HDBSCAN step and go straight to the PG-write phase that
+   * already follows the compute. When set, executionMode is ignored.
+   */
+  prefetchedResult?: Record<string, unknown>;
 }): Promise<
   | { ok: true; numClusters: number; numNoise: number; insertedClusterIds: number[] }
   | { ok: false; error: string }
@@ -546,15 +556,22 @@ async function runOneClusteringPipeline(opts: {
       y_2d: number;
       distance: number;
     }
-    let result: {
+    type ScriptResult = {
       error?: string;
       num_clusters: number;
       num_noise: number;
       clusters: ScriptCluster[];
       assignments: ScriptAssign[];
     };
+    let result: ScriptResult;
 
-    if (effectiveMode === 'gpu') {
+    if (opts.prefetchedResult) {
+      // Combined global_bake path supplied a pre-computed result —
+      // skip both CPU subprocess and GPU dispatch and go straight to
+      // the PG-write phase below.
+      await transitionTo('writing');
+      result = opts.prefetchedResult as ScriptResult;
+    } else if (effectiveMode === 'gpu') {
       // RunPod dispatch path. Same script, same payload, same JSON
       // result — just executed on a CUDA box. ~10-15× wall-time
       // speedup on UMAP+HDBSCAN.
@@ -836,6 +853,87 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     await pool.query(`UPDATE niche_tree_runs SET total_videos=$1, source=$2 WHERE id=$3`,
       [eligibleIds.length, source, runId]).catch(() => {});
 
+    // ── Combined L1+L2 GPU dispatch ──────────────────────────────
+    // When executionMode='gpu', a single RunPod container session
+    // covers both L1 and every qualifying L2 subdivide — one cold
+    // start instead of N. We dispatch up-front, then feed the
+    // pre-computed result into runOneClusteringPipeline (L1 first,
+    // then per-parent in the L2 loop below) via its prefetchedResult
+    // opt so the PG-write / stitch / label code below stays
+    // unchanged.
+    let bakeL2ByParent: Map<number, Record<string, unknown>> | null = null;
+    let prefetchedL1Result: Record<string, unknown> | undefined;
+    if (params.executionMode === 'gpu') {
+      const creds = await getRunPodCreds();
+      if (!creds) {
+        await pool.query(
+          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+          ['GPU execution requested but admin_config.runpod_api_key or .runpod_cluster_endpoint_id is not set', runId],
+        );
+        return;
+      }
+      const vectorDbUrl = process.env.VECTOR_DB_URL;
+      if (!vectorDbUrl) {
+        await pool.query(
+          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+          ['VECTOR_DB_URL env var is required for GPU dispatch', runId],
+        );
+        return;
+      }
+      await writeProgress(runId, {
+        stage: 'fetching',
+        stageStartedAt: new Date().toISOString(),
+        recentLogs: ['[gpu] dispatching combined L1+L2 bake to RunPod'],
+      });
+      try {
+        const bake = await dispatchGlobalBakeToRunPod({
+          creds,
+          dbUrl: vectorDbUrl,
+          source,
+          videoIds: eligibleIds,
+          l1: {
+            minClusterSize: params.minClusterSize || 80,
+            minSamples:     params.minSamples     || 10,
+            umapDims:       params.umapDims       || 50,
+          },
+          l2: {
+            minParentSize:  50,    // matches the existing L1-cluster eligibility floor
+            umapDims:       params.umapDims || 50,
+          },
+          onJobStart: (jobId) => {
+            console.log(`[niche-tree] run ${runId}: RunPod global_bake job ${jobId}`);
+            writeProgress(runId, {
+              recentLogs: [`[gpu] RunPod job ${jobId} queued`],
+            }).catch(() => {});
+          },
+          onProgress: (msg) => {
+            console.log(`[niche-tree] run ${runId}: ${msg}`);
+            writeProgress(runId, { recentLogs: [msg] }).catch(() => {});
+          },
+        });
+        console.log(
+          `[niche-tree] run ${runId}: global_bake done — L1 + ${Object.keys(bake.l2ByParent).length} L2 baked ` +
+          `(skipped ${bake.l2Skipped} small, ${bake.l2Errors} errors, execMs=${bake.executionMs})`,
+        );
+        prefetchedL1Result = bake.l1;
+        bakeL2ByParent = new Map(
+          Object.entries(bake.l2ByParent).map(([k, v]) => [parseInt(k, 10), v]),
+        );
+        if (bake.l2ErrorDetails.length > 0) {
+          console.warn(
+            `[niche-tree] run ${runId}: L2 errors in RunPod bake:`,
+            bake.l2ErrorDetails.slice(0, 5),
+          );
+        }
+      } catch (err) {
+        await pool.query(
+          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+          [`GPU global_bake failed: ${(err as Error).message?.slice(0, 600) || 'unknown'}`, runId],
+        );
+        return;
+      }
+    }
+
     // ── L1 pipeline ─────────────────────────────────────────────
     const l1 = await runOneClusteringPipeline({
       runId,
@@ -848,6 +946,10 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       umapDims:       params.umapDims       || 50,
       scriptKeyword:  '__global__',
       executionMode:  params.executionMode,
+      // GPU path: feed the pre-computed result from the combined bake
+      // so we skip a second RunPod dispatch. CPU path: undefined, runs
+      // the local subprocess as before.
+      prefetchedResult: prefetchedL1Result,
     });
 
     if (l1.ok === false) {
@@ -991,6 +1093,12 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
         // each rather than the full 90 used for L1 on the whole dataset.
         pyTimeoutMs: 1_800_000,
         executionMode: params.executionMode,
+        // GPU path: prefetched from the up-front global_bake dispatch
+        // when one was issued for this parent_cluster_index. Container
+        // skips L1 clusters smaller than its min_parent_size, so some
+        // parents won't have a prefetched entry; those quietly fall
+        // through to the per-pipeline GPU/CPU branch as before.
+        prefetchedResult: bakeL2ByParent?.get(parent.cluster_index),
       });
 
       if (subResult.ok === true) {

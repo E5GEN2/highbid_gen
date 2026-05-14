@@ -85,6 +85,21 @@ export interface RunPodDispatchResult {
   result: Record<string, unknown>; // cluster-niches.py output JSON
 }
 
+/** Result of a combined L1 + L2 bake — the container does both passes
+ *  in one container session, returning a single payload. */
+export interface GlobalBakeResult {
+  jobId: string;
+  delayMs: number;
+  executionMs: number;
+  l1: Record<string, unknown>;
+  /** Keyed by parent L1 cluster_index (stringified). Values are
+   *  cluster-niches.py output JSONs for that subdivide. */
+  l2ByParent: Record<string, Record<string, unknown>>;
+  l2Skipped: number;
+  l2Errors: number;
+  l2ErrorDetails: Array<{ parent_cluster_index: number; error: string; stderr_tail?: string }>;
+}
+
 interface DispatchOpts {
   /** Payload to forward verbatim to the handler — same shape as the
    *  config the local subprocess reads from its tmpfile. */
@@ -180,4 +195,88 @@ export async function dispatchClusterToRunPod(
     }
     // IN_QUEUE / IN_PROGRESS → keep polling
   }
+}
+
+/** Dispatch the combined L1+L2 bake to the RunPod worker. The handler
+ *  there runs L1 first, then iterates qualifying L1 clusters to bake
+ *  L2 inside the same container session — single cold start covers
+ *  the whole tree refresh. */
+export async function dispatchGlobalBakeToRunPod(opts: {
+  creds: RunPodCreds;
+  dbUrl: string;
+  source: string;
+  videoIds: number[];
+  l1: {
+    minClusterSize: number;
+    minSamples: number;
+    umapDims: number;
+    nNeighbors?: number;
+    outlierIqrMult?: number;
+  };
+  l2: {
+    minParentSize?: number;        // default 50 — matches Node L2 eligibility
+    minClusterSize?: number;       // null → derived per parent inside the container
+    minSamples?: number;
+    umapDims?: number;
+    nNeighbors?: number;
+    outlierIqrMult?: number;
+  };
+  timeoutMs?: number;
+  onJobStart?: (jobId: string) => void;
+  onProgress?: (msg: string) => void;
+}): Promise<GlobalBakeResult> {
+  const payload: Record<string, unknown> = {
+    mode: 'global_bake',
+    db_url: opts.dbUrl,
+    source: opts.source,
+    l1: {
+      video_ids:        opts.videoIds,
+      min_cluster_size: opts.l1.minClusterSize,
+      min_samples:      opts.l1.minSamples,
+      umap_dims:        opts.l1.umapDims,
+      n_neighbors:      opts.l1.nNeighbors ?? 5,
+      outlier_iqr_mult: opts.l1.outlierIqrMult ?? 3.0,
+    },
+    l2: {
+      min_parent_size:  opts.l2.minParentSize ?? 50,
+      min_cluster_size: opts.l2.minClusterSize,
+      min_samples:      opts.l2.minSamples,
+      umap_dims:        opts.l2.umapDims ?? opts.l1.umapDims,
+      n_neighbors:      opts.l2.nNeighbors ?? opts.l1.nNeighbors ?? 5,
+      outlier_iqr_mult: opts.l2.outlierIqrMult ?? opts.l1.outlierIqrMult ?? 3.0,
+    },
+  };
+
+  const dispatch = await dispatchClusterToRunPod(opts.creds, {
+    payload,
+    // Combined runs are longer — default 3h instead of 90 min.
+    timeoutMs: opts.timeoutMs ?? 3 * 60 * 60 * 1000,
+    onJobStart: opts.onJobStart,
+    onProgress: opts.onProgress,
+  });
+
+  const r = dispatch.result as {
+    l1?: Record<string, unknown>;
+    l2?: {
+      by_parent_cluster_index?: Record<string, Record<string, unknown>>;
+      baked?: number;
+      skipped_small?: number;
+      errors?: number;
+      error_details?: Array<{ parent_cluster_index: number; error: string; stderr_tail?: string }>;
+    };
+    error?: string;
+  };
+  if (r.error) throw new Error(`global_bake handler error: ${String(r.error).slice(0, 400)}`);
+  if (!r.l1) throw new Error('global_bake response missing l1 result');
+
+  return {
+    jobId: dispatch.jobId,
+    delayMs: dispatch.delayMs,
+    executionMs: dispatch.executionMs,
+    l1: r.l1,
+    l2ByParent: r.l2?.by_parent_cluster_index ?? {},
+    l2Skipped: r.l2?.skipped_small ?? 0,
+    l2Errors:  r.l2?.errors ?? 0,
+    l2ErrorDetails: r.l2?.error_details ?? [],
+  };
 }
