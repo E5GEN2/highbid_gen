@@ -21,9 +21,24 @@
 
 import { getPool } from './db';
 import { getRandomProxy } from './xgodo-proxy';
-import { ytFetchViaProxy } from './yt-proxy-fetch';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import { classifyKeyError } from './api-key-validation';
+
+const execFileAsync = promisify(execFile);
+const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 
 const XGODO_API = 'https://xgodo.com/api/v2';
+
+/** Model we validate harvested keys against. Must match what the
+ *  runtime embedding pipeline actually uses (lib/embeddings.ts).
+ *  Validating against /v1beta/models was too permissive — keys with
+ *  project bans or with Gemini API disabled passed the list call but
+ *  failed the real workload, polluting our pool. */
+const VALIDATION_MODEL = 'gemini-embedding-2-preview';
 
 /** The Google AI Studio key job — passed in from caller normally,
  *  exported here as the operator's default. */
@@ -184,50 +199,81 @@ function maskKey(key: string): string {
 
 type KeyTestVerdict = 'valid' | 'invalid' | 'error';
 
-/** Hit Google AI Studio's models list via xgodo proxy.
+/** Probe one key by attempting an actual gemini-embedding-2-preview
+ *  batchEmbedContents call through an xgodo proxy — the same call the
+ *  runtime embedding worker makes. We reuse scripts/embed-batch.py so
+ *  the validation path is bit-for-bit identical to production; a key
+ *  that passes here is guaranteed to work for the real workload.
  *
- *   200 + models[] populated   → 'valid'
- *   400 / 401 / 403 (auth msg) → 'invalid'  (real key rejection by Google)
- *   network / timeout / 5xx    → 'error'    (proxy or transient — don't
- *                                            burn an xgodo verdict on this)
+ *   array of vectors (non-empty)   → 'valid'
+ *   {error: <terminal pattern>}    → 'invalid'  (Google permanently
+ *                                                rejected — see
+ *                                                api-key-validation.ts)
+ *   {error: 'curl exit N'} / other → 'error'    (proxy/network — don't
+ *                                                burn an xgodo verdict)
  */
-async function testKey(key: string, proxy?: { url: string; deviceId: string }): Promise<{
+export async function testKey(key: string, proxy?: { url: string; deviceId: string }): Promise<{
   verdict: KeyTestVerdict;
   reason: string;
   latencyMs: number;
   proxyUsed: string;
 }> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
+  const proxyUsed = proxy?.deviceId || 'direct';
   const t0 = Date.now();
-  const pair = proxy ? {
-    key: '',                          // unused by ytFetchViaProxy
-    proxyUrl: proxy.url,
-    proxyDeviceId: proxy.deviceId,    // real xgodo device id — surfaced in events
-    banned: false,
-    banExpiry: 0,
-  } : undefined;
-  const res = await ytFetchViaProxy(url, pair);
-  const latencyMs = Date.now() - t0;
-  const proxyUsed = res.proxyUsed || proxy?.deviceId || '?';
-  const data = res.data as { models?: Array<{ name?: string }>; error?: { code?: number; message?: string; status?: string } } | null;
 
-  // Happy path
-  if (res.ok && Array.isArray(data?.models) && data.models.length > 0) {
-    return { verdict: 'valid', reason: `${data.models.length} models accessible`, latencyMs, proxyUsed };
+  const tmpFile = path.join(os.tmpdir(), `keyprobe_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+  fs.writeFileSync(tmpFile, JSON.stringify({
+    // One-token text is enough to cover all of token validation,
+    // permission check, billing check, and rate-limit check that
+    // batchEmbedContents performs. Adds <1 quota unit / call.
+    texts: ['hi'],
+    key,
+    model: VALIDATION_MODEL,
+    proxy: proxy?.url ?? '',
+  }));
+
+  let rawOut: string;
+  try {
+    const r = await execFileAsync(
+      'python3',
+      [path.join(SCRIPTS_DIR, 'embed-batch.py'), tmpFile],
+      { timeout: 75000, maxBuffer: 16 * 1024 * 1024 },
+    );
+    rawOut = String(r.stdout);
+  } catch (err) {
+    fs.unlinkSync(tmpFile);
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    const detail = e.stdout?.slice(0, 300) || e.stderr?.slice(0, 300) || e.message?.slice(0, 300) || 'unknown';
+    return { verdict: 'error', reason: `subprocess: ${detail}`, latencyMs: Date.now() - t0, proxyUsed };
   }
-  // Google authoritative reject (auth error envelope present)
-  if ((res.status === 400 || res.status === 401 || res.status === 403) && data?.error?.message) {
-    return { verdict: 'invalid', reason: data.error.message.slice(0, 200), latencyMs, proxyUsed };
+  try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
+  const latencyMs = Date.now() - t0;
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(rawOut); }
+  catch {
+    return { verdict: 'error', reason: `non-JSON output: ${rawOut.slice(0, 160)}`, latencyMs, proxyUsed };
   }
-  // Network-side curl errors come back through ytFetchViaProxy as
-  // {ok:false, status:0, error:'curl exit N: ...'} — those are PROXY
-  // failures, not key invalidations. Treat as 'error' and let the
-  // operator re-run later.
-  if (res.error && /curl exit \d+/.test(res.error)) {
-    return { verdict: 'error', reason: `proxy/network: ${res.error.slice(0, 160)}`, latencyMs, proxyUsed };
+
+  // Happy path: array of vectors, at least one with non-empty values.
+  if (Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0]) && (parsed[0] as unknown[]).length > 0) {
+    return { verdict: 'valid', reason: `${parsed.length} embedding(s) returned (${(parsed[0] as unknown[]).length}D)`, latencyMs, proxyUsed };
   }
-  // Timeout / no response / unexpected payload — also inconclusive.
-  return { verdict: 'error', reason: `inconclusive: ${res.error || (res.status ? `HTTP ${res.status}` : 'no response')}`, latencyMs, proxyUsed };
+
+  // embed-batch.py error envelope. Distinguish proxy errors (transient)
+  // from Google API errors (potentially terminal).
+  const errMsg = (parsed as { error?: string })?.error ?? `unexpected output: ${rawOut.slice(0, 160)}`;
+  if (/^curl exit \d+/i.test(errMsg) || /^Empty response/.test(errMsg) || /yt-fetch subprocess failed/.test(errMsg)) {
+    return { verdict: 'error', reason: `proxy/network: ${errMsg.slice(0, 160)}`, latencyMs, proxyUsed };
+  }
+  // Classify against the shared terminal-error table. Anything matching
+  // is a permanent reject (xgodo task → declined, key never enters
+  // inventory). Anything else is treated as transient.
+  const verdict = classifyKeyError(errMsg);
+  if (verdict.terminal) {
+    return { verdict: 'invalid', reason: `[${verdict.reason}] ${errMsg.slice(0, 200)}`, latencyMs, proxyUsed };
+  }
+  return { verdict: 'error', reason: `inconclusive: ${errMsg.slice(0, 200)}`, latencyMs, proxyUsed };
 }
 
 /** Insert one validated key into our inventory. Idempotent via

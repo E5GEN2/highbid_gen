@@ -13,6 +13,7 @@ import { getProxies } from './xgodo-proxy';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { classifyKeyError, deleteApiKey } from './api-key-validation';
 
 const execFileAsync = promisify(execFile);
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
@@ -311,15 +312,21 @@ export async function batchEmbedInputs(
 
   if (!Array.isArray(result)) {
     const errMsg = (result as { error: string }).error || 'Unknown embedding error';
-    // 403 "denied access" means Google permanently revoked the
-    // project/key (manual review failure, ToS, etc.) — it's not a
-    // transient 5-min ban, so flip the row to status='invalid' and
-    // drop it out of the rotation forever. 429 / RESOURCE_EXHAUSTED
-    // is the actual transient case → 5-min cooloff is right there.
-    if (errMsg.includes('API 403') && errMsg.includes('denied access')) {
-      invalidateKey(pair.key, '403 denied access').catch(() => { /* fire-and-forget */ });
-    } else if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+    // 429 / RESOURCE_EXHAUSTED is transient → 5-min cooloff via banKey.
+    // Everything matched by classifyKeyError() is terminal → hard delete
+    // the row from xgodo_api_keys so future thread pulls don't see it.
+    // Order matters: check transient FIRST so a key that's just been
+    // 429'd doesn't fall through into the terminal classifier on a stray
+    // status-string match.
+    if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
       banKey(pair.key);
+    } else {
+      const verdict = classifyKeyError(errMsg);
+      if (verdict.terminal) {
+        deleteApiKey('google_ai_studio', pair.key, verdict.reason)
+          .then((removed) => { if (removed) lastPairBuild = 0; })
+          .catch(() => { /* fire-and-forget */ });
+      }
     }
     throw new Error(errMsg);
   }
