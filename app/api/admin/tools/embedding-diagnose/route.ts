@@ -117,6 +117,12 @@ export async function GET(req: NextRequest) {
   const conditions: string[] = [];
   if (mode === 'dead') {
     conditions.push(`thumbnail_dead_at IS NOT NULL`);
+  } else if (mode === 'embedded') {
+    // For GPU sanity tests — pulls a sample of already-embedded videos
+    // so the caller can hand them to a `mode: 'cluster'` RunPod
+    // dispatch without re-embedding anything.
+    if (target === 'combined_v2') conditions.push(`combined_embedded_v2_at IS NOT NULL`);
+    else if (target === 'thumbnail_v2') conditions.push(`thumbnail_embedded_v2_at IS NOT NULL`);
   } else if (target === 'combined_v2') {
     conditions.push(`combined_embedded_v2_at IS NULL`);
     conditions.push(`title IS NOT NULL AND title != ''`);
@@ -145,6 +151,19 @@ export async function GET(req: NextRequest) {
       LIMIT $1`,
     [limit],
   );
+
+  // mode=embedded is purely an ID-list lookup — caller passes those
+  // IDs to a `cluster` RunPod dispatch as a sanity-test scope, no
+  // thumbnail probing needed.
+  if (mode === 'embedded') {
+    return NextResponse.json({
+      target,
+      order,
+      mode,
+      sample_size: sampleRes.rows.length,
+      video_ids: sampleRes.rows.map(r => r.id),
+    });
+  }
 
   // Concurrent fetches, capped at `concurrency`. Each row is its own
   // probe; we accumulate per-row results.
