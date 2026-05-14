@@ -232,6 +232,11 @@ export async function testKey(key: string, proxy?: { url: string; deviceId: stri
     proxy: proxy?.url ?? '',
   }));
 
+  // embed-batch.py prints the error JSON to stdout AND exits 1 on API
+  // failures (proxy curl errors, Google 4xx/5xx, etc). execFileAsync
+  // throws on non-zero exit, but the JSON we need is still in
+  // err.stdout — we have to extract it and parse normally instead of
+  // bailing out with a generic "subprocess failed".
   let rawOut: string;
   try {
     const r = await execFileAsync(
@@ -241,10 +246,16 @@ export async function testKey(key: string, proxy?: { url: string; deviceId: stri
     );
     rawOut = String(r.stdout);
   } catch (err) {
-    fs.unlinkSync(tmpFile);
     const e = err as { stdout?: string; stderr?: string; message?: string };
-    const detail = e.stdout?.slice(0, 300) || e.stderr?.slice(0, 300) || e.message?.slice(0, 300) || 'unknown';
-    return { verdict: 'error', reason: `subprocess: ${detail}`, latencyMs: Date.now() - t0, proxyUsed };
+    if (e.stdout && String(e.stdout).trim().startsWith('{')) {
+      // Expected: script printed structured error JSON then exited 1.
+      rawOut = String(e.stdout);
+    } else {
+      // True subprocess failure (crash, timeout, no stdout at all).
+      try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
+      const detail = e.stderr?.slice(0, 300) || e.message?.slice(0, 300) || 'unknown';
+      return { verdict: 'error', reason: `subprocess: ${detail}`, latencyMs: Date.now() - t0, proxyUsed };
+    }
   }
   try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
   const latencyMs = Date.now() - t0;

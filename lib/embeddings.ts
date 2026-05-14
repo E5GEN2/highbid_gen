@@ -292,10 +292,22 @@ export async function batchEmbedInputs(
     rawOut = result.stdout;
     rawErr = result.stderr;
   } catch (err) {
-    fs.unlinkSync(tmpFile);
+    // embed-batch.py exits 1 on Google API errors but still prints the
+    // structured error JSON to stdout. execFileAsync throws on the
+    // non-zero exit — but if we have the JSON we want to fall through
+    // and route it through the same parse + classify path as the
+    // success case (otherwise classifyKeyError below is unreachable
+    // for the API-error path and dead keys stay in rotation forever).
     const e = err as { stderr?: string; stdout?: string; message?: string };
-    const detail = e.stdout?.substring(0, 300) || e.stderr?.substring(0, 300) || e.message?.substring(0, 300);
-    throw new Error(`Python embed failed: ${detail}`);
+    if (e.stdout && String(e.stdout).trim().startsWith('{')) {
+      rawOut = e.stdout;
+      rawErr = e.stderr ?? '';
+    } else {
+      // True subprocess failure — no JSON to classify, surface as-is.
+      fs.unlinkSync(tmpFile);
+      const detail = e.stderr?.substring(0, 300) || e.message?.substring(0, 300);
+      throw new Error(`Python embed failed: ${detail}`);
+    }
   }
   fs.unlinkSync(tmpFile);
   const stdout = String(rawOut);
@@ -368,10 +380,17 @@ export async function batchEmbedGrouped(
     );
     rawOut = result.stdout;
   } catch (err) {
-    fs.unlinkSync(tmpFile);
+    // Same catch-but-recover pattern as batchEmbedInputs — embed-batch.py
+    // exits 1 on API errors but the structured error JSON is in
+    // err.stdout; route it through the classifier instead of bailing.
     const e = err as { stderr?: string; stdout?: string; message?: string };
-    const detail = e.stdout?.substring(0, 300) || e.stderr?.substring(0, 300) || e.message?.substring(0, 300);
-    throw new Error(`Python embed (grouped) failed: ${detail}`);
+    if (e.stdout && String(e.stdout).trim().startsWith('{')) {
+      rawOut = e.stdout;
+    } else {
+      fs.unlinkSync(tmpFile);
+      const detail = e.stderr?.substring(0, 300) || e.message?.substring(0, 300);
+      throw new Error(`Python embed (grouped) failed: ${detail}`);
+    }
   }
   fs.unlinkSync(tmpFile);
   const stdout = String(rawOut);
@@ -382,11 +401,18 @@ export async function batchEmbedGrouped(
 
   if (!Array.isArray(result)) {
     const errMsg = (result as { error: string }).error || 'Unknown embedding error';
-    // Same 403-vs-429 split as batchEmbedInputs above.
-    if (errMsg.includes('API 403') && errMsg.includes('denied access')) {
-      invalidateKey(pair.key, '403 denied access').catch(() => { /* fire-and-forget */ });
-    } else if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+    // Transient first (so 429 keys aren't accidentally deleted on a
+    // PERMISSION_DENIED status string in the body), then terminal
+    // classification → hard DELETE. Mirrors batchEmbedInputs.
+    if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
       banKey(pair.key);
+    } else {
+      const verdict = classifyKeyError(errMsg);
+      if (verdict.terminal) {
+        deleteApiKey('google_ai_studio', pair.key, verdict.reason)
+          .then((removed) => { if (removed) lastPairBuild = 0; })
+          .catch(() => { /* fire-and-forget */ });
+      }
     }
     throw new Error(errMsg);
   }
