@@ -8,12 +8,18 @@ export const revalidate = 0;
 /**
  * GET /api/admin/niche-tree/coverage
  *
- * Answers "how much of our embedded video corpus is reflected in the
- * latest clustering run?" — i.e. how stale is the niche tree?
+ * Answers "how stale is the niche tree?" — across the two bottlenecks
+ * that gate a video from being clustered:
+ *
+ *   1. embedding   (combined_embedded_v2_at IS NULL → unembedded)
+ *   2. clustering  (in niche_spy_videos but not in latest run's
+ *                   niche_tree_assignments → embedded but unclustered)
  *
  * Returns:
- *   embedded             — videos with combined_v2 embedding (eligible
+ *   total                — every row in niche_spy_videos
+ *   embedded             — subset with combined_v2 embedding (eligible
  *                          to cluster)
+ *   unembedded           — total - embedded (need embedding first)
  *   latestRun            — { id, source, status, startedAt, completedAt }
  *                          for the most recent global L1 run (any status)
  *   inLatestRun          — videos referenced by niche_tree_assignments
@@ -21,9 +27,11 @@ export const revalidate = 0;
  *      .assigned         — got a cluster id
  *      .noise            — ran but didn't form a cluster
  *   newSinceLatestRun    — embedded videos NOT in that run's assignments
- *                          (i.e. embedded after the run started, or
- *                          missed by the snapshot for some other reason)
+ *                          (embedded after the run started, or missed
+ *                          by the snapshot for some other reason)
  *   coveragePct          — 100 × inLatestRun / embedded, two decimals
+ *                          (i.e. "of what could be clustered, how much
+ *                          has been clustered?")
  *
  * Cheap: one count per metric, all indexed. Safe to poll from the
  * Cluster Lifecycle tab as a freshness indicator.
@@ -33,14 +41,16 @@ export async function GET(req: NextRequest) {
 
   const pool = await getPool();
 
-  // Embedded total — single source of truth for "could in principle
-  // be clustered right now".
-  const embRes = await pool.query<{ embedded: string }>(
-    `SELECT COUNT(*)::text AS embedded
-       FROM niche_spy_videos
-      WHERE combined_embedded_v2_at IS NOT NULL`,
+  // Single scan to count total + embedded — cheap and atomic.
+  const vidRes = await pool.query<{ total: string; embedded: string }>(
+    `SELECT
+       COUNT(*)::text AS total,
+       COUNT(*) FILTER (WHERE combined_embedded_v2_at IS NOT NULL)::text AS embedded
+       FROM niche_spy_videos`,
   );
-  const embedded = parseInt(embRes.rows[0]?.embedded ?? '0', 10) || 0;
+  const total    = parseInt(vidRes.rows[0]?.total    ?? '0', 10) || 0;
+  const embedded = parseInt(vidRes.rows[0]?.embedded ?? '0', 10) || 0;
+  const unembedded = Math.max(0, total - embedded);
 
   // Latest L1 run regardless of status — operators want to see "still
   // running" runs surfaced here too. The done check happens in the UI
@@ -58,7 +68,9 @@ export async function GET(req: NextRequest) {
 
   if (runRes.rows.length === 0) {
     return NextResponse.json({
+      total,
       embedded,
+      unembedded,
       latestRun: null,
       inLatestRun: { total: 0, assigned: 0, noise: 0 },
       newSinceLatestRun: embedded,
@@ -86,7 +98,9 @@ export async function GET(req: NextRequest) {
   const pct = embedded > 0 ? Math.round((inLatest / embedded) * 10000) / 100 : 0;
 
   return NextResponse.json({
+    total,
     embedded,
+    unembedded,
     latestRun: {
       id: r.id,
       source: r.source,
