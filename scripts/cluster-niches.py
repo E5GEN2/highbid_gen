@@ -274,29 +274,56 @@ def main():
     # (a) bump the container's cgroup memory.max, or (b) swap UMAP's
     # NNDescent for FAISS HNSW (more memory-efficient but lossy on
     # edge clusters). PCA pre-reduction stays off the table.
-    from umap import UMAP
+    # GPU path swaps umap-learn / hdbscan for cuML equivalents. Same
+    # algorithms, ~10–15× faster wall time on a T4/A10. Output shape is
+    # identical (numpy array of int labels), so the downstream Tukey
+    # cleanup + labeling code stays unchanged.
+    use_gpu = bool(config.get('use_gpu', False))
     n_neighbors = config.get('n_neighbors', 5)
-    reducer_cluster = UMAP(
-        n_components=umap_dims,
-        n_neighbors=n_neighbors,
-        metric='cosine',
-        min_dist=0.0,
-        random_state=42,
-        low_memory=True,         # halves peak RAM on wide inputs (>3K dims)
-        verbose=False,
-    )
+    if use_gpu:
+        # Force numpy output so we don't accidentally pass cupy arrays
+        # into np.percentile / np.linalg.norm later.
+        import cuml; cuml.set_global_output_type('numpy')
+        from cuml.manifold import UMAP
+        reducer_cluster = UMAP(
+            n_components=umap_dims,
+            n_neighbors=n_neighbors,
+            metric='cosine',
+            min_dist=0.0,
+            random_state=42,
+            verbose=False,
+        )
+    else:
+        from umap import UMAP
+        reducer_cluster = UMAP(
+            n_components=umap_dims,
+            n_neighbors=n_neighbors,
+            metric='cosine',
+            min_dist=0.0,
+            random_state=42,
+            low_memory=True,         # halves peak RAM on wide inputs (>3K dims); CPU only
+            verbose=False,
+        )
     X_reduced = reducer_cluster.fit_transform(X)
-    sys.stderr.write(f"[cluster] UMAP {dim}D -> {umap_dims}D done\n")
+    sys.stderr.write(f"[cluster] UMAP {dim}D -> {umap_dims}D done ({'gpu' if use_gpu else 'cpu'})\n")
 
     # --- HDBSCAN ---
-    import hdbscan
-    clusterer = hdbscan.HDBSCAN(
+    if use_gpu:
+        from cuml.cluster import HDBSCAN as _HDBSCAN
+    else:
+        import hdbscan as _hdbscan
+        _HDBSCAN = _hdbscan.HDBSCAN
+    clusterer = _HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         cluster_selection_method='eom',
         metric='euclidean'
     )
     labels = clusterer.fit_predict(X_reduced)
+    # cuML returns cupy/numpy depending on version — normalise to numpy.
+    if hasattr(labels, 'get'):
+        labels = labels.get()
+    labels = np.asarray(labels)
     num_clusters_raw = len(set(labels)) - (1 if -1 in labels else 0)
     num_noise_raw = int(np.sum(labels == -1))
     sys.stderr.write(f"[cluster] HDBSCAN: {num_clusters_raw} clusters, {num_noise_raw} noise (pre-cleanup)\n")
@@ -359,15 +386,25 @@ def main():
     # promote the tree to user-side.
     compute_2d = bool(config.get('compute_2d', True))
     if compute_2d:
-        reducer_2d = UMAP(
-            n_components=2,
-            n_neighbors=n_neighbors,
-            metric='cosine',
-            min_dist=0.0,
-            random_state=42,
-            low_memory=True,
-            verbose=False,
-        )
+        if use_gpu:
+            reducer_2d = UMAP(
+                n_components=2,
+                n_neighbors=n_neighbors,
+                metric='cosine',
+                min_dist=0.0,
+                random_state=42,
+                verbose=False,
+            )
+        else:
+            reducer_2d = UMAP(
+                n_components=2,
+                n_neighbors=n_neighbors,
+                metric='cosine',
+                min_dist=0.0,
+                random_state=42,
+                low_memory=True,
+                verbose=False,
+            )
         X_2d = reducer_2d.fit_transform(X)
         sys.stderr.write(f"[cluster] UMAP {dim}D -> 2D scatter done\n")
     else:
