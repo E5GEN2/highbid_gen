@@ -5808,6 +5808,14 @@ const EVENT_COLORS: Record<LifecycleEvent['event'], { bg: string; text: string; 
   died:   { bg: 'bg-red-500/10',     text: 'text-red-400',     border: 'border-red-500/30',     emoji: '✕' },
 };
 
+interface ClusterCoverage {
+  embedded: number;
+  latestRun: { id: number; source: string; status: string; startedAt: string | null; completedAt: string | null } | null;
+  inLatestRun: { total: number; assigned: number; noise: number };
+  newSinceLatestRun: number;
+  coveragePct: number;
+}
+
 function ClusterLifecycleTab({ active }: { active: boolean }) {
   const [runId, setRunId] = useState<number | null>(null);
   const [runInput, setRunInput] = useState<string>('');     // text input override for runId
@@ -5820,6 +5828,24 @@ function ClusterLifecycleTab({ active }: { active: boolean }) {
   const [level, setLevel] = useState<'all' | 1 | 2>('all');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'abs_delta' | 'size_after' | 'size_before' | 'jaccard'>('abs_delta');
+  const [coverage, setCoverage] = useState<ClusterCoverage | null>(null);
+
+  // Coverage — pulled once when the tab opens. Refresh on demand via
+  // the Refresh button; this is also the input for "should we re-cluster?"
+  // so we don't poll it.
+  useEffect(() => {
+    if (!active) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/admin/niche-tree/coverage');
+        if (!r.ok) return;
+        const d = await r.json() as ClusterCoverage;
+        if (!cancel) setCoverage(d);
+      } catch { /* swallow — coverage card is best-effort */ }
+    })();
+    return () => { cancel = true; };
+  }, [active]);
 
   const fetchDiff = useCallback(async (id?: number) => {
     setLoading(true);
@@ -5891,6 +5917,47 @@ function ClusterLifecycleTab({ active }: { active: boolean }) {
 
   return (
     <div className="space-y-6">
+      {/* Coverage — "how much of the embedded corpus is in the latest run?"
+          Surfaces the newSinceLatestRun delta so the operator knows when
+          a re-cluster is worth kicking off. */}
+      {coverage && (
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-[#1f1f1f] flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-sm font-semibold text-white">Clustering coverage</div>
+              <div className="text-[11px] text-[#888] mt-0.5">
+                {coverage.latestRun ? (
+                  <>Latest L1 run <span className="text-white font-medium">#{coverage.latestRun.id}</span> ({coverage.latestRun.source})
+                    {' · '}<span className={
+                      coverage.latestRun.status === 'done' ? 'text-emerald-400' :
+                      coverage.latestRun.status === 'running' ? 'text-yellow-400' :
+                                                                'text-red-400'}>{coverage.latestRun.status}</span>
+                    {coverage.latestRun.completedAt && <> · finished {new Date(coverage.latestRun.completedAt).toLocaleString()}</>}
+                  </>
+                ) : 'No global L1 run yet.'}
+              </div>
+            </div>
+            <div className="text-xs text-[#888]">
+              Coverage <span className="text-white font-semibold ml-1">{coverage.coveragePct.toFixed(1)}%</span>
+            </div>
+          </div>
+          <div className="px-4 py-3 grid grid-cols-2 md:grid-cols-5 gap-2">
+            {[
+              { label: 'Embedded',           value: coverage.embedded,           color: 'text-white'        },
+              { label: 'In latest run',      value: coverage.inLatestRun.total,  color: 'text-white'        },
+              { label: '→ assigned',         value: coverage.inLatestRun.assigned, color: 'text-emerald-400'  },
+              { label: '→ noise',            value: coverage.inLatestRun.noise,  color: 'text-[#888]'       },
+              { label: 'New (unclustered)',  value: coverage.newSinceLatestRun,  color: coverage.newSinceLatestRun > 0 ? 'text-fuchsia-400' : 'text-[#666]' },
+            ].map(s => (
+              <div key={s.label} className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg p-2 text-center">
+                <div className={`text-lg font-bold ${s.color}`}>{s.value.toLocaleString()}</div>
+                <div className="text-[10px] text-[#666] uppercase tracking-wider">{s.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-xl font-bold text-white">Cluster Lifecycle</h1>
