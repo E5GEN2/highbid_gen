@@ -247,13 +247,19 @@ export async function fetchClusterOpportunities(
 const activePyProcesses = new Map<number, ChildProcess>();
 const cancelledL1Runs = new Set<number>();
 
-/** Stages a global clustering run progresses through, in order. */
+/** Stages a global clustering run progresses through, in order.
+ *  GPU dispatch collapses the [umap_cluster, hdbscan, labeling] block
+ *  into [gpu_queued, gpu_running] because those steps run inside the
+ *  remote container — the operator's view is one opaque GPU phase
+ *  bracketed by RunPod's queue/init time. */
 export const TREE_STAGES = [
   'starting',
-  'fetching',      // Python: pulling embeddings + building feature matrix
-  'umap_cluster',  // Python: UMAP NND -> umap_dims (the long one)
-  'hdbscan',       // Python: HDBSCAN
-  'labeling',      // Python: TF-IDF auto-labels
+  'gpu_queued',    // GPU: dispatched to RunPod, worker initializing
+  'gpu_running',   // GPU: in-container compute (UMAP+HDBSCAN+L2 all inside)
+  'fetching',      // CPU: Python pulling embeddings + building feature matrix
+  'umap_cluster',  // CPU: UMAP NND -> umap_dims (the long one)
+  'hdbscan',       // CPU: HDBSCAN
+  'labeling',      // CPU: TF-IDF auto-labels
   'writing',       // Node: inserting clusters + assignments to DB
   'stitching',     // Node: matching new clusters to previous run for stable_ids
   'baking_l2',     // Node: chained per-cluster subdivides for L2 children
@@ -292,6 +298,12 @@ export interface TreeProgress {
     total_new_clusters: number;
   };
   stitch_error?: string;
+  /** Set during GPU dispatch — the RunPod job id (so the UI can deep-link
+   *  to the RunPod console for live logs) plus the queue/exec breakdown
+   *  once the dispatch returns. */
+  runpodJobId?: string;
+  runpodDelayMs?: number;
+  runpodExecMs?: number;
 }
 
 /** Persist a partial progress update without overwriting unrelated fields. */
@@ -889,10 +901,18 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
         return;
       }
       await writeProgress(runId, {
-        stage: 'fetching',
+        stage: 'gpu_queued',
         stageStartedAt: new Date().toISOString(),
         recentLogs: ['[gpu] dispatching combined L1+L2 bake to RunPod'],
       });
+      // Ring buffer for GPU stage's recentLogs — same shape the CPU
+      // path uses (last 12 lines). Drives the operator-visible stderr
+      // tail in the UI.
+      const gpuLogs: string[] = ['[gpu] dispatching combined L1+L2 bake to RunPod'];
+      const pushGpuLog = (line: string) => {
+        gpuLogs.push(line);
+        while (gpuLogs.length > 12) gpuLogs.shift();
+      };
       try {
         const bake = await dispatchGlobalBakeToRunPod({
           creds,
@@ -910,19 +930,40 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
           },
           onJobStart: (jobId) => {
             console.log(`[niche-tree] run ${runId}: RunPod global_bake job ${jobId}`);
+            pushGpuLog(`[gpu] RunPod job ${jobId} queued`);
             writeProgress(runId, {
-              recentLogs: [`[gpu] RunPod job ${jobId} queued`],
+              runpodJobId: jobId,
+              recentLogs:  [...gpuLogs],
             }).catch(() => {});
           },
           onProgress: (msg) => {
             console.log(`[niche-tree] run ${runId}: ${msg}`);
-            writeProgress(runId, { recentLogs: [msg] }).catch(() => {});
+            pushGpuLog(msg);
+            // RunPod status transitions drive our stage boundary:
+            // IN_QUEUE → gpu_queued (already set); IN_PROGRESS → gpu_running.
+            const patch: Partial<TreeProgress> = { recentLogs: [...gpuLogs] };
+            if (msg.includes('status → IN_PROGRESS')) {
+              patch.stage = 'gpu_running';
+              patch.stageStartedAt = new Date().toISOString();
+            } else if (msg.includes('status → IN_QUEUE')) {
+              patch.stage = 'gpu_queued';
+              patch.stageStartedAt = new Date().toISOString();
+            }
+            writeProgress(runId, patch).catch(() => {});
           },
         });
         console.log(
           `[niche-tree] run ${runId}: global_bake done — L1 + ${Object.keys(bake.l2ByParent).length} L2 baked ` +
           `(skipped ${bake.l2Skipped} small, ${bake.l2Errors} errors, execMs=${bake.executionMs})`,
         );
+        // Surface the post-mortem timing for the UI — total time
+        // breakdown lives in the run row's progress JSON.
+        pushGpuLog(`[gpu] bake complete: ${Object.keys(bake.l2ByParent).length} L2 baked, ${bake.l2Skipped} skipped, ${bake.l2Errors} errors`);
+        await writeProgress(runId, {
+          runpodDelayMs: bake.delayMs,
+          runpodExecMs:  bake.executionMs,
+          recentLogs:    [...gpuLogs],
+        });
         prefetchedL1Result = bake.l1;
         bakeL2ByParent = new Map(
           Object.entries(bake.l2ByParent).map(([k, v]) => [parseInt(k, 10), v]),

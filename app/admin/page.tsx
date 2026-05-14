@@ -34,7 +34,7 @@ export default function AdminPage() {
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
-  type TreeStage = 'starting' | 'fetching' | 'umap_cluster' | 'hdbscan' | 'labeling' | 'writing' | 'baking_l2' | 'done';
+  type TreeStage = 'starting' | 'gpu_queued' | 'gpu_running' | 'fetching' | 'umap_cluster' | 'hdbscan' | 'labeling' | 'writing' | 'stitching' | 'baking_l2' | 'done';
   interface TreeBakeL2Progress {
     total: number; completed: number; skipped: number; failed: number;
     currentParentId: number | null;
@@ -50,6 +50,13 @@ export default function AdminPage() {
     numClusters?: number;
     numNoise?: number;
     l2?: TreeBakeL2Progress;
+    /** RunPod job id when executionMode='gpu'. Surfaced in the stage
+     *  stepper as a deep link to the RunPod console. */
+    runpodJobId?: string;
+    /** RunPod queue-time + in-container exec-time, set by the dispatcher
+     *  when the global_bake job completes. Useful post-mortem stat. */
+    runpodDelayMs?: number;
+    runpodExecMs?: number;
   }
   interface TreeRun {
     id: number; status: 'running' | 'done' | 'error';
@@ -94,6 +101,10 @@ export default function AdminPage() {
     minClusterSize: 80,
     minSamples: 10,
     umapDims: 50,
+    /** 'cpu' (default) runs the Python subprocess on the Railway worker.
+     *  'gpu' dispatches a single combined L1+L2 bake to the RunPod cuML
+     *  serverless endpoint. Same script, same I/O, ~10× faster. */
+    executionMode: 'cpu' as 'cpu' | 'gpu',
   });
 
   const refetchTree = useCallback(async () => {
@@ -4946,6 +4957,33 @@ export default function AdminPage() {
                       onChange={e => setTreeParams(p => ({ ...p, umapDims: parseInt(e.target.value) || 50 }))}
                       className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
                   </div>
+                  {/* Execution mode — CPU subprocess on Railway, or GPU
+                      dispatch to RunPod cuML. GPU is ~10× faster but
+                      requires admin_config.runpod_* + vector_db_url_external. */}
+                  <div>
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1" title="Where to run the UMAP+HDBSCAN. GPU dispatches to RunPod cuML; CPU runs locally on Railway.">
+                      execution
+                    </label>
+                    <div className="inline-flex rounded-lg border border-[#1f1f1f] overflow-hidden h-9">
+                      {(['cpu', 'gpu'] as const).map(m => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setTreeParams(p => ({ ...p, executionMode: m }))}
+                          className={
+                            'px-3 text-xs transition ' +
+                            (treeParams.executionMode === m
+                              ? (m === 'gpu' ? 'bg-fuchsia-500/80 text-white font-semibold'
+                                             : 'bg-amber-500 text-black font-semibold')
+                              : 'bg-[#1a1a1a] text-[#888] hover:text-white')
+                          }
+                        >
+                          {m.toUpperCase()}
+                          {m === 'gpu' && <span className="ml-1 text-[10px] opacity-70">RunPod</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -5016,7 +5054,22 @@ export default function AdminPage() {
                 gives operator confidence that work is actually moving. */}
             {treeData.run?.status === 'running' && (() => {
               const prog = treeData.run.progress;
-              const TREE_STAGES_UI: Array<{ key: TreeStage; label: string; sub: string }> = [
+              // GPU and CPU paths share most stages; GPU adds two
+              // "gpu_*" stages up-front that cover RunPod queue +
+              // in-container compute (which is one opaque block from
+              // the operator's view). CPU runs hit the same UMAP /
+              // HDBSCAN / labeling sequence directly on the Railway
+              // worker. The stepper renders whichever stages are
+              // reachable in this run's mode.
+              const isGpu = (treeData.run?.params?.executionMode === 'gpu');
+              const TREE_STAGES_UI: Array<{ key: TreeStage; label: string; sub: string }> = isGpu ? [
+                { key: 'starting',     label: 'Starting',         sub: 'preparing RunPod payload' },
+                { key: 'gpu_queued',   label: 'GPU queued',       sub: 'RunPod worker initializing (cold pull ~10 min)' },
+                { key: 'gpu_running',  label: 'GPU running',      sub: 'cuML UMAP + HDBSCAN + L2 in single container' },
+                { key: 'writing',      label: 'Writing',          sub: 'PG inserts for clusters + assignments' },
+                { key: 'stitching',    label: 'Stitching',        sub: 'matching L1 against prior runs' },
+                { key: 'baking_l2',    label: 'Baking L2',        sub: 'per-parent writes + L2 stitch + AI labels' },
+              ] : [
                 { key: 'starting',     label: 'Starting',         sub: 'spawning python' },
                 { key: 'fetching',     label: 'Fetching',         sub: 'pulling embeddings + matrix' },
                 { key: 'umap_cluster', label: 'UMAP clustering',  sub: 'longest stage; raw embedding → 50D' },
@@ -5080,6 +5133,36 @@ export default function AdminPage() {
                       );
                     })}
                   </div>
+
+                  {/* RunPod job link + timing — only relevant when a
+                      GPU dispatch is in flight. Deep-links to RunPod's
+                      log viewer for the operator who wants stderr in
+                      real time (vs the polled tail we surface below). */}
+                  {isGpu && prog?.runpodJobId && (
+                    <div className="text-xs text-[#888] flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span>RunPod job:</span>
+                      <a
+                        href={`https://console.runpod.io/serverless/user/endpoint/9b6old274avgya?tab=logs`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-fuchsia-400 hover:text-fuchsia-300 underline"
+                      >
+                        {prog.runpodJobId.slice(0, 12)}…
+                      </a>
+                      {prog.runpodDelayMs != null && (
+                        <>
+                          <span className="text-[#444]">·</span>
+                          <span>queue: <span className="text-white">{fmtMs(prog.runpodDelayMs)}</span></span>
+                        </>
+                      )}
+                      {prog.runpodExecMs != null && (
+                        <>
+                          <span className="text-[#444]">·</span>
+                          <span>exec: <span className="text-white">{fmtMs(prog.runpodExecMs)}</span></span>
+                        </>
+                      )}
+                    </div>
+                  )}
 
                   {/* Counts surfaced as soon as HDBSCAN reports them, even
                       before the writing stage starts populating the grid. */}
