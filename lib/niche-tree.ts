@@ -351,6 +351,22 @@ export interface TreeClusterParams {
    * GPU noise back near CPU baseline.
    */
   nNeighbors?: number;
+  /**
+   * Tukey-fence multiplier applied per-cluster on euclidean distance
+   * to centroid to demote misclassified stragglers back to noise.
+   * 0 disables the cleanup; 3.0 is lenient (catches d=4-6 outliers
+   * but keeps legitimate cluster-edge members). See cluster-niches.py.
+   */
+  outlierIqrMult?: number;
+  /**
+   * Minimum L1 cluster size that triggers an L2 subdivide. Default
+   * 200 — at minClusterSize=30/40 we get many tiny L1 clusters whose
+   * subdivide is either pointless (only 1-2 sub-niches) or crashes
+   * cuML's UMAP when N is close to umap_dims. 200 keeps L2 baking
+   * focused on parents with enough population to produce meaningful
+   * sub-structure.
+   */
+  minParentSize?: number;
   minScore?: number;
   source?: TreeSource;
   /**
@@ -941,17 +957,17 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
             minSamples:     params.minSamples     || 10,
             umapDims:       params.umapDims       || 50,
             nNeighbors:     params.nNeighbors     || 15,
+            outlierIqrMult: params.outlierIqrMult ?? 3.0,
           },
           l2: {
-            // Higher floor than the CPU path's 50 — at minClusterSize=30
-            // we end up with many L1 clusters of 50-150 videos, and a
-            // 50-video parent fed into UMAP→50D crashes cuML
-            // (n_components >= n_samples is pathological). 200 keeps L2
-            // baking on parents large enough to produce meaningful
-            // sub-clusters without hitting that edge.
-            minParentSize:  200,
+            // Operator-tunable L2 floor. Default 200 — at small
+            // minClusterSize we get many tiny L1 clusters whose
+            // subdivide either crashes cuML (UMAP n_components >=
+            // n_samples) or just produces 1-2 sub-niches.
+            minParentSize:  params.minParentSize ?? 200,
             umapDims:       params.umapDims || 50,
             nNeighbors:     params.nNeighbors || 15,
+            outlierIqrMult: params.outlierIqrMult ?? 3.0,
           },
           onJobStart: (jobId) => {
             console.log(`[niche-tree] run ${runId}: RunPod global_bake job ${jobId}`);
@@ -1019,6 +1035,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       minSamples:     params.minSamples     || 10,
       umapDims:       params.umapDims       || 50,
       nNeighbors:     params.nNeighbors     || 15,
+      outlierIqrMult: params.outlierIqrMult ?? 3.0,
       scriptKeyword:  '__global__',
       executionMode:  params.executionMode,
       // GPU path: feed the pre-computed result from the combined bake
@@ -1164,6 +1181,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
         minSamples:     subMinSamples,
         umapDims:       params.umapDims || 50,
         nNeighbors:     params.nNeighbors || 15,
+        outlierIqrMult: params.outlierIqrMult ?? 3.0,
         scriptKeyword:  `subdivide:${parent.id}`,
         // Subdivides on smaller subsets are much faster — give 30 min
         // each rather than the full 90 used for L1 on the whole dataset.
@@ -1619,6 +1637,7 @@ export async function runSubdivideClusteringJob(opts: {
       minSamples:     subMinSamples,
       umapDims:       opts.params?.umapDims  || 50,
       nNeighbors:     opts.params?.nNeighbors || 15,
+      outlierIqrMult: opts.params?.outlierIqrMult ?? 3.0,
       scriptKeyword:  `subdivide:${opts.parentClusterId}`,
       pyTimeoutMs: 1_800_000,
       executionMode:  opts.params?.executionMode,

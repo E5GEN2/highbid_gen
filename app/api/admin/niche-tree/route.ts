@@ -42,6 +42,8 @@ export async function POST(req: NextRequest) {
     minSamples?: number;
     umapDims?: number;
     nNeighbors?: number;
+    outlierIqrMult?: number;
+    minParentSize?: number;
     minScore?: number;
     executionMode?: 'cpu' | 'gpu';
   } = {};
@@ -77,6 +79,8 @@ export async function POST(req: NextRequest) {
     minSamples:     body.minSamples     ?? 5,     // lowered from 10 — more permissive density floor
     umapDims:       body.umapDims       ?? 50,
     nNeighbors:     body.nNeighbors     ?? 15,    // bumped from 5 — biggest noise-reduction lever
+    outlierIqrMult: body.outlierIqrMult ?? 3.0,   // Tukey fence for HDBSCAN outlier cleanup
+    minParentSize:  body.minParentSize  ?? 200,   // L2 baking floor — skip subdivides on tiny parents
     minScore:       body.minScore       ?? 0,
     // Persisted into niche_tree_runs.params so resumeL2Baking can
     // inherit it later without the caller having to remember.

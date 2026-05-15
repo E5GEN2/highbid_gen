@@ -109,6 +109,13 @@ export default function AdminPage() {
      *  (CPU), inflating HDBSCAN's noise to 64% on GPU. 15 recovers
      *  CPU-baseline-like noise rates. */
     nNeighbors: 15,
+    /** Tukey-fence multiplier for per-cluster outlier cleanup. 0 disables;
+     *  3.0 is lenient (catches obvious misclassifications without nuking
+     *  legitimate cluster-edge members). */
+    outlierIqrMult: 3.0,
+    /** L1 cluster size that triggers an L2 subdivide. Smaller L1 clusters
+     *  are skipped — saves wall time and avoids cuML crashes on tiny inputs. */
+    minParentSize: 200,
     /** 'cpu' (default) runs the Python subprocess on the Railway worker.
      *  'gpu' dispatches a single combined L1+L2 bake to the RunPod cuML
      *  serverless endpoint. Same script, same I/O, ~10× faster. */
@@ -4971,6 +4978,22 @@ export default function AdminPage() {
                     </label>
                     <input type="number" min={2} max={100} value={treeParams.nNeighbors}
                       onChange={e => setTreeParams(p => ({ ...p, nNeighbors: parseInt(e.target.value) || 15 }))}
+                      className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1" title="Tukey-fence multiplier for per-cluster outlier cleanup. 0 disables; 3.0 is lenient.">
+                      iqr_mult
+                    </label>
+                    <input type="number" min={0} max={10} step={0.5} value={treeParams.outlierIqrMult}
+                      onChange={e => setTreeParams(p => ({ ...p, outlierIqrMult: parseFloat(e.target.value) || 3.0 }))}
+                      className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1" title="Minimum L1 cluster size that triggers an L2 subdivide. L1 clusters smaller than this are kept as leaves.">
+                      l2_min_parent
+                    </label>
+                    <input type="number" min={50} max={5000} value={treeParams.minParentSize}
+                      onChange={e => setTreeParams(p => ({ ...p, minParentSize: parseInt(e.target.value) || 200 }))}
                       className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
                   </div>
                   {/* Execution mode — CPU subprocess on Railway, or GPU
