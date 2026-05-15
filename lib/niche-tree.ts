@@ -925,7 +925,13 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
             umapDims:       params.umapDims       || 50,
           },
           l2: {
-            minParentSize:  50,    // matches the existing L1-cluster eligibility floor
+            // Higher floor than the CPU path's 50 — at minClusterSize=30
+            // we end up with many L1 clusters of 50-150 videos, and a
+            // 50-video parent fed into UMAP→50D crashes cuML
+            // (n_components >= n_samples is pathological). 200 keeps L2
+            // baking on parents large enough to produce meaningful
+            // sub-clusters without hitting that edge.
+            minParentSize:  200,
             umapDims:       params.umapDims || 50,
           },
           onJobStart: (jobId) => {

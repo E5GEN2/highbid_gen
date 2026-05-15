@@ -316,8 +316,11 @@ export async function dispatchGlobalBakeToRunPod(opts: {
 
   const dispatch = await dispatchClusterToRunPod(opts.creds, {
     payload,
-    // Combined runs are longer — default 3h instead of 90 min.
-    timeoutMs: opts.timeoutMs ?? 3 * 60 * 60 * 1000,
+    // Combined runs are long — empirically a minClusterSize=30 bake
+    // took ~3.5h on RunPod's L4 due to deep L2 fanout. Default 6h so
+    // a slightly deeper-than-expected run doesn't get its result
+    // orphaned by a too-tight Node-side timeout.
+    timeoutMs: opts.timeoutMs ?? 6 * 60 * 60 * 1000,
     onJobStart: opts.onJobStart,
     onProgress: opts.onProgress,
   });

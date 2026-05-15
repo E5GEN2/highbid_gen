@@ -228,6 +228,16 @@ def _handle_cluster(payload: dict[str, Any], log_sink: Optional[PgLogSink] = Non
 
 
 def _handle_global_bake(payload: dict[str, Any], log_sink: Optional[PgLogSink] = None) -> dict[str, Any]:
+    # Local emit helper — sends handler's own markers to BOTH stderr
+    # (RunPod dashboard) AND the PG sink (visible from Node-side
+    # niche-tree run logs). Without this, [bake] L1/L2 lines only
+    # appeared in RunPod's console and couldn't be queried via our
+    # /admin/tools/runpod-logs endpoint.
+    def _emit(line: str) -> None:
+        sys.stderr.write(line + '\n')
+        sys.stderr.flush()
+        if log_sink is not None:
+            log_sink.write(line)
     """L1 + L2 in one container session.
 
     Input shape:
@@ -269,7 +279,7 @@ def _handle_global_bake(payload: dict[str, Any], log_sink: Optional[PgLogSink] =
         'compute_2d':       False,
         'outlier_iqr_mult': l1_cfg.get('outlier_iqr_mult', 3.0),
     }
-    sys.stderr.write(f"[bake] L1 starting (min_cluster_size={l1_payload['min_cluster_size']})\n")
+    _emit(f"[bake] L1 starting (min_cluster_size={l1_payload['min_cluster_size']})")
     l1_result, l1_err, l1_stderr, l1_elapsed = _run_one_clustering(l1_payload, log_sink=log_sink)
     if l1_result is None:
         return {
@@ -277,9 +287,9 @@ def _handle_global_bake(payload: dict[str, Any], log_sink: Optional[PgLogSink] =
             'stderr_tail': '\n'.join(l1_stderr[-100:]),
             'elapsed_seconds': round(time.monotonic() - started, 1),
         }
-    sys.stderr.write(f"[bake] L1 done in {l1_elapsed:.1f}s: "
-                     f"{l1_result.get('num_clusters', 0)} clusters, "
-                     f"{l1_result.get('num_noise', 0)} noise\n")
+    _emit(f"[bake] L1 done in {l1_elapsed:.1f}s: "
+          f"{l1_result.get('num_clusters', 0)} clusters, "
+          f"{l1_result.get('num_noise', 0)} noise")
 
     # ---- L2 (per qualifying L1 cluster) -----------------------------
     min_parent = int(l2_cfg.get('min_parent_size', 200))
@@ -329,7 +339,7 @@ def _handle_global_bake(payload: dict[str, Any], log_sink: Optional[PgLogSink] =
             'compute_2d':       False,
             'outlier_iqr_mult': float(l2_cfg.get('outlier_iqr_mult', 3.0)),
         }
-        sys.stderr.write(f"[bake] L2 cluster {cluster_idx} ({len(video_ids)} vids) starting\n")
+        _emit(f"[bake] L2 cluster {cluster_idx} ({len(video_ids)} vids) starting")
         sub_result, sub_err, sub_stderr, sub_elapsed = _run_one_clustering(l2_payload, log_sink=log_sink)
         if sub_result is None:
             errors += 1
@@ -338,17 +348,17 @@ def _handle_global_bake(payload: dict[str, Any], log_sink: Optional[PgLogSink] =
                 'error': sub_err,
                 'stderr_tail': '\n'.join(sub_stderr[-30:]),
             })
-            sys.stderr.write(f"[bake] L2 cluster {cluster_idx} FAILED: {sub_err}\n")
+            _emit(f"[bake] L2 cluster {cluster_idx} FAILED: {sub_err[:200]}")
             continue
         l2_by_parent[str(cluster_idx)] = sub_result
         baked += 1
-        sys.stderr.write(f"[bake] L2 cluster {cluster_idx} done in {sub_elapsed:.1f}s: "
-                         f"{sub_result.get('num_clusters', 0)} sub-clusters, "
-                         f"{sub_result.get('num_noise', 0)} noise\n")
+        _emit(f"[bake] L2 cluster {cluster_idx} done in {sub_elapsed:.1f}s: "
+              f"{sub_result.get('num_clusters', 0)} sub-clusters, "
+              f"{sub_result.get('num_noise', 0)} noise")
 
     elapsed = time.monotonic() - started
-    sys.stderr.write(f"[bake] done in {elapsed:.1f}s — L1 + {baked} L2 baked "
-                     f"({skipped_small} skipped <{min_parent}, {errors} errors)\n")
+    _emit(f"[bake] done in {elapsed:.1f}s — L1 + {baked} L2 baked "
+          f"({skipped_small} skipped <{min_parent}, {errors} errors)")
 
     return {
         'l1': l1_result,
