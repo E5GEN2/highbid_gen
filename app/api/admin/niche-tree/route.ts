@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
     minClusterSize?: number;
     minSamples?: number;
     umapDims?: number;
+    nNeighbors?: number;
     minScore?: number;
     executionMode?: 'cpu' | 'gpu';
   } = {};
@@ -72,9 +73,10 @@ export async function POST(req: NextRequest) {
 
   const params = {
     source:         body.source         ?? 'thumbnail_v2',
-    minClusterSize: body.minClusterSize ?? 80,
-    minSamples:     body.minSamples     ?? 10,
+    minClusterSize: body.minClusterSize ?? 40,    // lowered from 80 — more clusters survive
+    minSamples:     body.minSamples     ?? 5,     // lowered from 10 — more permissive density floor
     umapDims:       body.umapDims       ?? 50,
+    nNeighbors:     body.nNeighbors     ?? 15,    // bumped from 5 — biggest noise-reduction lever
     minScore:       body.minScore       ?? 0,
     // Persisted into niche_tree_runs.params so resumeL2Baking can
     // inherit it later without the caller having to remember.

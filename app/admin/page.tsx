@@ -98,9 +98,17 @@ export default function AdminPage() {
   // ~thousands of videos. Bigger min_cluster_size = fewer, broader niches.
   const [treeParams, setTreeParams] = useState({
     source: 'combined_v2' as 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined' | 'combined_v2',
-    minClusterSize: 80,
-    minSamples: 10,
+    /** L1 default lowered from 80 → 40: more clusters survive, noise drops. */
+    minClusterSize: 40,
+    /** Lowered from 10 → 5: more permissive density floor, fewer points marked noise. */
+    minSamples: 5,
     umapDims: 50,
+    /** UMAP k-NN graph fan-out. Bumped from 5 → 15: bigger n_neighbors =
+     *  more global structure, more robust density landscape. cuML's stricter
+     *  k-NN search at n=5 created less-connected graphs than umap-learn
+     *  (CPU), inflating HDBSCAN's noise to 64% on GPU. 15 recovers
+     *  CPU-baseline-like noise rates. */
+    nNeighbors: 15,
     /** 'cpu' (default) runs the Python subprocess on the Railway worker.
      *  'gpu' dispatches a single combined L1+L2 bake to the RunPod cuML
      *  serverless endpoint. Same script, same I/O, ~10× faster. */
@@ -4955,6 +4963,14 @@ export default function AdminPage() {
                     <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1">umap_dims</label>
                     <input type="number" min={5} max={200} value={treeParams.umapDims}
                       onChange={e => setTreeParams(p => ({ ...p, umapDims: parseInt(e.target.value) || 50 }))}
+                      className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-[#666] uppercase tracking-wider mb-1" title="UMAP k-NN graph fan-out. Higher = more global structure, less HDBSCAN noise. 15 = sensible default; 5 was inflating GPU noise to 64%.">
+                      n_neighbors
+                    </label>
+                    <input type="number" min={2} max={100} value={treeParams.nNeighbors}
+                      onChange={e => setTreeParams(p => ({ ...p, nNeighbors: parseInt(e.target.value) || 15 }))}
                       className="w-24 bg-[#1a1a1a] border border-[#1f1f1f] rounded-lg px-3 h-9 text-xs text-white focus:outline-none focus:border-amber-500" />
                   </div>
                   {/* Execution mode — CPU subprocess on Railway, or GPU

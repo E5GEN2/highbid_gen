@@ -341,6 +341,16 @@ export interface TreeClusterParams {
   minSamples?: number;
   /** UMAP target dim for the reduced space HDBSCAN runs on. 50 mirrors lib/clustering.ts default. */
   umapDims?: number;
+  /**
+   * UMAP k-NN graph fan-out. Default 15 — bigger n_neighbors =
+   * more global structure, more robust density landscape, less
+   * noise. The previous default of 5 was aggressive enough that
+   * cuML's stricter k-NN search found fewer "bridge" neighbors
+   * than umap-learn (CPU) and inflated HDBSCAN's noise rate to
+   * 64% on GPU vs 44% on CPU at identical other params. 15 brings
+   * GPU noise back near CPU baseline.
+   */
+  nNeighbors?: number;
   minScore?: number;
   source?: TreeSource;
   /**
@@ -420,6 +430,12 @@ async function runOneClusteringPipeline(opts: {
   minSamples: number;
   umapDims: number;
   /**
+   * UMAP n_neighbors. Default 15 in the route POST — higher gives
+   * UMAP more global structure and reduces cuML's noise inflation
+   * relative to umap-learn on CPU.
+   */
+  nNeighbors?: number;
+  /**
    * Tukey-fence multiplier for per-cluster outlier cleanup (Q3 + k*IQR).
    * 0 disables cleanup, 3.0 is the default — lenient enough to keep
    * legitimate cluster-edge members, strict enough to demote clear
@@ -480,6 +496,7 @@ async function runOneClusteringPipeline(opts: {
     min_cluster_size: opts.minClusterSize,
     min_samples:      opts.minSamples,
     umap_dims:        opts.umapDims,
+    n_neighbors:      opts.nNeighbors ?? 15,
     compute_2d:       false,
     outlier_iqr_mult: opts.outlierIqrMult ?? 3.0,
   };
@@ -923,6 +940,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
             minClusterSize: params.minClusterSize || 80,
             minSamples:     params.minSamples     || 10,
             umapDims:       params.umapDims       || 50,
+            nNeighbors:     params.nNeighbors     || 15,
           },
           l2: {
             // Higher floor than the CPU path's 50 — at minClusterSize=30
@@ -933,6 +951,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
             // sub-clusters without hitting that edge.
             minParentSize:  200,
             umapDims:       params.umapDims || 50,
+            nNeighbors:     params.nNeighbors || 15,
           },
           onJobStart: (jobId) => {
             console.log(`[niche-tree] run ${runId}: RunPod global_bake job ${jobId}`);
@@ -999,6 +1018,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       minClusterSize: params.minClusterSize || 80,
       minSamples:     params.minSamples     || 10,
       umapDims:       params.umapDims       || 50,
+      nNeighbors:     params.nNeighbors     || 15,
       scriptKeyword:  '__global__',
       executionMode:  params.executionMode,
       // GPU path: feed the pre-computed result from the combined bake
@@ -1143,6 +1163,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
         minClusterSize: subMinClusterSize,
         minSamples:     subMinSamples,
         umapDims:       params.umapDims || 50,
+        nNeighbors:     params.nNeighbors || 15,
         scriptKeyword:  `subdivide:${parent.id}`,
         // Subdivides on smaller subsets are much faster — give 30 min
         // each rather than the full 90 used for L1 on the whole dataset.
@@ -1418,6 +1439,7 @@ export async function resumeL2Baking(l1RunId: number): Promise<void> {
         minClusterSize: subMinClusterSize,
         minSamples:     subMinSamples,
         umapDims:       50,
+        nNeighbors:     15,    // matches the L1 default; cluster-niches.py falls back to 5 if missing
         scriptKeyword:  `subdivide:${parent.id}`,
         pyTimeoutMs: 1_800_000,
         executionMode: inheritedExecMode,
@@ -1595,7 +1617,8 @@ export async function runSubdivideClusteringJob(opts: {
       level: parent.level + 1,
       minClusterSize: subMinClusterSize,
       minSamples:     subMinSamples,
-      umapDims:       opts.params?.umapDims || 50,
+      umapDims:       opts.params?.umapDims  || 50,
+      nNeighbors:     opts.params?.nNeighbors || 15,
       scriptKeyword:  `subdivide:${opts.parentClusterId}`,
       pyTimeoutMs: 1_800_000,
       executionMode:  opts.params?.executionMode,
