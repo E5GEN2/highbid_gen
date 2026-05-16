@@ -379,6 +379,55 @@ def _handle_global_bake(payload: dict[str, Any], log_sink: Optional[PgLogSink] =
     }
 
 
+_PG_STAGE_THRESHOLD_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+def _maybe_stage_result_to_pg(result: dict[str, Any],
+                              db_url: Optional[str],
+                              job_id: Optional[str]) -> dict[str, Any]:
+    """Side-step RunPod's ~20 MB /status output cap by writing big
+    results to runpod_job_results and returning a pointer. Small
+    results (e.g. a single-cluster smoke test) flow through the
+    response envelope unchanged."""
+    if not (db_url and job_id):
+        return result
+    try:
+        encoded = json.dumps(result).encode('utf-8')
+    except (TypeError, ValueError) as e:
+        return {'error': f'result not JSON-serialisable: {e}'}
+    size = len(encoded)
+    if size <= _PG_STAGE_THRESHOLD_BYTES:
+        # Small enough to fly through RunPod's response envelope.
+        result.setdefault('runtime', {})['result_size_bytes'] = size
+        return result
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=15)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO runpod_job_results (job_id, result) VALUES (%s, %s::jsonb) "
+                "ON CONFLICT (job_id) DO UPDATE SET result = EXCLUDED.result, written_at = NOW()",
+                (job_id, encoded.decode('utf-8')),
+            )
+        conn.close()
+        sys.stderr.write(f'[handler] result staged to PG ({size / 1024 / 1024:.1f} MB)\n')
+        sys.stderr.flush()
+        return {
+            'result_via_pg': True,
+            'job_id': job_id,
+            'size_bytes': size,
+            # Preserve runtime metadata in the response itself so the
+            # Node side can see backend / GPU type without round-tripping.
+            'runtime': result.get('runtime', {}),
+        }
+    except Exception as e:
+        sys.stderr.write(f'[handler] PG stage failed: {e}\n')
+        sys.stderr.flush()
+        # Fall back to inline return — Node will probably hit the
+        # 20 MB cap and lose it, but at least we tried.
+        return result
+
+
 def handler(event: dict[str, Any]) -> dict[str, Any]:
     """Entrypoint invoked once per RunPod job."""
     payload = event.get('input') or {}
@@ -401,8 +450,16 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 
     try:
         if mode == 'global_bake':
-            return _handle_global_bake(payload, log_sink=sink)
-        return _handle_cluster(payload, log_sink=sink)
+            result = _handle_global_bake(payload, log_sink=sink)
+        else:
+            result = _handle_cluster(payload, log_sink=sink)
+        # Stage big results to PG so RunPod's /status output cap can't
+        # drop them. Small results pass through unchanged.
+        return _maybe_stage_result_to_pg(
+            result,
+            db_url=db_url if isinstance(db_url, str) else None,
+            job_id=job_id if isinstance(job_id, str) else None,
+        )
     finally:
         # Final flush so trailing per-stage lines reach Node before
         # the worker scales down (idle_timeout=5s).

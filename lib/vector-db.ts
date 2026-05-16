@@ -133,10 +133,46 @@ export async function ensureVectorTables(): Promise<void> {
     // a btree on written_at handles range scans for the trim job.
     await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_rpjl_age ON runpod_job_logs(written_at)`).catch(() => {});
 
+    // Full bake result staging. RunPod's serverless /status response has
+    // a ~20 MB soft cap on the `output` field, and a real global_bake
+    // (2000+ L1 clusters × 530k assignments + L2 sub-results) easily
+    // weighs in around 30–50 MB. Returning that inline = output gets
+    // silently dropped → Node side gets `completed without output` →
+    // result lost. To fix: container writes the full JSON here, returns
+    // just `{result_via_pg: true, job_id: ...}` as the RunPod response;
+    // Node reads from this table instead of the response envelope.
+    // JSONB supports up to 1 GB per row, so the upper bound is well
+    // above any cluster bake we can throw at it.
+    await vectorPool.query(`
+      CREATE TABLE IF NOT EXISTS runpod_job_results (
+        id BIGSERIAL PRIMARY KEY,
+        job_id TEXT NOT NULL UNIQUE,
+        result JSONB NOT NULL,
+        written_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await vectorPool.query(`CREATE INDEX IF NOT EXISTS idx_rpjr_age ON runpod_job_results(written_at)`).catch(() => {});
+
     tablesReady = true;
   } catch (err) {
     console.error('[vector-db] ensureVectorTables failed:', (err as Error).message);
   }
+}
+
+/**
+ * Read the staged result for a RunPod job. Container writes the full
+ * bake JSON here; Node reads it when the /status `output` field
+ * signals `{result_via_pg: true}` rather than carrying the result
+ * inline. Returns null if no row found (container hasn't written yet
+ * or this isn't a PG-staged job).
+ */
+export async function fetchRunpodResult(jobId: string): Promise<Record<string, unknown> | null> {
+  await ensureVectorTables();
+  const res = await vectorPool.query<{ result: Record<string, unknown> }>(
+    `SELECT result FROM runpod_job_results WHERE job_id = $1`,
+    [jobId],
+  );
+  return res.rows[0]?.result ?? null;
 }
 
 /**

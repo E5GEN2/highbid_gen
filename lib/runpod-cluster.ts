@@ -21,7 +21,7 @@
  */
 
 import { getPool } from './db';
-import { fetchRunpodLogs } from './vector-db';
+import { fetchRunpodLogs, fetchRunpodResult } from './vector-db';
 
 const RUNPOD_API = 'https://api.runpod.ai/v2';
 
@@ -236,9 +236,22 @@ export async function dispatchClusterToRunPod(
       if (!status.output || typeof status.output !== 'object') {
         throw new Error(`RunPod job ${startJson.id} completed without output`);
       }
-      const out = status.output as Record<string, unknown>;
+      let out = status.output as Record<string, unknown>;
       if (out.error) {
         throw new Error(`RunPod handler error: ${String(out.error).slice(0, 400)}`);
+      }
+      // PG-staging indirection: when the container's result exceeded
+      // RunPod's ~20 MB /status output cap, it wrote the real result
+      // to runpod_job_results and returned a pointer here. Fetch the
+      // real result from PG. Small results (under the threshold)
+      // flow through `out` unchanged.
+      if (out.result_via_pg === true && typeof out.job_id === 'string') {
+        opts.onProgress?.(`[runpod] result was PG-staged (${out.size_bytes} bytes), fetching from runpod_job_results`);
+        const staged = await fetchRunpodResult(out.job_id);
+        if (!staged) {
+          throw new Error(`RunPod job ${startJson.id} reported PG-staged result but row not found in runpod_job_results`);
+        }
+        out = staged;
       }
       return {
         jobId: startJson.id,
