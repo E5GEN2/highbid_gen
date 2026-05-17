@@ -447,6 +447,12 @@ export default function AdminPage() {
   const [visibleTabs, setVisibleTabs] = useState<string[]>(['feed']);
   const [tabsSaving, setTabsSaving] = useState(false);
   const [tabsSaved, setTabsSaved] = useState(false);
+  // Homepage override — when true, GET / 302s to /niche so end users
+  // land on the niche grid instead of the product picker. Settled in
+  // admin_config under `homepage_to_niche` ('true' | anything else).
+  const [homepageToNiche, setHomepageToNiche] = useState(false);
+  const [homepageSaving, setHomepageSaving] = useState(false);
+  const [homepageSaved, setHomepageSaved] = useState(false);
 
   // Niche Explorer config
   const [nicheGoogleApiKeys, setNicheGoogleApiKeys] = useState('');
@@ -1321,6 +1327,7 @@ export default function AdminPage() {
         try {
           if (data.config.visible_tabs) setVisibleTabs(JSON.parse(data.config.visible_tabs));
         } catch {}
+        setHomepageToNiche(data.config.homepage_to_niche === 'true');
       }
     } catch (err) {
       console.error('Failed to fetch config:', err);
@@ -2351,6 +2358,63 @@ export default function AdminPage() {
               {tabsSaving ? 'Saving...' : 'Save'}
             </button>
             {tabsSaved && <span className="text-green-400 text-sm">Saved</span>}
+          </div>
+        </div>
+
+        {/* Homepage override */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
+          <h2 className="text-lg font-bold text-white mb-2">Homepage</h2>
+          <p className="text-gray-400 text-sm mb-6">
+            Pick what end users see when they hit the bare domain (<code className="text-gray-300">/</code>).
+            Default is the product picker; toggle this on to send them straight into the Niche grid instead.
+          </p>
+
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={homepageToNiche}
+              onChange={(e) => {
+                setHomepageToNiche(e.target.checked);
+                setHomepageSaved(false);
+              }}
+              className="w-4 h-4 mt-0.5 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+            />
+            <div>
+              <span className="text-sm text-gray-300">
+                Use <code className="text-gray-100">/niche</code> as the homepage
+              </span>
+              <p className="text-xs text-gray-500 mt-0.5">
+                When enabled, <code className="text-gray-400">rofe.ai/</code> redirects to{' '}
+                <code className="text-gray-400">rofe.ai/niche</code>. The original welcome page stays
+                reachable at <code className="text-gray-400">/welcome</code>.
+              </p>
+            </div>
+          </label>
+
+          <div className="flex items-center gap-3 mt-5">
+            <button
+              onClick={async () => {
+                setHomepageSaving(true);
+                setHomepageSaved(false);
+                try {
+                  await fetch('/api/admin/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      config: { homepage_to_niche: homepageToNiche ? 'true' : 'false' },
+                    }),
+                  });
+                  setHomepageSaved(true);
+                  setTimeout(() => setHomepageSaved(false), 3000);
+                } catch {}
+                setHomepageSaving(false);
+              }}
+              disabled={homepageSaving}
+              className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition"
+            >
+              {homepageSaving ? 'Saving...' : 'Save'}
+            </button>
+            {homepageSaved && <span className="text-green-400 text-sm">Saved</span>}
           </div>
         </div>
 
