@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { NicheClusterCard } from '@/components/NicheClusterCard';
 import { SimilarNichesModal } from '@/components/SimilarNichesModal';
 
@@ -56,11 +56,51 @@ interface NicheSearchHit extends TreeClusterCard {
 
 type ClusterSort = 'videos' | 'views' | 'score';
 
+// Initial + per-scroll page size. 50 fits within ~1s of server time
+// on the heavy aggregation queries and keeps the DOM small so first
+// paint is snappy. Subsequent scroll-triggered pages append.
+const PAGE_SIZE = 50;
+
+/**
+ * IntersectionObserver-driven sentinel — when the empty div scrolls
+ * into view (or within `rootMargin` of it) it fires `onVisible`,
+ * which the parent uses to fetch the next page. rootMargin of
+ * `400px` starts loading just before the user reaches the bottom so
+ * the next batch is usually already rendered by the time they scroll
+ * there. `enabled=false` disconnects the observer so an exhausted
+ * list doesn't keep observing.
+ */
+function ScrollSentinel({
+  onVisible, enabled,
+}: { onVisible: () => void; enabled: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const node = ref.current;
+    if (!node) return;
+    const obs = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) onVisible();
+    }, { rootMargin: '400px' });
+    obs.observe(node);
+    return () => obs.disconnect();
+  }, [onVisible, enabled]);
+  return <div ref={ref} className="h-1" />;
+}
+
 export default function NichesGrid() {
   const [clusters, setClusters] = useState<TreeClusterCard[]>([]);
   const [clustersLoading, setClustersLoading] = useState(true);
   const [clustersError, setClustersError] = useState<string | null>(null);
   const [clusterSort, setClusterSort] = useState<ClusterSort>('videos');
+  // How many L1 / L2 clusters we've already loaded. Used as the
+  // offset for the next page request and compared to totalL1/totalL2
+  // to know when to stop firing IntersectionObserver loads.
+  const [l1Loaded, setL1Loaded] = useState(0);
+  const [l2Loaded, setL2Loaded] = useState(0);
+  const [totalL1, setTotalL1] = useState(0);
+  const [totalL2, setTotalL2] = useState(0);
+  const [loadingMoreL1, setLoadingMoreL1] = useState(false);
+  const [loadingMoreL2, setLoadingMoreL2] = useState(false);
   // Similar-niches popup state — null = closed, set to the full
   // source cluster when the user clicks "Similar" on any card. We
   // store the entire cluster (not just the id) so the modal can
@@ -84,60 +124,110 @@ export default function NichesGrid() {
   // first, then filter up.
   const [minSimilarity, setMinSimilarity] = useState(0);
 
-  // Load clusters from the latest HDBSCAN run (L1 only — drill into L2
-  // happens on the cluster detail page). The payload is ~600 KB and
-  // can get truncated mid-stream during a Railway redeploy, so retry
-  // a couple of times on parse failure before showing the error.
-  const fetchClusters = useCallback(async () => {
-    setClustersLoading(true);
-    setClustersError(null);
+  // Paginated fetch — pulls one page of L1 + L2 from the latest
+  // HDBSCAN run. Backend sorts by clusterSort and returns the next
+  // slice based on l1Offset / l2Offset. Payload truncation has bit
+  // us during Railway redeploys before, so retry a couple of times
+  // on parse failure before surfacing the error.
+  const fetchPage = useCallback(async (params: {
+    l1Offset: number; l1Limit: number;
+    l2Offset: number; l2Limit: number;
+    sort: ClusterSort;
+    /** When true, replace the current cluster list (initial load /
+     *  sort change). Otherwise append to it (scroll-triggered). */
+    reset: boolean;
+  }) => {
+    const qs = new URLSearchParams({
+      l1Offset: String(params.l1Offset),
+      l1Limit:  String(params.l1Limit),
+      l2Offset: String(params.l2Offset),
+      l2Limit:  String(params.l2Limit),
+      sort:     params.sort,
+    });
     let lastErr: Error | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetch('/api/niche-spy/tree-clusters');
-        // Read as text first so we can fall back gracefully on
-        // truncation — `res.json()` throws "Unexpected end of JSON
-        // input" with no recoverable info.
+        const res = await fetch(`/api/niche-spy/tree-clusters?${qs.toString()}`);
         const text = await res.text();
         if (!text) throw new Error('empty response');
         const data = JSON.parse(text);
         if (!res.ok) {
+          if (params.reset) setClusters([]);
           setClustersError(data.error || `HTTP ${res.status}`);
-          setClusters([]);
-        } else {
-          setClusters(data.clusters || []);
-          setClustersError(null);
+          return;
         }
-        setClustersLoading(false);
+        const newClusters: TreeClusterCard[] = data.clusters || [];
+        const newL1 = newClusters.filter((c: TreeClusterCard) => c.parentClusterId == null).length;
+        const newL2 = newClusters.length - newL1;
+        if (params.reset) {
+          setClusters(newClusters);
+          setL1Loaded(newL1);
+          setL2Loaded(newL2);
+        } else {
+          setClusters(prev => [...prev, ...newClusters]);
+          setL1Loaded(prev => prev + newL1);
+          setL2Loaded(prev => prev + newL2);
+        }
+        setTotalL1(data.totalL1 ?? 0);
+        setTotalL2(data.totalL2 ?? 0);
+        setClustersError(null);
         return;
       } catch (err) {
         lastErr = err as Error;
-        // Backoff before retry — first retry near-immediate, second
-        // gives Railway a moment if it's mid-deploy.
         if (attempt < 2) await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
       }
     }
     setClustersError(`Failed to load clusters: ${lastErr?.message || 'unknown'} (after 3 attempts — try again in a few seconds)`);
-    setClusters([]);
-    setClustersLoading(false);
   }, []);
 
-  useEffect(() => { fetchClusters(); }, [fetchClusters]);
+  // Initial load + reload on sort change. Replacing the cluster list
+  // is the right move on sort change because backend sort might
+  // surface different L1/L2 at the top page than the previous sort.
+  useEffect(() => {
+    setClustersLoading(true);
+    fetchPage({
+      l1Offset: 0, l1Limit: PAGE_SIZE,
+      l2Offset: 0, l2Limit: PAGE_SIZE,
+      sort: clusterSort,
+      reset: true,
+    }).finally(() => setClustersLoading(false));
+  }, [clusterSort, fetchPage]);
 
-  // Split + sort. The API ships L1 and L2 in one payload now; the
-  // page renders L1 first (top-level niches) then L2 underneath
-  // (sub-niches) in two sections so users can scan the whole tree
-  // without drilling.
+  // Scroll-triggered next-page loaders. Guard with the in-flight
+  // flag so a fast scroll doesn't fire the same offset twice. Guard
+  // with `loaded < total` so we stop firing when the section is
+  // exhausted — IntersectionObserver still triggers when the
+  // sentinel is in view but the handler becomes a noop.
+  const loadMoreL1 = useCallback(() => {
+    if (loadingMoreL1 || l1Loaded >= totalL1) return;
+    setLoadingMoreL1(true);
+    fetchPage({
+      l1Offset: l1Loaded, l1Limit: PAGE_SIZE,
+      l2Offset: 0,        l2Limit: 0,         // don't refetch L2
+      sort: clusterSort,
+      reset: false,
+    }).finally(() => setLoadingMoreL1(false));
+  }, [loadingMoreL1, l1Loaded, totalL1, clusterSort, fetchPage]);
+
+  const loadMoreL2 = useCallback(() => {
+    if (loadingMoreL2 || l2Loaded >= totalL2) return;
+    setLoadingMoreL2(true);
+    fetchPage({
+      l1Offset: 0,        l1Limit: 0,         // don't refetch L1
+      l2Offset: l2Loaded, l2Limit: PAGE_SIZE,
+      sort: clusterSort,
+      reset: false,
+    }).finally(() => setLoadingMoreL2(false));
+  }, [loadingMoreL2, l2Loaded, totalL2, clusterSort, fetchPage]);
+
+  // Backend sorts the pages — client side just splits into the two
+  // sections preserving insertion order. (Naming kept as *Sorted
+  // for diff minimalism; rows are already ordered by the server.)
   const { l1Sorted, l2Sorted } = useMemo(() => {
-    const cmp = (a: TreeClusterCard, b: TreeClusterCard) => {
-      if (clusterSort === 'views')  return (b.totalViews ?? 0) - (a.totalViews ?? 0);
-      if (clusterSort === 'score')  return (b.avgScore ?? 0) - (a.avgScore ?? 0);
-      return b.videoCount - a.videoCount;
-    };
-    const l1 = clusters.filter(c => c.parentClusterId == null).sort(cmp);
-    const l2 = clusters.filter(c => c.parentClusterId != null).sort(cmp);
+    const l1 = clusters.filter(c => c.parentClusterId == null);
+    const l2 = clusters.filter(c => c.parentClusterId != null);
     return { l1Sorted: l1, l2Sorted: l2 };
-  }, [clusters, clusterSort]);
+  }, [clusters]);
 
   // Fire semantic NICHE search — embeds the query and finds the
   // closest niche clusters across both L1 and L2. ~1-2s on cache miss,
@@ -340,9 +430,9 @@ export default function NichesGrid() {
         </div>
         {clusters.length > 0 && (
           <span className="text-sm text-[#888]">
-            <span className="text-white font-medium">{l1Sorted.length}</span> niches
+            <span className="text-white font-medium">{totalL1.toLocaleString()}</span> niches
             <span className="mx-1">:</span>
-            <span className="text-white font-medium">{l2Sorted.length}</span> sub-niches
+            <span className="text-white font-medium">{totalL2.toLocaleString()}</span> sub-niches
           </span>
         )}
       </div>
@@ -372,28 +462,45 @@ export default function NichesGrid() {
         </div>
       )}
 
-      {/* L1 niches — wide rows so titles + thumbs stay legible. */}
+      {/* L1 niches — wide rows so titles + thumbs stay legible.
+          ScrollSentinel sits at the bottom of the list and pulls
+          the next L1 page in when it enters the viewport. */}
       {l1Sorted.length > 0 && (
         <div className="space-y-3">
           {l1Sorted.map(c => (
             <NicheClusterCard key={c.id} cluster={c} onFindSimilar={() => openSimilar(c)} />
           ))}
+          {loadingMoreL1 && (
+            <div className="text-center py-4 text-xs text-[#666]">
+              Loading more niches…
+            </div>
+          )}
+          <ScrollSentinel onVisible={loadMoreL1} enabled={l1Loaded < totalL1 && !loadingMoreL1} />
         </div>
       )}
 
       {/* L2 sub-niches — same wide-row card stacked below the L1
           section so an operator can scan the whole tree without
-          having to drill into each L1 cluster. */}
+          having to drill into each L1 cluster. Same lazy-load
+          pattern via its own ScrollSentinel. */}
       {l2Sorted.length > 0 && (
         <div className="mt-10">
           <div className="flex items-center gap-3 mb-4">
             <h2 className="text-lg font-bold text-white">Sub-niches</h2>
-            <span className="text-xs text-[#666]">{l2Sorted.length} L2 clusters across all parents</span>
+            <span className="text-xs text-[#666]">
+              {l2Sorted.length} of {totalL2.toLocaleString()} L2 clusters across all parents
+            </span>
           </div>
           <div className="space-y-3">
             {l2Sorted.map(c => (
               <NicheClusterCard key={c.id} cluster={c} onFindSimilar={() => openSimilar(c)} />
             ))}
+            {loadingMoreL2 && (
+              <div className="text-center py-4 text-xs text-[#666]">
+                Loading more sub-niches…
+              </div>
+            )}
+            <ScrollSentinel onVisible={loadMoreL2} enabled={l2Loaded < totalL2 && !loadingMoreL2} />
           </div>
         </div>
       )}

@@ -1728,9 +1728,23 @@ export interface TreeClusterWithRep extends TreeCluster {
  * the UI polls this endpoint every 5s and renders clusters as they're
  * inserted — so the grid populates live, ~5–10 cards per poll.
  */
-export async function getLatestGlobalRun(): Promise<{
+export type ClusterSortKey = 'videos' | 'views' | 'score';
+export interface GlobalRunPagination {
+  /** When set, pulls only this many top L1 clusters by `sort`. */
+  l1Limit?: number;
+  l1Offset?: number;
+  /** When set, pulls only this many top L2 clusters by `sort`. */
+  l2Limit?: number;
+  l2Offset?: number;
+  sort?: ClusterSortKey;
+}
+export async function getLatestGlobalRun(opts?: GlobalRunPagination): Promise<{
   run: (TreeRun & { progress?: TreeProgress | null }) | null;
   clusters: TreeClusterWithRep[];
+  /** Populated only when pagination opts are supplied — tells the
+   *  caller how many more pages exist. */
+  totalL1?: number;
+  totalL2?: number;
 }> {
   const pool = await getPool();
 
@@ -1743,53 +1757,166 @@ export async function getLatestGlobalRun(): Promise<{
   if (runRes.rows.length === 0) return { run: null, clusters: [] };
 
   const r = runRes.rows[0];
-  // Live counts + the L1+L2 cluster row pull are independent of each
-  // other (both keyed off run_id) — fire them in parallel so the
-  // bigger SELECT isn't gated behind three COUNT(*)s. Live counts
-  // come off the actual tables so partial writes / cleanup demotions
-  // / empty-cluster deletes always reflect reality, vs. the denorm
-  // columns on niche_tree_runs which can drift.
-  const [liveStats, clRes] = await Promise.all([
-    pool.query<{ assigned: string; noise: string; clusters: string }>(
-      `SELECT
-         (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NOT NULL) AS assigned,
-         (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NULL)     AS noise,
-         (SELECT COUNT(*)::text FROM niche_tree_clusters    WHERE run_id = $1 AND parent_cluster_id IS NULL) AS clusters`,
+  // Map UI sort key → ORDER BY clause. Cheap, indexed, NULLS LAST
+  // because some clusters legitimately have nulls (e.g. avg_score
+  // null for tiny clusters under the score threshold).
+  const sortOrder = (() => {
+    switch (opts?.sort) {
+      case 'views':  return 'total_views DESC NULLS LAST, video_count DESC';
+      case 'score':  return 'avg_score   DESC NULLS LAST, video_count DESC';
+      case 'videos':
+      default:       return 'video_count DESC';
+    }
+  })();
+  const paginated = opts != null && (
+    opts.l1Limit != null || opts.l2Limit != null ||
+    opts.l1Offset != null || opts.l2Offset != null
+  );
+
+  // The "select cluster rows" block looks different depending on
+  // whether the caller is paginating:
+  //   • Unpaginated (admin / drill-down): one combined query for
+  //     ALL L1+L2 cluster rows, with the rep-video LEFT JOIN so the
+  //     admin tree visualization can show rep_*. Identical to the
+  //     long-standing behavior.
+  //   • Paginated (public /niche/niches): two independent paginated
+  //     queries — one for top L1, one for top L2 — both sorted by
+  //     the user's pick. Drops the rep-video JOIN because the
+  //     public NicheClusterCard renders popularVideos, not rep_*.
+  //     Returns totalL1 / totalL2 so the client knows when to stop
+  //     auto-loading.
+  // Live counts always run alongside, parallel with the cluster
+  // SELECT(s), so the bigger SELECTs aren't gated behind the
+  // COUNT(*) trio.
+  const liveStatsP = pool.query<{ assigned: string; noise: string; clusters: string }>(
+    `SELECT
+       (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NOT NULL) AS assigned,
+       (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NULL)     AS noise,
+       (SELECT COUNT(*)::text FROM niche_tree_clusters    WHERE run_id = $1 AND parent_cluster_id IS NULL) AS clusters`,
+    [r.id],
+  );
+
+  let clRes: { rows: ClusterRow[] };
+  let totalL1: number | undefined;
+  let totalL2: number | undefined;
+  if (!paginated) {
+    const [_live, all] = await Promise.all([
+      liveStatsP,
+      pool.query<ClusterRow>(
+        `WITH l1 AS (
+           SELECT id FROM niche_tree_clusters
+            WHERE run_id = $1 AND parent_cluster_id IS NULL
+         )
+         SELECT
+           c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
+           c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
+           c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
+           c.centroid_2d,
+           v.title         AS rep_title,
+           v.thumbnail     AS rep_thumbnail,
+           v.url           AS rep_url,
+           v.view_count    AS rep_view_count,
+           v.channel_name  AS rep_channel_name
+         FROM niche_tree_clusters c
+         LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
+         WHERE c.id IN (SELECT id FROM l1)
+            OR c.parent_cluster_id IN (SELECT id FROM l1)
+         ORDER BY c.parent_cluster_id NULLS FIRST, c.video_count DESC`,
+        [r.id],
+      ),
+    ]);
+    void _live; // counts handled via liveStats below
+    clRes = all;
+  } else {
+    // Paginated path: two paginated SELECTs + a count for L2 (L1
+    // count already lives in liveStats.clusters). All inflight at
+    // once. The rep-video JOIN is dropped — public cards render
+    // popularVideos, not rep_*. This is the single biggest win
+    // because clRes was ~3s on the full 4k-cluster pull.
+    // l1Limit=0 means "skip L1" — the scroll handler for "load more
+    // L2" sets it that way so we don't re-fetch L1 rows on every
+    // L2-page request. Same on the L2 side. Clamp to [0, 500] so
+    // misbehaving clients can't ask for a 10k-row dump.
+    const l1Limit = Math.max(0, Math.min(opts!.l1Limit ?? 100, 500));
+    const l1Offset = Math.max(0, opts!.l1Offset ?? 0);
+    const l2Limit = Math.max(0, Math.min(opts!.l2Limit ?? 100, 500));
+    const l2Offset = Math.max(0, opts!.l2Offset ?? 0);
+
+    const l1P = l1Limit > 0
+      ? pool.query<ClusterRow>(
+          `SELECT
+             c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
+             c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
+             c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
+             c.centroid_2d,
+             NULL::text   AS rep_title,
+             NULL::text   AS rep_thumbnail,
+             NULL::text   AS rep_url,
+             NULL::bigint AS rep_view_count,
+             NULL::text   AS rep_channel_name
+           FROM niche_tree_clusters c
+           WHERE c.run_id = $1 AND c.parent_cluster_id IS NULL
+           ORDER BY ${sortOrder}
+           LIMIT $2 OFFSET $3`,
+          [r.id, l1Limit, l1Offset],
+        )
+      : Promise.resolve({ rows: [] as ClusterRow[] });
+
+    const l2P = l2Limit > 0
+      ? pool.query<ClusterRow>(
+          `WITH l1_ids AS (
+             SELECT id FROM niche_tree_clusters
+              WHERE run_id = $1 AND parent_cluster_id IS NULL
+           )
+           SELECT
+             c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
+             c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
+             c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
+             c.centroid_2d,
+             NULL::text   AS rep_title,
+             NULL::text   AS rep_thumbnail,
+             NULL::text   AS rep_url,
+             NULL::bigint AS rep_view_count,
+             NULL::text   AS rep_channel_name
+           FROM niche_tree_clusters c
+           WHERE c.parent_cluster_id IN (SELECT id FROM l1_ids)
+           ORDER BY ${sortOrder}
+           LIMIT $2 OFFSET $3`,
+          [r.id, l2Limit, l2Offset],
+        )
+      : Promise.resolve({ rows: [] as ClusterRow[] });
+
+    const l2CountP = pool.query<{ cnt: string }>(
+      `SELECT COUNT(*)::text AS cnt
+         FROM niche_tree_clusters c
+        WHERE c.parent_cluster_id IN (
+          SELECT id FROM niche_tree_clusters
+           WHERE run_id = $1 AND parent_cluster_id IS NULL
+        )`,
       [r.id],
-    ),
-    // Pull the L1 clusters from this run + their L2 children. L2
-    // clusters live under separate subdivide runs (different run_id),
-    // so we can't filter by run_id alone — we expand to "either belongs
-    // to this run, OR is a child of one that does". The home grid
-    // renders both in two sections. LEFT JOIN representative video so a
-    // cluster without a rep (shouldn't happen but defensive) still
-    // shows up with nulls.
-    pool.query(
-      `WITH l1 AS (
-         SELECT id FROM niche_tree_clusters
-          WHERE run_id = $1 AND parent_cluster_id IS NULL
-       )
-       SELECT
-         c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
-         c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
-         c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
-         c.centroid_2d,
-         v.title         AS rep_title,
-         v.thumbnail     AS rep_thumbnail,
-         v.url           AS rep_url,
-         v.view_count    AS rep_view_count,
-         v.channel_name  AS rep_channel_name
-       FROM niche_tree_clusters c
-       LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
-       WHERE c.id IN (SELECT id FROM l1)
-          OR c.parent_cluster_id IN (SELECT id FROM l1)
-       ORDER BY c.parent_cluster_id NULLS FIRST, c.video_count DESC`,
-      [r.id],
-    ),
-  ]);
+    );
+
+    const [_live, l1Page, l2Page, l2Count] = await Promise.all([
+      liveStatsP,
+      l1P,
+      l2P,
+      l2CountP,
+    ]);
+    void _live;
+    // Concatenate so all downstream code sees a single rows array.
+    clRes = { rows: [...l1Page.rows, ...l2Page.rows] };
+    totalL2 = parseInt(l2Count.rows[0]?.cnt ?? '0') || 0;
+  }
+  // liveStats is the one promise the !paginated branch awaited; the
+  // paginated branch did too via Promise.all. Read its result now.
+  const liveStats = await liveStatsP;
   const numAssigned = parseInt(liveStats.rows[0]?.assigned ?? '0') || 0;
   const numNoiseLive = parseInt(liveStats.rows[0]?.noise ?? '0') || 0;
   const numClustersLive = parseInt(liveStats.rows[0]?.clusters ?? '0') || 0;
+  // L1 total — falls back to liveStats which counts ALL L1 in the
+  // run. Public callers compare against this to know when to stop
+  // requesting more L1 pages.
+  if (paginated) totalL1 = numClustersLive;
   const run = {
     id: r.id, kind: r.kind, parentClusterId: r.parent_cluster_id, level: r.level,
     source: r.source, status: r.status, params: r.params || {},
@@ -2018,7 +2145,38 @@ export async function getLatestGlobalRun(): Promise<{
     };
   });
 
-  return { run, clusters };
+  return { run, clusters, totalL1, totalL2 };
+}
+
+/**
+ * Row shape returned by the clRes SELECT(s) inside
+ * getLatestGlobalRun. Hoisted so the paginated-vs-unpaginated
+ * branches can both type their `pool.query<ClusterRow>(...)` calls
+ * against the same shape. The rep_* columns are populated only in
+ * the unpaginated branch (which keeps the LEFT JOIN); the paginated
+ * branch fills them with NULL placeholders.
+ */
+interface ClusterRow {
+  id: number;
+  run_id: number;
+  parent_cluster_id: number | null;
+  level: number;
+  cluster_index: number;
+  auto_label: string | null;
+  ai_label: string | null;
+  label: string | null;
+  video_count: number;
+  avg_score: number | null;
+  avg_views: string | null;
+  total_views: string | null;
+  top_channels: string[] | null;
+  representative_video_id: number | null;
+  centroid_2d: number[] | null;
+  rep_title: string | null;
+  rep_thumbnail: string | null;
+  rep_url: string | null;
+  rep_view_count: string | null;
+  rep_channel_name: string | null;
 }
 
 /**
