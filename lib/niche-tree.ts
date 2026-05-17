@@ -1943,6 +1943,14 @@ export async function getLatestGlobalRun(opts?: GlobalRunPagination): Promise<{
   // anyway since it's independent and we want every query inflight at
   // the same time.
   const allClusterIds = clRes.rows.map(r => r.id);
+  // L1 ids on this page — needed to scope childStats below. On the
+  // unpaginated path this is every L1 in the run; on the paginated
+  // path it's just the current page's L1s, which is what we want
+  // because the L2 cards don't need children counts (they're leaves
+  // in the current tree).
+  const l1IdsOnPage = clRes.rows
+    .filter(r => r.parent_cluster_id == null)
+    .map(r => r.id);
 
   const [
     popRes,
@@ -2032,39 +2040,48 @@ export async function getLatestGlobalRun(opts?: GlobalRunPagination): Promise<{
       ? fetchClusterOpportunities(pool, { clusterIds: allClusterIds })
       : Promise.resolve(new Map<number, ClusterOpportunity>()),
 
-    // Child-count + subdivide-status per L1 cluster — drives the L2 status
-    // chip on each card. One row per L1 cluster id, joining the COUNT of
-    // its children in niche_tree_clusters with the LATEST subdivide run's
-    // status.
-    pool.query<{
-      parent_id: number;
-      children_count: string;
-      subdivide_status: 'running' | 'done' | 'error' | null;
-      subdivide_error: string | null;
-    }>(
-      `WITH child_counts AS (
-         SELECT parent_cluster_id AS parent_id, COUNT(*)::int AS children_count
-           FROM niche_tree_clusters
-           WHERE parent_cluster_id IS NOT NULL
-           GROUP BY parent_cluster_id
-       ),
-       latest_sub AS (
-         SELECT DISTINCT ON (parent_cluster_id)
-                parent_cluster_id AS parent_id,
-                status            AS subdivide_status,
-                error_message     AS subdivide_error
-           FROM niche_tree_runs
-           WHERE kind = 'subdivide' AND parent_cluster_id IS NOT NULL
-           ORDER BY parent_cluster_id, started_at DESC
-       )
-       SELECT
-         COALESCE(cc.parent_id, ls.parent_id) AS parent_id,
-         COALESCE(cc.children_count::text, '0') AS children_count,
-         ls.subdivide_status,
-         ls.subdivide_error
-       FROM child_counts cc
-       FULL OUTER JOIN latest_sub ls ON ls.parent_id = cc.parent_id`,
-    ),
+    // Child-count + subdivide-status per L1 cluster — drives the
+    // "N sub-niches" badge on each L1 card. Scoped to the L1 ids on
+    // the current page (unpaginated → every L1 in the run; paginated
+    // → just this page's L1s). On the 4k-cluster tree the full-scan
+    // version cost ~2.6s; scoping makes it sub-100ms.
+    l1IdsOnPage.length > 0
+      ? pool.query<{
+          parent_id: number;
+          children_count: string;
+          subdivide_status: 'running' | 'done' | 'error' | null;
+          subdivide_error: string | null;
+        }>(
+          `WITH child_counts AS (
+             SELECT parent_cluster_id AS parent_id, COUNT(*)::int AS children_count
+               FROM niche_tree_clusters
+               WHERE parent_cluster_id = ANY($1::int[])
+               GROUP BY parent_cluster_id
+           ),
+           latest_sub AS (
+             SELECT DISTINCT ON (parent_cluster_id)
+                    parent_cluster_id AS parent_id,
+                    status            AS subdivide_status,
+                    error_message     AS subdivide_error
+               FROM niche_tree_runs
+               WHERE kind = 'subdivide' AND parent_cluster_id = ANY($1::int[])
+               ORDER BY parent_cluster_id, started_at DESC
+           )
+           SELECT
+             COALESCE(cc.parent_id, ls.parent_id) AS parent_id,
+             COALESCE(cc.children_count::text, '0') AS children_count,
+             ls.subdivide_status,
+             ls.subdivide_error
+           FROM child_counts cc
+           FULL OUTER JOIN latest_sub ls ON ls.parent_id = cc.parent_id`,
+          [l1IdsOnPage],
+        )
+      : Promise.resolve({ rows: [] as Array<{
+          parent_id: number;
+          children_count: string;
+          subdivide_status: 'running' | 'done' | 'error' | null;
+          subdivide_error: string | null;
+        }> }),
   ]);
 
   const popularByCluster = new Map<number, Array<{
