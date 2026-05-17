@@ -47,7 +47,7 @@ function zeroHistogram(): number[] { return new Array(HISTOGRAM_WEEKS).fill(0); 
  * by cluster_id; missing clusters → undefined; missing weeks within
  * a cluster's array → 0.
  */
-async function fetchUploadHistograms(
+export async function fetchUploadHistograms(
   pool: import('pg').Pool,
   scope: { runId: number } | { clusterIds: number[] },
 ): Promise<Map<number, number[]>> {
