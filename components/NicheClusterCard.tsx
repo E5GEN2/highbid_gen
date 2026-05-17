@@ -157,8 +157,10 @@ export function NicheClusterCard({
         </div>
         {/* Find-similar action + OPP/TOP/NEW/CEIL pills share the top-
             right cluster header slot. Action button sits to the LEFT
-            of the pills so the eye scans "action then signals." */}
-        <div className="flex items-stretch gap-2">
+            of the pills so the eye scans "action then signals." Pill
+            styling matches the green "Similar" link on video cards so
+            the affordance reads the same across surfaces. */}
+        <div className="flex items-center gap-2">
           {onFindSimilar && (
             <button
               type="button"
@@ -168,14 +170,9 @@ export function NicheClusterCard({
                 onFindSimilar(c.id);
               }}
               title="Find similar niches"
-              className="flex flex-col items-center justify-center px-2 rounded-md border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:text-purple-200 hover:border-purple-500/60 transition text-[10px] font-medium leading-tight"
+              className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2 py-0.5 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium"
             >
-              {/* Simple 2-overlap-circles icon — represents "similar" */}
-              <svg className="w-4 h-4 mb-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <circle cx="9"  cy="12" r="5" />
-                <circle cx="15" cy="12" r="5" />
-              </svg>
-              SIMILAR
+              Similar
             </button>
           )}
           <CompactOpportunityRow opportunity={c.opportunity} />
