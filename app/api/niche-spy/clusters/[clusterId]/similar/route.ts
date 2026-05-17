@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 /**
- * GET /api/niche-spy/clusters/[id]/similar?k=12
+ * GET /api/niche-spy/clusters/[clusterId]/similar?k=12
  *
  * Returns up to K niche-tree clusters whose signature vector is closest
  * (cosine) to the source cluster's vector. Mixed L1 + L2 — caller renders
@@ -17,10 +17,14 @@ export const revalidate = 0;
  *
  * Response shape mirrors /api/niche-spy/search-niches so the existing
  * NicheClusterCard component renders results without any tweaks.
+ *
+ * Slug is `clusterId` (not `id`) to match the sibling route
+ * `/api/niche-spy/clusters/[clusterId]/videos` — Next.js requires
+ * consistent slug names within the same dynamic path segment.
  */
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params;
-  const sourceClusterId = parseInt(id);
+export async function GET(_req: NextRequest, ctx: { params: Promise<{ clusterId: string }> }) {
+  const { clusterId } = await ctx.params;
+  const sourceClusterId = parseInt(clusterId);
   if (Number.isNaN(sourceClusterId)) {
     return NextResponse.json({ error: 'invalid cluster id' }, { status: 400 });
   }
