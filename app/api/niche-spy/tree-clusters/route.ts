@@ -12,19 +12,26 @@ export const revalidate = 0;
  * 4 popular videos for the collage strip. Drives the user-facing
  * /niche/niches grid (replaces the manual keyword cards).
  *
- * Returns:
- *   {
- *     runId, source, status, totalVideos, numClusters,
- *     clusters: [{ id, level, parentClusterId, autoLabel, label, videoCount,
- *                  avgScore, avgViews, totalViews, topChannels,
- *                  representativeVideoId, repTitle, repThumbnail, repUrl,
- *                  repViewCount, repChannelName, popularVideos: [...],
- *                  childrenCount }]
- *   }
- *
  * Errors with empty clusters[] if no global run has finished yet.
+ *
+ * Cache: in-memory 60s TTL because building the response runs ~6 DB
+ * queries over the full 2k-cluster set (heartbeat histograms +
+ * opportunity indicators are the heaviest). Without it the page
+ * skeleton hangs for ~10s on every load. Cache is per-process so a
+ * Railway redeploy / scale event resets it — staleness window is
+ * bounded by TTL anyway.
  */
+
+const CACHE_TTL_MS = 60_000;
+let cache: { ts: number; body: unknown } | null = null;
+
 export async function GET() {
+  if (cache && Date.now() - cache.ts < CACHE_TTL_MS) {
+    return NextResponse.json(cache.body, {
+      headers: { 'x-tree-clusters-cache': 'hit' },
+    });
+  }
+
   let result;
   try {
     result = await getLatestGlobalRun();
@@ -41,10 +48,11 @@ export async function GET() {
   }
 
   if (!result.run) {
-    return NextResponse.json({
+    const empty = {
       runId: null, source: null, status: null,
       totalVideos: 0, numClusters: 0, numL1: 0, numL2: 0, clusters: [],
-    });
+    };
+    return NextResponse.json(empty);
   }
 
   // Return BOTH L1 and L2 so the home grid can render parents first
@@ -55,7 +63,11 @@ export async function GET() {
   const numL1 = all.filter(c => c.parentClusterId == null).length;
   const numL2 = all.filter(c => c.parentClusterId != null).length;
 
-  return NextResponse.json({
+  // Strip fields the card UI doesn't read so the 8MB-class payload
+  // stays small: rep* fields (NicheClusterCard renders popularVideos,
+  // not the rep video) and per-popular-video postedAt/postedDate/score
+  // (also unused in the card). ~30% payload shrink.
+  const body = {
     runId: result.run.id,
     source: result.run.source,
     status: result.run.status,
@@ -77,17 +89,23 @@ export async function GET() {
       avgViews: c.avgViews,
       totalViews: c.totalViews,
       topChannels: c.topChannels,
-      representativeVideoId: c.representativeVideoId,
-      repTitle: c.repTitle,
-      repThumbnail: c.repThumbnail,
-      repUrl: c.repUrl,
-      repViewCount: c.repViewCount,
-      repChannelName: c.repChannelName,
-      popularVideos: c.popularVideos,
+      popularVideos: c.popularVideos.map(p => ({
+        videoId: p.videoId,
+        title: p.title,
+        thumbnail: p.thumbnail,
+        url: p.url,
+        viewCount: p.viewCount,
+        channelName: p.channelName,
+      })),
       channelCount: c.channelCount,
       uploadHistogram: c.uploadHistogram,
       opportunity: c.opportunity,
       childrenCount: c.childrenCount,
     })),
+  };
+
+  cache = { ts: Date.now(), body };
+  return NextResponse.json(body, {
+    headers: { 'x-tree-clusters-cache': 'miss' },
   });
 }

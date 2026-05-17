@@ -1743,20 +1743,50 @@ export async function getLatestGlobalRun(): Promise<{
   if (runRes.rows.length === 0) return { run: null, clusters: [] };
 
   const r = runRes.rows[0];
-  // Live counts off the actual table — always consistent even after
-  // partial writes (e.g. Node killed mid-bake), cleanup demotions, or
-  // empty-cluster deletes. The denorm columns on niche_tree_runs are
-  // set at python-output time and can drift from reality, so prefer
-  // these for anything user-facing.
-  const liveStats = await pool.query<{
-    assigned: string; noise: string; clusters: string;
-  }>(
-    `SELECT
-       (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NOT NULL) AS assigned,
-       (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NULL)     AS noise,
-       (SELECT COUNT(*)::text FROM niche_tree_clusters    WHERE run_id = $1 AND parent_cluster_id IS NULL) AS clusters`,
-    [r.id],
-  );
+  // Live counts + the L1+L2 cluster row pull are independent of each
+  // other (both keyed off run_id) — fire them in parallel so the
+  // bigger SELECT isn't gated behind three COUNT(*)s. Live counts
+  // come off the actual tables so partial writes / cleanup demotions
+  // / empty-cluster deletes always reflect reality, vs. the denorm
+  // columns on niche_tree_runs which can drift.
+  const [liveStats, clRes] = await Promise.all([
+    pool.query<{ assigned: string; noise: string; clusters: string }>(
+      `SELECT
+         (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NOT NULL) AS assigned,
+         (SELECT COUNT(*)::text FROM niche_tree_assignments WHERE run_id = $1 AND cluster_id IS NULL)     AS noise,
+         (SELECT COUNT(*)::text FROM niche_tree_clusters    WHERE run_id = $1 AND parent_cluster_id IS NULL) AS clusters`,
+      [r.id],
+    ),
+    // Pull the L1 clusters from this run + their L2 children. L2
+    // clusters live under separate subdivide runs (different run_id),
+    // so we can't filter by run_id alone — we expand to "either belongs
+    // to this run, OR is a child of one that does". The home grid
+    // renders both in two sections. LEFT JOIN representative video so a
+    // cluster without a rep (shouldn't happen but defensive) still
+    // shows up with nulls.
+    pool.query(
+      `WITH l1 AS (
+         SELECT id FROM niche_tree_clusters
+          WHERE run_id = $1 AND parent_cluster_id IS NULL
+       )
+       SELECT
+         c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
+         c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
+         c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
+         c.centroid_2d,
+         v.title         AS rep_title,
+         v.thumbnail     AS rep_thumbnail,
+         v.url           AS rep_url,
+         v.view_count    AS rep_view_count,
+         v.channel_name  AS rep_channel_name
+       FROM niche_tree_clusters c
+       LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
+       WHERE c.id IN (SELECT id FROM l1)
+          OR c.parent_cluster_id IN (SELECT id FROM l1)
+       ORDER BY c.parent_cluster_id NULLS FIRST, c.video_count DESC`,
+      [r.id],
+    ),
+  ]);
   const numAssigned = parseInt(liveStats.rows[0]?.assigned ?? '0') || 0;
   const numNoiseLive = parseInt(liveStats.rows[0]?.noise ?? '0') || 0;
   const numClustersLive = parseInt(liveStats.rows[0]?.clusters ?? '0') || 0;
@@ -1775,91 +1805,140 @@ export async function getLatestGlobalRun(): Promise<{
   };
 
   // No early return for status — we want partial cluster reads during
-  // the Node-side DB-write phase so the grid populates live.
+  // the Node-side DB-write phase so the grid populates live. clRes is
+  // already populated above (parallel with liveStats).
 
-  // Pull the L1 clusters from this run + their L2 children. L2
-  // clusters live under separate subdivide runs (different run_id),
-  // so we can't filter by run_id alone — we expand to "either belongs
-  // to this run, OR is a child of one that does". The home grid
-  // renders both in two sections.
-  // LEFT JOIN representative video so a cluster without a rep (shouldn't
-  // happen but defensive) still shows up with nulls.
-  const clRes = await pool.query(
-    `WITH l1 AS (
-       SELECT id FROM niche_tree_clusters
-        WHERE run_id = $1 AND parent_cluster_id IS NULL
-     )
-     SELECT
-       c.id, c.run_id, c.parent_cluster_id, c.level, c.cluster_index,
-       c.auto_label, c.ai_label, c.label, c.video_count, c.avg_score,
-       c.avg_views, c.total_views, c.top_channels, c.representative_video_id,
-       c.centroid_2d,
-       v.title         AS rep_title,
-       v.thumbnail     AS rep_thumbnail,
-       v.url           AS rep_url,
-       v.view_count    AS rep_view_count,
-       v.channel_name  AS rep_channel_name
-     FROM niche_tree_clusters c
-     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
-     WHERE c.id IN (SELECT id FROM l1)
-        OR c.parent_cluster_id IN (SELECT id FROM l1)
-     ORDER BY c.parent_cluster_id NULLS FIRST, c.video_count DESC`,
-    [run.id],
-  );
+  // All five "per-cluster" queries below depend on allClusterIds but
+  // not on each other — they used to run sequentially, which on the
+  // 2k-cluster global view stacked up to ~10s of wall time. Promise.all
+  // fans them out so the total is bounded by the slowest single query.
+  // childStatsRes doesn't need allClusterIds but it's batched in here
+  // anyway since it's independent and we want every query inflight at
+  // the same time.
+  const allClusterIds = clRes.rows.map(r => r.id);
 
-  // 4 videos closest to the cluster centroid, deduped to one per
-  // channel so the strip shows 4 different creators converging on
-  // the niche. Per (cluster, channel) keep only the channel's
-  // most-central video, then per cluster take the 4 closest.
-  // Tiles are intentionally compact in the grid for overview
-  // density; the UI scales them up on hover so titles + thumbs
-  // become legible without sacrificing the at-a-glance row layout.
-  const popRes = await pool.query<{
-    cluster_id: number;
-    video_id: number;
-    title: string | null;
-    thumbnail: string | null;
-    url: string | null;
-    view_count: string | null;
-    channel_name: string | null;
-    posted_at: Date | null;
-    posted_date: string | null;
-    score: number | null;
-  }>(
+  const [
+    popRes,
+    channelCountRes,
+    histogramByCluster,
+    opportunityByCluster,
+    childStatsRes,
+  ] = await Promise.all([
+    // 4 videos closest to the cluster centroid, deduped to one per
+    // channel so the strip shows 4 different creators converging on
+    // the niche. Per (cluster, channel) keep only the channel's
+    // most-central video, then per cluster take the 4 closest.
     // Scope by explicit cluster id list (L1 from this run + their
     // L2 children, which live under separate subdivide runs). Run-id
     // alone would miss the L2s.
-    `WITH per_channel AS (
-       SELECT a.cluster_id,
-              v.id AS video_id, v.title, v.thumbnail, v.url, v.view_count,
-              v.channel_name, v.posted_at, v.posted_date, v.score,
-              a.distance_to_centroid,
-              ROW_NUMBER() OVER (
-                PARTITION BY a.cluster_id, v.channel_name
-                ORDER BY a.distance_to_centroid ASC NULLS LAST
-              ) AS channel_rn
-         FROM niche_tree_assignments a
-         JOIN niche_spy_videos v ON v.id = a.video_id
-         WHERE a.cluster_id = ANY($1::int[])
-           AND v.channel_name IS NOT NULL
-           AND v.thumbnail_dead_at IS NULL
-     ),
-     ranked AS (
-       SELECT *, ROW_NUMBER() OVER (
-                  PARTITION BY cluster_id
-                  ORDER BY distance_to_centroid ASC NULLS LAST
-                ) AS rn
-         FROM per_channel
-         WHERE channel_rn = 1
-     )
-     SELECT cluster_id,
-            video_id, title, thumbnail, url, view_count,
-            channel_name, posted_at, posted_date, score
-       FROM ranked
-       WHERE rn <= 4
-       ORDER BY cluster_id, rn`,
-    [clRes.rows.map(r => r.id)],
-  );
+    allClusterIds.length > 0
+      ? pool.query<{
+          cluster_id: number;
+          video_id: number;
+          title: string | null;
+          thumbnail: string | null;
+          url: string | null;
+          view_count: string | null;
+          channel_name: string | null;
+          posted_at: Date | null;
+          posted_date: string | null;
+          score: number | null;
+        }>(
+          `WITH per_channel AS (
+             SELECT a.cluster_id,
+                    v.id AS video_id, v.title, v.thumbnail, v.url, v.view_count,
+                    v.channel_name, v.posted_at, v.posted_date, v.score,
+                    a.distance_to_centroid,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY a.cluster_id, v.channel_name
+                      ORDER BY a.distance_to_centroid ASC NULLS LAST
+                    ) AS channel_rn
+               FROM niche_tree_assignments a
+               JOIN niche_spy_videos v ON v.id = a.video_id
+               WHERE a.cluster_id = ANY($1::int[])
+                 AND v.channel_name IS NOT NULL
+                 AND v.thumbnail_dead_at IS NULL
+           ),
+           ranked AS (
+             SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY cluster_id
+                        ORDER BY distance_to_centroid ASC NULLS LAST
+                      ) AS rn
+               FROM per_channel
+               WHERE channel_rn = 1
+           )
+           SELECT cluster_id,
+                  video_id, title, thumbnail, url, view_count,
+                  channel_name, posted_at, posted_date, score
+             FROM ranked
+             WHERE rn <= 4
+             ORDER BY cluster_id, rn`,
+          [allClusterIds],
+        )
+      : Promise.resolve({ rows: [] as Array<{
+          cluster_id: number; video_id: number;
+          title: string | null; thumbnail: string | null; url: string | null;
+          view_count: string | null; channel_name: string | null;
+          posted_at: Date | null; posted_date: string | null; score: number | null;
+        }> }),
+
+    // Distinct-channel count per cluster — replaces the redundant
+    // video_count "Videos" stat tile on the card.
+    allClusterIds.length > 0
+      ? pool.query<{ cluster_id: number; cnt: string }>(
+          `SELECT a.cluster_id, COUNT(DISTINCT v.channel_name)::text AS cnt
+             FROM niche_tree_assignments a
+             JOIN niche_spy_videos v ON v.id = a.video_id
+            WHERE a.cluster_id = ANY($1::int[]) AND v.channel_name IS NOT NULL AND v.channel_name <> ''
+            GROUP BY a.cluster_id`,
+          [allClusterIds],
+        )
+      : Promise.resolve({ rows: [] as Array<{ cluster_id: number; cnt: string }> }),
+
+    // Upload heartbeat + opportunity indicators — both scoped by
+    // explicit cluster id list (L1 + L2) so the L2 cards on the home
+    // grid get their data populated alongside the L1s.
+    allClusterIds.length > 0
+      ? fetchUploadHistograms(pool, { clusterIds: allClusterIds })
+      : Promise.resolve(new Map<number, number[]>()),
+    allClusterIds.length > 0
+      ? fetchClusterOpportunities(pool, { clusterIds: allClusterIds })
+      : Promise.resolve(new Map<number, ClusterOpportunity>()),
+
+    // Child-count + subdivide-status per L1 cluster — drives the L2 status
+    // chip on each card. One row per L1 cluster id, joining the COUNT of
+    // its children in niche_tree_clusters with the LATEST subdivide run's
+    // status.
+    pool.query<{
+      parent_id: number;
+      children_count: string;
+      subdivide_status: 'running' | 'done' | 'error' | null;
+      subdivide_error: string | null;
+    }>(
+      `WITH child_counts AS (
+         SELECT parent_cluster_id AS parent_id, COUNT(*)::int AS children_count
+           FROM niche_tree_clusters
+           WHERE parent_cluster_id IS NOT NULL
+           GROUP BY parent_cluster_id
+       ),
+       latest_sub AS (
+         SELECT DISTINCT ON (parent_cluster_id)
+                parent_cluster_id AS parent_id,
+                status            AS subdivide_status,
+                error_message     AS subdivide_error
+           FROM niche_tree_runs
+           WHERE kind = 'subdivide' AND parent_cluster_id IS NOT NULL
+           ORDER BY parent_cluster_id, started_at DESC
+       )
+       SELECT
+         COALESCE(cc.parent_id, ls.parent_id) AS parent_id,
+         COALESCE(cc.children_count::text, '0') AS children_count,
+         ls.subdivide_status,
+         ls.subdivide_error
+       FROM child_counts cc
+       FULL OUTER JOIN latest_sub ls ON ls.parent_id = cc.parent_id`,
+    ),
+  ]);
 
   const popularByCluster = new Map<number, Array<{
     videoId: number;
@@ -1888,70 +1967,11 @@ export async function getLatestGlobalRun(): Promise<{
     popularByCluster.set(row.cluster_id, arr);
   }
 
-  const allClusterIds = clRes.rows.map(r => r.id);
-
-  // Distinct-channel count per cluster. Cards used to show video_count
-  // twice (once as the badge, once as the "Videos" stat tile) — this
-  // replaces the redundant tile with something meaningful. Scoped by
-  // explicit cluster id list so L2s (different run_id) are included.
   const channelCountByCluster = new Map<number, number>();
-  if (allClusterIds.length > 0) {
-    const channelCountRes = await pool.query<{ cluster_id: number; cnt: string }>(
-      `SELECT a.cluster_id, COUNT(DISTINCT v.channel_name)::text AS cnt
-         FROM niche_tree_assignments a
-         JOIN niche_spy_videos v ON v.id = a.video_id
-        WHERE a.cluster_id = ANY($1::int[]) AND v.channel_name IS NOT NULL AND v.channel_name <> ''
-        GROUP BY a.cluster_id`,
-      [allClusterIds],
-    );
-    for (const row of channelCountRes.rows) {
-      channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
-    }
+  for (const row of channelCountRes.rows) {
+    channelCountByCluster.set(row.cluster_id, parseInt(row.cnt) || 0);
   }
 
-  // Upload heartbeat + opportunity indicators — both scoped by
-  // explicit cluster id list (L1 + L2) so the L2 cards on the home
-  // grid get their data populated alongside the L1s.
-  const histogramByCluster = allClusterIds.length > 0
-    ? await fetchUploadHistograms(pool, { clusterIds: allClusterIds })
-    : new Map<number, number[]>();
-  const opportunityByCluster = allClusterIds.length > 0
-    ? await fetchClusterOpportunities(pool, { clusterIds: allClusterIds })
-    : new Map<number, ClusterOpportunity>();
-
-  // Child-count + subdivide-status per L1 cluster — drives the L2 status
-  // chip on each card. One row per L1 cluster id, joining the COUNT of
-  // its children in niche_tree_clusters with the LATEST subdivide run's
-  // status.
-  const childStatsRes = await pool.query<{
-    parent_id: number;
-    children_count: string;
-    subdivide_status: 'running' | 'done' | 'error' | null;
-    subdivide_error: string | null;
-  }>(
-    `WITH child_counts AS (
-       SELECT parent_cluster_id AS parent_id, COUNT(*)::int AS children_count
-         FROM niche_tree_clusters
-         WHERE parent_cluster_id IS NOT NULL
-         GROUP BY parent_cluster_id
-     ),
-     latest_sub AS (
-       SELECT DISTINCT ON (parent_cluster_id)
-              parent_cluster_id AS parent_id,
-              status            AS subdivide_status,
-              error_message     AS subdivide_error
-         FROM niche_tree_runs
-         WHERE kind = 'subdivide' AND parent_cluster_id IS NOT NULL
-         ORDER BY parent_cluster_id, started_at DESC
-     )
-     SELECT
-       COALESCE(cc.parent_id, ls.parent_id) AS parent_id,
-       COALESCE(cc.children_count::text, '0') AS children_count,
-       ls.subdivide_status,
-       ls.subdivide_error
-     FROM child_counts cc
-     FULL OUTER JOIN latest_sub ls ON ls.parent_id = cc.parent_id`,
-  );
   const childStatsByParent = new Map<number, {
     childrenCount: number;
     subdivideStatus: 'running' | 'done' | 'error' | null;
