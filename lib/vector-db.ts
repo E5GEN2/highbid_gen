@@ -327,6 +327,23 @@ export async function upsertClusterVector(opts: {
 }
 
 /**
+ * Pull a single cluster's signature vector by cluster_id. Used by
+ * the "similar niches" endpoint to seed the cosine search from an
+ * existing cluster instead of a free-text query.
+ */
+export async function getClusterVector(clusterId: number): Promise<number[] | null> {
+  await ensureVectorTables();
+  const r = await vectorPool.query<{ embedding: string }>(
+    `SELECT embedding::text AS embedding
+       FROM niche_tree_cluster_vectors
+      WHERE cluster_id = $1`,
+    [clusterId],
+  );
+  if (r.rows.length === 0 || !r.rows[0].embedding) return null;
+  return JSON.parse(r.rows[0].embedding) as number[];
+}
+
+/**
  * Pull a single video's combined_v2 vector by video_id. Used by the
  * cluster-vector backfill: we look up each cluster's representative
  * video and copy its vector as the cluster's signature.

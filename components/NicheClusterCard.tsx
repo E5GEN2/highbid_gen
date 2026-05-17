@@ -68,7 +68,17 @@ export interface ClusterCardData {
   similarity?: number;
 }
 
-export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
+export function NicheClusterCard({
+  cluster: c,
+  onFindSimilar,
+}: {
+  cluster: ClusterCardData;
+  /** When provided, an "Find similar niches" icon button appears in the
+   *  header (left of the OPP/TOP/NEW/CEIL pill row). Click stops the
+   *  card-body link propagation so the popup opens without navigating
+   *  into the cluster. */
+  onFindSimilar?: (clusterId: number) => void;
+}) {
   // Outer wrapper is a div+onClick (not <Link>) because we have real
   // <a> anchors INSIDE the card for the per-thumbnail YT links — and
   // nested <a> inside <a> is invalid HTML / triggers a hydration error
@@ -145,11 +155,31 @@ export function NicheClusterCard({ cluster: c }: { cluster: ClusterCardData }) {
             {label}
           </h3>
         </div>
-        {/* OPP / TOP / NEW / CEIL pills sit in the top-right corner,
-            in the slot the avg-score block used to occupy. Compact
-            stacked label+value variant so 4 of them fit horizontally
-            without crowding the badges row. */}
-        <CompactOpportunityRow opportunity={c.opportunity} />
+        {/* Find-similar action + OPP/TOP/NEW/CEIL pills share the top-
+            right cluster header slot. Action button sits to the LEFT
+            of the pills so the eye scans "action then signals." */}
+        <div className="flex items-stretch gap-2">
+          {onFindSimilar && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onFindSimilar(c.id);
+              }}
+              title="Find similar niches"
+              className="flex flex-col items-center justify-center px-2 rounded-md border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:text-purple-200 hover:border-purple-500/60 transition text-[10px] font-medium leading-tight"
+            >
+              {/* Simple 2-overlap-circles icon — represents "similar" */}
+              <svg className="w-4 h-4 mb-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <circle cx="9"  cy="12" r="5" />
+                <circle cx="15" cy="12" r="5" />
+              </svg>
+              SIMILAR
+            </button>
+          )}
+          <CompactOpportunityRow opportunity={c.opportunity} />
+        </div>
       </div>
 
       {/* 4-tile stats row — avg views / heartbeat / total views /

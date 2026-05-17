@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { NicheClusterCard } from '@/components/NicheClusterCard';
+import { SimilarNichesModal } from '@/components/SimilarNichesModal';
 
 // Shape returned by /api/niche-spy/tree-clusters — auto-discovered
 // L1 niche clusters from the latest HDBSCAN run (combined_v2 space).
@@ -60,6 +61,14 @@ export default function NichesGrid() {
   const [clustersLoading, setClustersLoading] = useState(true);
   const [clustersError, setClustersError] = useState<string | null>(null);
   const [clusterSort, setClusterSort] = useState<ClusterSort>('videos');
+  // Similar-niches popup state — null = closed, set to a cluster id
+  // when the user clicks the "SIMILAR" icon on any card.
+  const [similarSourceId, setSimilarSourceId] = useState<number | null>(null);
+  const [similarSourceLabel, setSimilarSourceLabel] = useState<string | null>(null);
+  const openSimilar = useCallback((id: number, label?: string | null) => {
+    setSimilarSourceId(id);
+    setSimilarSourceLabel(label ?? null);
+  }, []);
   // searchInput = live input value; semanticQuery = committed query
   // (the value that was actually sent to the API). Splitting them lets
   // the user type freely without firing a search per keystroke.
@@ -298,7 +307,7 @@ export default function NichesGrid() {
           ) : (
             <div className="space-y-3">
               {filteredResults.map(c => (
-                <NicheClusterCard key={c.id} cluster={c} />
+                <NicheClusterCard key={c.id} cluster={c} onFindSimilar={(id) => openSimilar(id, c.label || c.autoLabel)} />
               ))}
             </div>
           )}
@@ -367,7 +376,7 @@ export default function NichesGrid() {
       {l1Sorted.length > 0 && (
         <div className="space-y-3">
           {l1Sorted.map(c => (
-            <NicheClusterCard key={c.id} cluster={c} />
+            <NicheClusterCard key={c.id} cluster={c} onFindSimilar={(id) => openSimilar(id, c.label || c.autoLabel)} />
           ))}
         </div>
       )}
@@ -383,13 +392,21 @@ export default function NichesGrid() {
           </div>
           <div className="space-y-3">
             {l2Sorted.map(c => (
-              <NicheClusterCard key={c.id} cluster={c} />
+              <NicheClusterCard key={c.id} cluster={c} onFindSimilar={(id) => openSimilar(id, c.label || c.autoLabel)} />
             ))}
           </div>
         </div>
       )}
       </>
       )}
+
+      {/* Mounted at root so it covers the whole page regardless of
+          which section spawned it (semantic results, L1 list, L2 list). */}
+      <SimilarNichesModal
+        sourceClusterId={similarSourceId}
+        sourceLabel={similarSourceLabel}
+        onClose={() => setSimilarSourceId(null)}
+      />
     </div>
   );
 }
