@@ -153,6 +153,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
          FROM niche_spy_videos v
          WHERE COALESCE(v.channel_id, 'name:' || v.channel_name) = ANY($1::text[])
            AND v.id IN (SELECT video_id FROM niche_tree_assignments WHERE cluster_id = $2)
+           AND v.thumbnail_dead_at IS NULL
        )
        SELECT grp_key, video_id, title, thumbnail, url, view_count, posted_at, posted_date, score
          FROM ranked WHERE rn <= 4

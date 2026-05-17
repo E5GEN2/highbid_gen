@@ -1800,7 +1800,7 @@ export async function getLatestGlobalRun(): Promise<{
        v.view_count    AS rep_view_count,
        v.channel_name  AS rep_channel_name
      FROM niche_tree_clusters c
-     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id
+     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
      WHERE c.id IN (SELECT id FROM l1)
         OR c.parent_cluster_id IN (SELECT id FROM l1)
      ORDER BY c.parent_cluster_id NULLS FIRST, c.video_count DESC`,
@@ -1842,6 +1842,7 @@ export async function getLatestGlobalRun(): Promise<{
          JOIN niche_spy_videos v ON v.id = a.video_id
          WHERE a.cluster_id = ANY($1::int[])
            AND v.channel_name IS NOT NULL
+           AND v.thumbnail_dead_at IS NULL
      ),
      ranked AS (
        SELECT *, ROW_NUMBER() OVER (
@@ -2032,7 +2033,7 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
        v.view_count    AS rep_view_count,
        v.channel_name  AS rep_channel_name
      FROM niche_tree_clusters c
-     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id
+     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
      WHERE c.id = $1`,
     [parentClusterId],
   );
@@ -2070,7 +2071,7 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
        v.view_count    AS rep_view_count,
        v.channel_name  AS rep_channel_name
      FROM niche_tree_clusters c
-     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id
+     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
      WHERE c.parent_cluster_id = $1
      ORDER BY c.video_count DESC`,
     [parentClusterId],
@@ -2098,6 +2099,7 @@ export async function getClusterChildren(parentClusterId: number): Promise<{
            JOIN niche_spy_videos v ON v.id = a.video_id
            WHERE a.cluster_id = ANY($1::int[])
              AND v.channel_name IS NOT NULL
+             AND v.thumbnail_dead_at IS NULL
        ),
        ranked AS (
          SELECT *, ROW_NUMBER() OVER (
@@ -2288,7 +2290,7 @@ export async function getClusterVideos(opts: {
        v.title AS rep_title, v.thumbnail AS rep_thumbnail, v.url AS rep_url,
        v.view_count AS rep_view_count, v.channel_name AS rep_channel_name
      FROM niche_tree_clusters c
-     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id
+     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
      WHERE c.id = $1`,
     [opts.clusterId],
   );

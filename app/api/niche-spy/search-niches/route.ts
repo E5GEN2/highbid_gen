@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
        v.view_count    AS rep_view_count,
        v.channel_name  AS rep_channel_name
      FROM niche_tree_clusters c
-     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id
+     LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
      WHERE c.id = ANY($1::int[])`,
     [ids],
   );
@@ -105,6 +105,7 @@ export async function POST(req: NextRequest) {
          JOIN niche_spy_videos v ON v.id = a.video_id
         WHERE a.cluster_id = ANY($1::int[])
           AND v.channel_name IS NOT NULL
+          AND v.thumbnail_dead_at IS NULL
      ),
      ranked AS (
        SELECT *, ROW_NUMBER() OVER (
