@@ -49,7 +49,7 @@ function zeroHistogram(): number[] { return new Array(HISTOGRAM_WEEKS).fill(0); 
  */
 export async function fetchUploadHistograms(
   pool: import('pg').Pool,
-  scope: { runId: number } | { clusterIds: number[] },
+  scope: { runId: number } | { clusterIds: number[] } | { customNicheIds: number[] },
 ): Promise<Map<number, number[]>> {
   const histByCluster = new Map<number, number[]>();
   let sql: string;
@@ -67,7 +67,7 @@ export async function fetchUploadHistograms(
          AND v.posted_at > NOW() - INTERVAL '${HISTOGRAM_WEEKS} weeks'
     GROUP BY a.cluster_id, weeks_ago`;
     params = [scope.runId];
-  } else {
+  } else if ('clusterIds' in scope) {
     if (scope.clusterIds.length === 0) return histByCluster;
     sql = `
       SELECT a.cluster_id,
@@ -80,6 +80,22 @@ export async function fetchUploadHistograms(
          AND v.posted_at > NOW() - INTERVAL '${HISTOGRAM_WEEKS} weeks'
     GROUP BY a.cluster_id, weeks_ago`;
     params = [scope.clusterIds];
+  } else {
+    // Custom niches — same shape, source is custom_niche_videos.
+    // Map output keys to custom_niche_id so the caller's downstream
+    // lookups don't have to know which table the data came from.
+    if (scope.customNicheIds.length === 0) return histByCluster;
+    sql = `
+      SELECT m.custom_niche_id AS cluster_id,
+             FLOOR(EXTRACT(EPOCH FROM (NOW() - v.posted_at)) / 604800)::int AS weeks_ago,
+             COUNT(*)::int AS cnt
+        FROM custom_niche_videos m
+        JOIN niche_spy_videos v ON v.id = m.video_id
+       WHERE m.custom_niche_id = ANY($1::int[])
+         AND v.posted_at IS NOT NULL
+         AND v.posted_at > NOW() - INTERVAL '${HISTOGRAM_WEEKS} weeks'
+    GROUP BY m.custom_niche_id, weeks_ago`;
+    params = [scope.customNicheIds];
   }
 
   const r = await pool.query<{ cluster_id: number; weeks_ago: number; cnt: number }>(sql, params);
@@ -136,7 +152,7 @@ function percentile(arr: number[], p: number): number {
  */
 export async function fetchClusterOpportunities(
   pool: import('pg').Pool,
-  scope: { runId: number } | { clusterIds: number[] },
+  scope: { runId: number } | { clusterIds: number[] } | { customNicheIds: number[] },
 ): Promise<Map<number, ClusterOpportunity>> {
   const out = new Map<number, ClusterOpportunity>();
   let sql: string;
@@ -162,7 +178,7 @@ export async function fetchClusterOpportunities(
          AND v.subscriber_count IS NOT NULL AND v.subscriber_count > 0
          AND v.view_count       IS NOT NULL AND v.view_count > 0`;
     params = [scope.runId];
-  } else {
+  } else if ('clusterIds' in scope) {
     if (scope.clusterIds.length === 0) return out;
     sql = `
       SELECT a.cluster_id,
@@ -178,6 +194,25 @@ export async function fetchClusterOpportunities(
          AND v.subscriber_count IS NOT NULL AND v.subscriber_count > 0
          AND v.view_count       IS NOT NULL AND v.view_count > 0`;
     params = [scope.clusterIds];
+  } else {
+    // Custom niches — same shape, source is custom_niche_videos.
+    // Output keys are custom_niche_id (same column name in SELECT so
+    // the row processor below doesn't have to branch).
+    if (scope.customNicheIds.length === 0) return out;
+    sql = `
+      SELECT m.custom_niche_id AS cluster_id,
+             v.subscriber_count AS subs,
+             v.view_count       AS views,
+             v.channel_created_at,
+             c.first_upload_at
+        FROM custom_niche_videos m
+        JOIN niche_spy_videos v ON v.id = m.video_id
+        LEFT JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+       WHERE m.custom_niche_id = ANY($1::int[])
+         AND v.score >= ${OPPORTUNITY_MIN_SCORE}
+         AND v.subscriber_count IS NOT NULL AND v.subscriber_count > 0
+         AND v.view_count       IS NOT NULL AND v.view_count > 0`;
+    params = [scope.customNicheIds];
   }
 
   type Dot = { s: number; v: number; a: number | null };

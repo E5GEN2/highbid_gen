@@ -72,6 +72,8 @@ export interface ClusterCardData {
 export function NicheClusterCard({
   cluster: c,
   onFindSimilar,
+  href: hrefProp,
+  kind = 'auto',
 }: {
   cluster: ClusterCardData;
   /** When provided, an "Find similar niches" icon button appears in the
@@ -79,6 +81,15 @@ export function NicheClusterCard({
    *  card-body link propagation so the popup opens without navigating
    *  into the cluster. */
   onFindSimilar?: (clusterId: number) => void;
+  /** Override the card-body click destination. Defaults to the auto
+   *  cluster detail page; custom niches use /niche/custom/[id]. */
+  href?: string;
+  /** Card variant. 'auto' = HDBSCAN-discovered niche_tree_cluster
+   *  (default). 'custom' = user-curated collection — swaps the L1/L2
+   *  pill for a 'Custom' badge, drops the cluster-only Star button
+   *  (the niche IS the saved object), and labels the popular-video
+   *  strip differently (top-by-views vs centroid-distance). */
+  kind?: 'auto' | 'custom';
 }) {
   // Outer wrapper is a div+onClick (not <Link>) because we have real
   // <a> anchors INSIDE the card for the per-thumbnail YT links — and
@@ -87,7 +98,7 @@ export function NicheClusterCard({
   // click on the inner anchors. Cmd/Ctrl/middle-click on the card
   // body still opens the cluster in a new tab via the explicit handler.
   const router = useRouter();
-  const href = `/niche/cluster/${c.id}`;
+  const href = hrefProp ?? `/niche/cluster/${c.id}`;
   const onCardClick = (e: React.MouseEvent) => {
     if (e.metaKey || e.ctrlKey || e.button === 1) {
       window.open(href, '_blank');
@@ -137,9 +148,15 @@ export function NicheClusterCard({
             <span className="text-xs bg-amber-600/30 text-amber-300 border border-amber-600/50 rounded-full px-2 py-0.5 whitespace-nowrap">
               {c.videoCount.toLocaleString()} videos
             </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/60 text-[#aaa] border border-white/10 whitespace-nowrap">
-              L{c.level}
-            </span>
+            {kind === 'auto' ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/60 text-[#aaa] border border-white/10 whitespace-nowrap">
+                L{c.level}
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 whitespace-nowrap font-medium">
+                Custom
+              </span>
+            )}
             {subBadge && (
               <span className={`text-[10px] px-2 py-0.5 rounded-full border whitespace-nowrap ${subBadge.cls}`}>
                 {subBadge.label}
@@ -161,9 +178,10 @@ export function NicheClusterCard({
             both action affordances cluster together before the
             read-only signal pills. Similar styling matches the green
             "Similar" link on video cards so the affordance reads the
-            same across surfaces. */}
+            same across surfaces. Custom niches hide the star (the
+            niche IS the saved object). */}
         <div className="flex items-center gap-2">
-          <NicheStarButton clusterId={c.id} />
+          {kind === 'auto' && <NicheStarButton clusterId={c.id} />}
           {onFindSimilar && (
             <button
               type="button"
@@ -192,13 +210,20 @@ export function NicheClusterCard({
         <Stat label="Total channels"      value={c.channelCount != null ? c.channelCount.toLocaleString() : '—'} valueColor="text-blue-400" />
       </div>
 
-      {/* Popular videos strip — 4 thumbs + title below each */}
+      {/* Popular videos strip — 4 thumbs + title below each. Caption
+          changes per kind because the ranking criterion is
+          different: auto uses centroid distance, custom uses raw
+          view count (no centroid exists for hand-picked sets). */}
       <div className="px-4 pb-4">
         <div className="flex items-center justify-between mb-2">
-          <h4 className="text-[11px] text-[#666] uppercase tracking-wider">Most representative videos</h4>
+          <h4 className="text-[11px] text-[#666] uppercase tracking-wider">
+            {kind === 'auto' ? 'Most representative videos' : 'Top videos in this niche'}
+          </h4>
           {c.popularVideos.length > 0 && (
-            <span className="text-[10px] text-[#666]" title="Closest to cluster centroid, deduped to one per channel.">
-              closest to centroid · 1 per channel
+            <span className="text-[10px] text-[#666]" title={kind === 'auto'
+              ? 'Closest to cluster centroid, deduped to one per channel.'
+              : 'Highest view count, deduped to one per channel.'}>
+              {kind === 'auto' ? 'closest to centroid · 1 per channel' : 'most views · 1 per channel'}
             </span>
           )}
         </div>

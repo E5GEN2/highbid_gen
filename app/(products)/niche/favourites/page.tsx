@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import Link from 'next/link';
 import { fmtYT } from '@/lib/format';
 import { useSimilarModal } from '@/components/SimilarModal';
 import { ChannelAgeChip } from '@/components/ChannelAgeChip';
@@ -368,9 +367,19 @@ function MyNichesPanel({
 
       {/* Skeleton */}
       {loading && niches.length === 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-32 rounded-xl bg-[#141414] border border-[#1f1f1f] animate-pulse" />
+            <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-4 animate-pulse">
+              <div className="h-4 w-1/3 bg-[#1f1f1f] rounded mb-3" />
+              <div className="grid grid-cols-4 gap-3">
+                {[0,1,2,3].map(j => (
+                  <div key={j}>
+                    <div className="aspect-video bg-[#1a1a1a] rounded-md" />
+                    <div className="h-3 w-3/4 bg-[#1f1f1f] rounded mt-2" />
+                  </div>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -393,57 +402,37 @@ function MyNichesPanel({
         </div>
       )}
 
-      {/* Niche cards grid */}
+      {/* Niche cards — wide row, same shape as auto NicheClusterCard
+          via kind="custom". stacked layout matches /niche/niches. */}
       {niches.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="space-y-3">
           {niches.map(n => (
-            <CustomNicheCard key={n.id} niche={n} />
+            <NicheClusterCard
+              key={n.id}
+              kind="custom"
+              href={`/niche/custom/${n.id}`}
+              cluster={{
+                id: n.id,
+                level: 0,
+                autoLabel: null,
+                label: n.name,
+                videoCount: n.videoCount,
+                channelCount: n.channelCount ?? 0,
+                avgScore: n.avgScore ?? null,
+                avgViews: n.avgViews ?? null,
+                totalViews: n.totalViews ?? null,
+                topChannels: n.topChannels ?? [],
+                popularVideos: n.popularVideos ?? [],
+                uploadHistogram: n.uploadHistogram,
+                opportunity: n.opportunity ?? null,
+                childrenCount: 0,
+              }}
+            />
           ))}
         </div>
       )}
     </div>
   );
-}
-
-function CustomNicheCard({ niche }: { niche: CustomNiche }) {
-  return (
-    <Link
-      href={`/niche/custom/${niche.id}`}
-      className="group block bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 hover:border-amber-500/40 hover:bg-[#171717] transition"
-    >
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[15px] font-semibold text-white truncate group-hover:text-amber-400 transition">
-            {niche.name}
-          </h3>
-          {niche.description && (
-            <p className="text-[12.5px] text-[#888] mt-1 line-clamp-2">
-              {niche.description}
-            </p>
-          )}
-        </div>
-        <span className="text-[10px] uppercase tracking-[0.12em] text-amber-400 font-semibold flex-shrink-0">
-          Open →
-        </span>
-      </div>
-      <div className="flex items-center gap-3 text-[11px] text-[#888]">
-        <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">
-          {niche.videoCount} {niche.videoCount === 1 ? 'video' : 'videos'}
-        </span>
-        <span>·</span>
-        <span>Updated {timeAgoLite(niche.updatedAt)}</span>
-      </div>
-    </Link>
-  );
-}
-
-function timeAgoLite(dateStr: string): string {
-  const d = new Date(dateStr);
-  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  if (days < 1) return 'today';
-  if (days < 7) return `${days}d ago`;
-  if (days < 30) return `${Math.floor(days / 7)}w ago`;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 /* ─────────────────────────────────────────────────────────────────

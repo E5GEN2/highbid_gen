@@ -32,6 +32,32 @@ export interface CustomNiche {
   videoCount: number;
   createdAt: string;
   updatedAt: string;
+  // Aggregate fields populated by /api/niche-spy/custom-niches GET
+  // so the My Niches tab can render the full NicheClusterCard.
+  // Optional because /api/niche-spy/custom-niches/[id] (single-row
+  // fetch on the detail page) doesn't bother computing them.
+  avgScore?: number | null;
+  avgViews?: number | null;
+  totalViews?: number | null;
+  channelCount?: number;
+  topChannels?: string[];
+  popularVideos?: Array<{
+    videoId: number;
+    title: string | null;
+    thumbnail: string | null;
+    url: string | null;
+    viewCount: number | null;
+    channelName: string | null;
+  }>;
+  uploadHistogram?: number[];
+  opportunity?: {
+    sample: number;
+    nos: number;
+    nosDisplay: number;
+    topLeftPct: number;
+    newcomerRate: number;
+    lowSubCeiling: number;
+  } | null;
 }
 
 interface FavouritesContextType {
