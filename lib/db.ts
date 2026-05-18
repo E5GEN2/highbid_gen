@@ -567,6 +567,32 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsfc_added ON niche_spy_favourite_clusters(added_at DESC)`).catch(() => {});
 
+    // Custom niches — user-defined collections of videos. Unlike the
+    // auto-discovered niche_tree_clusters these are manually curated:
+    // give it a name + optional description, then star videos into it
+    // from anywhere on the site. M:n join with niche_spy_videos via
+    // custom_niche_videos. Cascade delete from either side cleans the
+    // join automatically.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS custom_niches (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS custom_niche_videos (
+        custom_niche_id INTEGER NOT NULL REFERENCES custom_niches(id) ON DELETE CASCADE,
+        video_id        INTEGER NOT NULL REFERENCES niche_spy_videos(id) ON DELETE CASCADE,
+        added_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (custom_niche_id, video_id)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cnv_video    ON custom_niche_videos(video_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cnv_added    ON custom_niche_videos(added_at DESC)`).catch(() => {});
+
     // One-time backfill: copy channel-level data we already collected on the
     // videos table into the new channels table. Idempotent via ON CONFLICT.
     await client.query(`

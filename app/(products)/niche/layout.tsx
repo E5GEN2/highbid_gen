@@ -142,6 +142,11 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
     segments.push({ label: 'Similar video', href: `/niche/similar/${similarVideoId}/videos` });
     if (pathname.includes('/videos')) segments.push({ label: 'Videos' });
     else if (pathname.includes('/insights')) segments.push({ label: 'Insights' });
+  } else if (pathname.startsWith('/niche/custom/')) {
+    // Custom niche detail page — breadcrumb under Favourites since
+    // that's where users navigate from.
+    segments.push({ label: 'Favourites', href: '/niche/favourites' });
+    segments.push({ label: 'Custom niche' });
   } else {
     segments.push({ label: 'Overview' });
   }

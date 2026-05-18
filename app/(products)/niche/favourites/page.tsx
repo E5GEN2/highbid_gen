@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { fmtYT } from '@/lib/format';
 import { useSimilarModal } from '@/components/SimilarModal';
 import { ChannelAgeChip } from '@/components/ChannelAgeChip';
-import { StarButton, useFavourites } from '@/components/FavouritesProvider';
+import { StarButton, useFavourites, type CustomNiche } from '@/components/FavouritesProvider';
 import { NicheClusterCard, type ClusterCardData } from '@/components/NicheClusterCard';
 import { SimilarNichesModal } from '@/components/SimilarNichesModal';
 
@@ -28,14 +29,19 @@ interface FavNiche extends ClusterCardData {
   addedAt: string;
 }
 
-type Tab = 'niches' | 'videos';
+type Tab = 'my-niches' | 'niches' | 'videos';
 
 export default function FavouritesPage() {
   const { openSimilar } = useSimilarModal();
-  // Read both video + niche favourite sets. The video set drives the
-  // Videos tab refetch; the niche set drives the Niches tab refetch.
-  const { count, nicheCount, ids, nicheIds } = useFavourites();
-  const [tab, setTab] = useState<Tab>('niches');
+  // Read every saved surface in one go. `customNiches` powers the
+  // My Niches tab; `ids` / `nicheIds` drive video + cluster
+  // favourites respectively.
+  const {
+    count, nicheCount, ids, nicheIds,
+    customNiches, customNichesLoading,
+    createCustomNiche, refreshCustomNiches,
+  } = useFavourites();
+  const [tab, setTab] = useState<Tab>('my-niches');
 
   // Niches state
   const [niches, setNiches] = useState<FavNiche[]>([]);
@@ -105,23 +111,42 @@ export default function FavouritesPage() {
         </p>
       </div>
 
-      {/* Tab switcher — niches first because niches are the bigger
-          editorial surface. Counts are pulled from the provider so
-          they update optimistically when the user stars/unstars. */}
-      <div className="flex items-center gap-2 mb-6 border-b border-[#1f1f1f]">
+      {/* Tab switcher — My Niches (custom collections) is the default
+          tab because curated lists are the primary organizational
+          surface. Auto-discovered niches and individual starred
+          videos follow. Counts come from the provider so they
+          update optimistically. */}
+      <div className="flex items-center gap-2 mb-6 border-b border-[#1f1f1f] flex-wrap">
+        <TabPill
+          active={tab === 'my-niches'}
+          onClick={() => setTab('my-niches')}
+          label="My Niches"
+          count={customNiches.length}
+        />
         <TabPill
           active={tab === 'niches'}
           onClick={() => setTab('niches')}
-          label="Niches"
+          label="Starred niches"
           count={nicheCount}
         />
         <TabPill
           active={tab === 'videos'}
           onClick={() => setTab('videos')}
-          label="Videos"
+          label="Starred videos"
           count={count}
         />
       </div>
+
+      {tab === 'my-niches' && (
+        <MyNichesPanel
+          niches={customNiches}
+          loading={customNichesLoading}
+          onCreate={async (name, desc) => {
+            const r = await createCustomNiche(name, desc);
+            if (r) await refreshCustomNiches();
+          }}
+        />
+      )}
 
       {tab === 'niches' && (
         <NichesPanel
@@ -238,6 +263,191 @@ function NichesPanel({
 
 /* ─────────────────────────────────────────────────────────────────
  *  Videos tab (extracted from the previous flat implementation)
+ * ──────────────────────────────────────────────────────────────── */
+
+/* ─────────────────────────────────────────────────────────────────
+ *  My Niches tab — user-curated collections (custom_niches)
+ * ──────────────────────────────────────────────────────────────── */
+
+function MyNichesPanel({
+  niches, loading, onCreate,
+}: {
+  niches: CustomNiche[];
+  loading: boolean;
+  onCreate: (name: string, description?: string) => Promise<void>;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleCreate = async () => {
+    const name = newName.trim();
+    if (!name) { setError('Give the niche a name'); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreate(name, newDesc.trim() || undefined);
+      setNewName(''); setNewDesc('');
+      setCreating(false);
+    } catch {
+      setError('Could not create the niche');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      {/* Header row with the create-new affordance. Stays visible
+          regardless of whether the user has any niches yet — easier
+          to discover than tucking it inside an empty state. */}
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h2 className="text-base font-semibold text-white">My niches</h2>
+          <p className="text-xs text-[#888] mt-0.5">
+            Group videos into collections you define. Star any video
+            to add it.
+          </p>
+        </div>
+        {!creating && (
+          <button
+            type="button"
+            onClick={() => { setCreating(true); setError(null); }}
+            className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-amber-400 text-black hover:bg-amber-300 transition flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            New niche
+          </button>
+        )}
+      </div>
+
+      {/* Inline create form */}
+      {creating && (
+        <div className="mb-5 p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] space-y-2.5">
+          <input
+            type="text"
+            placeholder="Niche name (e.g. Office burnout shorts)"
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            maxLength={80}
+            autoFocus
+            className="w-full px-3 py-2 text-sm bg-[#0a0a0a] border border-[#2a2a2a] rounded-md text-white placeholder-[#555] focus:outline-none focus:border-amber-400/50"
+          />
+          <input
+            type="text"
+            placeholder="Description (optional)"
+            value={newDesc}
+            onChange={e => setNewDesc(e.target.value)}
+            maxLength={280}
+            className="w-full px-3 py-2 text-sm bg-[#0a0a0a] border border-[#2a2a2a] rounded-md text-white placeholder-[#555] focus:outline-none focus:border-amber-400/50"
+          />
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={busy}
+              className="px-3 py-1.5 text-xs font-semibold bg-amber-400 text-black rounded-md hover:bg-amber-300 transition disabled:opacity-50"
+            >
+              {busy ? 'Creating…' : 'Create'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setCreating(false); setNewName(''); setNewDesc(''); setError(null); }}
+              className="px-3 py-1.5 text-xs text-[#888] hover:text-white"
+            >
+              Cancel
+            </button>
+            {error && <span className="text-xs text-red-400 ml-2">{error}</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Skeleton */}
+      {loading && niches.length === 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-32 rounded-xl bg-[#141414] border border-[#1f1f1f] animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {/* Empty state — only when not creating */}
+      {!loading && niches.length === 0 && !creating && (
+        <div className="bg-[#141414] border border-dashed border-[#1f1f1f] rounded-xl px-6 py-16 text-center">
+          <div className="text-5xl mb-3">🗂️</div>
+          <h3 className="text-base font-medium text-white mb-1">No custom niches yet</h3>
+          <p className="text-sm text-[#666] mb-4">
+            Make your first one — then star videos into it from anywhere on the site.
+          </p>
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="px-4 py-2 rounded-full text-sm font-semibold bg-amber-400 text-black hover:bg-amber-300 transition"
+          >
+            + Create niche
+          </button>
+        </div>
+      )}
+
+      {/* Niche cards grid */}
+      {niches.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {niches.map(n => (
+            <CustomNicheCard key={n.id} niche={n} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomNicheCard({ niche }: { niche: CustomNiche }) {
+  return (
+    <Link
+      href={`/niche/custom/${niche.id}`}
+      className="group block bg-[#141414] border border-[#1f1f1f] rounded-xl p-5 hover:border-amber-500/40 hover:bg-[#171717] transition"
+    >
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[15px] font-semibold text-white truncate group-hover:text-amber-400 transition">
+            {niche.name}
+          </h3>
+          {niche.description && (
+            <p className="text-[12.5px] text-[#888] mt-1 line-clamp-2">
+              {niche.description}
+            </p>
+          )}
+        </div>
+        <span className="text-[10px] uppercase tracking-[0.12em] text-amber-400 font-semibold flex-shrink-0">
+          Open →
+        </span>
+      </div>
+      <div className="flex items-center gap-3 text-[11px] text-[#888]">
+        <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">
+          {niche.videoCount} {niche.videoCount === 1 ? 'video' : 'videos'}
+        </span>
+        <span>·</span>
+        <span>Updated {timeAgoLite(niche.updatedAt)}</span>
+      </div>
+    </Link>
+  );
+}
+
+function timeAgoLite(dateStr: string): string {
+  const d = new Date(dateStr);
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days < 1) return 'today';
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ *  Videos tab
  * ──────────────────────────────────────────────────────────────── */
 
 function VideosPanel({

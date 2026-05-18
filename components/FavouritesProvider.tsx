@@ -3,29 +3,63 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 /**
- * Favourites — two parallel global starred sets: one for videos
- * (the original /api/niche-spy/favourites surface) and one for
- * niches/clusters (/api/niche-spy/favourite-niches, added later).
+ * Favourites + Custom Niches — the shared provider for every video
+ * / niche save action on the site.
  *
- * Both behave the same: optimistic local update on toggle, then
- * server sync, with rollback on failure. A full re-fetch on mount
- * keeps sidebar counts + star states consistent across navigation
- * and hard refresh.
+ * Three pieces of state, all globally scoped (no per-user yet, same
+ * as the original favourites system):
  *
- * Components consume the relevant pair:
- *   - Video cards   → `useFavourites().isStarred / toggleStar`
- *   - Niche cards   → `useFavourites().isNicheStarred / toggleNicheStar`
+ *   1. `ids`            — Set of starred video ids (Favourites)
+ *   2. `nicheIds`       — Set of starred cluster ids
+ *   3. `customNiches`   — User-curated collections of videos
+ *
+ * Star-button UX:
+ *   - Click a video star → opens the StarChooser modal (lets the user
+ *     add to Favourites and/or any custom niche in one place).
+ *   - Click a niche/cluster star → direct toggle into the niche
+ *     favourites set. No chooser for clusters because they're not
+ *     part of the custom-niche surface (custom niches collect videos).
+ *
+ * Both writes are optimistic: local state flips first, server call
+ * goes after, rollback on failure. A full re-fetch on mount keeps
+ * everything consistent across navigation and hard refresh.
  */
 
+export interface CustomNiche {
+  id: number;
+  name: string;
+  description: string | null;
+  videoCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface FavouritesContextType {
+  // Video favourites
   ids: Set<number>;
-  nicheIds: Set<number>;
   isStarred: (videoId: number) => boolean;
-  isNicheStarred: (clusterId: number) => boolean;
   toggleStar: (videoId: number) => Promise<void>;
-  toggleNicheStar: (clusterId: number) => Promise<void>;
   count: number;
+
+  // Niche / cluster favourites
+  nicheIds: Set<number>;
+  isNicheStarred: (clusterId: number) => boolean;
+  toggleNicheStar: (clusterId: number) => Promise<void>;
   nicheCount: number;
+
+  // Custom niches (collections)
+  customNiches: CustomNiche[];
+  customNichesLoading: boolean;
+  refreshCustomNiches: () => Promise<void>;
+  createCustomNiche: (name: string, description?: string) => Promise<CustomNiche | null>;
+
+  // Star chooser modal control — exposed so any video star button on
+  // any page can open the chooser without remounting it. The modal
+  // is rendered once inside this provider's children tree.
+  activeChooserVideoId: number | null;
+  openStarChooser: (videoId: number) => void;
+  closeStarChooser: () => void;
+
   loading: boolean;
   refresh: () => Promise<void>;
 }
@@ -41,20 +75,34 @@ export function useFavourites() {
 export function FavouritesProvider({ children }: { children: React.ReactNode }) {
   const [ids, setIds] = useState<Set<number>>(new Set());
   const [nicheIds, setNicheIds] = useState<Set<number>>(new Set());
+  const [customNiches, setCustomNiches] = useState<CustomNiche[]>([]);
+  const [customNichesLoading, setCustomNichesLoading] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [activeChooserVideoId, setActiveChooserVideoId] = useState<number | null>(null);
+
+  const refreshCustomNiches = useCallback(async () => {
+    setCustomNichesLoading(true);
+    try {
+      const r = await fetch('/api/niche-spy/custom-niches').then(r => r.json());
+      setCustomNiches(r.niches || []);
+    } catch { /* ignore */ }
+    finally { setCustomNichesLoading(false); }
+  }, []);
 
   const refresh = useCallback(async () => {
-    // Pull video + niche favourite ids in parallel — keeps initial
-    // mount cheap and the two sets never race.
+    // Pull video + niche favourite ids + custom-niche list in
+    // parallel. None of them depend on each other.
     try {
-      const [vRes, nRes] = await Promise.all([
+      const [vRes, nRes, cRes] = await Promise.all([
         fetch('/api/niche-spy/favourites?onlyIds=1').then(r => r.json()).catch(() => ({ ids: [] })),
         fetch('/api/niche-spy/favourite-niches?onlyIds=1').then(r => r.json()).catch(() => ({ ids: [] })),
+        fetch('/api/niche-spy/custom-niches').then(r => r.json()).catch(() => ({ niches: [] })),
       ]);
       setIds(new Set<number>(vRes.ids || []));
       setNicheIds(new Set<number>(nRes.ids || []));
-    } catch { /* ignore — empty state is fine */ }
-    finally { setLoading(false); }
+      setCustomNiches(cRes.niches || []);
+    } catch { /* ignore */ }
+    finally { setLoading(false); setCustomNichesLoading(false); }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -62,6 +110,10 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
   const isStarred = useCallback((videoId: number) => ids.has(videoId), [ids]);
   const isNicheStarred = useCallback((clusterId: number) => nicheIds.has(clusterId), [nicheIds]);
 
+  // Direct toggle (used by chooser modal save + niche cards). The
+  // chooser uses this for the Favourites checkbox; we still expose
+  // it on the type so existing call-sites that want toggle-on-click
+  // (admin pages, debug surfaces) keep working.
   const toggleStar = useCallback(async (videoId: number) => {
     const wasStarred = ids.has(videoId);
     setIds(prev => {
@@ -76,7 +128,6 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
         body: JSON.stringify({ videoId }),
       });
     } catch {
-      // Roll back on failure
       setIds(prev => {
         const next = new Set(prev);
         if (wasStarred) next.add(videoId); else next.delete(videoId);
@@ -107,27 +158,91 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
     }
   }, [nicheIds]);
 
-  const value = useMemo(() => ({
+  const createCustomNiche = useCallback(async (name: string, description?: string): Promise<CustomNiche | null> => {
+    try {
+      const r = await fetch('/api/niche-spy/custom-niches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description }),
+      });
+      if (!r.ok) return null;
+      const d = await r.json() as { niche?: CustomNiche };
+      if (d.niche) {
+        // Prepend so the new niche shows up at the top of the list
+        // (updated_at DESC ordering on the server).
+        setCustomNiches(prev => [d.niche!, ...prev]);
+        return d.niche;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }, []);
+
+  const openStarChooser = useCallback((videoId: number) => {
+    setActiveChooserVideoId(videoId);
+  }, []);
+  const closeStarChooser = useCallback(() => {
+    setActiveChooserVideoId(null);
+  }, []);
+
+  const value = useMemo<FavouritesContextType>(() => ({
     ids, nicheIds,
     isStarred, isNicheStarred,
     toggleStar, toggleNicheStar,
     count: ids.size, nicheCount: nicheIds.size,
+    customNiches, customNichesLoading,
+    refreshCustomNiches, createCustomNiche,
+    activeChooserVideoId, openStarChooser, closeStarChooser,
     loading, refresh,
-  }), [ids, nicheIds, isStarred, isNicheStarred, toggleStar, toggleNicheStar, loading, refresh]);
+  }), [
+    ids, nicheIds, isStarred, isNicheStarred, toggleStar, toggleNicheStar,
+    customNiches, customNichesLoading, refreshCustomNiches, createCustomNiche,
+    activeChooserVideoId, openStarChooser, closeStarChooser,
+    loading, refresh,
+  ]);
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={value}>
+      {children}
+      {/* Star chooser mounts once here — any star button anywhere on
+          the page can pop it open without remounting. Imported here
+          inline (lazy via require would cost a render) so the bundle
+          is a single chunk. */}
+      <LazyStarChooser />
+    </Ctx.Provider>
+  );
 }
 
-/** Small star button for video cards. Hollow when unstarred, filled amber
- *  when starred. onClick stops propagation so parents (like a card-wide
- *  click handler) don't trigger. */
+/* ─────────────────────────────────────────────────────────────────
+ *  Lazy import wrapper — keeps the chooser logic in its own file
+ *  but mounted from here so the modal is always available.
+ * ──────────────────────────────────────────────────────────────── */
+function LazyStarChooser() {
+  // dynamic import keeps the chooser code out of the critical
+  // bundle of pages that never open it, but inside the same render
+  // tree so it can hook into useFavourites().
+  const [Comp, setComp] = useState<React.ComponentType | null>(null);
+  const { activeChooserVideoId } = useFavourites();
+  useEffect(() => {
+    if (activeChooserVideoId == null || Comp) return;
+    import('./StarChooserModal').then(m => setComp(() => m.StarChooserModal));
+  }, [activeChooserVideoId, Comp]);
+  if (!Comp) return null;
+  return <Comp />;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ *  StarButton — clicks now OPEN the chooser modal (the chooser
+ *  handles Favourites + custom-niche memberships in one place).
+ *  Visual state is driven by the Favourites set: filled amber when
+ *  the video is in Favourites, hollow otherwise.
+ * ──────────────────────────────────────────────────────────────── */
 export function StarButton({ videoId, className = '' }: { videoId: number; className?: string }) {
-  const { isStarred, toggleStar } = useFavourites();
+  const { isStarred, openStarChooser } = useFavourites();
   const starred = isStarred(videoId);
   return (
     <button
-      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleStar(videoId); }}
-      title={starred ? 'Remove from Favourites' : 'Add to Favourites'}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); openStarChooser(videoId); }}
+      title={starred ? 'Manage saves for this video' : 'Save this video'}
       className={`w-6 h-6 rounded-full flex items-center justify-center transition flex-shrink-0 ${
         starred
           ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
@@ -142,11 +257,11 @@ export function StarButton({ videoId, className = '' }: { videoId: number; class
   );
 }
 
-/** Star button for niche / cluster cards. Pill-shaped to sit next to
- *  the green "Similar" button on each card (same height + roundness).
- *  Same colour language as StarButton — hollow when unstarred, filled
- *  amber when starred. Stops propagation so the card-wide click
- *  handler doesn't fire when the button is hit. */
+/* ─────────────────────────────────────────────────────────────────
+ *  NicheStarButton — direct toggle, no chooser (custom niches
+ *  collect VIDEOS, not clusters). Pill-shaped to sit next to the
+ *  green Similar button on the cluster card.
+ * ──────────────────────────────────────────────────────────────── */
 export function NicheStarButton({ clusterId, className = '' }: { clusterId: number; className?: string }) {
   const { isNicheStarred, toggleNicheStar } = useFavourites();
   const starred = isNicheStarred(clusterId);
