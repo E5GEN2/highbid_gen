@@ -7,6 +7,7 @@ import { fmtYT } from '@/lib/format';
 import { useSimilarModal } from '@/components/SimilarModal';
 import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { StarButton, useFavourites } from '@/components/FavouritesProvider';
+import { AddFromFavouritesModal } from '@/components/AddFromFavouritesModal';
 
 /**
  * Custom niche detail page. Shows the niche's metadata up top
@@ -49,6 +50,10 @@ export default function CustomNichePage() {
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
+  // Add-from-favourites modal state — kept local because this is
+  // the only surface that opens it (vs. the StarChooser which any
+  // page can open via the FavouritesProvider).
+  const [addOpen, setAddOpen] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -144,7 +149,20 @@ export default function CustomNichePage() {
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+              {/* Primary action — adds from the existing Favourites
+                  list in bulk. Comes first because pulling videos
+                  in is the most common task once a niche exists. */}
+              <button
+                type="button"
+                onClick={() => setAddOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-400 text-black rounded-md hover:bg-amber-300 transition"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                Add from Favourites
+              </button>
               <button
                 type="button"
                 onClick={() => setEditing(true)}
@@ -220,15 +238,28 @@ export default function CustomNichePage() {
         <div className="bg-[#141414] border border-dashed border-[#1f1f1f] rounded-xl px-6 py-16 text-center">
           <div className="text-5xl mb-3">🗂️</div>
           <h3 className="text-base font-medium text-white mb-1">No videos in this niche yet</h3>
-          <p className="text-sm text-[#666] mb-4">
-            Star any video from anywhere on the site — the chooser lets you drop it in here.
+          <p className="text-sm text-[#666] mb-5">
+            Pull videos in from your Favourites, or star any video from
+            anywhere on the site — the chooser lets you drop it here.
           </p>
-          <Link
-            href="/niche/niches"
-            className="inline-block px-4 py-2 rounded-full text-sm font-semibold bg-amber-400 text-black hover:bg-amber-300 transition"
-          >
-            Browse niches →
-          </Link>
+          <div className="flex items-center justify-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setAddOpen(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-semibold bg-amber-400 text-black hover:bg-amber-300 transition"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Add from Favourites
+            </button>
+            <Link
+              href="/niche/niches"
+              className="px-4 py-2 rounded-full text-sm font-semibold bg-white/[0.04] border border-white/[0.08] text-white hover:bg-white/[0.08] transition"
+            >
+              Browse niches →
+            </Link>
+          </div>
         </div>
       )}
 
@@ -242,6 +273,26 @@ export default function CustomNichePage() {
             />
           ))}
         </div>
+      )}
+
+      {/* Add-from-favourites modal. Mounted at the page root so the
+          backdrop covers the whole viewport. existingVideoIds is
+          built from the current page video list — that way the
+          modal hides what's already in. On save we re-fetch the
+          full niche state so counts, ordering, and the grid stay
+          in lockstep. */}
+      {niche && (
+        <AddFromFavouritesModal
+          open={addOpen}
+          onClose={() => setAddOpen(false)}
+          nicheId={niche.id}
+          nicheName={niche.name}
+          existingVideoIds={new Set(videos.map(v => v.id))}
+          onAdded={() => {
+            refreshCustomNiches();
+            loadAll();
+          }}
+        />
       )}
     </div>
   );
