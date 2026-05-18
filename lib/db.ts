@@ -556,6 +556,17 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsf_added ON niche_spy_favourites(added_at DESC)`).catch(() => {});
 
+    // Niche-level favourites — parallel to niche_spy_favourites but
+    // keyed on cluster_id. The star button on each NicheClusterCard
+    // writes here. Cluster row delete cascades a row delete here.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_spy_favourite_clusters (
+        cluster_id INTEGER PRIMARY KEY REFERENCES niche_tree_clusters(id) ON DELETE CASCADE,
+        added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsfc_added ON niche_spy_favourite_clusters(added_at DESC)`).catch(() => {});
+
     // One-time backfill: copy channel-level data we already collected on the
     // videos table into the new channels table. Idempotent via ON CONFLICT.
     await client.query(`

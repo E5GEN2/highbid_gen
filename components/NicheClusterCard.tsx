@@ -3,6 +3,7 @@
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import { fmtYT } from '@/lib/format';
+import { NicheStarButton } from './FavouritesProvider';
 
 /**
  * Wide-row cluster card — mirrors the admin Niche Tree layout. Picked
@@ -155,12 +156,14 @@ export function NicheClusterCard({
             {label}
           </h3>
         </div>
-        {/* Find-similar action + OPP/TOP/NEW/CEIL pills share the top-
-            right cluster header slot. Action button sits to the LEFT
-            of the pills so the eye scans "action then signals." Pill
-            styling matches the green "Similar" link on video cards so
-            the affordance reads the same across surfaces. */}
+        {/* Top-right action row: Star → Similar → OPP/TOP/NEW/CEIL.
+            Star sits to the LEFT of Similar (per design request) so
+            both action affordances cluster together before the
+            read-only signal pills. Similar styling matches the green
+            "Similar" link on video cards so the affordance reads the
+            same across surfaces. */}
         <div className="flex items-center gap-2">
+          <NicheStarButton clusterId={c.id} />
           {onFindSimilar && (
             <button
               type="button"
