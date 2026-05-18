@@ -12,8 +12,9 @@ interface FavVideo {
   id: number; keyword: string; url: string; title: string; view_count: number;
   channel_name: string; posted_date: string; posted_at: string; score: number;
   channel_created_at: string;
-  // Per-target embedding flags so the Similar button can check the
-  // right one for the active similarity source.
+  // Per-target embedding flags — kept for forward compat with the
+  // similarity-source picker even though we no longer gate the
+  // Similar button on them (see VideosPanel for why).
   embedded_at: string | null;                  // v1 legacy
   title_embedded_v2_at?: string | null;        // v2 title
   thumbnail_embedded_v2_at?: string | null;    // v2 thumbnail
@@ -25,16 +26,6 @@ interface FavVideo {
 
 interface FavNiche extends ClusterCardData {
   addedAt: string;
-}
-
-type SimilaritySource = 'title_v1' | 'title_v2' | 'thumbnail_v2' | 'combined_v2';
-function favHasSimilarEmbedding(v: FavVideo, source: SimilaritySource): boolean {
-  switch (source) {
-    case 'title_v2':     return !!v.title_embedded_v2_at;
-    case 'thumbnail_v2': return !!v.thumbnail_embedded_v2_at;
-    case 'combined_v2':  return !!v.combined_embedded_v2_at;
-    default:             return !!v.embedded_at;
-  }
 }
 
 type Tab = 'niches' | 'videos';
@@ -51,10 +42,9 @@ export default function FavouritesPage() {
   const [nichesLoading, setNichesLoading] = useState(true);
   const [similarSource, setSimilarSource] = useState<ClusterCardData | null>(null);
 
-  // Videos state (unchanged from before)
+  // Videos state
   const [videos, setVideos] = useState<FavVideo[]>([]);
   const [videosLoading, setVideosLoading] = useState(true);
-  const [similaritySource, setSimilaritySource] = useState<SimilaritySource>('combined_v2');
 
   // Re-fetch full niche rows whenever the global niche-favourites set
   // changes. We key the dep on `nicheIds` (the Set itself) so swaps
@@ -83,7 +73,6 @@ export default function FavouritesPage() {
       .then(d => {
         if (cancelled) return;
         setVideos(d.videos || []);
-        if (d.similaritySource) setSimilaritySource(d.similaritySource);
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setVideosLoading(false); });
@@ -147,8 +136,6 @@ export default function FavouritesPage() {
           videos={videos}
           loading={videosLoading}
           openSimilar={openSimilar}
-          similaritySource={similaritySource}
-          favHasSimilar={favHasSimilarEmbedding}
           getThumb={getThumb}
           timeAgo={timeAgo}
         />
@@ -254,13 +241,11 @@ function NichesPanel({
  * ──────────────────────────────────────────────────────────────── */
 
 function VideosPanel({
-  videos, loading, openSimilar, similaritySource, favHasSimilar, getThumb, timeAgo,
+  videos, loading, openSimilar, getThumb, timeAgo,
 }: {
   videos: FavVideo[];
   loading: boolean;
   openSimilar: (id: number) => void;
-  similaritySource: SimilaritySource;
-  favHasSimilar: (v: FavVideo, source: SimilaritySource) => boolean;
   getThumb: (url: string | null | undefined, fallback: string) => string;
   timeAgo: (s: string) => string;
 }) {
@@ -313,14 +298,18 @@ function VideosPanel({
               )}
               <div className="flex items-center gap-1.5 ml-auto">
                 <StarButton videoId={v.id} />
-                {favHasSimilar(v, similaritySource) && (
-                  <button
-                    onClick={() => openSimilar(v.id)}
-                    className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium"
-                  >
-                    Similar
-                  </button>
-                )}
+                {/* Unconditional Similar pill — same affordance as the
+                    /niche/videos page. Clicking opens the existing
+                    SimilarModal popup (mounted at the niche layout via
+                    SimilarModalProvider). If the video doesn't have
+                    embeddings yet the modal surfaces that gracefully
+                    instead of us hiding the button. */}
+                <button
+                  onClick={() => openSimilar(v.id)}
+                  className="flex items-center gap-1 text-xs bg-green-600/20 text-green-400 border border-green-600/40 px-2.5 py-1 rounded-full hover:bg-green-600/30 transition flex-shrink-0 font-medium"
+                >
+                  Similar
+                </button>
               </div>
             </div>
             <h3 className="text-sm font-medium text-white line-clamp-2 mb-2">{v.title}</h3>
