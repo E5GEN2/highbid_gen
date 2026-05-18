@@ -7,6 +7,7 @@ import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { StarButton, useFavourites, type CustomNiche } from '@/components/FavouritesProvider';
 import { NicheClusterCard, type ClusterCardData } from '@/components/NicheClusterCard';
 import { SimilarNichesModal } from '@/components/SimilarNichesModal';
+import { ImportVideoModal } from '@/components/ImportVideoModal';
 
 interface FavVideo {
   id: number; keyword: string; url: string; title: string; view_count: number;
@@ -39,8 +40,14 @@ export default function FavouritesPage() {
     count, nicheCount, ids, nicheIds,
     customNiches, customNichesLoading,
     createCustomNiche, refreshCustomNiches,
+    refresh: refreshFavourites,
   } = useFavourites();
   const [tab, setTab] = useState<Tab>('my-niches');
+  // Manual single-video import modal — opened from a button on the
+  // Starred videos tab header. After a successful import the server
+  // has already starred the video, so the next page-level refresh
+  // surfaces it in the grid.
+  const [importOpen, setImportOpen] = useState(false);
 
   // Niches state
   const [niches, setNiches] = useState<FavNiche[]>([]);
@@ -110,30 +117,46 @@ export default function FavouritesPage() {
         </p>
       </div>
 
-      {/* Tab switcher — My Niches (custom collections) is the default
-          tab because curated lists are the primary organizational
-          surface. Auto-discovered niches and individual starred
-          videos follow. Counts come from the provider so they
-          update optimistically. */}
-      <div className="flex items-center gap-2 mb-6 border-b border-[#1f1f1f] flex-wrap">
-        <TabPill
-          active={tab === 'my-niches'}
-          onClick={() => setTab('my-niches')}
-          label="My Niches"
-          count={customNiches.length}
-        />
-        <TabPill
-          active={tab === 'niches'}
-          onClick={() => setTab('niches')}
-          label="Starred niches"
-          count={nicheCount}
-        />
-        <TabPill
-          active={tab === 'videos'}
-          onClick={() => setTab('videos')}
-          label="Starred videos"
-          count={count}
-        />
+      {/* Tab switcher + contextual import button. My Niches
+          (custom collections) is the default tab because curated
+          lists are the primary organizational surface. Counts
+          come from the provider so they update optimistically.
+          The "+ Import video" CTA appears only on the Starred
+          videos tab where it makes sense. */}
+      <div className="flex items-end justify-between gap-2 mb-6 border-b border-[#1f1f1f] flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <TabPill
+            active={tab === 'my-niches'}
+            onClick={() => setTab('my-niches')}
+            label="My Niches"
+            count={customNiches.length}
+          />
+          <TabPill
+            active={tab === 'niches'}
+            onClick={() => setTab('niches')}
+            label="Starred niches"
+            count={nicheCount}
+          />
+          <TabPill
+            active={tab === 'videos'}
+            onClick={() => setTab('videos')}
+            label="Starred videos"
+            count={count}
+          />
+        </div>
+        {tab === 'videos' && (
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="mb-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-amber-400 text-black hover:bg-amber-300 transition flex items-center gap-1.5"
+            title="Import a YouTube video by URL"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            Import video
+          </button>
+        )}
       </div>
 
       {tab === 'my-niches' && (
@@ -170,6 +193,18 @@ export default function FavouritesPage() {
       <SimilarNichesModal
         sourceCluster={similarSource}
         onClose={() => setSimilarSource(null)}
+      />
+
+      <ImportVideoModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          // Server already inserted the favourite — refreshing the
+          // provider re-pulls ids, which triggers the page-level
+          // videos useEffect (deps: [ids]) to re-fetch the grid
+          // with the new video included.
+          refreshFavourites();
+        }}
       />
     </div>
   );
