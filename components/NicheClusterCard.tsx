@@ -67,6 +67,11 @@ export interface ClusterCardData {
   /** Optional cosine similarity to a query — set when this card is
    *  rendered as a search result. Drives the "% match" pill. */
   similarity?: number;
+  /** Custom-niche only: id of the user-designated centre video.
+   *  When the matching id appears in popularVideos the card paints
+   *  a small "centre" star on its thumb so users see at a glance
+   *  which video anchors the niche. */
+  centerVideoId?: number | null;
 }
 
 export function NicheClusterCard({
@@ -232,6 +237,11 @@ export function NicheClusterCard({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {slots.map((v, i) => {
             const origin = i === 0 ? 'left center' : i === 3 ? 'right center' : 'center';
+            // Custom-niche centre — paint an amber ring + tiny
+            // "centre" star overlay on the thumb whose video id
+            // matches centerVideoId. The API already bubbles the
+            // centre to index 0 so it's normally the leading thumb.
+            const isCenter = kind === 'custom' && v != null && c.centerVideoId != null && v.videoId === c.centerVideoId;
             return v ? (
               <a
                 key={v.videoId}
@@ -242,12 +252,24 @@ export function NicheClusterCard({
                 className="block group/thumb relative transition-transform duration-200 ease-out hover:scale-[1.45] hover:z-20 hover:shadow-2xl"
                 style={{ transformOrigin: origin }}
               >
-                <div className="relative aspect-video bg-[#0a0a0a] rounded-md overflow-hidden border border-[#1f1f1f] group-hover/thumb:border-[#444] transition">
+                <div className={`relative aspect-video bg-[#0a0a0a] rounded-md overflow-hidden transition ${
+                  isCenter
+                    ? 'border-2 border-amber-400/60 shadow-md shadow-amber-500/[0.08] group-hover/thumb:border-amber-400/90'
+                    : 'border border-[#1f1f1f] group-hover/thumb:border-[#444]'
+                }`}>
                   {v.thumbnail ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-[#333] text-[10px]">no thumb</div>
+                  )}
+                  {isCenter && (
+                    <div className="absolute top-1 left-1 flex items-center gap-0.5 px-1.5 py-px rounded-full bg-amber-400 text-black text-[9px] font-bold shadow">
+                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                      </svg>
+                      CENTRE
+                    </div>
                   )}
                 </div>
                 <div className="mt-1.5 text-[11px] text-white line-clamp-2 leading-tight" title={v.title || ''}>

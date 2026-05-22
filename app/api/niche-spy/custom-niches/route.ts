@@ -29,15 +29,17 @@ const MAX_DESCRIPTION = 280;
 export async function GET() {
   const pool = await getPool();
 
-  // 1. Pull the base rows + a video count per niche. Same query as
-  //    before — it gives us the niche metadata + tells us which
-  //    nicheIds need aggregation.
+  // 1. Pull the base rows + a video count per niche. Includes
+  //    `center_video_id` so we can bubble the user-designated
+  //    centre to position 1 in the popularVideos strip below.
   const baseRes = await pool.query<{
     id: number; name: string; description: string | null;
     video_count: string; created_at: string; updated_at: string;
+    center_video_id: number | null;
   }>(
     `SELECT
        n.id, n.name, n.description, n.created_at, n.updated_at,
+       n.center_video_id,
        COALESCE(c.cnt, 0)::text AS video_count
      FROM custom_niches n
      LEFT JOIN (
@@ -155,10 +157,11 @@ export async function GET() {
   }
   const topChannelsByNiche = new Map<number, string[]>();
   for (const row of topChannelsRes.rows) topChannelsByNiche.set(row.custom_niche_id, row.top_channels || []);
-  const popularByNiche = new Map<number, Array<{
+  type PopularRow = {
     videoId: number; title: string | null; thumbnail: string | null; url: string | null;
     viewCount: number | null; channelName: string | null;
-  }>>();
+  };
+  const popularByNiche = new Map<number, PopularRow[]>();
   for (const row of popularRes.rows) {
     const arr = popularByNiche.get(row.custom_niche_id) || [];
     arr.push({
@@ -169,9 +172,63 @@ export async function GET() {
     popularByNiche.set(row.custom_niche_id, arr);
   }
 
+  // 3b. Centre bubble — for any niche with a centre_video_id set,
+  //     hoist that video to position 0 of popularVideos so the
+  //     card's 4-thumb strip leads with it. If the centre isn't
+  //     already in the top-by-views set we need to fetch it
+  //     separately; collect those once and batch-query.
+  const missingCenterFetches: Array<{ nicheId: number; videoId: number }> = [];
+  for (const row of baseRes.rows) {
+    const centerId = row.center_video_id;
+    if (centerId == null) continue;
+    const popular = popularByNiche.get(row.id) ?? [];
+    if (!popular.some(p => p.videoId === centerId)) {
+      missingCenterFetches.push({ nicheId: row.id, videoId: centerId });
+    }
+  }
+  const centerRowByVideoId = new Map<number, PopularRow>();
+  if (missingCenterFetches.length > 0) {
+    const missingIds = [...new Set(missingCenterFetches.map(c => c.videoId))];
+    const centerRes = await pool.query<{
+      id: number; title: string | null; thumbnail: string | null; url: string | null;
+      view_count: string | null; channel_name: string | null;
+    }>(
+      `SELECT id, title, thumbnail, url, view_count, channel_name
+         FROM niche_spy_videos
+        WHERE id = ANY($1::int[])
+          AND thumbnail_dead_at IS NULL`,
+      [missingIds],
+    );
+    for (const r of centerRes.rows) {
+      centerRowByVideoId.set(r.id, {
+        videoId: r.id, title: r.title, thumbnail: r.thumbnail, url: r.url,
+        viewCount: r.view_count != null ? parseInt(r.view_count) : null,
+        channelName: r.channel_name,
+      });
+    }
+  }
+  for (const row of baseRes.rows) {
+    const centerId = row.center_video_id;
+    if (centerId == null) continue;
+    const popular = popularByNiche.get(row.id) ?? [];
+    const existing = popular.find(p => p.videoId === centerId);
+    if (existing) {
+      // Already in top-by-views — just move it to index 0.
+      const rest = popular.filter(p => p.videoId !== centerId);
+      popularByNiche.set(row.id, [existing, ...rest]);
+    } else {
+      // Fetched separately — prepend and trim to 4.
+      const fetched = centerRowByVideoId.get(centerId);
+      if (fetched) {
+        popularByNiche.set(row.id, [fetched, ...popular].slice(0, 4));
+      }
+    }
+  }
+
   // 4. Assemble. Shape matches what NicheClusterCard's ClusterCardData
   //    expects, with `level: 0` + `kind: 'custom'` as sentinels for
-  //    the card to render the custom variant.
+  //    the card to render the custom variant. `centerVideoId` is
+  //    forwarded so the card can mark the leading thumb.
   const niches = baseRes.rows.map(row => {
     const agg = aggByNiche.get(row.id);
     return {
@@ -181,6 +238,7 @@ export async function GET() {
       videoCount: parseInt(row.video_count) || 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      centerVideoId: row.center_video_id,
       // Card-shaped aggregates — populated even when zero so the
       // card never has to special-case missing fields.
       avgScore:     agg?.avgScore     ?? null,

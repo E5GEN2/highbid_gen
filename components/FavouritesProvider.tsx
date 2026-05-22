@@ -32,6 +32,10 @@ export interface CustomNiche {
   videoCount: number;
   createdAt: string;
   updatedAt: string;
+  /** Manually-designated central video. When set, the niche card
+   *  bubbles this video to position 0 of popularVideos and marks
+   *  its thumb so the card visually leads with it. */
+  centerVideoId?: number | null;
   // Aggregate fields populated by /api/niche-spy/custom-niches GET
   // so the My Niches tab can render the full NicheClusterCard.
   // Optional because /api/niche-spy/custom-niches/[id] (single-row

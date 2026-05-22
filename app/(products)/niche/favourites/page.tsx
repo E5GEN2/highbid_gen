@@ -461,6 +461,7 @@ function MyNichesPanel({
                 uploadHistogram: n.uploadHistogram,
                 opportunity: n.opportunity ?? null,
                 childrenCount: 0,
+                centerVideoId: n.centerVideoId ?? null,
               }}
             />
           ))}
