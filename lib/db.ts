@@ -592,6 +592,19 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cnv_video    ON custom_niche_videos(video_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cnv_added    ON custom_niche_videos(added_at DESC)`).catch(() => {});
+    // Niche center — user-designated "most central" video for the
+    // custom niche. Manually picked (custom niches don't have a
+    // mathematical centroid like auto clusters do), used to anchor
+    // similarity sorts inside the niche + as the canonical
+    // representative on the niche card. ON DELETE SET NULL so
+    // removing the underlying video from the DB doesn't break the
+    // niche row. Foreign key relaxation matters because the user
+    // can also pick a video, then later remove it from the niche
+    // — center then naturally falls back to NULL.
+    await client.query(`
+      ALTER TABLE custom_niches
+        ADD COLUMN IF NOT EXISTS center_video_id INTEGER REFERENCES niche_spy_videos(id) ON DELETE SET NULL
+    `).catch(() => {});
 
     // One-time backfill: copy channel-level data we already collected on the
     // videos table into the new channels table. Idempotent via ON CONFLICT.

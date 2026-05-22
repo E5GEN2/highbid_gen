@@ -8,6 +8,7 @@ import { useSimilarModal } from '@/components/SimilarModal';
 import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { StarButton, useFavourites } from '@/components/FavouritesProvider';
 import { AddFromFavouritesModal } from '@/components/AddFromFavouritesModal';
+import { SetNicheCenterModal } from '@/components/SetNicheCenterModal';
 
 /**
  * Custom niche detail page. Shows the niche's metadata up top
@@ -23,6 +24,7 @@ import { AddFromFavouritesModal } from '@/components/AddFromFavouritesModal';
 interface NicheRow {
   id: number; name: string; description: string | null;
   videoCount: number; createdAt: string; updatedAt: string;
+  centerVideoId: number | null;
 }
 interface VideoRow {
   id: number; keyword: string; url: string; title: string; view_count: number;
@@ -54,6 +56,8 @@ export default function CustomNichePage() {
   // the only surface that opens it (vs. the StarChooser which any
   // page can open via the FavouritesProvider).
   const [addOpen, setAddOpen] = useState(false);
+  // Set-niche-centre modal — same scoping rationale.
+  const [centerOpen, setCenterOpen] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -150,9 +154,37 @@ export default function CustomNichePage() {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+              {/* "Set niche centre" — placed to the LEFT of Add
+                  from Favourites per design request. Disabled when
+                  the niche has no videos yet (nothing to pick from).
+                  Filled-amber when a centre is set, outlined when
+                  not, mirrors the star button's filled/hollow
+                  language. */}
+              <button
+                type="button"
+                onClick={() => setCenterOpen(true)}
+                disabled={!niche || niche.videoCount === 0}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                  niche?.centerVideoId != null
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+                    : 'bg-transparent text-amber-300 border border-amber-500/40 hover:bg-amber-500/10'
+                }`}
+                title={
+                  niche?.centerVideoId != null
+                    ? 'Change the niche centre'
+                    : 'Pick the most representative video for this niche'
+                }
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={niche?.centerVideoId != null ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round"
+                    d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                </svg>
+                {niche?.centerVideoId != null ? 'Niche centre' : 'Set niche centre'}
+              </button>
+
               {/* Primary action — adds from the existing Favourites
-                  list in bulk. Comes first because pulling videos
-                  in is the most common task once a niche exists. */}
+                  list in bulk. Comes second now (centre setter is
+                  the new leading action). */}
               <button
                 type="button"
                 onClick={() => setAddOpen(true)}
@@ -263,17 +295,28 @@ export default function CustomNichePage() {
         </div>
       )}
 
-      {videos.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {videos.map(v => (
-            <VideoCard
-              key={v.id}
-              v={v}
-              openSimilar={openSimilar}
-            />
-          ))}
-        </div>
-      )}
+      {videos.length > 0 && (() => {
+        // Order: the niche-centre video always shows first, the
+        // rest follow in their original added_at order from the
+        // server. Stable + predictable; if no centre is set the
+        // grid is unchanged.
+        const centerId = niche?.centerVideoId ?? null;
+        const center = centerId != null ? videos.find(v => v.id === centerId) : null;
+        const rest = center ? videos.filter(v => v.id !== center.id) : videos;
+        const ordered = center ? [center, ...rest] : rest;
+        return (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {ordered.map(v => (
+              <VideoCard
+                key={v.id}
+                v={v}
+                isCenter={v.id === centerId}
+                openSimilar={openSimilar}
+              />
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Add-from-favourites modal. Mounted at the page root so the
           backdrop covers the whole viewport. existingVideoIds is
@@ -294,19 +337,60 @@ export default function CustomNichePage() {
           }}
         />
       )}
+
+      {/* Set-niche-centre modal — picks one video from the niche
+          to designate as its canonical centre. After save, the
+          page reloads so the badge + bubble-to-top take effect. */}
+      {niche && (
+        <SetNicheCenterModal
+          open={centerOpen}
+          onClose={() => setCenterOpen(false)}
+          nicheId={niche.id}
+          nicheName={niche.name}
+          videos={videos.map(v => ({
+            id: v.id,
+            title: v.title,
+            url: v.url,
+            thumbnail: v.thumbnail,
+            view_count: v.view_count,
+            channel_name: v.channel_name,
+            score: v.score,
+          }))}
+          currentCenterId={niche.centerVideoId}
+          onSaved={() => loadAll()}
+        />
+      )}
     </div>
   );
 }
 
 function VideoCard({
-  v, openSimilar,
-}: { v: VideoRow; openSimilar: (id: number) => void }) {
+  v, openSimilar, isCenter = false,
+}: {
+  v: VideoRow;
+  openSimilar: (id: number) => void;
+  /** When true, this video is the niche centre — render an amber
+   *  ring + corner badge so it visually leads the grid. */
+  isCenter?: boolean;
+}) {
   const t = getThumb(v.url, v.thumbnail);
   return (
-    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden hover:border-[#333] transition">
+    <div className={`bg-[#141414] rounded-xl overflow-hidden transition ${
+      isCenter
+        ? 'border-2 border-amber-400/60 hover:border-amber-400/90 shadow-lg shadow-amber-500/[0.08]'
+        : 'border border-[#1f1f1f] hover:border-[#333]'
+    }`}>
       <div className="relative aspect-video bg-[#0a0a0a]">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         {t ? <img src={t} alt="" className="w-full h-full object-cover" loading="lazy" /> : null}
+        {isCenter && (
+          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-amber-400 text-black text-[10px] font-bold flex items-center gap-1 shadow">
+            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+            </svg>
+            NICHE CENTRE
+          </div>
+        )}
         <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
           v.score >= 80 ? 'bg-green-500 text-white' : v.score >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
         }`}>⚡ {v.score}</div>
