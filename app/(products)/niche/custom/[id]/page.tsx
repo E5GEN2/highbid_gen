@@ -46,6 +46,14 @@ export default function CustomNichePage() {
   const [nicheError, setNicheError] = useState<string | null>(null);
   const [videos, setVideos] = useState<VideoRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [centreUnavailable, setCentreUnavailable] = useState(false);
+
+  // Sort + min-score filter — mirror the pattern used on other
+  // video grids across the product. `recent` is the default
+  // because added_at order matches what the user just curated.
+  type SortKey = 'recent' | 'centre' | 'views' | 'likes' | 'score' | 'newest' | 'oldest';
+  const [sort, setSort] = useState<SortKey>('recent');
+  const [minScore, setMinScore] = useState<0 | 50 | 70 | 80 | 90>(0);
 
   // Edit-name state
   const [editing, setEditing] = useState(false);
@@ -62,9 +70,10 @@ export default function CustomNichePage() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
+      const qs = new URLSearchParams({ sort, minScore: String(minScore) });
       const [nicheRes, videosRes] = await Promise.all([
         fetch(`/api/niche-spy/custom-niches/${nicheId}`).then(r => r.json()),
-        fetch(`/api/niche-spy/custom-niches/${nicheId}/videos`).then(r => r.json()),
+        fetch(`/api/niche-spy/custom-niches/${nicheId}/videos?${qs.toString()}`).then(r => r.json()),
       ]);
       if (nicheRes.error) {
         setNicheError(nicheRes.error);
@@ -74,18 +83,19 @@ export default function CustomNichePage() {
         setEditDesc(nicheRes.niche.description || '');
       }
       setVideos(videosRes.videos || []);
+      setCentreUnavailable(!!videosRes.centreUnavailable);
     } catch (e) {
       setNicheError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [nicheId]);
+  }, [nicheId, sort, minScore]);
 
-  // Refetch on niche change AND on membership-nonce ticks so the
-  // grid drops videos the user unchecks from the star chooser
-  // elsewhere on the page. The provider bumps the nonce after any
-  // chooser save or bulk-add — cheap, just a single int comparison
-  // here, and the SQL is small.
+  // Refetch on niche change, on sort / minScore change, AND on
+  // membership-nonce ticks so the grid drops videos the user
+  // unchecks from the star chooser elsewhere on the page. All
+  // three end up running the same loadAll; the deps just listen
+  // for any of them to flip.
   useEffect(() => {
     if (!Number.isFinite(nicheId)) return;
     loadAll();
@@ -255,6 +265,65 @@ export default function CustomNichePage() {
           </div>
         )}
       </div>
+
+      {/* Sort pills + min-score filter. Same vocabulary as the
+          other video grids across the product — Recent, Most
+          views, etc. Closest-to-centre only renders when the
+          niche has a centre set; clicking it triggers the
+          vector-DB cosine sort. If the centre lacks an embedding
+          the API falls back to recent and we render a soft
+          warning. Hidden until the niche has at least one video
+          (so the empty state isn't crowded). */}
+      {(niche?.videoCount ?? 0) > 0 && (
+        <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            {([
+              { value: 'recent', label: 'Recently added' },
+              ...(niche?.centerVideoId != null
+                ? [{ value: 'centre', label: 'Closest to centre' } as const]
+                : []),
+              { value: 'views',  label: 'Most views'    },
+              { value: 'likes',  label: 'Most likes'    },
+              { value: 'score',  label: 'Highest score' },
+              { value: 'newest', label: 'Newest'        },
+              { value: 'oldest', label: 'Oldest'        },
+            ] as const).map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setSort(opt.value as SortKey)}
+                className={`px-3 py-1 rounded-full text-xs transition ${
+                  sort === opt.value
+                    ? 'bg-white text-black font-medium'
+                    : 'text-[#888] border border-[#333] hover:border-[#555]'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 text-xs text-[#888]">
+            <span>Min score</span>
+            <select
+              value={minScore}
+              onChange={e => setMinScore(Number(e.target.value) as 0 | 50 | 70 | 80 | 90)}
+              className="bg-[#0f0f0f] border border-[#2a2a2a] rounded-md px-2 py-1 text-white focus:outline-none focus:border-amber-400/50"
+            >
+              <option value={0}>Any</option>
+              <option value={50}>50+</option>
+              <option value={70}>70+</option>
+              <option value={80}>80+</option>
+              <option value={90}>90+</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {sort === 'centre' && centreUnavailable && (
+        <div className="mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[12px] text-amber-300">
+          Centre video has no embedding yet, so sorting by closest is unavailable.
+          Showing recently-added order instead.
+        </div>
+      )}
 
       {/* Video grid (same shape as the Favourites Videos tab) */}
       {loading && videos.length === 0 && (
