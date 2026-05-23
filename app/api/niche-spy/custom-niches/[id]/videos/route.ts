@@ -194,3 +194,70 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     skipped: videoIds.length - (r.rowCount ?? 0),
   });
 }
+
+/**
+ * DELETE /api/niche-spy/custom-niches/[id]/videos
+ *   body: { videoIds: number[] }
+ *
+ * Removes the supplied videos from this niche. Doesn't touch the
+ * videos themselves (niche_spy_videos rows stay), nor any other
+ * niche they happen to be in. Idempotent — passing ids that aren't
+ * in the niche is a no-op. updated_at bumps only when at least one
+ * row was actually removed.
+ *
+ * If the niche's centre points at one of the removed videos we
+ * also clear center_video_id so the card doesn't keep painting a
+ * "centre" badge on a video that no longer exists in this niche.
+ */
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  const nicheId = parseInt(id);
+  if (Number.isNaN(nicheId)) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
+
+  const body = await req.json().catch(() => ({})) as { videoIds?: unknown };
+  const videoIds = Array.isArray(body.videoIds)
+    ? body.videoIds.filter((n): n is number => typeof n === 'number' && Number.isFinite(n))
+    : [];
+  if (videoIds.length === 0) {
+    return NextResponse.json({ error: 'videoIds (number[]) required' }, { status: 400 });
+  }
+  if (videoIds.length > 500) {
+    return NextResponse.json({ error: 'max 500 videos per request' }, { status: 400 });
+  }
+
+  const pool = await getPool();
+  const exists = await pool.query<{ center_video_id: number | null }>(
+    'SELECT center_video_id FROM custom_niches WHERE id = $1',
+    [nicheId],
+  );
+  if (exists.rows.length === 0) return NextResponse.json({ error: 'niche not found' }, { status: 404 });
+  const centreId = exists.rows[0].center_video_id;
+
+  const r = await pool.query(
+    `DELETE FROM custom_niche_videos
+       WHERE custom_niche_id = $1
+         AND video_id = ANY($2::int[])
+       RETURNING video_id`,
+    [nicheId, videoIds],
+  );
+  const removed = r.rowCount ?? 0;
+  if (removed > 0) {
+    // If the centre got yanked, clear it so the card doesn't paint
+    // a "centre" badge on a video that no longer lives in this niche.
+    if (centreId != null && videoIds.includes(centreId)) {
+      await pool.query(
+        'UPDATE custom_niches SET center_video_id = NULL, updated_at = NOW() WHERE id = $1',
+        [nicheId],
+      );
+    } else {
+      await pool.query('UPDATE custom_niches SET updated_at = NOW() WHERE id = $1', [nicheId]);
+    }
+  }
+
+  return NextResponse.json({
+    ok: true,
+    removed,
+    skipped: videoIds.length - removed,
+    centreCleared: centreId != null && videoIds.includes(centreId),
+  });
+}

@@ -40,7 +40,7 @@ export default function CustomNichePage() {
   const params = useParams<{ id: string }>();
   const nicheId = parseInt(params.id);
   const { openSimilar } = useSimilarModal();
-  const { refreshCustomNiches, membershipNonce } = useFavourites();
+  const { refreshCustomNiches, membershipNonce, bumpMembership } = useFavourites();
 
   const [niche, setNiche] = useState<NicheRow | null>(null);
   const [nicheError, setNicheError] = useState<string | null>(null);
@@ -127,6 +127,42 @@ export default function CustomNichePage() {
     refreshCustomNiches();
     router.push('/niche/favourites');
   };
+
+  // Per-card "remove from niche" used by the × overlay in edit
+  // mode. Optimistic: drop the row from local state first, then
+  // POST. On error we put the video back and surface a confirm
+  // dialog asking the user to retry — keeps the grid snappy in
+  // the common case where DELETE just succeeds.
+  const handleRemoveVideo = useCallback(async (videoId: number) => {
+    if (!niche) return;
+    const prev = videos;
+    setVideos(curr => curr.filter(v => v.id !== videoId));
+    try {
+      const r = await fetch(`/api/niche-spy/custom-niches/${niche.id}/videos`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoIds: [videoId] }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json() as { centreCleared?: boolean };
+      // If the removed video was the centre, the API cleared
+      // center_video_id — reflect that locally so the badge stops
+      // painting on the (now-gone) thumb without waiting for a
+      // full refetch.
+      if (d.centreCleared) {
+        setNiche(curr => curr ? { ...curr, centerVideoId: null } : curr);
+      }
+      // Bump the global membership nonce so My Niches counts +
+      // any other open surface re-sync. We don't refetch this
+      // page's videos — optimistic drop already happened.
+      bumpMembership();
+      refreshCustomNiches();
+    } catch {
+      // Restore on failure.
+      setVideos(prev);
+      alert('Could not remove the video. Try again?');
+    }
+  }, [niche, videos, bumpMembership, refreshCustomNiches]);
 
   if (!Number.isFinite(nicheId)) {
     return <div className="p-8 text-red-400">Invalid niche id.</div>;
@@ -386,6 +422,10 @@ export default function CustomNichePage() {
                 v={v}
                 isCenter={v.id === centerId}
                 openSimilar={openSimilar}
+                // Pass the remove handler only while the niche is
+                // in edit mode — the card uses its presence as the
+                // signal to render the × overlay.
+                onRemove={editing ? () => handleRemoveVideo(v.id) : undefined}
               />
             ))}
           </div>
@@ -439,13 +479,17 @@ export default function CustomNichePage() {
 }
 
 function VideoCard({
-  v, openSimilar, isCenter = false,
+  v, openSimilar, isCenter = false, onRemove,
 }: {
   v: VideoRow;
   openSimilar: (id: number) => void;
   /** When true, this video is the niche centre — render an amber
    *  ring + corner badge so it visually leads the grid. */
   isCenter?: boolean;
+  /** When provided, the card renders a red × overlay in the
+   *  top-right of the thumbnail. Click → optimistic remove via
+   *  the supplied handler. Page only sets this in edit mode. */
+  onRemove?: () => void;
 }) {
   const t = getThumb(v.url, v.thumbnail);
   return (
@@ -464,6 +508,28 @@ function VideoCard({
             </svg>
             NICHE CENTRE
           </div>
+        )}
+        {/* Edit-mode remove button. Top-left so it stays out of
+            the way of the score chip on the right and (when set)
+            the centre badge — when both centre + onRemove are on
+            we shift the × to a slightly lower row. */}
+        {onRemove && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              if (confirm('Remove this video from the niche?')) onRemove();
+            }}
+            title="Remove from this niche"
+            className={`absolute z-10 w-7 h-7 rounded-full flex items-center justify-center bg-red-500/95 text-white border border-red-400/60 hover:bg-red-500 hover:scale-110 transition shadow-lg ${
+              isCenter ? 'top-9 left-2' : 'top-2 left-2'
+            }`}
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         )}
         <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
           v.score >= 80 ? 'bg-green-500 text-white' : v.score >= 50 ? 'bg-yellow-500 text-black' : 'bg-red-500 text-white'
