@@ -40,7 +40,7 @@ export default function CustomNichePage() {
   const params = useParams<{ id: string }>();
   const nicheId = parseInt(params.id);
   const { openSimilar } = useSimilarModal();
-  const { refreshCustomNiches } = useFavourites();
+  const { refreshCustomNiches, membershipNonce } = useFavourites();
 
   const [niche, setNiche] = useState<NicheRow | null>(null);
   const [nicheError, setNicheError] = useState<string | null>(null);
@@ -81,10 +81,15 @@ export default function CustomNichePage() {
     }
   }, [nicheId]);
 
+  // Refetch on niche change AND on membership-nonce ticks so the
+  // grid drops videos the user unchecks from the star chooser
+  // elsewhere on the page. The provider bumps the nonce after any
+  // chooser save or bulk-add — cheap, just a single int comparison
+  // here, and the SQL is small.
   useEffect(() => {
     if (!Number.isFinite(nicheId)) return;
     loadAll();
-  }, [nicheId, loadAll]);
+  }, [nicheId, loadAll, membershipNonce]);
 
   const handleSaveEdit = async () => {
     if (!niche) return;

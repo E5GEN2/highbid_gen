@@ -44,7 +44,7 @@ export function BulkAddToNicheModal({
    *  to so the caller can navigate or show a "go to niche" CTA. */
   onAdded: (nicheId: number, added: number) => void;
 }) {
-  const { customNiches, refreshCustomNiches, createCustomNiche } = useFavourites();
+  const { customNiches, refreshCustomNiches, createCustomNiche, bumpMembership } = useFavourites();
 
   const [picked, setPicked] = useState<Pick>(null);
   const [newName, setNewName] = useState('');
@@ -113,8 +113,11 @@ export function BulkAddToNicheModal({
         return;
       }
       // Refresh the niche list so counts + updated_at ordering
-      // reflect the new state next time the user navigates.
+      // reflect the new state next time the user navigates, and
+      // tick the membership nonce so any open niche detail page
+      // refetches its video grid.
       refreshCustomNiches();
+      bumpMembership();
       onAdded(targetId, d.added ?? videoIds.length);
       onClose();
     } catch (e) {

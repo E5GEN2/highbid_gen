@@ -37,6 +37,7 @@ export function StarChooserModal() {
     activeChooserVideoId, closeStarChooser,
     isStarred, toggleStar,
     customNiches, refreshCustomNiches, createCustomNiche,
+    bumpMembership,
   } = useFavourites();
 
   // null when closed; once opened we lazy-load membership.
@@ -115,8 +116,11 @@ export function StarChooserModal() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ videoId, customNicheIds: [...pickedNiches] }),
       });
-      // Refresh niche counts so My Niches reflects new totals.
+      // Refresh niche counts so My Niches reflects new totals,
+      // and tick the membership nonce so any open detail page can
+      // drop / surface the affected video in real time.
       refreshCustomNiches();
+      bumpMembership();
       closeStarChooser();
     } catch {
       setError('Save failed. Try again?');

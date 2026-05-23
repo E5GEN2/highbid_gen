@@ -90,6 +90,15 @@ interface FavouritesContextType {
   openStarChooser: (videoId: number) => void;
   closeStarChooser: () => void;
 
+  /** Monotonic counter that ticks every time a custom-niche
+   *  membership write succeeds (chooser save, bulk-add, etc.).
+   *  Pages showing membership-dependent data depend on this in a
+   *  useEffect so they re-fetch when memberships change elsewhere
+   *  — keeps the niche detail page reactive when the user unchecks
+   *  a niche from the star chooser. */
+  membershipNonce: number;
+  bumpMembership: () => void;
+
   loading: boolean;
   refresh: () => Promise<void>;
 }
@@ -109,6 +118,10 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
   const [customNichesLoading, setCustomNichesLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [activeChooserVideoId, setActiveChooserVideoId] = useState<number | null>(null);
+  // Membership change nonce — tick after any custom-niche
+  // membership write so subscribers can re-fetch on demand.
+  const [membershipNonce, setMembershipNonce] = useState(0);
+  const bumpMembership = useCallback(() => setMembershipNonce(n => n + 1), []);
 
   const refreshCustomNiches = useCallback(async () => {
     setCustomNichesLoading(true);
@@ -222,11 +235,13 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
     customNiches, customNichesLoading,
     refreshCustomNiches, createCustomNiche,
     activeChooserVideoId, openStarChooser, closeStarChooser,
+    membershipNonce, bumpMembership,
     loading, refresh,
   }), [
     ids, nicheIds, isStarred, isNicheStarred, toggleStar, toggleNicheStar,
     customNiches, customNichesLoading, refreshCustomNiches, createCustomNiche,
     activeChooserVideoId, openStarChooser, closeStarChooser,
+    membershipNonce, bumpMembership,
     loading, refresh,
   ]);
 
