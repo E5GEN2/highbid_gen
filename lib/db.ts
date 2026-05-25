@@ -992,6 +992,51 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xkhr_started ON xgodo_key_health_runs(started_at DESC)`).catch(() => {});
 
+    // Per-proxy health table — one row per xgodo device_id. Our
+    // local view of which proxies are reliable; the proxy list
+    // itself comes from xgodo (lib/xgodo-proxy.ts), so this is
+    // strictly an annotation layer. The sweep updates this; the
+    // proxy picker (Phase 2) reads it to skip dead devices.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xgodo_proxy_health (
+        device_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'unknown',
+            -- 'healthy' | 'flaky' | 'dead' | 'unknown'
+        last_checked_at TIMESTAMPTZ,
+        banned_until TIMESTAMPTZ,
+            -- when not null and > NOW, treat as dead for routing
+        last_tries     INTEGER NOT NULL DEFAULT 0,
+        last_successes INTEGER NOT NULL DEFAULT 0,
+        total_tries     INTEGER NOT NULL DEFAULT 0,
+        total_successes INTEGER NOT NULL DEFAULT 0,
+        name TEXT,
+        country TEXT,
+        last_error TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xph_status ON xgodo_proxy_health(status)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xph_banned_until ON xgodo_proxy_health(banned_until) WHERE banned_until IS NOT NULL`).catch(() => {});
+
+    // Sweep-history table parallel to xgodo_key_health_runs.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xgodo_proxy_health_runs (
+        id SERIAL PRIMARY KEY,
+        mode TEXT NOT NULL,                  -- 'sync' | 'background'
+        status TEXT NOT NULL DEFAULT 'running',
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        target_total INTEGER NOT NULL,
+        tries_per_proxy INTEGER NOT NULL,
+        concurrency INTEGER NOT NULL,
+        dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+        probed INTEGER NOT NULL DEFAULT 0,
+        sample_summary JSONB,                -- { healthy, flaky, dead }
+        db_updates JSONB,                    -- { newHealthy, newFlaky, newDead, recovered }
+        error_message TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xphr_started ON xgodo_proxy_health_runs(started_at DESC)`).catch(() => {});
+
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_task_log (
