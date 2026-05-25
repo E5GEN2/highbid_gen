@@ -340,9 +340,12 @@ export async function POST(req: NextRequest) {
     await pool.query(
       `UPDATE xgodo_key_health_runs
           SET status='done', completed_at=NOW(),
-              probed=$1, sample_summary=$2, db_updates=$3, proxy_top_failures=$4
+              probed=$1,
+              sample_summary=$2::jsonb,
+              db_updates=$3::jsonb,
+              proxy_top_failures=$4::jsonb
         WHERE id=$5`,
-      [r.probed, r.sample, r.dbUpdates, r.proxyTopFailures, runId],
+      [r.probed, JSON.stringify(r.sample), JSON.stringify(r.dbUpdates), JSON.stringify(r.proxyTopFailures), runId],
     );
 
     const poolAfter = await pool.query<{ active: string; banned: string; invalid: string; disabled: string }>(
