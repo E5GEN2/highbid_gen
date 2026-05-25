@@ -967,6 +967,31 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xak_service_status ON xgodo_api_keys(service, status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xak_banned_until ON xgodo_api_keys(banned_until) WHERE banned_until IS NOT NULL`).catch(() => {});
 
+    // Health-check runs — one row per yt-keys-health sweep. Lets
+    // background sweeps be polled while in-flight and supervised
+    // historically (pool composition trend, sweep cadence). The
+    // sample_summary + db_updates JSON columns hold the per-run
+    // tallies so we don't need a per-probe table.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xgodo_key_health_runs (
+        id SERIAL PRIMARY KEY,
+        service TEXT NOT NULL,
+        mode TEXT NOT NULL,                  -- 'sync' | 'background'
+        status TEXT NOT NULL DEFAULT 'running',  -- 'running' | 'done' | 'error'
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        target_limit INTEGER NOT NULL,
+        concurrency INTEGER NOT NULL,
+        dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+        probed INTEGER NOT NULL DEFAULT 0,
+        sample_summary JSONB,                -- { working, quotaExceeded, suspended, network, other }
+        db_updates JSONB,                    -- { activated, banned, invalidated }
+        proxy_top_failures JSONB,            -- [{ proxyDeviceId, count }]
+        error_message TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xkhr_started ON xgodo_key_health_runs(started_at DESC)`).catch(() => {});
+
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_task_log (
