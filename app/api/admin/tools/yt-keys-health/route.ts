@@ -194,11 +194,16 @@ async function runSweep(opts: {
     // don't hammer the DB.
     if (allResults.length - lastReportAt >= REPORT_EVERY) {
       lastReportAt = allResults.length;
+      // JSON.stringify the JSONB payload — node-postgres tries to
+      // coerce raw JS objects/arrays into Postgres native types
+      // (text[], composite) which JSONB then rejects with
+      // "invalid input syntax for type json". Explicit stringify
+      // forces it down the JSON path.
       pool.query(
         `UPDATE xgodo_key_health_runs
-            SET probed = $1, sample_summary = $2
+            SET probed = $1, sample_summary = $2::jsonb
           WHERE id = $3`,
-        [allResults.filter(Boolean).length, summary, opts.runId],
+        [allResults.filter(Boolean).length, JSON.stringify(summary), opts.runId],
       ).catch(() => { /* progress write failures shouldn't kill the sweep */ });
     }
   });
@@ -305,9 +310,12 @@ export async function POST(req: NextRequest) {
         await pool.query(
           `UPDATE xgodo_key_health_runs
               SET status='done', completed_at=NOW(),
-                  probed=$1, sample_summary=$2, db_updates=$3, proxy_top_failures=$4
+                  probed=$1,
+                  sample_summary=$2::jsonb,
+                  db_updates=$3::jsonb,
+                  proxy_top_failures=$4::jsonb
             WHERE id=$5`,
-          [r.probed, r.sample, r.dbUpdates, r.proxyTopFailures, runId],
+          [r.probed, JSON.stringify(r.sample), JSON.stringify(r.dbUpdates), JSON.stringify(r.proxyTopFailures), runId],
         );
       } catch (err) {
         await pool.query(
