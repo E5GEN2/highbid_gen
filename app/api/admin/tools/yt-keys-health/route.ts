@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
+import { ytFetchViaProxy } from '@/lib/yt-proxy-fetch';
+import { getRandomProxy } from '@/lib/xgodo-proxy';
+import type { YtKeyProxyPair } from '@/lib/yt-keys';
 
 /**
  * POST /api/admin/tools/yt-keys-health
@@ -29,9 +32,18 @@ import { getPool } from '@/lib/db';
  *   {
  *     limit?:       number;   // default 500 keys per call. Repeated
  *                             // calls cover the rest of the pool.
- *     concurrency?: number;   // default 50 in-flight probes.
+ *     concurrency?: number;   // default 20 in-flight probes. Each
+ *                             // probe spawns a Python subprocess via
+ *                             // ytFetchViaProxy so 20 keeps the
+ *                             // server's memory + fd budget sane.
  *     dryRun?:      boolean;  // probe + classify only, no DB writes.
  *   }
+ *
+ * Probes go through the SAME proxy stack the enrichment pipeline
+ * uses (ytFetchViaProxy → Python+curl via xgodo proxy). Each probe
+ * pairs the candidate key with a freshly-picked random proxy so a
+ * single flaky proxy can't take out a whole sample. Mirrors the
+ * production call path's reliability profile.
  *
  * Auth: admin Bearer token. Synchronous — returns when done. Use
  * limit + repeated calls to chew through a 4k-key pool without
@@ -52,43 +64,71 @@ interface ProbeResult {
   httpStatus: number | null;
   reason?: string;     // YT error reason if any
   errorMessage?: string;
+  proxyUsed?: string;  // which proxy device routed this probe
 }
 
-async function probeOne(key: string): Promise<{ outcome: Outcome; httpStatus: number | null; reason?: string; errorMessage?: string }> {
+/**
+ * Probe one key by routing the request through the same xgodo
+ * proxy stack the enrichment pipeline uses (lib/yt-proxy-fetch.ts).
+ * Each probe pairs the candidate key with a freshly-picked random
+ * proxy so a single flaky proxy can't take down a batch — same
+ * decoupling pickRandomActiveYtPair does for the real call path.
+ *
+ * Outcome mapping from YtFetchResult:
+ *   status === 0     → network (subprocess/proxy failure)
+ *   YT error reason  → quotaExceeded / suspended / other
+ *   ok + items[]     → working
+ *   ok + no items    → other
+ */
+async function probeOne(key: string): Promise<{ outcome: Outcome; httpStatus: number | null; reason?: string; errorMessage?: string; proxyUsed?: string }> {
   const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${TEST_VIDEO_ID}&key=${key}`;
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-    const httpStatus = res.status;
-    const text = await res.text();
-    let parsed: { items?: unknown[]; error?: { errors?: { reason?: string }[]; message?: string } } | null = null;
-    try { parsed = JSON.parse(text); } catch { /* leave null */ }
 
-    if (parsed?.error) {
-      const reason = parsed.error.errors?.[0]?.reason ?? 'unknown';
-      if (reason === 'quotaExceeded') {
-        return { outcome: 'quotaExceeded', httpStatus, reason, errorMessage: parsed.error.message };
-      }
-      if (reason === 'forbidden') {
-        // CONSUMER_SUSPENDED lives under forbidden — message is the
-        // canonical "Permission denied: Consumer '...' has been
-        // suspended." Treat anything else under forbidden as
-        // suspended too; in practice that's what Google returns
-        // for keys we can't recover from automatically.
-        return { outcome: 'suspended', httpStatus, reason, errorMessage: parsed.error.message };
-      }
-      return { outcome: 'other', httpStatus, reason, errorMessage: parsed.error.message };
-    }
-    if (Array.isArray(parsed?.items) && parsed.items.length > 0) {
-      return { outcome: 'working', httpStatus };
-    }
-    return { outcome: 'other', httpStatus, errorMessage: 'response had no items + no error' };
-  } catch (err) {
+  // Build a one-off pair: this specific key + a fresh random proxy.
+  // The proxy can be null when the pool is empty; in that case
+  // ytFetchViaProxy falls back to direct fetch (mirrors what the
+  // real path does when no proxy is available).
+  const proxy = await getRandomProxy();
+  const pair: YtKeyProxyPair = {
+    key,
+    proxyUrl: proxy?.url ?? '',
+    proxyDeviceId: proxy?.deviceId?.substring(0, 8) ?? 'no-proxy',
+    banned: false,
+    banExpiry: 0,
+  };
+
+  const res = await ytFetchViaProxy(url, pair.proxyUrl ? pair : undefined);
+  const httpStatus = res.status || null;
+  const proxyUsed = res.proxyUsed;
+
+  // Subprocess / network failure — keep status=0 separate from API
+  // errors so we don't punish a key for a flaky proxy.
+  if (res.status === 0 || res.data == null) {
     return {
       outcome: 'network',
-      httpStatus: null,
-      errorMessage: (err as Error).message?.slice(0, 200),
+      httpStatus,
+      errorMessage: res.error?.slice(0, 200),
+      proxyUsed,
     };
   }
+
+  const data = res.data as { items?: unknown[]; error?: { errors?: { reason?: string }[]; message?: string } };
+  if (data.error) {
+    const reason = data.error.errors?.[0]?.reason ?? 'unknown';
+    if (reason === 'quotaExceeded') {
+      return { outcome: 'quotaExceeded', httpStatus, reason, errorMessage: data.error.message, proxyUsed };
+    }
+    if (reason === 'forbidden') {
+      // CONSUMER_SUSPENDED lives under forbidden. Anything else
+      // under forbidden Google returns for un-recoverable keys
+      // (IP-restriction etc.) — treat them all as terminal.
+      return { outcome: 'suspended', httpStatus, reason, errorMessage: data.error.message, proxyUsed };
+    }
+    return { outcome: 'other', httpStatus, reason, errorMessage: data.error.message, proxyUsed };
+  }
+  if (Array.isArray(data.items) && data.items.length > 0) {
+    return { outcome: 'working', httpStatus, proxyUsed };
+  }
+  return { outcome: 'other', httpStatus, errorMessage: 'response had no items + no error', proxyUsed };
 }
 
 /**
@@ -119,7 +159,10 @@ export async function POST(req: NextRequest) {
     limit?: number; concurrency?: number; dryRun?: boolean;
   };
   const limit       = Math.max(1,  Math.min(body.limit       ?? 500, 2000));
-  const concurrency = Math.max(1,  Math.min(body.concurrency ?? 50,  100));
+  // Each probe spawns a Python subprocess via ytFetchViaProxy.
+  // 20 in-flight keeps memory + fd usage comfortable on Railway;
+  // hard cap at 50 so a misconfigured client can't OOM the box.
+  const concurrency = Math.max(1,  Math.min(body.concurrency ?? 20,  50));
   const dryRun      = !!body.dryRun;
 
   const pool = await getPool();
@@ -149,6 +192,7 @@ export async function POST(req: NextRequest) {
       httpStatus: r.httpStatus,
       reason: r.reason,
       errorMessage: r.errorMessage,
+      proxyUsed: r.proxyUsed,
     };
     return out;
   });
@@ -235,7 +279,13 @@ export async function POST(req: NextRequest) {
     examples: results
       .filter(r => r.outcome !== 'working')
       .slice(0, 5)
-      .map(r => ({ keyPreview: r.keyPreview, outcome: r.outcome, reason: r.reason, errorMessage: r.errorMessage?.slice(0, 120) })),
+      .map(r => ({
+        keyPreview: r.keyPreview,
+        outcome: r.outcome,
+        reason: r.reason,
+        proxyUsed: r.proxyUsed,
+        errorMessage: r.errorMessage?.slice(0, 120),
+      })),
   });
 }
 
