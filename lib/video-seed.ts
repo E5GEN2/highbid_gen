@@ -109,12 +109,16 @@ async function batchEmbedGroupedViaProxy(
   }));
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:batchEmbedContents?key=${apiKey}`;
+  // 20s per-attempt timeout. A healthy proxy + Gemini call completes
+  // in ~3s; anything taking longer is either a slow proxy or a stalled
+  // upstream and we'd rather rotate than wait. Cap matters because
+  // batchEmbedGroupedDirect's inner loop runs up to 6 of these.
   const res = await undiciFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
-    dispatcher: new ProxyAgent(proxyUrl),
-    signal: AbortSignal.timeout(60_000),
+    dispatcher: new ProxyAgent({ uri: proxyUrl, connectTimeout: 8_000, bodyTimeout: 20_000, headersTimeout: 15_000 }),
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!res.ok) {
