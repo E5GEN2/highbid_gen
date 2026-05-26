@@ -294,7 +294,7 @@ async function ensureCombinedV2(
   // needed. Retry each chunk up to 3 times with a fresh pair on failure
   // (batchEmbedGrouped picks the pair internally — we just retry).
   const CHUNK = 100;
-  const EMBED_RETRIES = 3;
+  const EMBED_RETRIES = 5;
   const { vectorPool } = await import('./vector-db');
 
   for (let off = 0; off < valid.length; off += CHUNK) {
@@ -308,6 +308,13 @@ async function ensureCombinedV2(
       } catch (err) {
         lastErr = (err as Error).message?.slice(0, 200) || 'unknown';
         console.warn(`[video-seed] embed chunk attempt ${attempt}/${EMBED_RETRIES} failed:`, lastErr);
+        // Small linear backoff between retries so the project-ban DB
+        // UPDATE (fire-and-forget on banKey, awaited on banProject) has
+        // a moment to settle, and we don't burn through 5 retries in 6s
+        // hitting the same per-minute quota window.
+        if (attempt < EMBED_RETRIES) {
+          await new Promise(r => setTimeout(r, 500 * attempt));
+        }
       }
     }
     if (!vectors) {
