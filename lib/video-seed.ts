@@ -18,23 +18,29 @@
  * coherent with the cluster pipeline.
  */
 
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { getPool } from './db';
 import { pickRandomActiveYtPair } from './yt-keys';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
+import { getRandomProxy } from './xgodo-proxy';
 import type { EmbedInput } from './embeddings';
 
 // ─────────────────────────────────────────────────────────────────────
-// Direct Gemini embedding helper
+// Gemini embedding helper, IP-rotated via xgodo proxies.
 //
-// The shared lib/embeddings.ts batchEmbedGrouped routes through a
-// Python+curl subprocess that goes through an xgodo proxy by default.
-// The proxy pool is currently ~67% dead-on-connect, so most embed
-// calls were failing with curl exit 56. Same diagnosis as vid-gen.
+// We can't go direct from Railway at scale — Gemini will eventually
+// rate-limit (and at worst, ban) the single egress IP. So embeddings
+// go through a fresh random xgodo proxy per attempt, rotating egress
+// IP. The proxy pool has a real dead rate (~67% dead-on-connect per
+// recent probe via /api/admin/tools/vid-gen/diag), so we ALSO rotate
+// the proxy on every retry — most failures are "this proxy is down
+// right now", not "this key is bad", so a different proxy on the next
+// try is more likely to succeed than reusing the same one.
 //
-// Direct fetch from Railway → Gemini works fine for the volumes
-// video-seed runs at. We also lazily clean up the key pool by
-// invalidating 403 PERMISSION_DENIED keys and cooling off 429 keys —
-// same pattern that's been working for the vid-gen generator.
+// Key-pool hygiene runs alongside: 403 PERMISSION_DENIED → invalidate
+// the key (it's terminally banned). 429 → 90s banned_until cooloff so
+// the next picker call skips that key while its per-minute window
+// refills.
 // ─────────────────────────────────────────────────────────────────────
 
 interface AiKeyRow { id: number; key: string; }
@@ -80,17 +86,18 @@ function cooloffAiKey(keyId: number, seconds: number = 90): void {
   })();
 }
 
-/** Direct Gemini batchEmbedContents call. One key per attempt; throws on
- *  any failure so the chunk loop can swap keys.
- *  Marks 403 as invalid, 429 as cooled off, before throwing. */
-async function batchEmbedGroupedDirect(
+/** One Gemini batchEmbedContents call, routed through a specific
+ *  (key, proxy) pair. Proxy is required — we never go direct so we
+ *  don't pile load against Railway's single egress IP. Throws on any
+ *  failure so the chunk loop can swap to a fresh pair. */
+async function batchEmbedGroupedViaProxy(
   groups: EmbedInput[][],
   modelName: string,
+  apiKey: string,
+  keyId: number,
+  proxyUrl: string,
 ): Promise<number[][]> {
   if (groups.length === 0) return [];
-
-  const keyRow = await pickHealthyAiKey();
-  if (!keyRow) throw new Error('no_active_ai_keys');
 
   const requests = groups.map(group => ({
     model: `models/${modelName}`,
@@ -101,20 +108,21 @@ async function batchEmbedGroupedDirect(
     },
   }));
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:batchEmbedContents?key=${keyRow.key}`;
-  const res = await fetch(url, {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:batchEmbedContents?key=${apiKey}`;
+  const res = await undiciFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
+    dispatcher: new ProxyAgent(proxyUrl),
     signal: AbortSignal.timeout(60_000),
   });
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
     if (res.status === 403 && /PERMISSION_DENIED|has been (denied|suspended)/i.test(errBody)) {
-      invalidateAiKey(keyRow.id, `gemini_403: ${errBody.slice(0, 80)}`);
+      invalidateAiKey(keyId, `gemini_403: ${errBody.slice(0, 80)}`);
     } else if (res.status === 429) {
-      cooloffAiKey(keyRow.id, 90);
+      cooloffAiKey(keyId, 90);
     }
     throw new Error(`Gemini HTTP ${res.status}: ${errBody.slice(0, 200)}`);
   }
@@ -128,6 +136,37 @@ async function batchEmbedGroupedDirect(
   }
   if (!data.embeddings) throw new Error('Gemini response had no embeddings');
   return data.embeddings.map(e => e.values ?? []);
+}
+
+/** Chunk-level driver: tries the embedding call through a fresh
+ *  (key, proxy) pair until one succeeds or maxAttempts is exhausted.
+ *  Rotates both dimensions every attempt — most failures here are
+ *  "this proxy is down right now" rather than "this key is bad", so
+ *  retrying with the same proxy isn't useful. */
+async function batchEmbedGroupedDirect(
+  groups: EmbedInput[][],
+  modelName: string,
+  maxAttempts: number = 6,
+): Promise<number[][]> {
+  if (groups.length === 0) return [];
+  let lastErr = 'no_attempts';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const keyRow = await pickHealthyAiKey();
+    if (!keyRow) { lastErr = 'no_active_ai_keys'; break; }
+    const proxy = await getRandomProxy().catch(() => null);
+    if (!proxy?.url) {
+      // Proxy dealer empty or errored — wait briefly and let next
+      // attempt re-pick. Bail entirely if this keeps happening.
+      lastErr = 'no_proxy_available';
+      continue;
+    }
+    try {
+      return await batchEmbedGroupedViaProxy(groups, modelName, keyRow.key, keyRow.id, proxy.url);
+    } catch (err) {
+      lastErr = (err as Error).message?.slice(0, 200) || 'unknown';
+    }
+  }
+  throw new Error(lastErr);
 }
 
 interface YtVideoSnippet {
@@ -398,10 +437,12 @@ async function ensureCombinedV2(
   if (valid.length === 0) return outcomes;
 
   // Step B: Gemini batchEmbedGrouped takes up to 100 groups; chunk if
-  // needed. Retry each chunk up to 3 times with a fresh pair on failure
-  // (batchEmbedGrouped picks the pair internally — we just retry).
+  // needed. batchEmbedGroupedDirect already rotates (key, proxy) pairs
+  // internally up to 6 times per call, so one outer attempt with a
+  // single retry is enough — the inner loop handles the common case
+  // of dead proxies and banned keys.
   const CHUNK = 100;
-  const EMBED_RETRIES = 5;
+  const EMBED_RETRIES = 2;
   const { vectorPool } = await import('./vector-db');
 
   for (let off = 0; off < valid.length; off += CHUNK) {
@@ -414,7 +455,7 @@ async function ensureCombinedV2(
         break;
       } catch (err) {
         lastErr = (err as Error).message?.slice(0, 200) || 'unknown';
-        console.warn(`[video-seed] embed chunk attempt ${attempt}/${EMBED_RETRIES} failed:`, lastErr);
+        console.warn(`[video-seed] embed chunk outer attempt ${attempt}/${EMBED_RETRIES} failed:`, lastErr);
       }
     }
     if (!vectors) {
