@@ -1061,6 +1061,23 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_available ON video_prompts(id) WHERE served_at IS NULL`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_created ON video_prompts(created_at DESC)`).catch(() => {});
 
+    // Vid Gen settings — single-row config table for global suffix
+    // that gets appended at serve time (e.g. ", photoreal, cinematic
+    // 8k"). Storing this separately from the prompt rows means we
+    // can toggle/edit it without touching every existing prompt and
+    // it applies instantly to the next pop.
+    // The CHECK (id = 1) enforces single-row semantics so we never
+    // accidentally end up with multiple competing config rows.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vid_gen_settings (
+        id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        suffix TEXT NOT NULL DEFAULT '',
+        suffix_enabled BOOLEAN NOT NULL DEFAULT false,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO vid_gen_settings (id) VALUES (1) ON CONFLICT DO NOTHING`).catch(() => {});
+
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_task_log (

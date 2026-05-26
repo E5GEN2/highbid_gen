@@ -8002,6 +8002,15 @@ function VidGenTab({ active }: { active: boolean }) {
   const [genBusy, setGenBusy] = useState(false);
   const [genMsg, setGenMsg] = useState<string | null>(null);
 
+  // Global serve-time suffix — appended to every prompt returned by
+  // GET /api/video_prompt when enabled. Lets us bolt on style modifiers
+  // ("photoreal, cinematic 8k") without touching stored rows.
+  const [suffix, setSuffix] = useState('');
+  const [suffixEnabled, setSuffixEnabled] = useState(false);
+  const [suffixBusy, setSuffixBusy] = useState(false);
+  const [suffixMsg, setSuffixMsg] = useState<string | null>(null);
+  const [suffixDirty, setSuffixDirty] = useState(false);
+
   // Debounce search input — 300ms.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -8033,6 +8042,51 @@ function VidGenTab({ active }: { active: boolean }) {
     if (!active) return;
     fetchPrompts();
   }, [active, fetchPrompts]);
+
+  // Load suffix settings once on tab activation. We don't refetch on
+  // every filter change since settings are independent of the table.
+  useEffect(() => {
+    if (!active) return;
+    (async () => {
+      try {
+        const r = await fetch('/api/admin/tools/vid-gen/settings');
+        const d = await r.json();
+        if (d.ok) {
+          setSuffix(d.suffix || '');
+          setSuffixEnabled(!!d.suffixEnabled);
+          setSuffixDirty(false);
+        }
+      } catch { /* silent — settings panel just shows empty defaults */ }
+    })();
+  }, [active]);
+
+  // Save suffix config. Called from both the explicit Save button and
+  // implicitly when the toggle flips, so flipping the switch never
+  // needs a second click.
+  const saveSuffix = async (next: { suffix?: string; suffixEnabled?: boolean }) => {
+    setSuffixBusy(true);
+    setSuffixMsg(null);
+    try {
+      const r = await fetch('/api/admin/tools/vid-gen/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setSuffix(d.suffix || '');
+        setSuffixEnabled(!!d.suffixEnabled);
+        setSuffixDirty(false);
+        setSuffixMsg(d.suffixEnabled ? 'Saved — suffix active' : 'Saved — suffix disabled');
+      } else {
+        setSuffixMsg(d.error || 'Failed');
+      }
+    } catch (e) {
+      setSuffixMsg((e as Error).message);
+    } finally {
+      setSuffixBusy(false);
+    }
+  };
 
   const handleAddManual = async () => {
     // Split on newlines so the operator can paste multiple prompts
@@ -8120,6 +8174,64 @@ function VidGenTab({ active }: { active: boolean }) {
           <StatBox label="Total"     value={counts.total}     accent="text-white" />
         </div>
       )}
+
+      {/* Global suffix — appended to every served prompt when enabled.
+          Toggle saves immediately so flipping it never needs a second
+          click; edits to the text require pressing Save. */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Global suffix</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Appended to every served prompt while enabled — for style modifiers like{' '}
+              <code className="text-rose-300">, photoreal, cinematic 8k</code>. Stored rows stay clean.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none whitespace-nowrap">
+            <input
+              type="checkbox"
+              checked={suffixEnabled}
+              disabled={suffixBusy}
+              onChange={e => {
+                const next = e.target.checked;
+                setSuffixEnabled(next);
+                // Persist toggle immediately, sending the current text too
+                // so an unsaved edit doesn't get clobbered by the toggle.
+                saveSuffix({ suffixEnabled: next, suffix });
+              }}
+              className="accent-rose-500 w-4 h-4"
+            />
+            <span className={suffixEnabled ? 'text-emerald-300 font-medium' : 'text-gray-400'}>
+              {suffixEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </div>
+        <input
+          type="text"
+          value={suffix}
+          onChange={e => { setSuffix(e.target.value); setSuffixDirty(true); }}
+          placeholder=", photoreal, cinematic, 8k, shot on Arri"
+          className="w-full px-3 py-2 text-sm bg-black border border-gray-800 rounded-md text-white placeholder-gray-600 focus:outline-none focus:border-rose-500/50 font-mono"
+        />
+        <div className="flex items-center justify-between mt-2 gap-3">
+          <span className="text-xs text-gray-500 truncate">
+            {suffix.trim() && suffixEnabled
+              ? <>Preview: <span className="text-gray-300">&lt;prompt&gt; {suffix.trim()}</span></>
+              : <>{suffix.length}/500 chars</>}
+          </span>
+          <div className="flex items-center gap-2">
+            {suffixMsg && <span className="text-xs text-rose-300">{suffixMsg}</span>}
+            <button
+              type="button"
+              disabled={suffixBusy || !suffixDirty}
+              onClick={() => saveSuffix({ suffix, suffixEnabled })}
+              className="px-4 py-1.5 text-xs font-semibold bg-rose-500 text-white rounded-md hover:bg-rose-400 transition disabled:opacity-50"
+            >
+              {suffixBusy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* Add manual + AI gen forms — side-by-side on desktop */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
