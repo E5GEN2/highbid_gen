@@ -8224,6 +8224,25 @@ function VidGenTab({ active }: { active: boolean }) {
     fetchPrompts();
   };
 
+  // Wipe every unserved prompt in one shot. Useful for resetting a
+  // bad batch (off-theme, low-quality, etc.) before regenerating.
+  const [clearBusy, setClearBusy] = useState(false);
+  const handleClearAvailable = async () => {
+    if (!counts || counts.available === 0) return;
+    if (!confirm(`Delete all ${counts.available} available prompts? This can't be undone.`)) return;
+    setClearBusy(true);
+    try {
+      await fetch('/api/admin/tools/vid-gen', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clearStatus: 'available' }),
+      });
+      fetchPrompts();
+    } finally {
+      setClearBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -8234,14 +8253,26 @@ function VidGenTab({ active }: { active: boolean }) {
         </p>
       </div>
 
-      {/* Stats strip */}
+      {/* Stats strip + bulk actions */}
       {counts && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          <StatBox label="Available" value={counts.available} accent="text-emerald-400" />
-          <StatBox label="Served"    value={counts.served}    accent="text-zinc-400" />
-          <StatBox label="Manual"    value={counts.manual}    accent="text-blue-400" />
-          <StatBox label="AI-gen"    value={counts.ai}        accent="text-rose-400" />
-          <StatBox label="Total"     value={counts.total}     accent="text-white" />
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <StatBox label="Available" value={counts.available} accent="text-emerald-400" />
+            <StatBox label="Served"    value={counts.served}    accent="text-zinc-400" />
+            <StatBox label="Manual"    value={counts.manual}    accent="text-blue-400" />
+            <StatBox label="AI-gen"    value={counts.ai}        accent="text-rose-400" />
+            <StatBox label="Total"     value={counts.total}     accent="text-white" />
+          </div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              disabled={clearBusy || counts.available === 0}
+              onClick={handleClearAvailable}
+              className="px-3 py-1 text-xs font-medium text-red-300 border border-red-500/30 rounded-md hover:bg-red-500/10 hover:border-red-500/60 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {clearBusy ? 'Clearing…' : `Clear ${counts.available} available`}
+            </button>
+          </div>
         </div>
       )}
 

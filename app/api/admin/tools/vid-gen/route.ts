@@ -158,18 +158,33 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
 
-  const body = await req.json().catch(() => ({})) as { ids?: number[] };
+  const body = await req.json().catch(() => ({})) as { ids?: number[]; clearStatus?: 'available' | 'served' };
+  const pool = await getPool();
+
+  // Bulk-clear mode — delete every row matching the given status in a
+  // single SQL hit. Used by the "Clear available" button in the UI to
+  // wipe a stuck queue without round-tripping every ID. We don't gate
+  // on a count cap here because the table size is small and the WHERE
+  // clause is indexable.
+  if (body.clearStatus === 'available' || body.clearStatus === 'served') {
+    const where = body.clearStatus === 'available'
+      ? 'served_at IS NULL'
+      : 'served_at IS NOT NULL';
+    const r = await pool.query(`DELETE FROM video_prompts WHERE ${where} RETURNING id`);
+    const counts = await fetchCounts();
+    return NextResponse.json({ ok: true, deleted: r.rowCount ?? 0, counts, clearedStatus: body.clearStatus });
+  }
+
   const ids = Array.isArray(body.ids)
     ? body.ids.filter((n): n is number => typeof n === 'number' && Number.isFinite(n))
     : [];
   if (ids.length === 0) {
-    return NextResponse.json({ error: 'ids (number[]) required' }, { status: 400 });
+    return NextResponse.json({ error: 'ids (number[]) or clearStatus required' }, { status: 400 });
   }
   if (ids.length > 500) {
     return NextResponse.json({ error: 'max 500 ids per request' }, { status: 400 });
   }
 
-  const pool = await getPool();
   const r = await pool.query(
     `DELETE FROM video_prompts WHERE id = ANY($1::int[]) RETURNING id`,
     [ids],
