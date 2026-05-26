@@ -1,32 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { getRandomProxy } from '@/lib/xgodo-proxy';
 import crypto from 'crypto';
 
 /**
  * POST /api/admin/tools/vid-gen/generate
  *
  * Generates video prompts at scale via Gemini Flash. Each attempt
- * rotates BOTH dimensions:
- *   - key   — random active google_ai_studio row (pool is from many
- *             independent Google accounts; per-key quota rotation
- *             spreads the load across project buckets)
- *   - proxy — random online xgodo device (rotates egress IP so we
- *             don't pile up Gemini's per-IP rate limit on Railway's
- *             single egress address — that's what was producing the
- *             walls of 429s when we tried direct fetch)
+ * picks a fresh random key from the active google_ai_studio pool.
+ *
+ * Direct fetch, no proxy. Empirically (via /vid-gen/diag) the xgodo
+ * proxy pool is currently ~67% dead-on-connect for Gemini, which
+ * compounds with the key pool's banned-key rate to produce ~5× more
+ * total failures than direct fetch from Railway. Per-IP rate limits
+ * on Gemini aren't significant at the volumes this tool runs — only
+ * 1/12 proxied probes hit a 429 — so we don't need IP rotation to
+ * survive.
+ *
+ * Banned-key cleanup: 403 PERMISSION_DENIED responses ("project has
+ * been denied access" / "Consumer ... has been suspended") are
+ * terminal — the key is dead and will keep returning the same 403
+ * forever. We mark such keys status='invalid' immediately so future
+ * picks skip them, shrinking the effective pool to healthy keys over
+ * time. Same approach already used in lib/embeddings.ts via
+ * classifyKeyError + deleteApiKey.
  *
  * A batch that fails retries up to PER_BATCH_RETRIES times with a
- * fresh (key, proxy) pair. The retry count is set high enough to
- * tolerate the proxy pool's partial dead rate — at ~50% live, 8
- * tries give us > 99% chance of landing on at least one good pair.
- * Proxy is optional: if the dealer returns nothing we fall back to
- * direct fetch rather than hard-failing.
- *
- * The run only aborts when failure ratio crosses 50% AND we've
- * actually tried ≥ 4 batches.
+ * fresh key. The run only aborts when failure ratio crosses 50%
+ * AND we've actually tried ≥ 4 batches.
  *
  * Body:
  *   { count?: number;            // total prompts. sync ≤ 50, bg ≤ 1000
@@ -75,15 +76,38 @@ async function pickAiStudioKey(): Promise<{ id: number; key: string } | null> {
 }
 
 /**
- * One Gemini call — pinned to a specific (key, proxy URL). Throws on
- * any failure so the retry wrapper can swap the pair.
+ * Mark a key as terminally invalid in xgodo_api_keys. Fire-and-forget
+ * so the caller's request path doesn't wait on the UPDATE. Used when
+ * Gemini returns 403 PERMISSION_DENIED — the key is dead, will only
+ * ever return the same 403, no point keeping it in the active pool.
+ */
+function invalidateKey(keyId: number, reason: string): void {
+  void (async () => {
+    try {
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE xgodo_api_keys SET status = 'invalid', invalidated_at = NOW()
+          WHERE id = $1 AND status = 'active'`,
+        [keyId],
+      );
+      console.log(`[vid-gen] Invalidated key id=${keyId} (${reason})`);
+    } catch (err) {
+      console.warn('[vid-gen] invalidateKey failed:', (err as Error).message);
+    }
+  })();
+}
+
+/**
+ * One Gemini call — pinned to a specific key. Throws on any failure
+ * so the retry wrapper can swap the key. On 403 PERMISSION_DENIED we
+ * also flag the key for invalidation as a side effect.
  */
 async function generateOneBatch(
+  keyId: number,
   apiKey: string,
   model: string,
   n: number,
   theme: string | null,
-  proxyUrl: string | null,
 ): Promise<string[]> {
   const themeClause = theme ? `Theme: ${theme}\n\n` : '';
   const metaPrompt =
@@ -113,14 +137,16 @@ Example output for n=3:
     signal: AbortSignal.timeout(60_000),
   };
 
-  // undici fetch when we have a proxy (native fetch doesn't honour
-  // dispatcher); native fetch otherwise.
-  const res = proxyUrl
-    ? await undiciFetch(url, { ...init, dispatcher: new ProxyAgent(proxyUrl) })
-    : await fetch(url, init);
+  const res = await fetch(url, init);
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
+    // 403 PERMISSION_DENIED = terminally dead key. Mark it invalid so
+    // future ORDER BY RANDOM() picks skip it and the effective pool
+    // shrinks to working keys.
+    if (res.status === 403 && /PERMISSION_DENIED|has been (denied|suspended)/i.test(errBody)) {
+      invalidateKey(keyId, `gemini_403: ${errBody.slice(0, 80)}`);
+    }
     throw new Error(`Gemini HTTP ${res.status}: ${errBody.slice(0, 200)}`);
   }
   const data = await res.json() as {
@@ -147,8 +173,9 @@ Example output for n=3:
 
 /**
  * Try one batch up to PER_BATCH_RETRIES times, each attempt with a
- * fresh (key, proxy) pair. Returns the first successful result, or
- * empty + lastError if every attempt failed.
+ * fresh key. Returns the first successful result, or empty + lastError
+ * if every attempt failed. Banned keys are pruned as a side effect via
+ * invalidateKey() so subsequent picks land on healthy ones faster.
  */
 async function runOneBatchWithRetry(n: number, theme: string | null, model: string): Promise<BatchAttempt> {
   let lastError: string | undefined;
@@ -157,11 +184,8 @@ async function runOneBatchWithRetry(n: number, theme: string | null, model: stri
     if (!keyRow) {
       return { prompts: [], attempts: attempt - 1, lastError: 'no_active_keys' };
     }
-    // Proxy is optional: if the dealer returns nothing this iteration
-    // we still try direct rather than wasting the attempt.
-    const proxy = await getRandomProxy().catch(() => null);
     try {
-      const prompts = await generateOneBatch(keyRow.key, model, n, theme, proxy?.url ?? null);
+      const prompts = await generateOneBatch(keyRow.id, keyRow.key, model, n, theme);
       return { prompts, attempts: attempt, lastError };
     } catch (err) {
       lastError = (err as Error).message?.slice(0, 200);
