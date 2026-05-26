@@ -30,7 +30,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1617,6 +1617,7 @@ export default function AdminPage() {
     { key: 'seed',           label: 'Video Seed',      dot: 'bg-emerald-500/70' },
     { key: 'docs',           label: 'Docs',            dot: 'bg-slate-400/70' },
     { key: 'tools',          label: 'Tools',           dot: 'bg-yellow-500/70' },
+    { key: 'vid-gen',        label: 'Vid Gen',         dot: 'bg-rose-500/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5913,6 +5914,13 @@ export default function AdminPage() {
         <div style={{ display: adminSection === 'tools' ? 'block' : 'none' }}>
           <ToolsTab active={adminSection === 'tools'} />
         </div>
+
+        {/* Vid Gen Tab — manages the video_prompts queue + AI bulk
+            generation. GET /api/video_prompt pops one for clients;
+            this tab is the operator surface that fills the queue. */}
+        <div style={{ display: adminSection === 'vid-gen' ? 'block' : 'none' }}>
+          <VidGenTab active={adminSection === 'vid-gen'} />
+        </div>
       </div>
     </div>
   );
@@ -7953,6 +7961,360 @@ function DataCollection() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ *  Vid Gen Tab — video_prompts queue management + AI bulk generation
+ * ──────────────────────────────────────────────────────────────── */
+interface VidPromptRow {
+  id: number;
+  prompt: string;
+  source: string;
+  generationMeta: Record<string, unknown> | null;
+  createdAt: string;
+  servedAt: string | null;
+  servedTo: string | null;
+}
+interface VidPromptCounts { available: number; served: number; manual: number; ai: number; total: number; }
+
+function VidGenTab({ active }: { active: boolean }) {
+  const [counts, setCounts] = useState<VidPromptCounts | null>(null);
+  const [prompts, setPrompts] = useState<VidPromptRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<'available' | 'served' | 'all'>('available');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'manual' | 'ai-generated'>('all');
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [page, setPage] = useState(0);
+  const limit = 50;
+
+  // Manual-add form state
+  const [manualInput, setManualInput] = useState('');
+  const [addBusy, setAddBusy] = useState(false);
+  const [addMsg, setAddMsg] = useState<string | null>(null);
+
+  // AI-gen form state
+  const [genCount, setGenCount] = useState(50);
+  const [genTheme, setGenTheme] = useState('');
+  const [genBg, setGenBg] = useState(false);
+  const [genBusy, setGenBusy] = useState(false);
+  const [genMsg, setGenMsg] = useState<string | null>(null);
+
+  // Debounce search input — 300ms.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const fetchPrompts = useCallback(async () => {
+    setLoading(true);
+    try {
+      const qs = new URLSearchParams({
+        status: statusFilter,
+        source: sourceFilter,
+        search: debouncedSearch,
+        limit: String(limit),
+        offset: String(page * limit),
+      });
+      const r = await fetch(`/api/admin/tools/vid-gen?${qs.toString()}`);
+      const d = await r.json();
+      if (d.ok) {
+        setPrompts(d.prompts || []);
+        setCounts(d.counts || null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter, sourceFilter, debouncedSearch, page]);
+
+  useEffect(() => {
+    if (!active) return;
+    fetchPrompts();
+  }, [active, fetchPrompts]);
+
+  const handleAddManual = async () => {
+    // Split on newlines so the operator can paste multiple prompts
+    // at once. Each non-blank line becomes one prompt.
+    const prompts = manualInput
+      .split(/\r?\n/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+    if (prompts.length === 0) { setAddMsg('Paste at least one non-blank line'); return; }
+    setAddBusy(true);
+    setAddMsg(null);
+    try {
+      const r = await fetch('/api/admin/tools/vid-gen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompts }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setAddMsg(`Added ${d.added} (${d.skipped} duplicates skipped)`);
+        setManualInput('');
+        fetchPrompts();
+      } else {
+        setAddMsg(d.error || 'Failed');
+      }
+    } finally {
+      setAddBusy(false);
+    }
+  };
+
+  const handleGenerate = async () => {
+    setGenBusy(true);
+    setGenMsg(null);
+    try {
+      const r = await fetch('/api/admin/tools/vid-gen/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: genCount, theme: genTheme.trim() || undefined, background: genBg }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        if (d.mode === 'background') {
+          setGenMsg(`${d.message} (batchId: ${d.batchId.slice(0, 8)})`);
+        } else {
+          setGenMsg(`Generated ${d.generated}, inserted ${d.inserted}, ${d.duplicatesSkipped} dupes. Batches: ${d.batches}.${d.errors.length ? ' Errors: ' + d.errors.length : ''}`);
+        }
+        fetchPrompts();
+      } else {
+        setGenMsg(d.error || 'Failed');
+      }
+    } catch (e) {
+      setGenMsg((e as Error).message);
+    } finally {
+      setGenBusy(false);
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Delete this prompt?')) return;
+    await fetch('/api/admin/tools/vid-gen', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [id] }),
+    });
+    fetchPrompts();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Vid Gen — Prompt Queue</h2>
+        <p className="text-sm text-gray-400">
+          Manages <code className="text-rose-300">video_prompts</code>. Clients pop one at a time via{' '}
+          <code className="text-rose-300">GET /api/video_prompt</code> (returns 503 when empty).
+        </p>
+      </div>
+
+      {/* Stats strip */}
+      {counts && (
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <StatBox label="Available" value={counts.available} accent="text-emerald-400" />
+          <StatBox label="Served"    value={counts.served}    accent="text-zinc-400" />
+          <StatBox label="Manual"    value={counts.manual}    accent="text-blue-400" />
+          <StatBox label="AI-gen"    value={counts.ai}        accent="text-rose-400" />
+          <StatBox label="Total"     value={counts.total}     accent="text-white" />
+        </div>
+      )}
+
+      {/* Add manual + AI gen forms — side-by-side on desktop */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-white mb-2">Add prompts manually</h3>
+          <p className="text-xs text-gray-500 mb-3">One prompt per line. Pastes a whole batch at once. Duplicates skipped.</p>
+          <textarea
+            value={manualInput}
+            onChange={e => setManualInput(e.target.value)}
+            placeholder={'A red panda balancing on a unicycle through a neon-lit Tokyo alley\nMacro shot of raindrops bouncing off a sunflower petal'}
+            rows={6}
+            className="w-full px-3 py-2 text-sm bg-black border border-gray-800 rounded-md text-white placeholder-gray-600 focus:outline-none focus:border-rose-500/50 font-mono"
+          />
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-xs text-gray-500">{manualInput.split(/\r?\n/).filter(s => s.trim()).length} lines</span>
+            <div className="flex items-center gap-2">
+              {addMsg && <span className="text-xs text-rose-300">{addMsg}</span>}
+              <button
+                type="button"
+                disabled={addBusy || !manualInput.trim()}
+                onClick={handleAddManual}
+                className="px-4 py-1.5 text-xs font-semibold bg-rose-500 text-white rounded-md hover:bg-rose-400 transition disabled:opacity-50"
+              >
+                {addBusy ? 'Adding…' : 'Add'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-white mb-2">Bulk-generate via Gemini</h3>
+          <p className="text-xs text-gray-500 mb-3">Uses a random active <code>google_ai_studio</code> key. 25/batch. Background mode for &gt; 50.</p>
+          <div className="space-y-2.5">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-400 w-20">Count</label>
+              <input
+                type="number"
+                min={1}
+                max={1000}
+                value={genCount}
+                onChange={e => setGenCount(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))}
+                className="w-24 px-2 py-1 text-sm bg-black border border-gray-800 rounded-md text-white focus:outline-none focus:border-rose-500/50"
+              />
+              <label className="text-xs text-gray-400 ml-3 flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={genBg} onChange={e => setGenBg(e.target.checked)} className="accent-rose-500" />
+                Background
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-400 w-20">Theme</label>
+              <input
+                type="text"
+                value={genTheme}
+                onChange={e => setGenTheme(e.target.value)}
+                placeholder="optional — e.g. 'urban legend horror shorts'"
+                className="flex-1 px-2 py-1 text-sm bg-black border border-gray-800 rounded-md text-white placeholder-gray-600 focus:outline-none focus:border-rose-500/50"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between mt-3">
+            {genMsg && <span className="text-xs text-rose-300 truncate flex-1 mr-3">{genMsg}</span>}
+            <button
+              type="button"
+              disabled={genBusy}
+              onClick={handleGenerate}
+              className="px-4 py-1.5 text-xs font-semibold bg-rose-500 text-white rounded-md hover:bg-rose-400 transition disabled:opacity-50 ml-auto"
+            >
+              {genBusy ? 'Generating…' : `Generate ${genCount}`}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          {(['available','served','all'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => { setStatusFilter(s); setPage(0); }}
+              className={`px-3 py-1 text-xs rounded-full transition ${
+                statusFilter === s ? 'bg-white text-black font-medium' : 'text-gray-400 border border-gray-700 hover:text-white'
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {(['all','manual','ai-generated'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => { setSourceFilter(s); setPage(0); }}
+              className={`px-3 py-1 text-xs rounded-full transition ${
+                sourceFilter === s ? 'bg-white text-black font-medium' : 'text-gray-400 border border-gray-700 hover:text-white'
+              }`}
+            >
+              {s === 'ai-generated' ? 'AI' : s}
+            </button>
+          ))}
+        </div>
+        <input
+          type="text"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setPage(0); }}
+          placeholder="Search prompt text…"
+          className="flex-1 min-w-[200px] px-3 py-1.5 text-xs bg-black border border-gray-800 rounded-md text-white placeholder-gray-600 focus:outline-none focus:border-rose-500/50"
+        />
+      </div>
+
+      {/* Prompts table */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        {loading && prompts.length === 0 && (
+          <div className="px-5 py-8 text-center text-sm text-gray-500">Loading…</div>
+        )}
+        {!loading && prompts.length === 0 && (
+          <div className="px-5 py-12 text-center text-sm text-gray-500">
+            No prompts match this filter. Add some above or trigger AI generation.
+          </div>
+        )}
+        {prompts.length > 0 && (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-950/60 text-xs text-gray-500 uppercase">
+              <tr>
+                <th className="px-4 py-2 text-left font-medium">Prompt</th>
+                <th className="px-4 py-2 text-left font-medium w-28">Source</th>
+                <th className="px-4 py-2 text-left font-medium w-32">Created</th>
+                <th className="px-4 py-2 text-left font-medium w-32">Status</th>
+                <th className="px-4 py-2 text-right font-medium w-20"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {prompts.map(p => (
+                <tr key={p.id} className="border-t border-gray-800/60 hover:bg-gray-800/30">
+                  <td className="px-4 py-2 text-gray-200 max-w-md">
+                    <div className="line-clamp-2">{p.prompt}</div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className={`text-[10px] uppercase tracking-wider font-medium ${
+                      p.source === 'ai-generated' ? 'text-rose-400' : 'text-blue-400'
+                    }`}>{p.source === 'ai-generated' ? 'AI' : p.source}</span>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-500">
+                    {new Date(p.createdAt).toLocaleDateString()}
+                  </td>
+                  <td className="px-4 py-2 text-xs">
+                    {p.servedAt
+                      ? <span className="text-gray-500">served {new Date(p.servedAt).toLocaleDateString()}</span>
+                      : <span className="text-emerald-400">available</span>}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(p.id)}
+                      className="text-xs text-red-400 hover:text-red-300"
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          disabled={page === 0}
+          onClick={() => setPage(p => Math.max(0, p - 1))}
+          className="px-3 py-1.5 text-xs text-gray-400 border border-gray-700 rounded-md hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          ← Prev
+        </button>
+        <span className="text-xs text-gray-500">Page {page + 1}</span>
+        <button
+          type="button"
+          disabled={prompts.length < limit}
+          onClick={() => setPage(p => p + 1)}
+          className="px-3 py-1.5 text-xs text-gray-400 border border-gray-700 rounded-md hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StatBox({ label, value, accent }: { label: string; value: number; accent: string }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
+      <div className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">{label}</div>
+      <div className={`text-xl font-bold ${accent} mt-1 font-mono`}>{value.toLocaleString()}</div>
     </div>
   );
 }

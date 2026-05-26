@@ -1037,6 +1037,30 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xphr_started ON xgodo_proxy_health_runs(started_at DESC)`).catch(() => {});
 
+    // Video-prompt queue — the "Vid Gen" admin tool fills this with
+    // either manually-added or AI-generated short video prompts;
+    // GET /api/video_prompt pops one at a time for client consumers.
+    // served_at NULL = still available; non-null = already popped.
+    // Keep served rows around so we have an audit trail of what's
+    // been handed out. UNIQUE on prompt prevents identical duplicates
+    // from AI generation runs.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS video_prompts (
+        id SERIAL PRIMARY KEY,
+        prompt TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL DEFAULT 'manual',
+            -- 'manual' | 'ai-generated'
+        generation_meta JSONB,
+            -- { batch_id, model, theme, etc. }
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        served_at TIMESTAMPTZ,
+        served_to TEXT
+            -- token id or 'anonymous' for whoever popped this
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_available ON video_prompts(id) WHERE served_at IS NULL`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_created ON video_prompts(created_at DESC)`).catch(() => {});
+
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_task_log (
