@@ -213,63 +213,6 @@ export function banKey(key: string): void {
   })();
 }
 
-/** Parse `project_number:<n>` out of a Gemini 429 / RESOURCE_EXHAUSTED
- *  message. The full quota error string includes
- *  `consumer 'project_number:580972839754'.` — we extract just the
- *  digits so we can persist + dedupe-ban by project. */
-function extractProjectNumber(errMsg: string): string | null {
-  const m = errMsg.match(/project_number:(\d+)/);
-  return m ? m[1] : null;
-}
-
-/** Stamp the project_number on a key when we observe one (idempotent —
- *  only writes if the column was NULL, so we don't churn the row). */
-async function tagKeyProject(key: string, projectNumber: string): Promise<void> {
-  try {
-    const pool = await getPool();
-    await pool.query(
-      `UPDATE xgodo_api_keys SET project_number = $1
-        WHERE service = 'google_ai_studio' AND key = $2 AND project_number IS NULL`,
-      [projectNumber, key],
-    );
-  } catch { /* fire-and-forget */ }
-}
-
-/**
- * Ban every active key tied to this Gemini project for ~90 seconds.
- *
- * Per-project, per-region, per-minute is the quota Google enforces.
- * When one key in a project gets 429'd, picking ANY sibling key from
- * the same project will land in the same quota bucket. 90s is one
- * minute window + slack — the limit drains before we retry the
- * project's keys.
- *
- * Awaited so the next pickRandomActivePair → buildPairs reads the
- * fresh banned_until rows. Also resets lastPairBuild so the in-memory
- * cache picks up the new bans on next call.
- */
-export async function banProject(projectNumber: string, durationMs: number = 90_000): Promise<void> {
-  const pool = await getPool();
-  const expiry = Date.now() + durationMs;
-  try {
-    const r = await pool.query(
-      `UPDATE xgodo_api_keys
-          SET banned_until = to_timestamp($1 / 1000.0)
-        WHERE service = 'google_ai_studio'
-          AND project_number = $2
-          AND status = 'active'
-          AND (banned_until IS NULL OR banned_until < to_timestamp($1 / 1000.0))`,
-      [expiry, projectNumber],
-    );
-    console.log(`[embedding] Project ${projectNumber}: banned ${r.rowCount ?? 0} sibling keys for ${Math.round(durationMs / 1000)}s`);
-  } catch (err) {
-    console.error('[embedding] banProject failed:', (err as Error).message);
-  }
-  // Force the in-memory pairs cache to refresh on next pick — otherwise
-  // pickRandomActivePair would still see this project's keys as active
-  // until PAIR_CACHE_TTL expires (60s) and we'd retry the same project.
-  lastPairBuild = 0;
-}
 
 /** Mark a key as permanently invalid (e.g. 400 invalid_api_key responses).
  *  Drops it out of the rotation forever — operator can re-enable via SQL. */
@@ -389,14 +332,14 @@ export async function batchEmbedInputs(
     // 429'd doesn't fall through into the terminal classifier on a stray
     // status-string match.
     if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+      // The 429 body sometimes embeds `consumer 'project_number:N'` —
+      // tempting to interpret as a real project number to ban siblings
+      // by. In practice the pool is from many independent Google
+      // accounts and that field is a templated value that usually just
+      // means the key itself is banned. So we treat 429 as a per-key
+      // cooloff only; broader project-level bans would punish unrelated
+      // keys that happen to share an arbitrary template.
       banKey(pair.key);
-      const proj = extractProjectNumber(errMsg);
-      if (proj) {
-        // Learn the project for this key, then ban the whole project's
-        // minute-quota bucket so retries don't pick sibling keys.
-        await tagKeyProject(pair.key, proj);
-        await banProject(proj);
-      }
     } else {
       const verdict = classifyKeyError(errMsg);
       if (verdict.terminal) {
@@ -470,12 +413,8 @@ export async function batchEmbedGrouped(
     // PERMISSION_DENIED status string in the body), then terminal
     // classification → hard DELETE. Mirrors batchEmbedInputs.
     if (errMsg.includes('API 429') || errMsg.includes('"code": 429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+      // Per-key cooloff only — see note in batchEmbedGrouped.
       banKey(pair.key);
-      const proj = extractProjectNumber(errMsg);
-      if (proj) {
-        await tagKeyProject(pair.key, proj);
-        await banProject(proj);
-      }
     } else {
       const verdict = classifyKeyError(errMsg);
       if (verdict.terminal) {
