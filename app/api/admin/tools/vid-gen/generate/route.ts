@@ -1,23 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
+import { getRandomProxy } from '@/lib/xgodo-proxy';
 import crypto from 'crypto';
 
 /**
  * POST /api/admin/tools/vid-gen/generate
  *
- * Generates video prompts at scale via Gemini Flash. Each batch pulls
- * a fresh random key from the active google_ai_studio pool — keys are
- * from independent Google accounts, so per-key quota rotation is the
- * right dispersion strategy. (Earlier versions of this route tunnelled
- * Gemini calls through xgodo proxies, but ~50% of the proxy pool is
- * dead at any given time and Railway's egress IP isn't an issue for
- * AI Studio anyway, so direct fetch is the more reliable path.)
+ * Generates video prompts at scale via Gemini Flash. Each attempt
+ * rotates BOTH dimensions:
+ *   - key   — random active google_ai_studio row (pool is from many
+ *             independent Google accounts; per-key quota rotation
+ *             spreads the load across project buckets)
+ *   - proxy — random online xgodo device (rotates egress IP so we
+ *             don't pile up Gemini's per-IP rate limit on Railway's
+ *             single egress address — that's what was producing the
+ *             walls of 429s when we tried direct fetch)
  *
- * A batch that fails retries up to 3 times with a fresh key before
- * being counted as a permanent batch failure. The run only aborts when
- * failure ratio crosses 50% AND we've actually tried ≥ 4 batches —
- * tolerant of unlucky picks against a partially-degraded key pool.
+ * A batch that fails retries up to PER_BATCH_RETRIES times with a
+ * fresh (key, proxy) pair. The retry count is set high enough to
+ * tolerate the proxy pool's partial dead rate — at ~50% live, 8
+ * tries give us > 99% chance of landing on at least one good pair.
+ * Proxy is optional: if the dealer returns nothing we fall back to
+ * direct fetch rather than hard-failing.
+ *
+ * The run only aborts when failure ratio crosses 50% AND we've
+ * actually tried ≥ 4 batches.
  *
  * Body:
  *   { count?: number;            // total prompts. sync ≤ 50, bg ≤ 1000
@@ -40,7 +49,9 @@ export const maxDuration = 300;
 
 const BATCH_SIZE = 25;
 const DEFAULT_MODEL = 'gemini-flash-latest';
-const PER_BATCH_RETRIES = 3;
+// 8 retries handles a ~50% live-proxy rate gracefully: P(all 8 dead) ≈ 0.4%.
+// Bounded so a fully-dead pool doesn't burn the whole maxDuration window.
+const PER_BATCH_RETRIES = 8;
 const SYNC_CAP = 50;
 const BG_CAP = 1000;
 
@@ -64,14 +75,15 @@ async function pickAiStudioKey(): Promise<{ id: number; key: string } | null> {
 }
 
 /**
- * One Gemini call — pinned to a specific key. Throws on any failure
- * so the retry wrapper can swap the key.
+ * One Gemini call — pinned to a specific (key, proxy URL). Throws on
+ * any failure so the retry wrapper can swap the pair.
  */
 async function generateOneBatch(
   apiKey: string,
   model: string,
   n: number,
   theme: string | null,
+  proxyUrl: string | null,
 ): Promise<string[]> {
   const themeClause = theme ? `Theme: ${theme}\n\n` : '';
   const metaPrompt =
@@ -101,7 +113,11 @@ Example output for n=3:
     signal: AbortSignal.timeout(60_000),
   };
 
-  const res = await fetch(url, init);
+  // undici fetch when we have a proxy (native fetch doesn't honour
+  // dispatcher); native fetch otherwise.
+  const res = proxyUrl
+    ? await undiciFetch(url, { ...init, dispatcher: new ProxyAgent(proxyUrl) })
+    : await fetch(url, init);
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
@@ -131,8 +147,8 @@ Example output for n=3:
 
 /**
  * Try one batch up to PER_BATCH_RETRIES times, each attempt with a
- * fresh key. Returns whatever the first successful try produced — or
- * empty + lastError if all attempts failed.
+ * fresh (key, proxy) pair. Returns the first successful result, or
+ * empty + lastError if every attempt failed.
  */
 async function runOneBatchWithRetry(n: number, theme: string | null, model: string): Promise<BatchAttempt> {
   let lastError: string | undefined;
@@ -141,8 +157,11 @@ async function runOneBatchWithRetry(n: number, theme: string | null, model: stri
     if (!keyRow) {
       return { prompts: [], attempts: attempt - 1, lastError: 'no_active_keys' };
     }
+    // Proxy is optional: if the dealer returns nothing this iteration
+    // we still try direct rather than wasting the attempt.
+    const proxy = await getRandomProxy().catch(() => null);
     try {
-      const prompts = await generateOneBatch(keyRow.key, model, n, theme);
+      const prompts = await generateOneBatch(keyRow.key, model, n, theme, proxy?.url ?? null);
       return { prompts, attempts: attempt, lastError };
     } catch (err) {
       lastError = (err as Error).message?.slice(0, 200);
@@ -340,6 +359,19 @@ export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
 
   const pool = await getPool();
+
+  // Sweep stale 'running' rows. maxDuration is 300s; anything still
+  // running after 10 minutes is wedged (deploy mid-flight, OOM, etc.)
+  // and shouldn't keep flashing as in-progress in the UI.
+  await pool.query(
+    `UPDATE vid_gen_runs
+        SET status = 'failed',
+            completed_at = NOW(),
+            last_error = COALESCE(last_error, 'stale: exceeded 10min without completion')
+      WHERE status = 'running'
+        AND started_at < NOW() - INTERVAL '10 minutes'`,
+  ).catch(() => {});
+
   const runId = req.nextUrl.searchParams.get('runId');
   if (runId) {
     const r = await pool.query(`SELECT * FROM vid_gen_runs WHERE id = $1`, [runId]);
