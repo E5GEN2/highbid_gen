@@ -332,16 +332,21 @@ async function ensureCombinedV2(
       const vec = vectors[i];
       const embStr = '[' + vec.join(',') + ']';
       try {
+        // Vector DB: pgvector-backed, takes the bracket-string format.
         await vectorPool.query(
           `INSERT INTO niche_video_vectors_combined_v2 (video_id, keyword, embedding)
            VALUES ($1, $2, $3::vector)
            ON CONFLICT (video_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
           [r.videoId, 'video-seed', embStr],
         );
+        // Main DB: column is REAL[] (no pgvector installed here). Pass
+        // the raw JS number[] — node-postgres serialises to a PG array.
+        // The previous `$1::vector` cast was a copy-paste bug that
+        // failed silently on every write since pgvector isn't on this DB.
         await pool.query(
-          `UPDATE niche_spy_videos SET combined_embedding_v2 = $1::vector, combined_embedded_v2_at = NOW()
+          `UPDATE niche_spy_videos SET combined_embedding_v2 = $1, combined_embedded_v2_at = NOW()
            WHERE id = $2`,
-          [embStr, r.videoId],
+          [vec, r.videoId],
         );
         outcomes.set(r.videoId, { ok: true, cached: false });
       } catch (err) {
