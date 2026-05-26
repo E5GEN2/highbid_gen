@@ -21,7 +21,114 @@
 import { getPool } from './db';
 import { pickRandomActiveYtPair } from './yt-keys';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
-import { batchEmbedGrouped, type EmbedInput } from './embeddings';
+import type { EmbedInput } from './embeddings';
+
+// ─────────────────────────────────────────────────────────────────────
+// Direct Gemini embedding helper
+//
+// The shared lib/embeddings.ts batchEmbedGrouped routes through a
+// Python+curl subprocess that goes through an xgodo proxy by default.
+// The proxy pool is currently ~67% dead-on-connect, so most embed
+// calls were failing with curl exit 56. Same diagnosis as vid-gen.
+//
+// Direct fetch from Railway → Gemini works fine for the volumes
+// video-seed runs at. We also lazily clean up the key pool by
+// invalidating 403 PERMISSION_DENIED keys and cooling off 429 keys —
+// same pattern that's been working for the vid-gen generator.
+// ─────────────────────────────────────────────────────────────────────
+
+interface AiKeyRow { id: number; key: string; }
+
+async function pickHealthyAiKey(): Promise<AiKeyRow | null> {
+  const pool = await getPool();
+  const r = await pool.query<AiKeyRow>(
+    `SELECT id, key
+       FROM xgodo_api_keys
+      WHERE service = 'google_ai_studio'
+        AND status = 'active'
+        AND (banned_until IS NULL OR banned_until < NOW())
+      ORDER BY RANDOM()
+      LIMIT 1`,
+  );
+  return r.rows[0] ?? null;
+}
+
+function invalidateAiKey(keyId: number, reason: string): void {
+  void (async () => {
+    try {
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE xgodo_api_keys SET status = 'invalid', invalidated_at = NOW()
+          WHERE id = $1 AND status = 'active'`,
+        [keyId],
+      );
+      console.log(`[video-seed] Invalidated key id=${keyId} (${reason})`);
+    } catch { /* fire-and-forget */ }
+  })();
+}
+
+function cooloffAiKey(keyId: number, seconds: number = 90): void {
+  void (async () => {
+    try {
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE xgodo_api_keys SET banned_until = NOW() + ($1 || ' seconds')::interval
+          WHERE id = $2`,
+        [String(seconds), keyId],
+      );
+    } catch { /* fire-and-forget */ }
+  })();
+}
+
+/** Direct Gemini batchEmbedContents call. One key per attempt; throws on
+ *  any failure so the chunk loop can swap keys.
+ *  Marks 403 as invalid, 429 as cooled off, before throwing. */
+async function batchEmbedGroupedDirect(
+  groups: EmbedInput[][],
+  modelName: string,
+): Promise<number[][]> {
+  if (groups.length === 0) return [];
+
+  const keyRow = await pickHealthyAiKey();
+  if (!keyRow) throw new Error('no_active_ai_keys');
+
+  const requests = groups.map(group => ({
+    model: `models/${modelName}`,
+    content: {
+      parts: group.map(p => p.type === 'image'
+        ? { inlineData: { mimeType: p.mimeType, data: p.data } }
+        : { text: p.text }),
+    },
+  }));
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:batchEmbedContents?key=${keyRow.key}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests }),
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    if (res.status === 403 && /PERMISSION_DENIED|has been (denied|suspended)/i.test(errBody)) {
+      invalidateAiKey(keyRow.id, `gemini_403: ${errBody.slice(0, 80)}`);
+    } else if (res.status === 429) {
+      cooloffAiKey(keyRow.id, 90);
+    }
+    throw new Error(`Gemini HTTP ${res.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await res.json() as {
+    embeddings?: Array<{ values?: number[] }>;
+    error?: { code?: number; message?: string };
+  };
+  if (data.error) {
+    throw new Error(`Gemini error ${data.error.code}: ${(data.error.message || '').slice(0, 200)}`);
+  }
+  if (!data.embeddings) throw new Error('Gemini response had no embeddings');
+  return data.embeddings.map(e => e.values ?? []);
+}
 
 interface YtVideoSnippet {
   id: string;
@@ -303,18 +410,11 @@ async function ensureCombinedV2(
     let lastErr = '';
     for (let attempt = 1; attempt <= EMBED_RETRIES; attempt++) {
       try {
-        vectors = await batchEmbedGrouped(slice.map(s => s.group), modelName);
+        vectors = await batchEmbedGroupedDirect(slice.map(s => s.group), modelName);
         break;
       } catch (err) {
         lastErr = (err as Error).message?.slice(0, 200) || 'unknown';
         console.warn(`[video-seed] embed chunk attempt ${attempt}/${EMBED_RETRIES} failed:`, lastErr);
-        // Small linear backoff between retries so the project-ban DB
-        // UPDATE (fire-and-forget on banKey, awaited on banProject) has
-        // a moment to settle, and we don't burn through 5 retries in 6s
-        // hitting the same per-minute quota window.
-        if (attempt < EMBED_RETRIES) {
-          await new Promise(r => setTimeout(r, 500 * attempt));
-        }
       }
     }
     if (!vectors) {
