@@ -1,28 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { getRandomProxy } from '@/lib/xgodo-proxy';
 import crypto from 'crypto';
 
 /**
  * POST /api/admin/tools/vid-gen/generate
  *
- * Generates video prompts at scale via Gemini Flash. Each batch is
- * a (key, proxy) pair pulled at random:
+ * Generates video prompts at scale via Gemini Flash. Each batch pulls
+ * a fresh random key from the active google_ai_studio pool — keys are
+ * from independent Google accounts, so per-key quota rotation is the
+ * right dispersion strategy. (Earlier versions of this route tunnelled
+ * Gemini calls through xgodo proxies, but ~50% of the proxy pool is
+ * dead at any given time and Railway's egress IP isn't an issue for
+ * AI Studio anyway, so direct fetch is the more reliable path.)
  *
- *   - key:   ORDER BY RANDOM() LIMIT 1 over the 2.7k active
- *            google_ai_studio rows — spreads quota across the pool.
- *   - proxy: getRandomProxy() over the healthy xgodo device list —
- *            spreads egress IP so we don't burn Railway's single IP
- *            against Gemini's per-source rate limit.
- *
- *   Both dimensions are rotated per attempt, not just per batch. A
- *   batch that fails retries up to 3 times with a fresh (key, proxy)
- *   pair before being counted as a permanent batch failure. The run
- *   only aborts when failure ratio crosses 50% AND we've actually
- *   tried ≥ 4 batches — way more tolerant than the old "5 cumulative
- *   errors and die" threshold.
+ * A batch that fails retries up to 3 times with a fresh key before
+ * being counted as a permanent batch failure. The run only aborts when
+ * failure ratio crosses 50% AND we've actually tried ≥ 4 batches —
+ * tolerant of unlucky picks against a partially-degraded key pool.
  *
  * Body:
  *   { count?: number;            // total prompts. sync ≤ 50, bg ≤ 1000
@@ -69,15 +64,14 @@ async function pickAiStudioKey(): Promise<{ id: number; key: string } | null> {
 }
 
 /**
- * One Gemini call — pinned to a specific key + optional proxy URL.
- * Throws on any failure so the retry wrapper can swap the pair.
+ * One Gemini call — pinned to a specific key. Throws on any failure
+ * so the retry wrapper can swap the key.
  */
 async function generateOneBatch(
   apiKey: string,
   model: string,
   n: number,
   theme: string | null,
-  proxyUrl: string | null,
 ): Promise<string[]> {
   const themeClause = theme ? `Theme: ${theme}\n\n` : '';
   const metaPrompt =
@@ -107,11 +101,7 @@ Example output for n=3:
     signal: AbortSignal.timeout(60_000),
   };
 
-  // undici fetch when proxied, native fetch otherwise. Native fetch
-  // doesn't honour `dispatcher` so we MUST use undici when proxying.
-  const res = proxyUrl
-    ? await undiciFetch(url, { ...init, dispatcher: new ProxyAgent(proxyUrl) })
-    : await fetch(url, init);
+  const res = await fetch(url, init);
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
@@ -141,8 +131,8 @@ Example output for n=3:
 
 /**
  * Try one batch up to PER_BATCH_RETRIES times, each attempt with a
- * fresh (key, proxy) pair. Returns whatever the last successful try
- * produced — or empty + lastError if all attempts failed.
+ * fresh key. Returns whatever the first successful try produced — or
+ * empty + lastError if all attempts failed.
  */
 async function runOneBatchWithRetry(n: number, theme: string | null, model: string): Promise<BatchAttempt> {
   let lastError: string | undefined;
@@ -151,11 +141,8 @@ async function runOneBatchWithRetry(n: number, theme: string | null, model: stri
     if (!keyRow) {
       return { prompts: [], attempts: attempt - 1, lastError: 'no_active_keys' };
     }
-    // Proxy is optional — if the pool is empty/exhausted we fall back
-    // to direct fetch rather than failing the batch.
-    const proxy = await getRandomProxy().catch(() => null);
     try {
-      const prompts = await generateOneBatch(keyRow.key, model, n, theme, proxy?.url ?? null);
+      const prompts = await generateOneBatch(keyRow.key, model, n, theme);
       return { prompts, attempts: attempt, lastError };
     } catch (err) {
       lastError = (err as Error).message?.slice(0, 200);
