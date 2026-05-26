@@ -7978,6 +7978,23 @@ interface VidPromptRow {
   servedTo: string | null;
 }
 interface VidPromptCounts { available: number; served: number; manual: number; ai: number; total: number; }
+interface VidGenRun {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: 'running' | 'done' | 'failed';
+  mode: 'sync' | 'background';
+  countRequested: number;
+  countGenerated: number;
+  countInserted: number;
+  countDuplicates: number;
+  batchesTotal: number;
+  batchesFailed: number;
+  theme: string | null;
+  model: string;
+  lastError: string | null;
+  concurrency: number;
+}
 
 function VidGenTab({ active }: { active: boolean }) {
   const [counts, setCounts] = useState<VidPromptCounts | null>(null);
@@ -7999,8 +8016,13 @@ function VidGenTab({ active }: { active: boolean }) {
   const [genCount, setGenCount] = useState(50);
   const [genTheme, setGenTheme] = useState('');
   const [genBg, setGenBg] = useState(false);
+  const [genConcurrency, setGenConcurrency] = useState(6);
   const [genBusy, setGenBusy] = useState(false);
   const [genMsg, setGenMsg] = useState<string | null>(null);
+
+  // Recent runs + the run currently being watched live.
+  const [runs, setRuns] = useState<VidGenRun[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   // Global serve-time suffix — appended to every prompt returned by
   // GET /api/video_prompt when enabled. Lets us bolt on style modifiers
@@ -8038,10 +8060,51 @@ function VidGenTab({ active }: { active: boolean }) {
     }
   }, [statusFilter, sourceFilter, debouncedSearch, page]);
 
+  const fetchRuns = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/tools/vid-gen/generate?limit=10');
+      const d = await r.json();
+      if (d.ok) setRuns(d.runs || []);
+    } catch { /* silent */ }
+  }, []);
+
   useEffect(() => {
     if (!active) return;
     fetchPrompts();
   }, [active, fetchPrompts]);
+
+  // Load recent runs whenever the tab activates so the runs panel
+  // shows audit history even before a new run is fired.
+  useEffect(() => {
+    if (!active) return;
+    fetchRuns();
+  }, [active, fetchRuns]);
+
+  // Live-poll the active run + the runs list at 3s while anything
+  // is still running. Stops polling once everything is settled.
+  useEffect(() => {
+    if (!active) return;
+    const anyRunning = activeRunId || runs.some(r => r.status === 'running');
+    if (!anyRunning) return;
+    const t = setInterval(() => {
+      fetchRuns();
+      // If the active run completed, also refresh the prompts table
+      // so newly-inserted rows show up.
+      fetchPrompts();
+    }, 3000);
+    return () => clearInterval(t);
+  }, [active, activeRunId, runs, fetchRuns, fetchPrompts]);
+
+  // Drop the activeRunId once that run finishes — stops the noisy
+  // "watching X…" message lingering forever after completion.
+  useEffect(() => {
+    if (!activeRunId) return;
+    const r = runs.find(x => x.id === activeRunId);
+    if (r && r.status !== 'running') {
+      setGenMsg(`Run ${activeRunId.slice(0, 8)} ${r.status}: inserted ${r.countInserted}/${r.countRequested}, ${r.batchesFailed}/${r.batchesTotal} batches failed${r.lastError ? ` (${r.lastError})` : ''}`);
+      setActiveRunId(null);
+    }
+  }, [activeRunId, runs]);
 
   // Load suffix settings once on tab activation. We don't refetch on
   // every filter change since settings are independent of the table.
@@ -8124,16 +8187,23 @@ function VidGenTab({ active }: { active: boolean }) {
       const r = await fetch('/api/admin/tools/vid-gen/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count: genCount, theme: genTheme.trim() || undefined, background: genBg }),
+        body: JSON.stringify({
+          count: genCount,
+          theme: genTheme.trim() || undefined,
+          background: genBg,
+          concurrency: genConcurrency,
+        }),
       });
       const d = await r.json();
       if (d.ok) {
+        setActiveRunId(d.runId);
         if (d.mode === 'background') {
-          setGenMsg(`${d.message} (batchId: ${d.batchId.slice(0, 8)})`);
+          setGenMsg(`Background run started (${d.concurrency} workers). Watching ${d.runId.slice(0, 8)}…`);
         } else {
-          setGenMsg(`Generated ${d.generated}, inserted ${d.inserted}, ${d.duplicatesSkipped} dupes. Batches: ${d.batches}.${d.errors.length ? ' Errors: ' + d.errors.length : ''}`);
+          setGenMsg(`Sync done — inserted ${d.inserted}/${d.requested}, ${d.duplicates} dupes, ${d.batchesFailed}/${d.batches} batches failed.`);
         }
         fetchPrompts();
+        fetchRuns();
       } else {
         setGenMsg(d.error || 'Failed');
       }
@@ -8279,6 +8349,19 @@ function VidGenTab({ active }: { active: boolean }) {
                 <input type="checkbox" checked={genBg} onChange={e => setGenBg(e.target.checked)} className="accent-rose-500" />
                 Background
               </label>
+              {genBg && (
+                <>
+                  <label className="text-xs text-gray-400 ml-3">Workers</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={12}
+                    value={genConcurrency}
+                    onChange={e => setGenConcurrency(Math.max(1, Math.min(12, parseInt(e.target.value) || 1)))}
+                    className="w-16 px-2 py-1 text-sm bg-black border border-gray-800 rounded-md text-white focus:outline-none focus:border-rose-500/50"
+                  />
+                </>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <label className="text-xs text-gray-400 w-20">Theme</label>
@@ -8304,6 +8387,68 @@ function VidGenTab({ active }: { active: boolean }) {
           </div>
         </div>
       </div>
+
+      {/* Recent AI-gen runs */}
+      {runs.length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-white mb-2">Recent generation runs</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-gray-500 uppercase">
+                <tr>
+                  <th className="px-2 py-1 text-left font-medium">When</th>
+                  <th className="px-2 py-1 text-left font-medium">Mode</th>
+                  <th className="px-2 py-1 text-left font-medium">Status</th>
+                  <th className="px-2 py-1 text-right font-medium">Inserted/Req</th>
+                  <th className="px-2 py-1 text-right font-medium">Dupes</th>
+                  <th className="px-2 py-1 text-right font-medium">Batches ok/fail</th>
+                  <th className="px-2 py-1 text-left font-medium">Theme</th>
+                  <th className="px-2 py-1 text-left font-medium">Last error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map(r => {
+                  const pct = r.countRequested > 0
+                    ? Math.round((r.countInserted / r.countRequested) * 100)
+                    : 0;
+                  const elapsed = r.completedAt
+                    ? Math.max(0, (new Date(r.completedAt).getTime() - new Date(r.startedAt).getTime()) / 1000)
+                    : Math.max(0, (Date.now() - new Date(r.startedAt).getTime()) / 1000);
+                  return (
+                    <tr key={r.id} className={`border-t border-gray-800/60 ${r.status === 'running' ? 'bg-rose-500/5' : ''}`}>
+                      <td className="px-2 py-1.5 text-gray-300">
+                        <span title={r.startedAt}>{r.startedAt.slice(11, 19)}</span>
+                        <span className="text-gray-500 ml-1.5">({elapsed.toFixed(0)}s)</span>
+                      </td>
+                      <td className="px-2 py-1.5 text-gray-400">
+                        {r.mode}{r.mode === 'background' && r.concurrency > 1 ? `×${r.concurrency}` : ''}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <span className={
+                          r.status === 'done'    ? 'text-emerald-400' :
+                          r.status === 'failed'  ? 'text-red-400' :
+                          'text-amber-400 animate-pulse'
+                        }>{r.status}</span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono">
+                        <span className="text-white">{r.countInserted}</span>
+                        <span className="text-gray-500">/{r.countRequested}</span>
+                        <span className="text-gray-500 ml-1.5">({pct}%)</span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-gray-400 font-mono">{r.countDuplicates}</td>
+                      <td className="px-2 py-1.5 text-right text-gray-400 font-mono">
+                        {r.batchesTotal - r.batchesFailed}/<span className={r.batchesFailed > 0 ? 'text-red-400' : 'text-gray-400'}>{r.batchesFailed}</span>
+                      </td>
+                      <td className="px-2 py-1.5 text-gray-500 max-w-[160px] truncate" title={r.theme || ''}>{r.theme || '—'}</td>
+                      <td className="px-2 py-1.5 text-red-300 max-w-[260px] truncate font-mono text-[10px]" title={r.lastError || ''}>{r.lastError || '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">

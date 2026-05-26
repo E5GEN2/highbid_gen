@@ -1061,6 +1061,33 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_available ON video_prompts(id) WHERE served_at IS NULL`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_created ON video_prompts(created_at DESC)`).catch(() => {});
 
+    // Vid Gen runs — durable log of every AI-generation kick-off.
+    // Background mode would otherwise be a black box; this gives the
+    // UI something to poll + the operator something to debug. Row is
+    // created up front, then continuously updated as batches finish.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vid_gen_runs (
+        id UUID PRIMARY KEY,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'running',
+            -- 'running' | 'done' | 'failed'
+        mode TEXT NOT NULL,
+            -- 'sync' | 'background'
+        count_requested INT NOT NULL,
+        count_generated INT NOT NULL DEFAULT 0,
+        count_inserted INT NOT NULL DEFAULT 0,
+        count_duplicates INT NOT NULL DEFAULT 0,
+        batches_total INT NOT NULL DEFAULT 0,
+        batches_failed INT NOT NULL DEFAULT 0,
+        theme TEXT,
+        model TEXT NOT NULL,
+        last_error TEXT,
+        concurrency INT NOT NULL DEFAULT 1
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vgr_started ON vid_gen_runs(started_at DESC)`).catch(() => {});
+
     // Vid Gen settings — single-row config table for global suffix
     // that gets appended at serve time (e.g. ", photoreal, cinematic
     // 8k"). Storing this separately from the prompt rows means we
