@@ -8216,7 +8216,7 @@ function VidGenTab({ active }: { active: boolean }) {
         <div className="flex items-center justify-between mt-2 gap-3">
           <span className="text-xs text-gray-500 truncate">
             {suffix.trim() && suffixEnabled
-              ? <>Preview: <span className="text-gray-300">&lt;prompt&gt; {suffix.trim()}</span></>
+              ? <>Preview: <span className="text-gray-300">&lt;prompt&gt;{/^[,.;:!?]/.test(suffix.trim()) ? '' : ' '}{suffix.trim()}</span></>
               : <>{suffix.length}/500 chars</>}
           </span>
           <div className="flex items-center gap-2">

@@ -66,14 +66,17 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Append the global suffix at serve time when enabled. Single-space
-  // separator — the suffix should include its own leading comma /
-  // punctuation if the user wants that (so ", photoreal, cinematic"
-  // composes naturally with the prompt).
+  // Append the global suffix at serve time when enabled. If the suffix
+  // starts with its own punctuation (", " / ". " etc.) join flush — so
+  // ", photoreal" produces "<prompt>, photoreal" not "<prompt> , photoreal".
+  // Otherwise insert a single space so plain words ("photoreal 8k")
+  // don't run into the previous token.
   let prompt = popRes.rows[0].prompt;
   const cfg = settingsRes.rows[0];
   if (cfg?.suffix_enabled && cfg.suffix?.trim()) {
-    prompt = `${prompt} ${cfg.suffix.trim()}`;
+    const trimmed = cfg.suffix.trim();
+    const sep = /^[,.;:!?]/.test(trimmed) ? '' : ' ';
+    prompt = `${prompt}${sep}${trimmed}`;
   }
 
   return NextResponse.json({ prompt });
