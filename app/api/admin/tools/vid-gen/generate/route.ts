@@ -62,17 +62,37 @@ interface BatchAttempt {
   lastError?: string;
 }
 
-/** Pick one random active google_ai_studio key. */
+/** Pick one random google_ai_studio key that isn't currently cooling
+ *  off from a 429. Without the banned_until filter, a key just rejected
+ *  for per-minute quota would be re-pickable on the next retry. */
 async function pickAiStudioKey(): Promise<{ id: number; key: string } | null> {
   const pool = await getPool();
   const r = await pool.query<{ id: number; key: string }>(
     `SELECT id, key
        FROM xgodo_api_keys
-      WHERE service = 'google_ai_studio' AND status = 'active'
+      WHERE service = 'google_ai_studio'
+        AND status = 'active'
+        AND (banned_until IS NULL OR banned_until < NOW())
       ORDER BY RANDOM()
       LIMIT 1`,
   );
   return r.rows[0] ?? null;
+}
+
+/** Soft cooloff for a key that hit per-minute quota (429). Lets the
+ *  minute window slide before we touch this key again. Fire-and-forget. */
+function cooloffKey(keyId: number, seconds: number = 90): void {
+  void (async () => {
+    try {
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE xgodo_api_keys
+            SET banned_until = NOW() + ($1 || ' seconds')::interval
+          WHERE id = $2`,
+        [String(seconds), keyId],
+      );
+    } catch { /* fire-and-forget */ }
+  })();
 }
 
 /**
@@ -146,6 +166,11 @@ Example output for n=3:
     // shrinks to working keys.
     if (res.status === 403 && /PERMISSION_DENIED|has been (denied|suspended)/i.test(errBody)) {
       invalidateKey(keyId, `gemini_403: ${errBody.slice(0, 80)}`);
+    }
+    // 429 = per-minute project quota hit. Cool the key off for 90s so
+    // the next retry doesn't keep re-rolling it from the random pool.
+    if (res.status === 429) {
+      cooloffKey(keyId, 90);
     }
     throw new Error(`Gemini HTTP ${res.status}: ${errBody.slice(0, 200)}`);
   }
