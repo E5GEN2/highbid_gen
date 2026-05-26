@@ -61,7 +61,8 @@ export interface SeedExpandResult {
     url: string;
     title: string | null;
     thumbnail: string | null;
-    embeddingCached: boolean;      // false if we just generated it
+    embeddingCached: boolean;      // true if a vector already existed; false if we attempted to generate one this call
+    embedError?: string;           // populated only when generation was attempted AND failed
   };
   candidates: SeedCandidate[];     // every candidate we processed, in submitted order
   matches: SeedCandidate[];        // filtered subset (above threshold OR top-K)
@@ -230,29 +231,53 @@ async function resolveBatch(
   });
 }
 
+/** Per-video outcome of the ensureCombinedV2 pipeline — surfaces in
+ *  the API response so the operator can see exactly which step failed. */
+export type EmbedOutcome =
+  | { ok: true; cached: boolean }
+  | { ok: false; reason: 'thumb_fetch_failed' | 'embed_api_failed' | 'persist_failed' | 'missing_title_or_thumb'; detail?: string };
+
 /**
  * Embed any of the given rows that don't already have combined_v2
  * vectors. Writes to niche_video_vectors_combined_v2 and stamps
  * niche_spy_videos.combined_embedded_v2_at on success.
  *
- * Returns the set of videoIds successfully embedded (or already cached).
+ * Returns one outcome per videoId so the caller can surface the exact
+ * failure mode (thumbnail unreachable, Gemini API down, persist crash).
+ *
+ * Embed-chunk retries: each Gemini call tries up to 3 fresh (key, proxy)
+ * pairs before giving up on the whole chunk. Mirrors the resilient
+ * pattern in /api/admin/tools/vid-gen/generate — a single bad key or
+ * proxy shouldn't tank an entire seed expansion.
  */
 async function ensureCombinedV2(
   rows: ResolvedVideo[],
   modelName = 'gemini-embedding-2-preview',
-): Promise<Set<number>> {
+): Promise<Map<number, EmbedOutcome>> {
   const pool = await getPool();
-  const ok = new Set<number>();
+  const outcomes = new Map<number, EmbedOutcome>();
+
+  for (const r of rows) {
+    if (r.hadCombinedV2) {
+      outcomes.set(r.videoId, { ok: true, cached: true });
+    } else if (!r.title || !r.thumbnail) {
+      outcomes.set(r.videoId, { ok: false, reason: 'missing_title_or_thumb' });
+    }
+  }
+
   const needsEmbed = rows.filter(r => !r.hadCombinedV2 && r.title && r.thumbnail);
-  for (const r of rows) if (r.hadCombinedV2) ok.add(r.videoId);
+  if (needsEmbed.length === 0) return outcomes;
 
-  if (needsEmbed.length === 0) return ok;
-
-  // Fetch thumbnail bytes in parallel, build group inputs, embed.
-  const groupsRaw: Array<{ row: ResolvedVideo; group: EmbedInput[] } | null> = await Promise.all(
+  // Step A: fetch thumbnail bytes in parallel; record thumb-fetch
+  // failures so the caller can distinguish "YT IP block" from "Gemini
+  // failed". 12s timeout per thumb is already in fetchThumbBase64.
+  const groupsRaw = await Promise.all(
     needsEmbed.map(async r => {
       const img = await fetchThumbBase64(r.thumbnail!);
-      if (!img) return null;
+      if (!img) {
+        outcomes.set(r.videoId, { ok: false, reason: 'thumb_fetch_failed' });
+        return null;
+      }
       return {
         row: r,
         group: [
@@ -262,24 +287,39 @@ async function ensureCombinedV2(
       };
     }),
   );
-
   const valid = groupsRaw.filter((x): x is { row: ResolvedVideo; group: EmbedInput[] } => !!x);
-  if (valid.length === 0) return ok;
+  if (valid.length === 0) return outcomes;
 
-  // Gemini batchEmbedGrouped takes up to 100 groups; chunk if needed.
+  // Step B: Gemini batchEmbedGrouped takes up to 100 groups; chunk if
+  // needed. Retry each chunk up to 3 times with a fresh pair on failure
+  // (batchEmbedGrouped picks the pair internally — we just retry).
   const CHUNK = 100;
+  const EMBED_RETRIES = 3;
+  const { vectorPool } = await import('./vector-db');
+
   for (let off = 0; off < valid.length; off += CHUNK) {
     const slice = valid.slice(off, off + CHUNK);
-    let vectors: number[][];
-    try {
-      vectors = await batchEmbedGrouped(slice.map(s => s.group), modelName);
-    } catch (err) {
-      console.warn('[video-seed] embedding chunk failed:', (err as Error).message);
+    let vectors: number[][] | null = null;
+    let lastErr = '';
+    for (let attempt = 1; attempt <= EMBED_RETRIES; attempt++) {
+      try {
+        vectors = await batchEmbedGrouped(slice.map(s => s.group), modelName);
+        break;
+      } catch (err) {
+        lastErr = (err as Error).message?.slice(0, 200) || 'unknown';
+        console.warn(`[video-seed] embed chunk attempt ${attempt}/${EMBED_RETRIES} failed:`, lastErr);
+      }
+    }
+    if (!vectors) {
+      // All retries exhausted — mark every row in this chunk as failed.
+      for (const s of slice) {
+        outcomes.set(s.row.videoId, { ok: false, reason: 'embed_api_failed', detail: lastErr });
+      }
       continue;
     }
-    // Persist each embedding to the vector DB + stamp the main DB.
-    // We do this via raw SQL to share the existing vector-db pool.
-    const { vectorPool } = await import('./vector-db');
+
+    // Step C: persist. Vector DB + main DB. Per-row try/catch so one
+    // bad insert doesn't lose the rest of the chunk.
     for (let i = 0; i < slice.length && i < vectors.length; i++) {
       const r = slice[i].row;
       const vec = vectors[i];
@@ -296,13 +336,15 @@ async function ensureCombinedV2(
            WHERE id = $2`,
           [embStr, r.videoId],
         );
-        ok.add(r.videoId);
+        outcomes.set(r.videoId, { ok: true, cached: false });
       } catch (err) {
-        console.warn(`[video-seed] persist embedding for video ${r.videoId} failed:`, (err as Error).message);
+        const detail = (err as Error).message?.slice(0, 200);
+        console.warn(`[video-seed] persist for video ${r.videoId} failed:`, detail);
+        outcomes.set(r.videoId, { ok: false, reason: 'persist_failed', detail });
       }
     }
   }
-  return ok;
+  return outcomes;
 }
 
 export interface ExpandOpts {
@@ -351,7 +393,12 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
   // ── Step 2: embed missing combined_v2 vectors.
   const t1 = Date.now();
   const allRows = [seedRow, ...candidateRows.map(c => c.row).filter((r): r is ResolvedVideo => !!r)];
-  const embedded = await ensureCombinedV2(allRows);
+  const outcomes = await ensureCombinedV2(allRows);
+  // Back-compat: previous code used a Set<number> of successful ids.
+  // Build one from the new outcomes map.
+  const embedded = new Set<number>(
+    [...outcomes.entries()].filter(([, o]) => o.ok).map(([id]) => id),
+  );
   const embeddingMs = Date.now() - t1;
 
   // ── Step 3: cosine similarity for each candidate vs the seed.
@@ -394,13 +441,26 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
       };
     }
     const sim = similarityMap.get(c.row.videoId) ?? null;
+    // Pull the precise failure reason from outcomes so the API caller
+    // can tell "Gemini failed" from "YT blocked the thumbnail fetch".
+    let error: string | undefined;
+    if (sim == null) {
+      const outcome = outcomes.get(c.row.videoId);
+      if (outcome && outcome.ok === false) {
+        const reason = outcome.reason;
+        const detail = outcome.detail;
+        error = detail ? `${reason}: ${detail}` : reason;
+      } else {
+        error = 'no embedding';
+      }
+    }
     return {
       videoId: c.row.videoId, ytId: c.row.ytId,
       url: c.url, title: c.row.title, thumbnail: c.row.thumbnail,
       similarity: sim,
       matched: false,   // populated below
       rank: i + 1,
-      error: sim == null ? 'no embedding' : undefined,
+      error,
     };
   });
 
@@ -456,6 +516,13 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
   }
   const persistMs = Date.now() - t3;
 
+  const seedOutcome = outcomes.get(seedRow.videoId);
+  let seedEmbedError: string | undefined;
+  if (seedOutcome && seedOutcome.ok === false) {
+    const reason = seedOutcome.reason;
+    const detail = seedOutcome.detail;
+    seedEmbedError = detail ? `${reason}: ${detail}` : reason;
+  }
   return {
     seed: {
       videoId: seedRow.videoId,
@@ -464,6 +531,7 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
       title: seedRow.title,
       thumbnail: seedRow.thumbnail,
       embeddingCached: seedRow.hadCombinedV2,
+      embedError: seedEmbedError,
     },
     candidates,
     matches: candidates.filter(c => c.matched),
