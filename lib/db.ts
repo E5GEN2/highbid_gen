@@ -966,6 +966,13 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xak_service_status ON xgodo_api_keys(service, status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xak_banned_until ON xgodo_api_keys(banned_until) WHERE banned_until IS NOT NULL`).catch(() => {});
+    // Project number is learned lazily from 429 / RESOURCE_EXHAUSTED
+    // errors (whose body includes `project_number:<n>`). Once known we
+    // can ban the entire project briefly when ONE of its sibling keys
+    // hits the per-project regional minute quota — otherwise random
+    // retries cluster on the same poisoned project.
+    await client.query(`ALTER TABLE xgodo_api_keys ADD COLUMN IF NOT EXISTS project_number TEXT`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xak_project ON xgodo_api_keys(service, project_number) WHERE project_number IS NOT NULL`).catch(() => {});
 
     // Health-check runs — one row per yt-keys-health sweep. Lets
     // background sweeps be polled while in-flight and supervised
