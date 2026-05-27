@@ -1061,6 +1061,34 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_available ON video_prompts(id) WHERE served_at IS NULL`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_created ON video_prompts(created_at DESC)`).catch(() => {});
 
+    // Reservation columns for visibility-timeout pop semantics. When a
+    // client pops with ?reservable=1, we stamp served_at + claim_token
+    // but DON'T treat the prompt as finally consumed until POST
+    // /api/video_prompt/confirm comes back with the matching token. If
+    // the client never confirms, the picker considers the prompt
+    // available again after RESERVATION_TIMEOUT minutes — fixing the
+    // "client popped 350 prompts, only generated 15 videos, the rest
+    // are lost" scenario the operator hit on production.
+    await client.query(`ALTER TABLE video_prompts ADD COLUMN IF NOT EXISTS claim_token TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE video_prompts ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`ALTER TABLE video_prompts ADD COLUMN IF NOT EXISTS confirmation_meta JSONB`).catch(() => {});
+    // Partial index so confirm lookups stay O(1) — claim_token is a
+    // UUID, never collides across active reservations.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vp_claim_token ON video_prompts(claim_token) WHERE claim_token IS NOT NULL AND confirmed_at IS NULL`).catch(() => {});
+    // One-shot backfill: every row served before reservation existed
+    // was implicitly "confirmed" (the old GET marked-and-consumed
+    // atomically). Without this fill-in, the new picker would treat
+    // those legacy-served rows as expired-reservations after 5min and
+    // hand them out a second time. Idempotent — the WHERE clause skips
+    // rows we already touched on a previous boot.
+    await client.query(`
+      UPDATE video_prompts
+         SET confirmed_at = served_at
+       WHERE served_at IS NOT NULL
+         AND confirmed_at IS NULL
+         AND claim_token IS NULL
+    `).catch(() => {});
+
     // Vid Gen runs — durable log of every AI-generation kick-off.
     // Background mode would otherwise be a black box; this gives the
     // UI something to poll + the operator something to debug. Row is

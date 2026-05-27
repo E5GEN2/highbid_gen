@@ -7977,7 +7977,14 @@ interface VidPromptRow {
   servedAt: string | null;
   servedTo: string | null;
 }
-interface VidPromptCounts { available: number; served: number; manual: number; ai: number; total: number; }
+interface VidPromptCounts {
+  available: number;
+  reserved: number;   // popped via ?reservable=1 awaiting POST /confirm, <5min old
+  confirmed: number;  // truly used
+  manual: number;
+  ai: number;
+  total: number;
+}
 interface VidGenRun {
   id: string;
   startedAt: string;
@@ -8000,7 +8007,7 @@ function VidGenTab({ active }: { active: boolean }) {
   const [counts, setCounts] = useState<VidPromptCounts | null>(null);
   const [prompts, setPrompts] = useState<VidPromptRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<'available' | 'served' | 'all'>('available');
+  const [statusFilter, setStatusFilter] = useState<'available' | 'reserved' | 'confirmed' | 'all'>('available');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'manual' | 'ai-generated'>('all');
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -8256,9 +8263,10 @@ function VidGenTab({ active }: { active: boolean }) {
       {/* Stats strip + bulk actions */}
       {counts && (
         <div className="space-y-2">
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
             <StatBox label="Available" value={counts.available} accent="text-emerald-400" />
-            <StatBox label="Served"    value={counts.served}    accent="text-zinc-400" />
+            <StatBox label="Reserved"  value={counts.reserved}  accent="text-amber-400" />
+            <StatBox label="Confirmed" value={counts.confirmed} accent="text-zinc-400" />
             <StatBox label="Manual"    value={counts.manual}    accent="text-blue-400" />
             <StatBox label="AI-gen"    value={counts.ai}        accent="text-rose-400" />
             <StatBox label="Total"     value={counts.total}     accent="text-white" />
@@ -8484,7 +8492,7 @@ function VidGenTab({ active }: { active: boolean }) {
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-1.5">
-          {(['available','served','all'] as const).map(s => (
+          {(['available','reserved','confirmed','all'] as const).map(s => (
             <button
               key={s}
               onClick={() => { setStatusFilter(s); setPage(0); }}

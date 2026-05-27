@@ -34,26 +34,47 @@ export const revalidate = 0;
 
 const MAX_PROMPT_LEN = 2000;
 
-interface CountsRow { available: string; served: string; manual: string; ai: string; }
+interface CountsRow {
+  available: string;        // never served OR reservation expired without confirm
+  reserved: string;         // served, claim_token set, not yet confirmed, still inside 5min window
+  confirmed: string;        // truly consumed
+  manual: string;
+  ai: string;
+}
 
-async function fetchCounts(): Promise<{ available: number; served: number; manual: number; ai: number; total: number }> {
+async function fetchCounts(): Promise<{
+  available: number; reserved: number; confirmed: number;
+  manual: number; ai: number; total: number;
+}> {
   const pool = await getPool();
+  // Same 5-min visibility window as the picker. Anything served with a
+  // claim_token but no confirmation AND older than 5min is effectively
+  // back in the available bucket.
   const r = await pool.query<CountsRow>(
     `SELECT
-       COUNT(*) FILTER (WHERE served_at IS NULL)::text                AS available,
-       COUNT(*) FILTER (WHERE served_at IS NOT NULL)::text             AS served,
-       COUNT(*) FILTER (WHERE source = 'manual')::text                 AS manual,
-       COUNT(*) FILTER (WHERE source = 'ai-generated')::text           AS ai
+       COUNT(*) FILTER (
+         WHERE confirmed_at IS NULL
+           AND (served_at IS NULL OR served_at < NOW() - INTERVAL '5 minutes')
+       )::text AS available,
+       COUNT(*) FILTER (
+         WHERE confirmed_at IS NULL
+           AND claim_token IS NOT NULL
+           AND served_at >= NOW() - INTERVAL '5 minutes'
+       )::text AS reserved,
+       COUNT(*) FILTER (WHERE confirmed_at IS NOT NULL)::text AS confirmed,
+       COUNT(*) FILTER (WHERE source = 'manual')::text        AS manual,
+       COUNT(*) FILTER (WHERE source = 'ai-generated')::text  AS ai
        FROM video_prompts`,
   );
   const row = r.rows[0];
   const available = parseInt(row?.available ?? '0') || 0;
-  const served    = parseInt(row?.served    ?? '0') || 0;
+  const reserved  = parseInt(row?.reserved  ?? '0') || 0;
+  const confirmed = parseInt(row?.confirmed ?? '0') || 0;
   return {
-    available, served,
+    available, reserved, confirmed,
     manual: parseInt(row?.manual ?? '0') || 0,
     ai:     parseInt(row?.ai     ?? '0') || 0,
-    total: available + served,
+    total: available + reserved + confirmed,
   };
 }
 
@@ -69,8 +90,22 @@ export async function GET(req: NextRequest) {
 
   const where: string[] = [];
   const params: (string | number)[] = [];
-  if (status === 'available') where.push('served_at IS NULL');
-  else if (status === 'served') where.push('served_at IS NOT NULL');
+  // Status filter accepts:
+  //   available  — never served OR reservation expired (back in pool)
+  //   reserved   — popped via ?reservable=1, awaiting confirm, < 5min old
+  //   confirmed  — truly used (POST /confirm came back) OR popped via
+  //                the legacy non-reservable path
+  //   served     — back-compat alias for "reserved OR confirmed"
+  //   all        — no filter
+  if (status === 'available') {
+    where.push(`(confirmed_at IS NULL AND (served_at IS NULL OR served_at < NOW() - INTERVAL '5 minutes'))`);
+  } else if (status === 'reserved') {
+    where.push(`(confirmed_at IS NULL AND claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes')`);
+  } else if (status === 'confirmed') {
+    where.push(`confirmed_at IS NOT NULL`);
+  } else if (status === 'served') {
+    where.push(`(confirmed_at IS NOT NULL OR (claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes'))`);
+  }
   if (source !== 'all') {
     params.push(source);
     where.push(`source = $${params.length}`);
@@ -84,7 +119,8 @@ export async function GET(req: NextRequest) {
 
   const pool = await getPool();
   const r = await pool.query(
-    `SELECT id, prompt, source, generation_meta, created_at, served_at, served_to
+    `SELECT id, prompt, source, generation_meta, created_at,
+            served_at, served_to, claim_token, confirmed_at, confirmation_meta
        FROM video_prompts
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY created_at DESC
@@ -104,6 +140,9 @@ export async function GET(req: NextRequest) {
       createdAt: row.created_at,
       servedAt: row.served_at,
       servedTo: row.served_to,
+      claimToken: row.claim_token,
+      confirmedAt: row.confirmed_at,
+      confirmationMeta: row.confirmation_meta,
     })),
     limit, offset,
   });
@@ -158,21 +197,30 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
 
-  const body = await req.json().catch(() => ({})) as { ids?: number[]; clearStatus?: 'available' | 'served' };
+  const body = await req.json().catch(() => ({})) as { ids?: number[]; clearStatus?: 'available' | 'served' | 'reserved' | 'confirmed' };
   const pool = await getPool();
 
   // Bulk-clear mode — delete every row matching the given status in a
   // single SQL hit. Used by the "Clear available" button in the UI to
-  // wipe a stuck queue without round-tripping every ID. We don't gate
-  // on a count cap here because the table size is small and the WHERE
-  // clause is indexable.
-  if (body.clearStatus === 'available' || body.clearStatus === 'served') {
-    const where = body.clearStatus === 'available'
-      ? 'served_at IS NULL'
-      : 'served_at IS NOT NULL';
-    const r = await pool.query(`DELETE FROM video_prompts WHERE ${where} RETURNING id`);
-    const counts = await fetchCounts();
-    return NextResponse.json({ ok: true, deleted: r.rowCount ?? 0, counts, clearedStatus: body.clearStatus });
+  // wipe a stuck queue without round-tripping every ID. Mirrors the
+  // GET status filter's semantics; 'served' is kept as a back-compat
+  // alias meaning reserved-or-confirmed.
+  if (body.clearStatus) {
+    let where: string | null = null;
+    if (body.clearStatus === 'available') {
+      where = `(confirmed_at IS NULL AND (served_at IS NULL OR served_at < NOW() - INTERVAL '5 minutes'))`;
+    } else if (body.clearStatus === 'reserved') {
+      where = `(confirmed_at IS NULL AND claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes')`;
+    } else if (body.clearStatus === 'confirmed') {
+      where = `confirmed_at IS NOT NULL`;
+    } else if (body.clearStatus === 'served') {
+      where = `(confirmed_at IS NOT NULL OR (claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes'))`;
+    }
+    if (where) {
+      const r = await pool.query(`DELETE FROM video_prompts WHERE ${where} RETURNING id`);
+      const counts = await fetchCounts();
+      return NextResponse.json({ ok: true, deleted: r.rowCount ?? 0, counts, clearedStatus: body.clearStatus });
+    }
   }
 
   const ids = Array.isArray(body.ids)

@@ -1,32 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { getApiUser } from '@/lib/api-auth';
+import crypto from 'crypto';
 
 /**
  * GET /api/video_prompt
  *
- * Public client-facing endpoint. Pops one random unserved prompt
- * from `video_prompts` atomically and returns it. If the queue is
- * empty returns HTTP 503 so clients can back off and retry.
+ * Public client-facing endpoint. Pops one random prompt atomically.
+ * Two modes:
  *
- * Auth: hb_ API token (Authorization: Bearer hb_…). Mirrors the
- * existing client-API pattern.
+ *   Default (legacy):
+ *     served_at + served_to are stamped; the prompt is permanently
+ *     consumed on this call. Existing clients keep working unchanged.
+ *
+ *   ?reservable=1  (recommended for new clients):
+ *     The pop creates a 5-minute RESERVATION instead of a permanent
+ *     consume. Response includes a claim_token. The client must POST
+ *     /api/video_prompt/confirm with that token after the video is
+ *     actually generated. If they never confirm, the prompt is
+ *     returned to the available pool automatically when the next pop
+ *     scans for candidates (anything with served_at older than 5min
+ *     AND no confirmed_at is treated as available again).
+ *
+ *     This fixes the production scenario where 350 prompts were popped
+ *     but only 15 videos got generated — clients can now crash mid-
+ *     generation without permanently losing the prompt.
+ *
+ *     The global suffix (vid_gen_settings.suffix) is appended at serve
+ *     time when enabled, same as before.
+ *
+ * Auth: hb_ API token (Authorization: Bearer hb_…).
  *
  * Response (200):
- *   { "prompt": "<prompt text>" }
+ *   default:     { "prompt": "<prompt text>" }
+ *   reservable:  { "prompt": "<prompt text>", "claim_token": "<uuid>", "expires_in_seconds": 300 }
  *
  * Response (503):
  *   { "detail": "Prompts are being generated, try again shortly" }
  *
- * Atomicity: the pop is one UPDATE ... RETURNING that uses a
- * subquery scoped to a single id with FOR UPDATE SKIP LOCKED, so
- * concurrent pops never hand out the same row. ORDER BY RANDOM()
- * is fine at the queue size we expect (hundreds → low thousands);
- * the partial index `idx_vp_available` keeps the candidate set
- * cheap to scan.
+ * Atomicity: one UPDATE … RETURNING with a FOR UPDATE SKIP LOCKED
+ * subquery, so concurrent pops never hand out the same row.
  */
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+const RESERVATION_MINUTES = 5;
 
 export async function GET(req: NextRequest) {
   const user = await getApiUser(req);
@@ -34,25 +52,32 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ detail: 'Missing or invalid hb_ token' }, { status: 401 });
   }
 
+  const reservable = req.nextUrl.searchParams.get('reservable') === '1';
+  const claimToken = reservable ? crypto.randomUUID() : null;
   const pool = await getPool();
 
-  // Read the global suffix config in parallel with the pop. If the
-  // settings row doesn't exist yet (fresh deploy) we fall back to
-  // "no suffix" — no need to block the serve path on schema setup.
+  // The available-row predicate covers BOTH modes:
+  //   - never served (served_at IS NULL)
+  //   - reserved but never confirmed AND reservation expired
+  // confirmed_at IS NULL guards against picking already-completed rows.
+  // Always exclude any row with a non-null confirmed_at — those are done.
   const [popRes, settingsRes] = await Promise.all([
     pool.query<{ id: number; prompt: string }>(
       `UPDATE video_prompts
-          SET served_at = NOW(),
-              served_to = $1
+          SET served_at  = NOW(),
+              served_to  = $1,
+              claim_token = $2,
+              confirmed_at = CASE WHEN $2 IS NULL THEN NOW() ELSE NULL END
         WHERE id = (
           SELECT id FROM video_prompts
-           WHERE served_at IS NULL
+           WHERE confirmed_at IS NULL
+             AND (served_at IS NULL OR served_at < NOW() - ($3 || ' minutes')::interval)
            ORDER BY RANDOM()
            LIMIT 1
            FOR UPDATE SKIP LOCKED
         )
         RETURNING id, prompt`,
-      [user.tokenId || 'anonymous'],
+      [user.tokenId || 'anonymous', claimToken, String(RESERVATION_MINUTES)],
     ),
     pool.query<{ suffix: string; suffix_enabled: boolean }>(
       `SELECT suffix, suffix_enabled FROM vid_gen_settings WHERE id = 1`,
@@ -66,11 +91,6 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Append the global suffix at serve time when enabled. If the suffix
-  // starts with its own punctuation (", " / ". " etc.) join flush — so
-  // ", photoreal" produces "<prompt>, photoreal" not "<prompt> , photoreal".
-  // Otherwise insert a single space so plain words ("photoreal 8k")
-  // don't run into the previous token.
   let prompt = popRes.rows[0].prompt;
   const cfg = settingsRes.rows[0];
   if (cfg?.suffix_enabled && cfg.suffix?.trim()) {
@@ -79,5 +99,12 @@ export async function GET(req: NextRequest) {
     prompt = `${prompt}${sep}${trimmed}`;
   }
 
+  if (reservable) {
+    return NextResponse.json({
+      prompt,
+      claim_token: claimToken,
+      expires_in_seconds: RESERVATION_MINUTES * 60,
+    });
+  }
   return NextResponse.json({ prompt });
 }
