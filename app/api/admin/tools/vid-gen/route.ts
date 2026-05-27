@@ -36,7 +36,7 @@ const MAX_PROMPT_LEN = 2000;
 
 interface CountsRow {
   available: string;        // never served OR reservation expired without confirm
-  reserved: string;         // served, claim_token set, not yet confirmed, still inside 5min window
+  reserved: string;         // popped, not yet confirmed, still inside the 5-min window
   confirmed: string;        // truly consumed
   manual: string;
   ai: string;
@@ -47,9 +47,7 @@ async function fetchCounts(): Promise<{
   manual: number; ai: number; total: number;
 }> {
   const pool = await getPool();
-  // Same 5-min visibility window as the picker. Anything served with a
-  // claim_token but no confirmation AND older than 5min is effectively
-  // back in the available bucket.
+  // Same 5-min visibility window the picker uses.
   const r = await pool.query<CountsRow>(
     `SELECT
        COUNT(*) FILTER (
@@ -58,7 +56,6 @@ async function fetchCounts(): Promise<{
        )::text AS available,
        COUNT(*) FILTER (
          WHERE confirmed_at IS NULL
-           AND claim_token IS NOT NULL
            AND served_at >= NOW() - INTERVAL '5 minutes'
        )::text AS reserved,
        COUNT(*) FILTER (WHERE confirmed_at IS NOT NULL)::text AS confirmed,
@@ -100,11 +97,11 @@ export async function GET(req: NextRequest) {
   if (status === 'available') {
     where.push(`(confirmed_at IS NULL AND (served_at IS NULL OR served_at < NOW() - INTERVAL '5 minutes'))`);
   } else if (status === 'reserved') {
-    where.push(`(confirmed_at IS NULL AND claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes')`);
+    where.push(`(confirmed_at IS NULL AND served_at >= NOW() - INTERVAL '5 minutes')`);
   } else if (status === 'confirmed') {
     where.push(`confirmed_at IS NOT NULL`);
   } else if (status === 'served') {
-    where.push(`(confirmed_at IS NOT NULL OR (claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes'))`);
+    where.push(`(confirmed_at IS NOT NULL OR (served_at >= NOW() - INTERVAL '5 minutes'))`);
   }
   if (source !== 'all') {
     params.push(source);
@@ -210,11 +207,11 @@ export async function DELETE(req: NextRequest) {
     if (body.clearStatus === 'available') {
       where = `(confirmed_at IS NULL AND (served_at IS NULL OR served_at < NOW() - INTERVAL '5 minutes'))`;
     } else if (body.clearStatus === 'reserved') {
-      where = `(confirmed_at IS NULL AND claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes')`;
+      where = `(confirmed_at IS NULL AND served_at >= NOW() - INTERVAL '5 minutes')`;
     } else if (body.clearStatus === 'confirmed') {
       where = `confirmed_at IS NOT NULL`;
     } else if (body.clearStatus === 'served') {
-      where = `(confirmed_at IS NOT NULL OR (claim_token IS NOT NULL AND served_at >= NOW() - INTERVAL '5 minutes'))`;
+      where = `(confirmed_at IS NOT NULL OR (served_at >= NOW() - INTERVAL '5 minutes'))`;
     }
     if (where) {
       const r = await pool.query(`DELETE FROM video_prompts WHERE ${where} RETURNING id`);
