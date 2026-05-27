@@ -1132,6 +1132,14 @@ export async function initSchema(): Promise<void> {
       )
     `);
     await client.query(`INSERT INTO vid_gen_settings (id) VALUES (1) ON CONFLICT DO NOTHING`).catch(() => {});
+    // Auto-refill: keep the queue topped up automatically. When a client
+    // pop drops the available count under auto_refill_threshold we
+    // fire a background generation of auto_refill_target prompts steered
+    // by auto_theme. See lib/vid-gen-runner.ts triggerAutoRefillIfNeeded.
+    await client.query(`ALTER TABLE vid_gen_settings ADD COLUMN IF NOT EXISTS auto_theme TEXT NOT NULL DEFAULT ''`).catch(() => {});
+    await client.query(`ALTER TABLE vid_gen_settings ADD COLUMN IF NOT EXISTS auto_refill_enabled BOOLEAN NOT NULL DEFAULT false`).catch(() => {});
+    await client.query(`ALTER TABLE vid_gen_settings ADD COLUMN IF NOT EXISTS auto_refill_threshold INT NOT NULL DEFAULT 500`).catch(() => {});
+    await client.query(`ALTER TABLE vid_gen_settings ADD COLUMN IF NOT EXISTS auto_refill_target INT NOT NULL DEFAULT 500`).catch(() => {});
 
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`

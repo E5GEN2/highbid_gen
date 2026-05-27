@@ -8040,6 +8040,17 @@ function VidGenTab({ active }: { active: boolean }) {
   const [suffixMsg, setSuffixMsg] = useState<string | null>(null);
   const [suffixDirty, setSuffixDirty] = useState(false);
 
+  // Auto-refill — when a client pops drops available below threshold,
+  // a background generation of `target` prompts using `theme` fires
+  // automatically. State mirrors the settings endpoint's shape.
+  const [autoTheme, setAutoTheme] = useState('');
+  const [autoRefillEnabled, setAutoRefillEnabled] = useState(false);
+  const [autoRefillThreshold, setAutoRefillThreshold] = useState(500);
+  const [autoRefillTarget, setAutoRefillTarget] = useState(500);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoMsg, setAutoMsg] = useState<string | null>(null);
+  const [autoDirty, setAutoDirty] = useState(false);
+
   // Debounce search input — 300ms.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -8113,8 +8124,9 @@ function VidGenTab({ active }: { active: boolean }) {
     }
   }, [activeRunId, runs]);
 
-  // Load suffix settings once on tab activation. We don't refetch on
-  // every filter change since settings are independent of the table.
+  // Load both suffix + auto-refill settings on tab activation. We
+  // don't refetch on every filter change since settings are independent
+  // of the prompt table.
   useEffect(() => {
     if (!active) return;
     (async () => {
@@ -8125,14 +8137,52 @@ function VidGenTab({ active }: { active: boolean }) {
           setSuffix(d.suffix || '');
           setSuffixEnabled(!!d.suffixEnabled);
           setSuffixDirty(false);
+          setAutoTheme(d.autoTheme || '');
+          setAutoRefillEnabled(!!d.autoRefillEnabled);
+          setAutoRefillThreshold(typeof d.autoRefillThreshold === 'number' ? d.autoRefillThreshold : 500);
+          setAutoRefillTarget(typeof d.autoRefillTarget === 'number' ? d.autoRefillTarget : 500);
+          setAutoDirty(false);
         }
-      } catch { /* silent — settings panel just shows empty defaults */ }
+      } catch { /* silent */ }
     })();
   }, [active]);
 
   // Save suffix config. Called from both the explicit Save button and
   // implicitly when the toggle flips, so flipping the switch never
   // needs a second click.
+  // Persist auto-refill settings. Like saveSuffix, can be called from
+  // the toggle (saves immediately) or the Save button (saves all dirty
+  // fields together).
+  const saveAutoRefill = async (next: {
+    autoTheme?: string; autoRefillEnabled?: boolean;
+    autoRefillThreshold?: number; autoRefillTarget?: number;
+  }) => {
+    setAutoBusy(true);
+    setAutoMsg(null);
+    try {
+      const r = await fetch('/api/admin/tools/vid-gen/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setAutoTheme(d.autoTheme || '');
+        setAutoRefillEnabled(!!d.autoRefillEnabled);
+        setAutoRefillThreshold(typeof d.autoRefillThreshold === 'number' ? d.autoRefillThreshold : 500);
+        setAutoRefillTarget(typeof d.autoRefillTarget === 'number' ? d.autoRefillTarget : 500);
+        setAutoDirty(false);
+        setAutoMsg(d.autoRefillEnabled ? 'Saved — auto-refill active' : 'Saved — auto-refill disabled');
+      } else {
+        setAutoMsg(d.error || 'Failed');
+      }
+    } catch (e) {
+      setAutoMsg((e as Error).message);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
   const saveSuffix = async (next: { suffix?: string; suffixEnabled?: boolean }) => {
     setSuffixBusy(true);
     setSuffixMsg(null);
@@ -8337,6 +8387,100 @@ function VidGenTab({ active }: { active: boolean }) {
               className="px-4 py-1.5 text-xs font-semibold bg-rose-500 text-white rounded-md hover:bg-rose-400 transition disabled:opacity-50"
             >
               {suffixBusy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Auto-refill — keeps the queue topped up automatically using a
+          saved theme. Triggered lazily on every /api/video_prompt pop:
+          if available drops below threshold, fires a background gen of
+          target prompts. */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Auto-refill</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              When available drops below threshold, automatically generate more using the saved theme.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none whitespace-nowrap">
+            <input
+              type="checkbox"
+              checked={autoRefillEnabled}
+              disabled={autoBusy}
+              onChange={e => {
+                const next = e.target.checked;
+                setAutoRefillEnabled(next);
+                // Persist toggle immediately, sending current text/numbers
+                // too so an unsaved edit doesn't get clobbered.
+                saveAutoRefill({
+                  autoRefillEnabled: next,
+                  autoTheme,
+                  autoRefillThreshold,
+                  autoRefillTarget,
+                });
+              }}
+              className="accent-rose-500 w-4 h-4"
+            />
+            <span className={autoRefillEnabled ? 'text-emerald-300 font-medium' : 'text-gray-400'}>
+              {autoRefillEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </div>
+        <div className="space-y-2.5">
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Saved theme</label>
+            <textarea
+              value={autoTheme}
+              onChange={e => { setAutoTheme(e.target.value); setAutoDirty(true); }}
+              placeholder="optional — e.g. 'AI faceless YT shorts about urban legends'"
+              rows={2}
+              className="w-full px-3 py-2 text-sm bg-black border border-gray-800 rounded-md text-white placeholder-gray-600 focus:outline-none focus:border-rose-500/50"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Threshold (min available)</label>
+              <input
+                type="number" min={0} max={10000}
+                value={autoRefillThreshold}
+                onChange={e => {
+                  const v = Math.max(0, Math.min(10000, parseInt(e.target.value) || 0));
+                  setAutoRefillThreshold(v); setAutoDirty(true);
+                }}
+                className="w-full px-3 py-2 text-sm bg-black border border-gray-800 rounded-md text-white focus:outline-none focus:border-rose-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Target (prompts per refill)</label>
+              <input
+                type="number" min={1} max={1000}
+                value={autoRefillTarget}
+                onChange={e => {
+                  const v = Math.max(1, Math.min(1000, parseInt(e.target.value) || 1));
+                  setAutoRefillTarget(v); setAutoDirty(true);
+                }}
+                className="w-full px-3 py-2 text-sm bg-black border border-gray-800 rounded-md text-white focus:outline-none focus:border-rose-500/50"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center justify-between mt-3 gap-3">
+          <span className="text-xs text-gray-500 truncate">
+            {autoRefillEnabled
+              ? <>Will refill to <span className="text-gray-300">+{autoRefillTarget}</span> when available drops below <span className="text-gray-300">{autoRefillThreshold}</span></>
+              : <>{autoTheme.length}/2000 chars</>}
+          </span>
+          <div className="flex items-center gap-2">
+            {autoMsg && <span className="text-xs text-rose-300">{autoMsg}</span>}
+            <button
+              type="button"
+              disabled={autoBusy || !autoDirty}
+              onClick={() => saveAutoRefill({ autoTheme, autoRefillEnabled, autoRefillThreshold, autoRefillTarget })}
+              className="px-4 py-1.5 text-xs font-semibold bg-rose-500 text-white rounded-md hover:bg-rose-400 transition disabled:opacity-50"
+            >
+              {autoBusy ? 'Saving…' : 'Save'}
             </button>
           </div>
         </div>

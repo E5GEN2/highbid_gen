@@ -3,20 +3,18 @@ import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
 
 /**
- * Vid Gen settings — single-row config for the global prompt suffix
- * that gets appended at serve time.
+ * Vid Gen settings — single-row config for:
+ *   - serve-time suffix          (suffix, suffix_enabled)
+ *   - auto-refill of the queue   (auto_theme, auto_refill_enabled,
+ *                                 auto_refill_threshold,
+ *                                 auto_refill_target)
  *
  * GET  /api/admin/tools/vid-gen/settings
- *   → { ok, suffix, suffixEnabled, updatedAt }
+ * PUT  /api/admin/tools/vid-gen/settings   (any subset of fields)
  *
- * PUT  /api/admin/tools/vid-gen/settings
- *   body: { suffix?: string; suffixEnabled?: boolean }
- *   → { ok, suffix, suffixEnabled, updatedAt }
- *
- * The suffix is appended verbatim to each served prompt with a single
- * space between, so a comma-led suffix like ", photoreal, cinematic"
- * gives natural results. We don't try to be clever about separators
- * — what the user types is what gets appended.
+ * The auto-refill fields drive /api/video_prompt's lazy refill trigger:
+ * each pop checks "if available < threshold, fire a background gen of
+ * target prompts using auto_theme". One in-flight refill at a time.
  *
  * Auth: admin Bearer token.
  */
@@ -24,21 +22,38 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 const MAX_SUFFIX_LEN = 500;
+const MAX_THEME_LEN  = 2000;
 
 interface SettingsRow {
   suffix: string;
   suffix_enabled: boolean;
+  auto_theme: string;
+  auto_refill_enabled: boolean;
+  auto_refill_threshold: number;
+  auto_refill_target: number;
   updated_at: string;
+}
+
+const FIELDS = `suffix, suffix_enabled, auto_theme, auto_refill_enabled, auto_refill_threshold, auto_refill_target, updated_at`;
+
+function shape(s: SettingsRow) {
+  return {
+    suffix: s.suffix,
+    suffixEnabled: s.suffix_enabled,
+    autoTheme: s.auto_theme,
+    autoRefillEnabled: s.auto_refill_enabled,
+    autoRefillThreshold: s.auto_refill_threshold,
+    autoRefillTarget: s.auto_refill_target,
+    updatedAt: s.updated_at,
+  };
 }
 
 async function readSettings(): Promise<SettingsRow> {
   const pool = await getPool();
-  // Upsert-fetch: if the row got nuked somehow, recreate it on read so
-  // GET never 500s on a missing config row.
   const r = await pool.query<SettingsRow>(
     `INSERT INTO vid_gen_settings (id) VALUES (1)
        ON CONFLICT (id) DO UPDATE SET id = 1
-       RETURNING suffix, suffix_enabled, updated_at`,
+       RETURNING ${FIELDS}`,
   );
   return r.rows[0];
 }
@@ -46,24 +61,21 @@ async function readSettings(): Promise<SettingsRow> {
 export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   const s = await readSettings();
-  return NextResponse.json({
-    ok: true,
-    suffix: s.suffix,
-    suffixEnabled: s.suffix_enabled,
-    updatedAt: s.updated_at,
-  });
+  return NextResponse.json({ ok: true, ...shape(s) });
 }
 
 export async function PUT(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
 
   const body = await req.json().catch(() => ({})) as {
-    suffix?: string;
-    suffixEnabled?: boolean;
+    suffix?: string; suffixEnabled?: boolean;
+    autoTheme?: string; autoRefillEnabled?: boolean;
+    autoRefillThreshold?: number; autoRefillTarget?: number;
   };
 
   const sets: string[] = [];
-  const params: (string | boolean)[] = [];
+  const params: (string | boolean | number)[] = [];
+
   if (typeof body.suffix === 'string') {
     if (body.suffix.length > MAX_SUFFIX_LEN) {
       return NextResponse.json({ error: `suffix exceeds ${MAX_SUFFIX_LEN} chars` }, { status: 400 });
@@ -75,25 +87,41 @@ export async function PUT(req: NextRequest) {
     params.push(body.suffixEnabled);
     sets.push(`suffix_enabled = $${params.length}`);
   }
+  if (typeof body.autoTheme === 'string') {
+    if (body.autoTheme.length > MAX_THEME_LEN) {
+      return NextResponse.json({ error: `autoTheme exceeds ${MAX_THEME_LEN} chars` }, { status: 400 });
+    }
+    params.push(body.autoTheme);
+    sets.push(`auto_theme = $${params.length}`);
+  }
+  if (typeof body.autoRefillEnabled === 'boolean') {
+    params.push(body.autoRefillEnabled);
+    sets.push(`auto_refill_enabled = $${params.length}`);
+  }
+  if (typeof body.autoRefillThreshold === 'number' && Number.isFinite(body.autoRefillThreshold)) {
+    // Clamp to a sane range so a typo can't kill the system. 0 = never
+    // refill (effectively disabled). 10_000 is a generous upper bound.
+    const v = Math.max(0, Math.min(Math.floor(body.autoRefillThreshold), 10_000));
+    params.push(v);
+    sets.push(`auto_refill_threshold = $${params.length}`);
+  }
+  if (typeof body.autoRefillTarget === 'number' && Number.isFinite(body.autoRefillTarget)) {
+    const v = Math.max(1, Math.min(Math.floor(body.autoRefillTarget), 1000));
+    params.push(v);
+    sets.push(`auto_refill_target = $${params.length}`);
+  }
+
   if (sets.length === 0) {
-    return NextResponse.json({ error: 'suffix or suffixEnabled required' }, { status: 400 });
+    return NextResponse.json({ error: 'no recognised fields in body' }, { status: 400 });
   }
   sets.push(`updated_at = NOW()`);
 
   const pool = await getPool();
-  // Ensure the row exists, then update. Cheaper than a write-time
-  // upsert because we only ever have one row.
   await pool.query(`INSERT INTO vid_gen_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
   const r = await pool.query<SettingsRow>(
     `UPDATE vid_gen_settings SET ${sets.join(', ')} WHERE id = 1
-       RETURNING suffix, suffix_enabled, updated_at`,
+       RETURNING ${FIELDS}`,
     params,
   );
-  const s = r.rows[0];
-  return NextResponse.json({
-    ok: true,
-    suffix: s.suffix,
-    suffixEnabled: s.suffix_enabled,
-    updatedAt: s.updated_at,
-  });
+  return NextResponse.json({ ok: true, ...shape(r.rows[0]) });
 }

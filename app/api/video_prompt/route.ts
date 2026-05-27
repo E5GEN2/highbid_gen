@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { getApiUser } from '@/lib/api-auth';
+import { triggerAutoRefillIfNeeded } from '@/lib/vid-gen-runner';
 
 /**
  * GET /api/video_prompt
@@ -94,6 +95,15 @@ export async function GET(req: NextRequest) {
     const sep = /^[,.;:!?]/.test(trimmed) ? '' : ' ';
     prompt = `${prompt}${sep}${trimmed}`;
   }
+
+  // Fire-and-forget auto-refill check. If the queue dropped under the
+  // configured threshold this pop, kick off a background generation
+  // for the saved theme. No-op if disabled, already in-flight, or
+  // count still above threshold. Doesn't block the response — the
+  // client gets their prompt immediately.
+  void triggerAutoRefillIfNeeded().catch(err => {
+    console.warn('[video_prompt] auto-refill check failed:', (err as Error).message);
+  });
 
   return NextResponse.json({ id: popRes.rows[0].id, prompt });
 }
