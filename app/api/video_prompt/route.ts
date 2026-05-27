@@ -56,29 +56,52 @@ export async function GET(req: NextRequest) {
   const claimToken = reservable ? crypto.randomUUID() : null;
   const pool = await getPool();
 
-  // The available-row predicate covers BOTH modes:
-  //   - never served (served_at IS NULL)
-  //   - reserved but never confirmed AND reservation expired
-  // confirmed_at IS NULL guards against picking already-completed rows.
-  // Always exclude any row with a non-null confirmed_at — those are done.
+  // The "available row" predicate is shared by both modes: a row whose
+  // confirmed_at is NULL AND has either never been served OR was served
+  // more than RESERVATION_MINUTES ago (i.e. its reservation expired).
+  // Splitting the UPDATE itself into two paths avoids a CASE expression
+  // that confuses pg's parameter-type inference when claim_token is null.
+  const availablePredicate = `
+    confirmed_at IS NULL
+    AND (served_at IS NULL OR served_at < NOW() - INTERVAL '${RESERVATION_MINUTES} minutes')
+  `;
+
+  const popPromise = reservable
+    ? pool.query<{ id: number; prompt: string }>(
+        `UPDATE video_prompts
+            SET served_at  = NOW(),
+                served_to  = $1,
+                claim_token = $2
+          WHERE id = (
+            SELECT id FROM video_prompts
+             WHERE ${availablePredicate}
+             ORDER BY RANDOM()
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED
+          )
+          RETURNING id, prompt`,
+        [user.tokenId || 'anonymous', claimToken],
+      )
+    : pool.query<{ id: number; prompt: string }>(
+        // Legacy mode: stamp confirmed_at = served_at so the row is
+        // permanently consumed — same semantics as before reservations.
+        `UPDATE video_prompts
+            SET served_at  = NOW(),
+                served_to  = $1,
+                confirmed_at = NOW()
+          WHERE id = (
+            SELECT id FROM video_prompts
+             WHERE ${availablePredicate}
+             ORDER BY RANDOM()
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED
+          )
+          RETURNING id, prompt`,
+        [user.tokenId || 'anonymous'],
+      );
+
   const [popRes, settingsRes] = await Promise.all([
-    pool.query<{ id: number; prompt: string }>(
-      `UPDATE video_prompts
-          SET served_at  = NOW(),
-              served_to  = $1,
-              claim_token = $2,
-              confirmed_at = CASE WHEN $2 IS NULL THEN NOW() ELSE NULL END
-        WHERE id = (
-          SELECT id FROM video_prompts
-           WHERE confirmed_at IS NULL
-             AND (served_at IS NULL OR served_at < NOW() - ($3 || ' minutes')::interval)
-           ORDER BY RANDOM()
-           LIMIT 1
-           FOR UPDATE SKIP LOCKED
-        )
-        RETURNING id, prompt`,
-      [user.tokenId || 'anonymous', claimToken, String(RESERVATION_MINUTES)],
-    ),
+    popPromise,
     pool.query<{ suffix: string; suffix_enabled: boolean }>(
       `SELECT suffix, suffix_enabled FROM vid_gen_settings WHERE id = 1`,
     ).catch(() => ({ rows: [] as Array<{ suffix: string; suffix_enabled: boolean }> })),
