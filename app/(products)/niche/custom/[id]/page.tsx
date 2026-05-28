@@ -9,6 +9,7 @@ import { ChannelAgeChip } from '@/components/ChannelAgeChip';
 import { StarButton, useFavourites } from '@/components/FavouritesProvider';
 import { AddFromFavouritesModal } from '@/components/AddFromFavouritesModal';
 import { SetNicheCenterModal } from '@/components/SetNicheCenterModal';
+import { NicheClusterCard, type ClusterCardData } from '@/components/NicheClusterCard';
 
 /**
  * Custom niche detail page. Shows the niche's metadata up top
@@ -69,12 +70,8 @@ export default function CustomNichePage() {
 
   // Sub-clustering — HDBSCAN on combined_v2 inside this niche only.
   // Same pipeline used for the DB-level niche tree, just scoped here.
-  interface SubCluster {
-    id: number; clusterIndex: number; label: string;
-    videoCount: number; avgScore: number | null;
-    totalViews: number | null; avgViews: number | null;
-    rep: { videoId: number; title: string; thumbnail: string; url: string } | null;
-  }
+  // Cluster shape mirrors the global tree's so we can render with the
+  // same NicheClusterCard component instead of inventing a new card.
   interface SubClusterRun {
     id: number; status: 'running' | 'done' | 'error';
     numClusters: number; numNoise: number; totalVideos: number;
@@ -83,7 +80,7 @@ export default function CustomNichePage() {
     progress: { stage?: string; recentLogs?: string[] } | null;
   }
   const [subRun, setSubRun] = useState<SubClusterRun | null>(null);
-  const [subClusters, setSubClusters] = useState<SubCluster[]>([]);
+  const [subClusters, setSubClusters] = useState<ClusterCardData[]>([]);
   const [subBusy, setSubBusy] = useState(false);
   const [subError, setSubError] = useState<string | null>(null);
 
@@ -418,33 +415,12 @@ export default function CustomNichePage() {
                 {subClusters.length} sub-clusters from {subRun.totalVideos} videos
                 {subRun.numNoise > 0 ? ` (${subRun.numNoise} unassigned)` : ''}.
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {/* Reuse the platform's standard cluster card so sub-clusters
+                  visually match the global niche tree. Each card links to
+                  the same /niche/cluster/[id] drill-in page. */}
+              <div className="space-y-3">
                 {subClusters.map(c => (
-                  <Link
-                    key={c.id}
-                    href={`/niche/cluster/${c.id}/channels`}
-                    className="block rounded-lg overflow-hidden bg-[#0a0a0a] border border-[#1f1f1f] hover:border-amber-400/50 transition group"
-                  >
-                    {c.rep?.thumbnail && (
-                      <div className="aspect-video bg-black overflow-hidden">
-                        <img src={c.rep.thumbnail} alt="" className="w-full h-full object-cover group-hover:scale-105 transition" loading="lazy" />
-                      </div>
-                    )}
-                    <div className="p-2.5">
-                      <div className="text-xs font-medium text-white line-clamp-2 mb-1">
-                        {c.label}
-                      </div>
-                      <div className="text-[10px] text-[#666] flex items-center gap-2">
-                        <span>{c.videoCount} videos</span>
-                        {c.totalViews != null && c.totalViews > 0 && (
-                          <span className="text-[#555]">·</span>
-                        )}
-                        {c.totalViews != null && c.totalViews > 0 && (
-                          <span>{fmtYT(c.totalViews)} total views</span>
-                        )}
-                      </div>
-                    </div>
-                  </Link>
+                  <NicheClusterCard key={c.id} cluster={c} />
                 ))}
               </div>
             </>

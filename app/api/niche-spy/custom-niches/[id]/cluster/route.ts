@@ -120,25 +120,59 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   }
   const run = runRes.rows[0];
 
-  // Pull clusters + their representative videos for the UI grid.
-  // Mirrors the join shape used in getLatestGlobalRun / getClusterChildren.
+  // Pull clusters in the shape NicheClusterCard expects. Same join
+  // pattern as lib/niche-tree.ts getLatestGlobalRun — pulls top-4
+  // popular videos per cluster + a distinct channel count so the
+  // existing card component renders identically here.
   const clRes = await pool.query<{
     id: number; cluster_index: number; level: number;
     auto_label: string | null; ai_label: string | null; label: string | null;
     video_count: number; avg_score: number | null;
     total_views: number | null; avg_views: number | null;
     top_channels: string[] | null;
-    representative_video_id: number | null;
-    rep_title: string | null; rep_thumbnail: string | null; rep_url: string | null;
+    channel_count: number;
+    popular: Array<{
+      video_id: number; title: string | null; thumbnail: string | null;
+      url: string | null; view_count: number | null; channel_name: string | null;
+    }> | null;
   }>(
-    `SELECT c.id, c.cluster_index, c.level,
+    `WITH cluster_videos AS (
+       SELECT c.id AS cluster_id,
+              v.id, v.title, v.thumbnail, v.url, v.view_count, v.channel_name,
+              ROW_NUMBER() OVER (PARTITION BY c.id ORDER BY v.view_count DESC NULLS LAST) AS rn
+         FROM niche_tree_clusters c
+         JOIN niche_tree_assignments a ON a.cluster_id = c.id
+         JOIN niche_spy_videos v ON v.id = a.video_id
+        WHERE c.run_id = $1
+     ),
+     popular AS (
+       SELECT cluster_id,
+              jsonb_agg(jsonb_build_object(
+                'video_id', id, 'title', title, 'thumbnail', thumbnail,
+                'url', url, 'view_count', view_count, 'channel_name', channel_name
+              ) ORDER BY view_count DESC NULLS LAST) AS rows
+         FROM cluster_videos
+        WHERE rn <= 4
+        GROUP BY cluster_id
+     ),
+     channel_counts AS (
+       SELECT c.id AS cluster_id,
+              COUNT(DISTINCT v.channel_id)::int AS n
+         FROM niche_tree_clusters c
+         JOIN niche_tree_assignments a ON a.cluster_id = c.id
+         JOIN niche_spy_videos v ON v.id = a.video_id
+        WHERE c.run_id = $1
+        GROUP BY c.id
+     )
+     SELECT c.id, c.cluster_index, c.level,
             c.auto_label, c.ai_label, c.label,
             c.video_count, c.avg_score,
             c.total_views, c.avg_views, c.top_channels,
-            c.representative_video_id,
-            v.title AS rep_title, v.thumbnail AS rep_thumbnail, v.url AS rep_url
+            COALESCE(ch.n, 0) AS channel_count,
+            COALESCE(p.rows, '[]'::jsonb) AS popular
        FROM niche_tree_clusters c
-       LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id
+       LEFT JOIN popular p        ON p.cluster_id = c.id
+       LEFT JOIN channel_counts ch ON ch.cluster_id = c.id
       WHERE c.run_id = $1
       ORDER BY c.video_count DESC`,
     [run.id],
@@ -159,24 +193,29 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       completedAt: run.completed_at,
       progress: run.progress,
     },
+    // Shape matches ClusterCardData from components/NicheClusterCard.tsx
+    // so the consumer can pass these straight to <NicheClusterCard cluster=…>.
     clusters: clRes.rows.map(c => ({
       id: c.id,
-      clusterIndex: c.cluster_index,
       level: c.level,
-      label: c.label || c.ai_label || c.auto_label || `Cluster ${c.cluster_index}`,
       autoLabel: c.auto_label,
       aiLabel: c.ai_label,
+      label: c.label,
       videoCount: c.video_count,
+      channelCount: c.channel_count,
       avgScore: c.avg_score,
-      totalViews: c.total_views,
       avgViews: c.avg_views,
-      topChannels: c.top_channels,
-      rep: c.representative_video_id ? {
-        videoId: c.representative_video_id,
-        title: c.rep_title,
-        thumbnail: c.rep_thumbnail,
-        url: c.rep_url,
-      } : null,
+      totalViews: c.total_views,
+      topChannels: c.top_channels || [],
+      popularVideos: (c.popular || []).map(p => ({
+        videoId: p.video_id,
+        title: p.title,
+        thumbnail: p.thumbnail,
+        url: p.url,
+        viewCount: p.view_count,
+        channelName: p.channel_name,
+      })),
+      childrenCount: 0,
     })),
   });
 }
