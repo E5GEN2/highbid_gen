@@ -1703,6 +1703,121 @@ export async function runSubdivideClusteringJob(opts: {
   }
 }
 
+/**
+ * Cluster the videos inside ONE custom niche.
+ *
+ * Same pipeline as runSubdivideClusteringJob — pulls the input video
+ * set, replaces any prior clusters from this niche's most recent run,
+ * shells out to cluster-niches.py, persists clusters + assignments.
+ * Difference: scoping. Parent here is a custom_niche, not an L1 cluster.
+ *
+ * Stored in the same niche_tree_clusters / niche_tree_assignments
+ * tables (no separate table — reuses the existing read path), keyed
+ * to the run via run_id. The run row has kind='custom_niche' and
+ * custom_niche_id set so the UI can pull just the latest run for
+ * a niche.
+ *
+ * Param defaults are sized for the small-N regime: a typical custom
+ * niche is in the hundreds, not hundreds of thousands. min_cluster_size
+ * scales as max(5, 2% of N) — 5-floor so we don't merge everything
+ * into one giant cluster on small inputs.
+ */
+export async function runCustomNicheClusteringJob(opts: {
+  runId: number;
+  customNicheId: number;
+  params?: TreeClusterParams;
+}): Promise<void> {
+  const pool = await getPool();
+  try {
+    // Pull video IDs that are BOTH in the custom niche AND embedded in
+    // combined_v2. Unembedded ones get silently dropped — they'd just
+    // produce errors in the Python script anyway.
+    const vidsRes = await pool.query<{ video_id: number }>(
+      `SELECT cnv.video_id
+         FROM custom_niche_videos cnv
+         JOIN niche_spy_videos v ON v.id = cnv.video_id
+        WHERE cnv.custom_niche_id = $1
+          AND v.combined_embedding_v2 IS NOT NULL`,
+      [opts.customNicheId],
+    );
+    const videoIds = vidsRes.rows.map(r => r.video_id);
+    if (videoIds.length < 20) {
+      await pool.query(
+        `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+        [`Custom niche has only ${videoIds.length} embedded videos — at least 20 needed to cluster.`, opts.runId],
+      );
+      return;
+    }
+
+    // Clear any previous clusters/assignments from this niche's prior
+    // runs. CASCADE on niche_tree_runs(id) deletion would do it too,
+    // but we want the old runs row preserved for audit — just nuke
+    // the cluster rows.
+    await pool.query(
+      `DELETE FROM niche_tree_clusters
+        WHERE run_id IN (
+          SELECT id FROM niche_tree_runs
+           WHERE kind = 'custom_niche'
+             AND custom_niche_id = $1
+             AND id <> $2
+        )`,
+      [opts.customNicheId, opts.runId],
+    );
+
+    const source: TreeSource = opts.params?.source || 'combined_v2';
+    // Small-N tuning: min_cluster_size floors at 5 so the algorithm
+    // doesn't collapse 50-video sets into one giant cluster. 2% of N
+    // is the heuristic from the L2 subdivide path; same idea, lower
+    // floor.
+    const minClusterSize = opts.params?.minClusterSize ?? Math.max(5, Math.round(videoIds.length * 0.02));
+    const minSamples     = opts.params?.minSamples     ?? Math.max(3, Math.min(minClusterSize, 8));
+
+    await pool.query(
+      `UPDATE niche_tree_runs SET total_videos=$1, source=$2 WHERE id=$3`,
+      [videoIds.length, source, opts.runId],
+    );
+
+    const result = await runOneClusteringPipeline({
+      runId: opts.runId,
+      source,
+      videoIds,
+      parentClusterId: null,                  // no L1 parent — scoped by custom_niche_id on the run row instead
+      level: 1,
+      minClusterSize,
+      minSamples,
+      umapDims:       opts.params?.umapDims  || 50,
+      nNeighbors:     opts.params?.nNeighbors || 15,
+      outlierIqrMult: opts.params?.outlierIqrMult ?? 3.0,
+      scriptKeyword:  `custom_niche:${opts.customNicheId}`,
+      pyTimeoutMs: 1_800_000,
+      executionMode:  opts.params?.executionMode,  // 'cpu' default; tiny runs auto-fallback anyway
+    });
+
+    if (result.ok === false) {
+      await pool.query(
+        `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+        [result.error, opts.runId],
+      );
+      return;
+    }
+
+    await pool.query(
+      `UPDATE niche_tree_runs SET status='done', completed_at=NOW(),
+         progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb
+         WHERE id=$2`,
+      [JSON.stringify({ stage: 'done', stageStartedAt: new Date().toISOString() }), opts.runId],
+    );
+    console.log(`[niche-tree] custom-niche ${opts.customNicheId} done: ${result.numClusters} sub-clusters, ${result.numNoise} noise`);
+  } catch (err) {
+    console.error('[niche-tree] custom-niche clustering error:', err);
+    const e = err as Error & { message?: string };
+    await pool.query(
+      `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+      [(e.message || 'unknown').slice(0, 4000), opts.runId],
+    ).catch(() => {});
+  }
+}
+
 /** What the API returns per cluster card — includes rep video joined data and L2 child stats. */
 export interface TreeClusterWithRep extends TreeCluster {
   repTitle: string | null;

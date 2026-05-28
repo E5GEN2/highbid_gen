@@ -67,6 +67,26 @@ export default function CustomNichePage() {
   // Set-niche-centre modal — same scoping rationale.
   const [centerOpen, setCenterOpen] = useState(false);
 
+  // Sub-clustering — HDBSCAN on combined_v2 inside this niche only.
+  // Same pipeline used for the DB-level niche tree, just scoped here.
+  interface SubCluster {
+    id: number; clusterIndex: number; label: string;
+    videoCount: number; avgScore: number | null;
+    totalViews: number | null; avgViews: number | null;
+    rep: { videoId: number; title: string; thumbnail: string; url: string } | null;
+  }
+  interface SubClusterRun {
+    id: number; status: 'running' | 'done' | 'error';
+    numClusters: number; numNoise: number; totalVideos: number;
+    errorMessage: string | null;
+    startedAt: string; completedAt: string | null;
+    progress: { stage?: string; recentLogs?: string[] } | null;
+  }
+  const [subRun, setSubRun] = useState<SubClusterRun | null>(null);
+  const [subClusters, setSubClusters] = useState<SubCluster[]>([]);
+  const [subBusy, setSubBusy] = useState(false);
+  const [subError, setSubError] = useState<string | null>(null);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -100,6 +120,52 @@ export default function CustomNichePage() {
     if (!Number.isFinite(nicheId)) return;
     loadAll();
   }, [nicheId, loadAll, membershipNonce]);
+
+  // Sub-cluster state fetcher + start handler. Polls every 3s while
+  // a run is in 'running' status; stops as soon as it goes done/error.
+  const loadSubClusters = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/niche-spy/custom-niches/${nicheId}/cluster`);
+      const d = await r.json();
+      if (d.ok) {
+        setSubRun(d.run);
+        setSubClusters(d.clusters || []);
+      }
+    } catch { /* silent — keep the last good state */ }
+  }, [nicheId]);
+
+  useEffect(() => {
+    if (!Number.isFinite(nicheId)) return;
+    loadSubClusters();
+  }, [nicheId, loadSubClusters]);
+
+  useEffect(() => {
+    if (!subRun || subRun.status !== 'running') return;
+    const t = setInterval(loadSubClusters, 3000);
+    return () => clearInterval(t);
+  }, [subRun, loadSubClusters]);
+
+  const handleStartSubClustering = async () => {
+    setSubBusy(true);
+    setSubError(null);
+    try {
+      const r = await fetch(`/api/niche-spy/custom-niches/${nicheId}/cluster`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const d = await r.json();
+      if (!r.ok || d.ok === false) {
+        setSubError(d.error || `HTTP ${r.status}`);
+      } else {
+        await loadSubClusters();
+      }
+    } catch (e) {
+      setSubError((e as Error).message);
+    } finally {
+      setSubBusy(false);
+    }
+  };
 
   const handleSaveEdit = async () => {
     if (!niche) return;
@@ -301,6 +367,94 @@ export default function CustomNichePage() {
           </div>
         )}
       </div>
+
+      {/* Sub-clusters panel — HDBSCAN on combined_v2 embeddings,
+          scoped to this niche's videos. Same pipeline as the DB-level
+          niche tree, just filtered. Hidden until the niche has enough
+          videos to bother clustering (20-video floor matches the
+          minimum the server enforces). */}
+      {(niche?.videoCount ?? 0) >= 20 && (
+        <div className="p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Sub-clusters</h3>
+              <p className="text-xs text-[#888] mt-0.5">
+                Group this niche's videos into thematic sub-clusters automatically.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {subRun && subRun.status === 'running' && (
+                <span className="text-xs text-amber-300 animate-pulse">
+                  Clustering… {subRun.totalVideos > 0 ? `${subRun.totalVideos} videos` : ''}
+                </span>
+              )}
+              {subRun && subRun.status === 'error' && (
+                <span className="text-xs text-red-300 truncate max-w-[280px]" title={subRun.errorMessage || ''}>
+                  {subRun.errorMessage?.slice(0, 60) || 'failed'}
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={subBusy || subRun?.status === 'running'}
+                onClick={handleStartSubClustering}
+                className="px-3 py-1.5 text-xs font-semibold bg-amber-400 text-black rounded-md hover:bg-amber-300 transition disabled:opacity-50"
+              >
+                {subRun?.status === 'running'
+                  ? 'Running…'
+                  : subRun?.status === 'done'
+                    ? 'Re-cluster'
+                    : 'Cluster videos'}
+              </button>
+            </div>
+          </div>
+
+          {subError && (
+            <div className="text-xs text-red-300 mb-2">{subError}</div>
+          )}
+
+          {subRun?.status === 'done' && subClusters.length > 0 && (
+            <>
+              <div className="text-xs text-[#777] mb-3">
+                {subClusters.length} sub-clusters from {subRun.totalVideos} videos
+                {subRun.numNoise > 0 ? ` (${subRun.numNoise} unassigned)` : ''}.
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                {subClusters.map(c => (
+                  <Link
+                    key={c.id}
+                    href={`/niche/cluster/${c.id}/channels`}
+                    className="block rounded-lg overflow-hidden bg-[#0a0a0a] border border-[#1f1f1f] hover:border-amber-400/50 transition group"
+                  >
+                    {c.rep?.thumbnail && (
+                      <div className="aspect-video bg-black overflow-hidden">
+                        <img src={c.rep.thumbnail} alt="" className="w-full h-full object-cover group-hover:scale-105 transition" loading="lazy" />
+                      </div>
+                    )}
+                    <div className="p-2.5">
+                      <div className="text-xs font-medium text-white line-clamp-2 mb-1">
+                        {c.label}
+                      </div>
+                      <div className="text-[10px] text-[#666] flex items-center gap-2">
+                        <span>{c.videoCount} videos</span>
+                        {c.totalViews != null && c.totalViews > 0 && (
+                          <span className="text-[#555]">·</span>
+                        )}
+                        {c.totalViews != null && c.totalViews > 0 && (
+                          <span>{fmtYT(c.totalViews)} total views</span>
+                        )}
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </>
+          )}
+
+          {subRun?.status === 'done' && subClusters.length === 0 && (
+            <div className="text-xs text-[#666]">No sub-clusters produced — try adding more videos.</div>
+          )}
+        </div>
+      )}
 
       {/* Sort pills + min-score filter. Same vocabulary as the
           other video grids across the product — Recent, Most

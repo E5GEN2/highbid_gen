@@ -826,8 +826,14 @@ export async function initSchema(): Promise<void> {
     // stream in. Read by the admin UI to render a per-stage progress bar
     // alongside the cluster grid.
     await client.query(`ALTER TABLE niche_tree_runs ADD COLUMN IF NOT EXISTS progress JSONB DEFAULT '{}'`).catch(() => {});
+    // custom_niche_id is set for kind='custom_niche' runs — clustering
+    // scoped to a single custom niche's videos. Reuses niche_tree_clusters
+    // + niche_tree_assignments so the existing read path (with rep video
+    // joins) works unchanged.
+    await client.query(`ALTER TABLE niche_tree_runs ADD COLUMN IF NOT EXISTS custom_niche_id INTEGER`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_kind ON niche_tree_runs(kind, started_at DESC)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_parent ON niche_tree_runs(parent_cluster_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_custom_niche ON niche_tree_runs(custom_niche_id, started_at DESC) WHERE custom_niche_id IS NOT NULL`).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_tree_clusters (
