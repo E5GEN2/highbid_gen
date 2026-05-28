@@ -273,6 +273,35 @@ export default function CustomNichePage() {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+              {/* Cluster / Re-cluster — top-level action so the
+                  control is visible regardless of which tab the user
+                  is on, and the Sub-niches panel below stays focused
+                  on results instead of holding the trigger. Hidden
+                  when the niche is too small to cluster (matches the
+                  server-side 20-video floor). */}
+              {(niche?.videoCount ?? 0) >= 20 && (
+                <button
+                  type="button"
+                  disabled={subBusy || subRun?.status === 'running'}
+                  onClick={handleStartSubClustering}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-50 bg-transparent text-amber-300 border border-amber-500/40 hover:bg-amber-500/10"
+                  title="Group this niche's videos into thematic sub-clusters"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                    <circle cx="6" cy="6" r="2.2" />
+                    <circle cx="18" cy="6" r="2.2" />
+                    <circle cx="6" cy="18" r="2.2" />
+                    <circle cx="18" cy="18" r="2.2" />
+                    <circle cx="12" cy="12" r="1.6" />
+                  </svg>
+                  {subRun?.status === 'running'
+                    ? 'Clustering…'
+                    : subRun?.status === 'done'
+                      ? 'Re-cluster'
+                      : 'Cluster'}
+                </button>
+              )}
+
               {/* "Set niche centre" — placed to the LEFT of Add
                   from Favourites per design request. Disabled when
                   the niche has no videos yet (nothing to pick from).
@@ -397,48 +426,41 @@ export default function CustomNichePage() {
           ))}
       </div>
 
-      {/* Sub-clusters panel — HDBSCAN on combined_v2 embeddings,
-          scoped to this niche's videos. Same pipeline as the DB-level
-          niche tree, just filtered. Hidden until the niche has enough
-          videos to bother clustering (20-video floor matches the
-          minimum the server enforces). */}
+      {/* Sub-niches tab content. The Cluster / Re-cluster trigger now
+          lives in the page header action row (see the Cluster button
+          above), so this section is purely results + status — no
+          duplicate button cluttering the panel. */}
       {tab === 'sub-niches' && (niche?.videoCount ?? 0) >= 20 && (
-        <div className="p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] mb-4">
-          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
-            <div>
-              <h3 className="text-sm font-semibold text-white">Sub-clusters</h3>
-              <p className="text-xs text-[#888] mt-0.5">
-                Group this niche's videos into thematic sub-clusters automatically.
+        <>
+          {/* Status strip — only renders while a run is meaningful to
+              show (in flight / errored / has a meta line under the
+              cards). Goes silent when there's nothing to say. */}
+          {(subRun?.status === 'running' || subRun?.status === 'error' || subError) && (
+            <div className="mb-4 p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f] flex items-center gap-3 flex-wrap">
+              {subRun?.status === 'running' && (
+                <span className="text-xs text-amber-300 animate-pulse">
+                  Clustering{subRun.totalVideos > 0 ? ` ${subRun.totalVideos} videos…` : '…'}
+                </span>
+              )}
+              {subRun?.status === 'error' && (
+                <span className="text-xs text-red-300 truncate" title={subRun.errorMessage || ''}>
+                  Last run failed: {subRun.errorMessage?.slice(0, 100) || 'unknown error'}
+                </span>
+              )}
+              {subError && <span className="text-xs text-red-300">{subError}</span>}
+            </div>
+          )}
+
+          {/* Empty state — niche has enough videos but has never been
+              clustered. Direct them to the Cluster button in the
+              header. */}
+          {!subRun && (
+            <div className="p-6 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] text-center">
+              <h3 className="text-sm font-semibold text-white mb-1">No sub-clusters yet</h3>
+              <p className="text-xs text-[#888]">
+                Click the <span className="text-amber-300 font-medium">Cluster</span> button up top to group this niche's videos into thematic sub-clusters.
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              {subRun && subRun.status === 'running' && (
-                <span className="text-xs text-amber-300 animate-pulse">
-                  Clustering… {subRun.totalVideos > 0 ? `${subRun.totalVideos} videos` : ''}
-                </span>
-              )}
-              {subRun && subRun.status === 'error' && (
-                <span className="text-xs text-red-300 truncate max-w-[280px]" title={subRun.errorMessage || ''}>
-                  {subRun.errorMessage?.slice(0, 60) || 'failed'}
-                </span>
-              )}
-              <button
-                type="button"
-                disabled={subBusy || subRun?.status === 'running'}
-                onClick={handleStartSubClustering}
-                className="px-3 py-1.5 text-xs font-semibold bg-amber-400 text-black rounded-md hover:bg-amber-300 transition disabled:opacity-50"
-              >
-                {subRun?.status === 'running'
-                  ? 'Running…'
-                  : subRun?.status === 'done'
-                    ? 'Re-cluster'
-                    : 'Cluster videos'}
-              </button>
-            </div>
-          </div>
-
-          {subError && (
-            <div className="text-xs text-red-300 mb-2">{subError}</div>
           )}
 
           {subRun?.status === 'done' && subClusters.length > 0 && (
@@ -459,9 +481,11 @@ export default function CustomNichePage() {
           )}
 
           {subRun?.status === 'done' && subClusters.length === 0 && (
-            <div className="text-xs text-[#666]">No sub-clusters produced — try adding more videos.</div>
+            <div className="p-6 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] text-center text-xs text-[#888]">
+              No sub-clusters produced — try adding more videos or re-clustering.
+            </div>
           )}
-        </div>
+        </>
       )}
 
       {/* Videos tab content — sort pills + the grid. Stays wrapped
