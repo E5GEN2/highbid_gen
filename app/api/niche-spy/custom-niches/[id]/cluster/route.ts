@@ -1,49 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
-import { runCustomNicheClusteringJob, type TreeClusterParams } from '@/lib/niche-tree';
+import { runCustomNicheClusteringJob, type TreeClusterParams, type TreeSource } from '@/lib/niche-tree';
 
 /**
- * Sub-clustering for a custom niche.
+ * Sub-clustering for a custom niche, source-aware.
+ *
+ * The same niche can hold cluster sets for several embedding sources
+ * simultaneously (title_v2 / thumbnail_v2 / combined_v2). The UI flips
+ * between them; each is a separate niche_tree_run row scoped by
+ * (custom_niche_id, source).
  *
  * POST /api/niche-spy/custom-niches/[id]/cluster
- *   body (all optional):
- *     { minClusterSize?, minSamples?, umapDims?, nNeighbors?,
- *       outlierIqrMult?, source?, executionMode? }
- *   → { ok, runId }
+ *   body: { source?, minClusterSize?, minSamples?, umapDims?, nNeighbors?, outlierIqrMult?, executionMode? }
+ *   source default = 'combined_v2'. Valid: 'title_v2' | 'thumbnail_v2' | 'combined_v2'.
+ *   Returns { ok, runId, source }.
  *
- *   Starts a background HDBSCAN run scoped to the niche's videos.
- *   Reuses the niche_tree pipeline (lib/niche-tree.ts) — same Python
- *   script, same niche_tree_clusters + niche_tree_assignments tables,
- *   just filtered to this niche and scoped via custom_niche_id on the
- *   run row. Tiny inputs (<5K videos, always the case here) run on
- *   the local CPU subprocess.
+ *   Re-clustering with a given source wipes ONLY that source's prior
+ *   clusters; other sources' results survive.
  *
- *   Replaces the niche's previous sub-cluster set on success (old
- *   niche_tree_clusters with this custom_niche_id are deleted before
- *   the run's results are inserted).
- *
- * GET /api/niche-spy/custom-niches/[id]/cluster
- *   → { ok, run, clusters: [...] }
- *
- *   Returns the latest sub-clustering run for this niche plus its
- *   clusters (with rep video + ai_label/auto_label/label joined).
- *   Returns { ok: true, run: null, clusters: [] } if the niche has
- *   never been clustered.
+ * GET /api/niche-spy/custom-niches/[id]/cluster?source=…
+ *   source default = 'combined_v2' (returned in the response so the UI
+ *   can pin its tab state). Response shape:
+ *     {
+ *       ok: true,
+ *       source: <active source>,
+ *       coverage: { title_v2: {embedded,total}, thumbnail_v2: {…}, combined_v2: {…} },
+ *       run:      <run object for the active source | null>,
+ *       clusters: <ClusterCardData[] for the active source>,
+ *     }
  */
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const maxDuration = 300;
+
+const SUPPORTED_SOURCES: TreeSource[] = ['title_v2', 'thumbnail_v2', 'combined_v2'];
+
+function normaliseSource(raw: string | null | undefined): TreeSource {
+  return (SUPPORTED_SOURCES as string[]).includes(raw ?? '') ? (raw as TreeSource) : 'combined_v2';
+}
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const nicheId = parseInt(id);
   if (Number.isNaN(nicheId)) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
 
-  const body = await req.json().catch(() => ({})) as Partial<TreeClusterParams>;
-  const params: TreeClusterParams | undefined = Object.keys(body).length > 0 ? body : undefined;
+  const body = await req.json().catch(() => ({})) as Partial<TreeClusterParams> & { source?: string };
+  const source = normaliseSource(body.source);
+  const params: TreeClusterParams = { ...(body as TreeClusterParams), source };
 
   const pool = await getPool();
-  // Sanity check the niche exists.
   const nicheRow = await pool.query<{ id: number; name: string }>(
     `SELECT id, name FROM custom_niches WHERE id = $1`, [nicheId],
   );
@@ -51,55 +56,77 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ error: 'custom niche not found' }, { status: 404 });
   }
 
-  // Refuse to start a second run while one is already in flight for
-  // this niche. The runCustomNicheClusteringJob would happily race
-  // itself but the UI would get confused about which is the "latest".
+  // Refuse to start a second run for the SAME source while one is in
+  // flight. Different sources can run in parallel — they touch
+  // independent cluster sets.
   const inflight = await pool.query<{ id: number }>(
     `SELECT id FROM niche_tree_runs
       WHERE kind = 'custom_niche'
         AND custom_niche_id = $1
+        AND source = $2
         AND status = 'running'
       LIMIT 1`,
-    [nicheId],
+    [nicheId, source],
   );
   if (inflight.rows.length > 0) {
     return NextResponse.json(
-      { ok: false, error: 'a clustering run is already in progress for this niche', runId: inflight.rows[0].id },
+      { ok: false, error: `a ${source} clustering run is already in progress for this niche`, runId: inflight.rows[0].id, source },
       { status: 409 },
     );
   }
 
-  // Create the run row up front so the GET endpoint can show "running"
-  // immediately. runCustomNicheClusteringJob updates total_videos +
-  // source once it knows them.
   const ins = await pool.query<{ id: number }>(
     `INSERT INTO niche_tree_runs
        (kind, custom_niche_id, level, source, status, params, total_videos)
      VALUES ('custom_niche', $1, 1, $2, 'running', $3::jsonb, 0)
      RETURNING id`,
-    [
-      nicheId,
-      (params?.source) || 'combined_v2',
-      JSON.stringify(params ?? {}),
-    ],
+    [nicheId, source, JSON.stringify(params)],
   );
   const runId = ins.rows[0].id;
 
-  // Fire and forget — the run is durable in the DB row; the route's
-  // 300s maxDuration is plenty for a few-hundred-video set but we
-  // don't want to block the caller either way.
   void runCustomNicheClusteringJob({ runId, customNicheId: nicheId, params })
-    .catch(err => console.error(`[custom-niche cluster ${nicheId}] uncaught:`, err));
+    .catch(err => console.error(`[custom-niche cluster ${nicheId}/${source}] uncaught:`, err));
 
-  return NextResponse.json({ ok: true, runId });
+  return NextResponse.json({ ok: true, runId, source });
 }
 
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const nicheId = parseInt(id);
   if (Number.isNaN(nicheId)) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
+  const source = normaliseSource(req.nextUrl.searchParams.get('source'));
 
   const pool = await getPool();
+
+  // Per-source coverage: how many of this niche's videos have each
+  // embedding type stored? Lets the UI flag "not enough title_v2
+  // embeddings — request them" without an extra round trip.
+  const coverageRes = await pool.query<{
+    total: number;
+    title_v2: number;
+    thumbnail_v2: number;
+    combined_v2: number;
+  }>(
+    `SELECT
+       COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE v.title_embedding_v2     IS NOT NULL)::int AS title_v2,
+       COUNT(*) FILTER (WHERE v.thumbnail_embedding_v2 IS NOT NULL)::int AS thumbnail_v2,
+       COUNT(*) FILTER (WHERE v.combined_embedding_v2  IS NOT NULL)::int AS combined_v2
+       FROM custom_niche_videos cnv
+       JOIN niche_spy_videos v ON v.id = cnv.video_id
+      WHERE cnv.custom_niche_id = $1`,
+    [nicheId],
+  );
+  const cov = coverageRes.rows[0] || { total: 0, title_v2: 0, thumbnail_v2: 0, combined_v2: 0 };
+  const coverage = {
+    title_v2:     { embedded: cov.title_v2,     total: cov.total },
+    thumbnail_v2: { embedded: cov.thumbnail_v2, total: cov.total },
+    combined_v2:  { embedded: cov.combined_v2,  total: cov.total },
+  };
+
+  // Pull the latest run for the requested source (each source has its
+  // own latest). Returns null if this source has never been clustered
+  // for this niche.
   const runRes = await pool.query<{
     id: number; status: string; level: number; source: string;
     num_clusters: number; num_noise: number; total_videos: number;
@@ -110,20 +137,36 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
             num_clusters, num_noise, total_videos,
             error_message, started_at, completed_at, progress
        FROM niche_tree_runs
-      WHERE kind = 'custom_niche' AND custom_niche_id = $1
+      WHERE kind = 'custom_niche' AND custom_niche_id = $1 AND source = $2
       ORDER BY started_at DESC
       LIMIT 1`,
+    [nicheId, source],
+  );
+
+  // List of all (source, latest run status) so the UI can render the
+  // source tabs with a status dot — and tell whether each source has
+  // ever been clustered. Cheap aggregate over the same runs table.
+  const allRunsRes = await pool.query<{ source: string; status: string; num_clusters: number; started_at: string }>(
+    `SELECT DISTINCT ON (source) source, status, num_clusters, started_at
+       FROM niche_tree_runs
+      WHERE kind = 'custom_niche' AND custom_niche_id = $1
+      ORDER BY source, started_at DESC`,
     [nicheId],
   );
+  const runsBySource: Record<string, { status: string; numClusters: number; startedAt: string }> = {};
+  for (const r of allRunsRes.rows) {
+    runsBySource[r.source] = {
+      status: r.status,
+      numClusters: r.num_clusters,
+      startedAt: r.started_at,
+    };
+  }
+
   if (runRes.rows.length === 0) {
-    return NextResponse.json({ ok: true, run: null, clusters: [] });
+    return NextResponse.json({ ok: true, source, coverage, runsBySource, run: null, clusters: [] });
   }
   const run = runRes.rows[0];
 
-  // Pull clusters in the shape NicheClusterCard expects. Same join
-  // pattern as lib/niche-tree.ts getLatestGlobalRun — pulls top-4
-  // popular videos per cluster + a distinct channel count so the
-  // existing card component renders identically here.
   const clRes = await pool.query<{
     id: number; cluster_index: number; level: number;
     auto_label: string | null; ai_label: string | null; label: string | null;
@@ -180,6 +223,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
   return NextResponse.json({
     ok: true,
+    source,
+    coverage,
+    runsBySource,
     run: {
       id: run.id,
       status: run.status,
@@ -193,8 +239,6 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       completedAt: run.completed_at,
       progress: run.progress,
     },
-    // Shape matches ClusterCardData from components/NicheClusterCard.tsx
-    // so the consumer can pass these straight to <NicheClusterCard cluster=…>.
     clusters: clRes.rows.map(c => ({
       id: c.id,
       level: c.level,

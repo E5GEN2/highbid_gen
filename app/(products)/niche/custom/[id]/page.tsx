@@ -73,10 +73,11 @@ export default function CustomNichePage() {
   // Set-niche-centre modal — same scoping rationale.
   const [centerOpen, setCenterOpen] = useState(false);
 
-  // Sub-clustering — HDBSCAN on combined_v2 inside this niche only.
-  // Same pipeline used for the DB-level niche tree, just scoped here.
-  // Cluster shape mirrors the global tree's so we can render with the
-  // same NicheClusterCard component instead of inventing a new card.
+  // Sub-clustering — HDBSCAN scoped to this niche, source-aware. Three
+  // possible sources can coexist (title_v2 / thumbnail_v2 / combined_v2);
+  // the user flips between them via pills inside the Sub-niches tab.
+  // For each, the latest run + clusters live independently in the DB.
+  type ClusterSource = 'title_v2' | 'thumbnail_v2' | 'combined_v2';
   interface SubClusterRun {
     id: number; status: 'running' | 'done' | 'error';
     numClusters: number; numNoise: number; totalVideos: number;
@@ -84,10 +85,19 @@ export default function CustomNichePage() {
     startedAt: string; completedAt: string | null;
     progress: { stage?: string; recentLogs?: string[] } | null;
   }
+  interface SubCoverage {
+    embedded: number; total: number;
+  }
+  type RunsBySource = Partial<Record<ClusterSource, { status: string; numClusters: number; startedAt: string }>>;
+  const [subSource, setSubSource] = useState<ClusterSource>('combined_v2');
   const [subRun, setSubRun] = useState<SubClusterRun | null>(null);
   const [subClusters, setSubClusters] = useState<ClusterCardData[]>([]);
+  const [subCoverage, setSubCoverage] = useState<Record<ClusterSource, SubCoverage> | null>(null);
+  const [subRunsBySource, setSubRunsBySource] = useState<RunsBySource>({});
   const [subBusy, setSubBusy] = useState(false);
   const [subError, setSubError] = useState<string | null>(null);
+  // Embedding request feedback (set after POST /request-embeddings).
+  const [subReqMsg, setSubReqMsg] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -123,18 +133,21 @@ export default function CustomNichePage() {
     loadAll();
   }, [nicheId, loadAll, membershipNonce]);
 
-  // Sub-cluster state fetcher + start handler. Polls every 3s while
-  // a run is in 'running' status; stops as soon as it goes done/error.
+  // Source-aware sub-cluster state fetcher. Pulls latest run + clusters
+  // for the active source AND the per-source status map so the source
+  // pills can render their dot. Polls every 3s while running.
   const loadSubClusters = useCallback(async () => {
     try {
-      const r = await fetch(`/api/niche-spy/custom-niches/${nicheId}/cluster`);
+      const r = await fetch(`/api/niche-spy/custom-niches/${nicheId}/cluster?source=${subSource}`);
       const d = await r.json();
       if (d.ok) {
         setSubRun(d.run);
         setSubClusters(d.clusters || []);
+        setSubCoverage(d.coverage || null);
+        setSubRunsBySource(d.runsBySource || {});
       }
     } catch { /* silent — keep the last good state */ }
-  }, [nicheId]);
+  }, [nicheId, subSource]);
 
   useEffect(() => {
     if (!Number.isFinite(nicheId)) return;
@@ -150,17 +163,48 @@ export default function CustomNichePage() {
   const handleStartSubClustering = async () => {
     setSubBusy(true);
     setSubError(null);
+    setSubReqMsg(null);
     try {
       const r = await fetch(`/api/niche-spy/custom-niches/${nicheId}/cluster`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: '{}',
+        body: JSON.stringify({ source: subSource }),
       });
       const d = await r.json();
       if (!r.ok || d.ok === false) {
         setSubError(d.error || `HTTP ${r.status}`);
       } else {
         await loadSubClusters();
+      }
+    } catch (e) {
+      setSubError((e as Error).message);
+    } finally {
+      setSubBusy(false);
+    }
+  };
+
+  // File an embedding request for the active source so an admin can
+  // compute the missing vectors and unblock clustering. Returns a
+  // friendly message ("Queued 42 videos…" or "Already pending…").
+  const handleRequestEmbeddings = async () => {
+    setSubBusy(true);
+    setSubReqMsg(null);
+    setSubError(null);
+    try {
+      const r = await fetch(`/api/niche-spy/custom-niches/${nicheId}/cluster/request-embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: subSource }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.ok === false) {
+        setSubError(d.error || `HTTP ${r.status}`);
+      } else if (d.queuedVideos === 0) {
+        setSubReqMsg(d.detail || 'No missing embeddings — try clustering directly.');
+      } else if (d.existingPending) {
+        setSubReqMsg(`Already pending — admin will compute ${d.queuedVideos} embeddings.`);
+      } else {
+        setSubReqMsg(`Queued ${d.queuedVideos} videos for embedding. You'll be able to cluster once admin processes the request.`);
       }
     } catch (e) {
       setSubError((e as Error).message);
@@ -276,31 +320,39 @@ export default function CustomNichePage() {
               {/* Cluster / Re-cluster — top-level action so the
                   control is visible regardless of which tab the user
                   is on, and the Sub-niches panel below stays focused
-                  on results instead of holding the trigger. Hidden
-                  when the niche is too small to cluster (matches the
-                  server-side 20-video floor). */}
-              {(niche?.videoCount ?? 0) >= 20 && (
-                <button
-                  type="button"
-                  disabled={subBusy || subRun?.status === 'running'}
-                  onClick={handleStartSubClustering}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-50 bg-transparent text-amber-300 border border-amber-500/40 hover:bg-amber-500/10"
-                  title="Group this niche's videos into thematic sub-clusters"
-                >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <circle cx="6" cy="6" r="2.2" />
-                    <circle cx="18" cy="6" r="2.2" />
-                    <circle cx="6" cy="18" r="2.2" />
-                    <circle cx="18" cy="18" r="2.2" />
-                    <circle cx="12" cy="12" r="1.6" />
-                  </svg>
-                  {subRun?.status === 'running'
-                    ? 'Clustering…'
-                    : subRun?.status === 'done'
-                      ? 'Re-cluster'
-                      : 'Cluster'}
-                </button>
-              )}
+                  on results instead of holding the trigger. Disabled
+                  when the active source lacks enough embedded videos
+                  (the Sub-niches tab offers a Request embeddings flow
+                  in that case). */}
+              {(niche?.videoCount ?? 0) >= 20 && (() => {
+                const activeCov = subCoverage?.[subSource];
+                const canCluster = (activeCov?.embedded ?? 0) >= 20;
+                const tooltip = canCluster
+                  ? `Cluster by ${subSource} embeddings`
+                  : `Not enough ${subSource} embeddings — use Sub-niches tab to request them`;
+                return (
+                  <button
+                    type="button"
+                    disabled={subBusy || subRun?.status === 'running' || !canCluster}
+                    onClick={handleStartSubClustering}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-40 disabled:cursor-not-allowed bg-transparent text-amber-300 border border-amber-500/40 hover:bg-amber-500/10"
+                    title={tooltip}
+                  >
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                      <circle cx="6" cy="6" r="2.2" />
+                      <circle cx="18" cy="6" r="2.2" />
+                      <circle cx="6" cy="18" r="2.2" />
+                      <circle cx="18" cy="18" r="2.2" />
+                      <circle cx="12" cy="12" r="1.6" />
+                    </svg>
+                    {subRun?.status === 'running'
+                      ? 'Clustering…'
+                      : subRun?.status === 'done'
+                        ? 'Re-cluster'
+                        : 'Cluster'}
+                  </button>
+                );
+              })()}
 
               {/* "Set niche centre" — placed to the LEFT of Add
                   from Favourites per design request. Disabled when
@@ -426,67 +478,147 @@ export default function CustomNichePage() {
           ))}
       </div>
 
-      {/* Sub-niches tab content. The Cluster / Re-cluster trigger now
-          lives in the page header action row (see the Cluster button
-          above), so this section is purely results + status — no
-          duplicate button cluttering the panel. */}
-      {tab === 'sub-niches' && (niche?.videoCount ?? 0) >= 20 && (
-        <>
-          {/* Status strip — only renders while a run is meaningful to
-              show (in flight / errored / has a meta line under the
-              cards). Goes silent when there's nothing to say. */}
-          {(subRun?.status === 'running' || subRun?.status === 'error' || subError) && (
-            <div className="mb-4 p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f] flex items-center gap-3 flex-wrap">
-              {subRun?.status === 'running' && (
-                <span className="text-xs text-amber-300 animate-pulse">
-                  Clustering{subRun.totalVideos > 0 ? ` ${subRun.totalVideos} videos…` : '…'}
-                </span>
-              )}
-              {subRun?.status === 'error' && (
-                <span className="text-xs text-red-300 truncate" title={subRun.errorMessage || ''}>
-                  Last run failed: {subRun.errorMessage?.slice(0, 100) || 'unknown error'}
-                </span>
-              )}
-              {subError && <span className="text-xs text-red-300">{subError}</span>}
+      {/* Sub-niches tab content. The Cluster / Re-cluster trigger lives
+          in the page header action row. This panel hosts the source
+          switcher (title / thumb / combined), coverage hint, and the
+          card grid for the active source. */}
+      {tab === 'sub-niches' && (niche?.videoCount ?? 0) >= 20 && (() => {
+        const SOURCE_OPTIONS: Array<{ key: ClusterSource; label: string }> = [
+          { key: 'combined_v2',  label: 'Combined' },
+          { key: 'title_v2',     label: 'Title' },
+          { key: 'thumbnail_v2', label: 'Thumbnail' },
+        ];
+        const activeCov = subCoverage?.[subSource];
+        const covMissing = activeCov ? activeCov.total - activeCov.embedded : 0;
+        const covRatio = activeCov && activeCov.total > 0 ? activeCov.embedded / activeCov.total : 0;
+        // 20-video floor matches the server. Anything under that on
+        // this source means we can't cluster.
+        const canCluster = (activeCov?.embedded ?? 0) >= 20;
+        return (
+          <>
+            {/* Source switcher pills */}
+            <div className="flex items-center gap-2 mb-4 flex-wrap">
+              <span className="text-xs text-[#666] mr-1">Cluster by:</span>
+              {SOURCE_OPTIONS.map(s => {
+                const meta = subRunsBySource[s.key];
+                const cov = subCoverage?.[s.key];
+                return (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setSubSource(s.key)}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs transition ${
+                      subSource === s.key
+                        ? 'bg-amber-400/15 text-amber-300 border border-amber-400/40'
+                        : 'text-[#888] border border-[#333] hover:border-[#555]'
+                    }`}
+                    title={cov ? `${cov.embedded}/${cov.total} videos have ${s.key} embeddings` : ''}
+                  >
+                    {s.label}
+                    {meta?.status === 'done' && meta.numClusters > 0 && (
+                      <span className="text-[#888]">({meta.numClusters})</span>
+                    )}
+                    {meta?.status === 'running' && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          )}
 
-          {/* Empty state — niche has enough videos but has never been
-              clustered. Direct them to the Cluster button in the
-              header. */}
-          {!subRun && (
-            <div className="p-6 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] text-center">
-              <h3 className="text-sm font-semibold text-white mb-1">No sub-clusters yet</h3>
-              <p className="text-xs text-[#888]">
-                Click the <span className="text-amber-300 font-medium">Cluster</span> button up top to group this niche's videos into thematic sub-clusters.
-              </p>
-            </div>
-          )}
-
-          {subRun?.status === 'done' && subClusters.length > 0 && (
-            <>
-              <div className="text-xs text-[#777] mb-3">
-                {subClusters.length} sub-clusters from {subRun.totalVideos} videos
-                {subRun.numNoise > 0 ? ` (${subRun.numNoise} unassigned)` : ''}.
+            {/* Coverage line — surfaces under-coverage so the user
+                understands why their Cluster button might be greyed out. */}
+            {activeCov && activeCov.total > 0 && (
+              <div className="mb-4 text-xs text-[#888]">
+                Coverage for <span className="text-white">{subSource}</span>:{' '}
+                <span className={covRatio >= 0.8 ? 'text-emerald-400' : covRatio >= 0.3 ? 'text-amber-300' : 'text-red-400'}>
+                  {activeCov.embedded}/{activeCov.total}
+                </span>{' '}
+                videos embedded
+                {!canCluster && covMissing > 0 && (
+                  <>
+                    {' · '}
+                    <button
+                      type="button"
+                      onClick={handleRequestEmbeddings}
+                      disabled={subBusy}
+                      className="text-amber-300 hover:text-amber-200 underline underline-offset-2 disabled:opacity-50"
+                    >
+                      Request {covMissing} embedding{covMissing === 1 ? '' : 's'}
+                    </button>
+                  </>
+                )}
               </div>
-              {/* Reuse the platform's standard cluster card so sub-clusters
-                  visually match the global niche tree. Each card links to
-                  the same /niche/cluster/[id] drill-in page. */}
-              <div className="space-y-3">
-                {subClusters.map(c => (
-                  <NicheClusterCard key={c.id} cluster={c} />
-                ))}
-              </div>
-            </>
-          )}
+            )}
 
-          {subRun?.status === 'done' && subClusters.length === 0 && (
-            <div className="p-6 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] text-center text-xs text-[#888]">
-              No sub-clusters produced — try adding more videos or re-clustering.
-            </div>
-          )}
-        </>
-      )}
+            {/* Inline status / error messages */}
+            {(subRun?.status === 'running' || subRun?.status === 'error' || subError || subReqMsg) && (
+              <div className="mb-4 p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f] flex items-center gap-3 flex-wrap">
+                {subRun?.status === 'running' && (
+                  <span className="text-xs text-amber-300 animate-pulse">
+                    Clustering{subRun.totalVideos > 0 ? ` ${subRun.totalVideos} videos…` : '…'}
+                  </span>
+                )}
+                {subRun?.status === 'error' && (
+                  <span className="text-xs text-red-300 truncate" title={subRun.errorMessage || ''}>
+                    Last run failed: {subRun.errorMessage?.slice(0, 100) || 'unknown error'}
+                  </span>
+                )}
+                {subError && <span className="text-xs text-red-300">{subError}</span>}
+                {subReqMsg && <span className="text-xs text-emerald-300">{subReqMsg}</span>}
+              </div>
+            )}
+
+            {/* Empty state for this source. Two flavours: never clustered
+                (suggest the header button) vs not enough embeddings
+                (offer the request flow). */}
+            {!subRun && canCluster && (
+              <div className="p-6 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] text-center">
+                <h3 className="text-sm font-semibold text-white mb-1">No sub-clusters yet for {subSource}</h3>
+                <p className="text-xs text-[#888]">
+                  Click the <span className="text-amber-300 font-medium">Cluster</span> button up top to group by {SOURCE_OPTIONS.find(o => o.key === subSource)?.label.toLowerCase()} embeddings.
+                </p>
+              </div>
+            )}
+            {!subRun && !canCluster && (
+              <div className="p-6 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] text-center">
+                <h3 className="text-sm font-semibold text-white mb-1">Not enough {subSource} embeddings</h3>
+                <p className="text-xs text-[#888] mb-3">
+                  Only {activeCov?.embedded ?? 0} of {activeCov?.total ?? 0} videos in this niche have a {subSource} embedding — at least 20 are needed to cluster.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleRequestEmbeddings}
+                  disabled={subBusy}
+                  className="px-4 py-1.5 text-xs font-semibold bg-amber-400 text-black rounded-md hover:bg-amber-300 transition disabled:opacity-50"
+                >
+                  Request embeddings
+                </button>
+              </div>
+            )}
+
+            {subRun?.status === 'done' && subClusters.length > 0 && (
+              <>
+                <div className="text-xs text-[#777] mb-3">
+                  {subClusters.length} sub-clusters from {subRun.totalVideos} videos
+                  {subRun.numNoise > 0 ? ` (${subRun.numNoise} unassigned)` : ''}.
+                </div>
+                <div className="space-y-3">
+                  {subClusters.map(c => (
+                    <NicheClusterCard key={c.id} cluster={c} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {subRun?.status === 'done' && subClusters.length === 0 && (
+              <div className="p-6 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] text-center text-xs text-[#888]">
+                No sub-clusters produced — try adding more videos or re-clustering.
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* Videos tab content — sort pills + the grid. Stays wrapped
           in a Fragment so we don't reflow the existing layout; the

@@ -30,7 +30,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1618,6 +1618,7 @@ export default function AdminPage() {
     { key: 'docs',           label: 'Docs',            dot: 'bg-slate-400/70' },
     { key: 'tools',          label: 'Tools',           dot: 'bg-yellow-500/70' },
     { key: 'vid-gen',        label: 'Vid Gen',         dot: 'bg-rose-500/70' },
+    { key: 'embed-reqs',     label: 'Embed reqs',      dot: 'bg-cyan-400/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5921,6 +5922,15 @@ export default function AdminPage() {
         <div style={{ display: adminSection === 'vid-gen' ? 'block' : 'none' }}>
           <VidGenTab active={adminSection === 'vid-gen'} />
         </div>
+
+        {/* Embedding requests — custom-niche owners file these when
+            they want to cluster by an embedding source (title_v2 /
+            thumbnail_v2 / combined_v2) that isn't computed for enough
+            videos in their niche yet. Admin processes them out-of-
+            band and flips the status. */}
+        <div style={{ display: adminSection === 'embed-reqs' ? 'block' : 'none' }}>
+          <EmbedReqsTab active={adminSection === 'embed-reqs'} />
+        </div>
       </div>
     </div>
   );
@@ -8755,6 +8765,216 @@ function StatBox({ label, value, accent }: { label: string; value: number; accen
     <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
       <div className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">{label}</div>
       <div className={`text-xl font-bold ${accent} mt-1 font-mono`}>{value.toLocaleString()}</div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ *  Embedding requests tab — admin surface for custom-niche owners
+ *  who can't cluster because their niche lacks enough of a given
+ *  embedding source. Each pending row is a group of videos awaiting
+ *  embedding generation.
+ * ──────────────────────────────────────────────────────────────── */
+interface EmbedRequest {
+  id: number;
+  customNicheId: number;
+  nicheName: string | null;
+  nicheDescription: string | null;
+  source: string;
+  videoCount: number;
+  requestedBy: string | null;
+  requesterLabel: string | null;
+  status: 'pending' | 'processing' | 'done' | 'failed' | 'dismissed';
+  note: string | null;
+  createdAt: string;
+  processedAt: string | null;
+}
+
+function EmbedReqsTab({ active }: { active: boolean }) {
+  const [requests, setRequests] = useState<EmbedRequest[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [statusFilter, setStatusFilter] = useState<'pending' | 'all'>('pending');
+  const [loading, setLoading] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/admin/embedding-requests?status=${statusFilter}&limit=100`);
+      const d = await r.json();
+      if (d.ok) {
+        setRequests(d.requests || []);
+        setCounts(d.counts || {});
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    if (!active) return;
+    load();
+  }, [active, load]);
+
+  const updateStatus = async (id: number, status: EmbedRequest['status']) => {
+    setUpdateBusy(id);
+    try {
+      await fetch('/api/admin/embedding-requests', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, status }),
+      });
+      await load();
+    } finally {
+      setUpdateBusy(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">Embedding Requests</h2>
+        <p className="text-sm text-gray-400">
+          Custom-niche owners file these when they want to cluster by a source
+          that's not computed for enough of their niche's videos. Pending rows
+          show what's queued; mark them <span className="text-emerald-400">done</span> once the
+          embeddings exist (the embedding pipeline lives in <code className="text-cyan-300">lib/embeddings.ts</code>).
+        </p>
+      </div>
+
+      {/* Counts row */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <StatBox label="Pending"    value={counts.pending    ?? 0} accent="text-amber-400" />
+        <StatBox label="Processing" value={counts.processing ?? 0} accent="text-cyan-400" />
+        <StatBox label="Done"       value={counts.done       ?? 0} accent="text-emerald-400" />
+        <StatBox label="Failed"     value={counts.failed     ?? 0} accent="text-red-400" />
+        <StatBox label="Dismissed"  value={counts.dismissed  ?? 0} accent="text-zinc-400" />
+      </div>
+
+      {/* Status filter pills */}
+      <div className="flex items-center gap-1.5">
+        {(['pending', 'all'] as const).map(s => (
+          <button
+            key={s}
+            onClick={() => setStatusFilter(s)}
+            className={`px-3 py-1 text-xs rounded-full transition ${
+              statusFilter === s ? 'bg-white text-black font-medium' : 'text-gray-400 border border-gray-700 hover:text-white'
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+
+      {/* Requests table */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        {loading && requests.length === 0 && (
+          <div className="px-5 py-8 text-center text-sm text-gray-500">Loading…</div>
+        )}
+        {!loading && requests.length === 0 && (
+          <div className="px-5 py-12 text-center text-sm text-gray-500">
+            No {statusFilter === 'all' ? '' : statusFilter} requests.
+          </div>
+        )}
+        {requests.length > 0 && (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-950/60 text-xs text-gray-500 uppercase">
+              <tr>
+                <th className="px-4 py-2 text-left font-medium">When</th>
+                <th className="px-4 py-2 text-left font-medium">Niche</th>
+                <th className="px-4 py-2 text-left font-medium w-32">Source</th>
+                <th className="px-4 py-2 text-right font-medium w-24">Videos</th>
+                <th className="px-4 py-2 text-left font-medium">Requester</th>
+                <th className="px-4 py-2 text-left font-medium w-28">Status</th>
+                <th className="px-4 py-2 text-right font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {requests.map(r => (
+                <tr key={r.id} className="border-t border-gray-800/60 hover:bg-gray-950/40">
+                  <td className="px-4 py-2 text-xs text-gray-400 whitespace-nowrap">
+                    {new Date(r.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2">
+                    <a
+                      href={`/niche/custom/${r.customNicheId}`}
+                      target="_blank" rel="noreferrer"
+                      className="text-cyan-300 hover:text-cyan-200 underline underline-offset-2"
+                    >
+                      {r.nicheName || `#${r.customNicheId}`}
+                    </a>
+                    {r.nicheDescription && (
+                      <div className="text-[10px] text-gray-500 truncate max-w-[280px]" title={r.nicheDescription}>
+                        {r.nicheDescription}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className="px-2 py-0.5 text-[10px] rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono">
+                      {r.source}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono text-white">{r.videoCount}</td>
+                  <td className="px-4 py-2 text-xs text-gray-400" title={r.requestedBy || ''}>
+                    {r.requesterLabel || r.requestedBy?.slice(0, 12) || '—'}
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className={`text-xs ${
+                      r.status === 'pending'    ? 'text-amber-400' :
+                      r.status === 'processing' ? 'text-cyan-400 animate-pulse' :
+                      r.status === 'done'       ? 'text-emerald-400' :
+                      r.status === 'failed'     ? 'text-red-400' :
+                                                  'text-zinc-500'
+                    }`}>{r.status}</span>
+                  </td>
+                  <td className="px-4 py-2 text-right whitespace-nowrap">
+                    {r.status === 'pending' && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={updateBusy === r.id}
+                          onClick={() => updateStatus(r.id, 'processing')}
+                          className="px-2 py-0.5 text-[10px] text-cyan-300 border border-cyan-500/30 rounded hover:bg-cyan-500/10 transition mr-1.5 disabled:opacity-50"
+                        >
+                          Mark processing
+                        </button>
+                        <button
+                          type="button"
+                          disabled={updateBusy === r.id}
+                          onClick={() => updateStatus(r.id, 'dismissed')}
+                          className="px-2 py-0.5 text-[10px] text-zinc-400 border border-zinc-700 rounded hover:bg-zinc-800 transition disabled:opacity-50"
+                        >
+                          Dismiss
+                        </button>
+                      </>
+                    )}
+                    {r.status === 'processing' && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={updateBusy === r.id}
+                          onClick={() => updateStatus(r.id, 'done')}
+                          className="px-2 py-0.5 text-[10px] text-emerald-300 border border-emerald-500/30 rounded hover:bg-emerald-500/10 transition mr-1.5 disabled:opacity-50"
+                        >
+                          Mark done
+                        </button>
+                        <button
+                          type="button"
+                          disabled={updateBusy === r.id}
+                          onClick={() => updateStatus(r.id, 'failed')}
+                          className="px-2 py-0.5 text-[10px] text-red-300 border border-red-500/30 rounded hover:bg-red-500/10 transition disabled:opacity-50"
+                        >
+                          Mark failed
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

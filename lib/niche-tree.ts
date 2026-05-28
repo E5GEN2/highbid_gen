@@ -1729,42 +1729,48 @@ export async function runCustomNicheClusteringJob(opts: {
 }): Promise<void> {
   const pool = await getPool();
   try {
-    // Pull video IDs that are BOTH in the custom niche AND embedded in
-    // combined_v2. Unembedded ones get silently dropped — they'd just
-    // produce errors in the Python script anyway.
+    const source: TreeSource = opts.params?.source || 'combined_v2';
+
+    // Pull video IDs that are BOTH in the custom niche AND embedded
+    // for THIS source. Each source has its own column on niche_spy_videos.
+    const embeddingCol =
+      source === 'title_v2'     ? 'title_embedding_v2' :
+      source === 'thumbnail_v2' ? 'thumbnail_embedding_v2' :
+      source === 'title_v1'     ? 'title_embedding' :
+      /* default */               'combined_embedding_v2';
     const vidsRes = await pool.query<{ video_id: number }>(
       `SELECT cnv.video_id
          FROM custom_niche_videos cnv
          JOIN niche_spy_videos v ON v.id = cnv.video_id
         WHERE cnv.custom_niche_id = $1
-          AND v.combined_embedding_v2 IS NOT NULL`,
+          AND v.${embeddingCol} IS NOT NULL`,
       [opts.customNicheId],
     );
     const videoIds = vidsRes.rows.map(r => r.video_id);
     if (videoIds.length < 20) {
       await pool.query(
         `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
-        [`Custom niche has only ${videoIds.length} embedded videos — at least 20 needed to cluster.`, opts.runId],
+        [`Custom niche has only ${videoIds.length} videos embedded for source=${source} — at least 20 needed to cluster.`, opts.runId],
       );
       return;
     }
 
-    // Clear any previous clusters/assignments from this niche's prior
-    // runs. CASCADE on niche_tree_runs(id) deletion would do it too,
-    // but we want the old runs row preserved for audit — just nuke
-    // the cluster rows.
+    // Wipe ONLY this niche's prior runs for the SAME source. Other
+    // sources' results (e.g. previous combined_v2 cluster set when
+    // user is now running title_v2) survive so the user can flip
+    // between them in the UI. CASCADE on niche_tree_runs would nuke
+    // everything, so we delete cluster rows surgically by source.
     await pool.query(
       `DELETE FROM niche_tree_clusters
         WHERE run_id IN (
           SELECT id FROM niche_tree_runs
            WHERE kind = 'custom_niche'
              AND custom_niche_id = $1
-             AND id <> $2
+             AND source = $2
+             AND id <> $3
         )`,
-      [opts.customNicheId, opts.runId],
+      [opts.customNicheId, source, opts.runId],
     );
-
-    const source: TreeSource = opts.params?.source || 'combined_v2';
     // Small-N tuning: min_cluster_size floors at 5 so the algorithm
     // doesn't collapse 50-video sets into one giant cluster. 2% of N
     // is the heuristic from the L2 subdivide path; same idea, lower

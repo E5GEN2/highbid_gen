@@ -606,6 +606,30 @@ export async function initSchema(): Promise<void> {
         ADD COLUMN IF NOT EXISTS center_video_id INTEGER REFERENCES niche_spy_videos(id) ON DELETE SET NULL
     `).catch(() => {});
 
+    // Embedding requests — when a user wants to cluster a custom niche
+    // by an embedding source (title_v2 / thumbnail_v2 / combined_v2)
+    // that isn't yet computed for enough videos in the niche, they
+    // file a request. Admin sees the request in a dedicated tab and
+    // can kick off the embedding job. Once done, the user can come
+    // back and cluster.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS embedding_requests (
+        id SERIAL PRIMARY KEY,
+        custom_niche_id INTEGER NOT NULL REFERENCES custom_niches(id) ON DELETE CASCADE,
+        source TEXT NOT NULL,                  -- 'title_v2' | 'thumbnail_v2' | 'combined_v2'
+        video_ids INTEGER[] NOT NULL,          -- specific unembedded videos at request time
+        video_count INTEGER NOT NULL,          -- length(video_ids) cached for the admin list
+        requested_by TEXT,                     -- api_tokens.id or session user id
+        requester_label TEXT,                  -- human label (token name, email, etc.) for the admin UI
+        status TEXT NOT NULL DEFAULT 'pending',-- 'pending' | 'processing' | 'done' | 'failed' | 'dismissed'
+        note TEXT,                             -- admin / system notes
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        processed_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_embreq_pending ON embedding_requests(created_at DESC) WHERE status = 'pending'`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_embreq_niche ON embedding_requests(custom_niche_id, source, created_at DESC)`).catch(() => {});
+
     // One-time backfill: copy channel-level data we already collected on the
     // videos table into the new channels table. Idempotent via ON CONFLICT.
     await client.query(`
