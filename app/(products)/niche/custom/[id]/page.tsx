@@ -61,6 +61,11 @@ export default function CustomNichePage() {
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
+  // Active content tab. Mirrors the /niche/cluster/[id] tab pattern so
+  // a custom niche behaves like an L1 cluster from the user's POV.
+  // Sub-niches only renders once the niche has been clustered.
+  type Tab = 'videos' | 'sub-niches';
+  const [tab, setTab] = useState<Tab>('videos');
   // Add-from-favourites modal state — kept local because this is
   // the only surface that opens it (vs. the StarChooser which any
   // page can open via the FavouritesProvider).
@@ -365,12 +370,39 @@ export default function CustomNichePage() {
         )}
       </div>
 
+      {/* Tab pills — matches the /niche/cluster/[id] layout so a
+          custom niche reads as the same kind of object visually
+          (Videos default, Sub-niches once clustered). Sub-niches
+          is hidden until the niche is large enough to cluster
+          (20-video floor mirrors the server). */}
+      <div className="flex gap-2 mb-6 flex-wrap">
+        {(['videos', 'sub-niches'] as const)
+          .filter(t => t === 'videos' || (niche?.videoCount ?? 0) >= 20)
+          .map(t => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={`px-4 py-1.5 rounded-full text-sm transition ${
+                tab === t
+                  ? 'bg-white text-black font-medium'
+                  : 'text-[#888] border border-[#333] hover:border-[#555]'
+              }`}
+            >
+              {t === 'videos' ? 'Videos' : 'Sub-niches'}
+              {t === 'sub-niches' && subRun?.status === 'done' && subClusters.length > 0 && (
+                <span className="ml-1.5 text-[#888]">({subClusters.length})</span>
+              )}
+            </button>
+          ))}
+      </div>
+
       {/* Sub-clusters panel — HDBSCAN on combined_v2 embeddings,
           scoped to this niche's videos. Same pipeline as the DB-level
           niche tree, just filtered. Hidden until the niche has enough
           videos to bother clustering (20-video floor matches the
           minimum the server enforces). */}
-      {(niche?.videoCount ?? 0) >= 20 && (
+      {tab === 'sub-niches' && (niche?.videoCount ?? 0) >= 20 && (
         <div className="p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] mb-4">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
             <div>
@@ -432,6 +464,10 @@ export default function CustomNichePage() {
         </div>
       )}
 
+      {/* Videos tab content — sort pills + the grid. Stays wrapped
+          in a Fragment so we don't reflow the existing layout; the
+          sort + grid + empty state all belong together in this tab. */}
+      {tab === 'videos' && <>
       {/* Sort pills + min-score filter. Same vocabulary as the
           other video grids across the product — Recent, Most
           views, etc. Closest-to-centre only renders when the
@@ -561,6 +597,7 @@ export default function CustomNichePage() {
           </div>
         );
       })()}
+      </>}
 
       {/* Add-from-favourites modal. Mounted at the page root so the
           backdrop covers the whole viewport. existingVideoIds is
