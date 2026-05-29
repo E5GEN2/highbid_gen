@@ -20,10 +20,9 @@
  * a fresh key.
  */
 
-import { fetch as undiciFetch } from 'undici';
 import { getPool } from './db';
 import { getRandomHealthyProxy } from './xgodo-proxy';
-import { dispatcherFor } from './proxy-dispatcher';
+import { fetchViaProxy, type ProxyFetchResponse } from './proxy-dispatcher';
 import type { EmbedInput } from './embeddings';
 
 interface AiKeyRow { id: number; key: string }
@@ -88,12 +87,12 @@ function partToGeminiPart(p: EmbedInput): Record<string, unknown> {
  *
  * Throws if all PROXY_ATTEMPTS proxies fail to connect.
  */
-async function postGeminiViaProxy(url: string, body: string): Promise<Response> {
+async function postGeminiViaProxy(url: string, body: string): Promise<ProxyFetchResponse> {
   const init = {
-    method: 'POST' as const,
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
-    signal: AbortSignal.timeout(45_000),
+    timeoutMs: 45_000,
   };
 
   let lastErr: string | null = null;
@@ -104,11 +103,9 @@ async function postGeminiViaProxy(url: string, body: string): Promise<Response> 
       continue;
     }
     try {
-      const res = await undiciFetch(url, {
-        ...init,
-        dispatcher: dispatcherFor(proxy.url),
-      });
-      return res as unknown as Response;
+      // fetchViaProxy handles both HTTP (undici) and SOCKS5 (https.request)
+      // transports — see lib/proxy-dispatcher.ts.
+      return await fetchViaProxy(url, init, proxy.url);
     } catch (err) {
       lastErr = `${proxy.deviceId}: ${(err as Error).message?.slice(0, 100) || 'proxy fail'}`;
     }

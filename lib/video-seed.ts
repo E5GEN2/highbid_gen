@@ -18,8 +18,7 @@
  * coherent with the cluster pipeline.
  */
 
-import { fetch as undiciFetch } from 'undici';
-import { dispatcherFor } from './proxy-dispatcher';
+import { fetchViaProxy } from './proxy-dispatcher';
 import { getPool } from './db';
 import { pickRandomActiveYtPair } from './yt-keys';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
@@ -114,13 +113,15 @@ async function batchEmbedGroupedViaProxy(
   // in ~3s; anything taking longer is either a slow proxy or a stalled
   // upstream and we'd rather rotate than wait. Cap matters because
   // batchEmbedGroupedDirect's inner loop runs up to 6 of these.
-  const res = await undiciFetch(url, {
+  // fetchViaProxy handles both HTTP (undici) and SOCKS5 (https.request)
+  // transports — see lib/proxy-dispatcher.ts. 20s timeout keeps the
+  // outer per-call retry loop snappy.
+  const res = await fetchViaProxy(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
-    dispatcher: dispatcherFor(proxyUrl, { connectTimeout: 8_000, bodyTimeout: 20_000, headersTimeout: 15_000 }),
-    signal: AbortSignal.timeout(20_000),
-  });
+    timeoutMs: 20_000,
+  }, proxyUrl);
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');

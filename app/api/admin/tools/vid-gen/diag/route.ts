@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetch as undiciFetch } from 'undici';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
 import { getRandomProxy, getProxyStats } from '@/lib/xgodo-proxy';
-import { dispatcherFor } from '@/lib/proxy-dispatcher';
+import { fetchViaProxy } from '@/lib/proxy-dispatcher';
 
 /**
  * GET /api/admin/tools/vid-gen/diag?n=10
@@ -49,22 +48,32 @@ export async function GET(req: NextRequest) {
     const proxyUrl = proxy?.url ? proxy.url.replace(/:[^@]+@/, ':REDACTED@') : null;
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${k.key}`;
-    const init = {
-      method: 'POST' as const,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: 'reply OK' }] }],
-        generationConfig: { maxOutputTokens: 16 },
-      }),
-      signal: AbortSignal.timeout(30_000),
-    };
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: 'reply OK' }] }],
+      generationConfig: { maxOutputTokens: 16 },
+    });
 
     const t0 = Date.now();
     let status: number | null = null, error: string | null = null, bodyPreview: string | null = null;
     try {
-      const res = proxy?.url
-        ? await undiciFetch(url, { ...init, dispatcher: dispatcherFor(proxy.url) })
-        : await fetch(url, init);
+      let res: { ok: boolean; status: number; text: () => Promise<string> };
+      if (proxy?.url) {
+        // fetchViaProxy handles both HTTP and SOCKS5 transports.
+        res = await fetchViaProxy(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          timeoutMs: 30_000,
+        }, proxy.url);
+      } else {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal: AbortSignal.timeout(30_000),
+        });
+        res = { ok: r.ok, status: r.status, text: () => r.text() };
+      }
       status = res.status;
       if (!res.ok) {
         const text = await res.text().catch(() => '');

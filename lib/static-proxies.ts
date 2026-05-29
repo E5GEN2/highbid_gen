@@ -71,7 +71,10 @@ function parse(): StaticProxy[] {
     }
     const [, host, port, user, pass] = m;
     out.push({
-      url: `socks5://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`,
+      // socks5h:// (DNS resolved by the proxy). The provider's nodes
+      // reject host-side DNS with NetworkUnreachable — verified via
+      // local probe — so plain socks5:// would fail every call.
+      url: `socks5h://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`,
       host,
       port: parseInt(port, 10),
       id: `${host}:${port}`,
