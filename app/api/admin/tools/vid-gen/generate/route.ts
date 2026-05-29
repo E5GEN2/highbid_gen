@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
+import { getRandomHealthyProxy } from '@/lib/xgodo-proxy';
+import { fetchViaProxy } from '@/lib/proxy-dispatcher';
 import crypto from 'crypto';
 
 /**
@@ -142,22 +144,38 @@ Example output for n=3:
  "An astronaut planting a single tulip on the surface of Mars at sunrise"]`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const init = {
-    method: 'POST' as const,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: metaPrompt }] }],
-      generationConfig: {
-        temperature: 1.0,
-        topP: 0.95,
-        maxOutputTokens: 4096,
-        responseMimeType: 'application/json',
-      },
-    }),
-    signal: AbortSignal.timeout(60_000),
-  };
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: metaPrompt }] }],
+    generationConfig: {
+      temperature: 1.0,
+      topP: 0.95,
+      maxOutputTokens: 4096,
+      responseMimeType: 'application/json',
+    },
+  });
 
-  const res = await fetch(url, init);
+  // Route through the platform proxy pool — gives Google a different
+  // egress IP per call than the embedding workers' parallel traffic,
+  // so the two systems don't share a per-IP rate-limit bucket. Falls
+  // back to direct fetch only if the pool is empty.
+  const proxy = await getRandomHealthyProxy().catch(() => null);
+  let res: { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> };
+  if (proxy?.url) {
+    res = await fetchViaProxy(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      timeoutMs: 60_000,
+    }, proxy.url);
+  } else {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    });
+    res = { ok: r.ok, status: r.status, text: () => r.text(), json: () => r.json() };
+  }
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');

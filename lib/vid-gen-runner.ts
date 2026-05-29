@@ -5,13 +5,16 @@
  * HTTP self-call.
  *
  * Key/pool hygiene (mark 403 invalid, cooloff 429 for 90s, filter
- * banned_until on the picker) is preserved here. Direct fetch to
- * Gemini; the proxy layer's dead rate made it net-negative for this
- * specific endpoint at the volumes we run.
+ * banned_until on the picker) is preserved here. Calls go through
+ * the platform's proxy pool (static SOCKS5 list while xgodo is
+ * degraded) so vid-gen and the embedding workers don't contend for
+ * the same Gemini per-IP rate-limit bucket.
  */
 
 import crypto from 'crypto';
 import { getPool } from './db';
+import { getRandomHealthyProxy } from './xgodo-proxy';
+import { fetchViaProxy } from './proxy-dispatcher';
 
 export const BATCH_SIZE = 25;
 export const DEFAULT_MODEL = 'gemini-flash-latest';
@@ -87,18 +90,36 @@ Example output for n=3:
  "An astronaut planting a single tulip on the surface of Mars at sunrise"]`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: metaPrompt }] }],
-      generationConfig: {
-        temperature: 1.0, topP: 0.95, maxOutputTokens: 4096,
-        responseMimeType: 'application/json',
-      },
-    }),
-    signal: AbortSignal.timeout(60_000),
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: metaPrompt }] }],
+    generationConfig: {
+      temperature: 1.0, topP: 0.95, maxOutputTokens: 4096,
+      responseMimeType: 'application/json',
+    },
   });
+
+  // Pick a proxy from the platform pool. Falls back to direct fetch
+  // only when the pool is completely empty (rare). The proxy gives
+  // Google a different egress IP than the embedding workers' calls,
+  // so vid-gen + embeddings get separate per-IP rate-limit buckets.
+  const proxy = await getRandomHealthyProxy().catch(() => null);
+  let res: { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> };
+  if (proxy?.url) {
+    res = await fetchViaProxy(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      timeoutMs: 60_000,
+    }, proxy.url);
+  } else {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    });
+    res = { ok: r.ok, status: r.status, text: () => r.text(), json: () => r.json() };
+  }
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
