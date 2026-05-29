@@ -25,12 +25,15 @@
 
 import { getPool } from './db';
 import {
-  batchEmbedInputs,
-  batchEmbedGrouped,
   TARGET_CONFIG,
   type EmbeddingTarget,
   type EmbedInput,
 } from './embeddings';
+// Direct-fetch Gemini path — see lib/embed-direct.ts for why we
+// stopped using the proxied batchEmbedInputs / batchEmbedGrouped from
+// lib/embeddings.ts (proxy collapse rate made the success ratio
+// ~1.5%, leaving requests stuck at 0/N for tens of minutes).
+import { batchEmbedInputsDirect, batchEmbedGroupedDirect } from './embed-direct';
 import { upsertVector } from './vector-db';
 import { probeThumbnail, markThumbnailDead, thumbnailUrlFor } from './thumbnail-validate';
 
@@ -189,8 +192,8 @@ export async function embedSpecificVideos(
       if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
       try {
         const embeddings = target === 'combined_v2'
-          ? await batchEmbedGrouped(groups, cfg.model)
-          : await batchEmbedInputs(inputs, cfg.model);
+          ? await batchEmbedGroupedDirect(groups, cfg.model)
+          : await batchEmbedInputsDirect(inputs, cfg.model);
         // Defensive: Google sometimes returns short / zero-length lists
         // on content it can't process — treat as transient.
         if (embeddings.length < expected) {

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { batchEmbedInputs, batchEmbedGrouped, TARGET_CONFIG, type EmbeddingTarget, type EmbedInput } from '@/lib/embeddings';
+import { TARGET_CONFIG, type EmbeddingTarget, type EmbedInput } from '@/lib/embeddings';
+import { batchEmbedInputsDirect, batchEmbedGroupedDirect } from '@/lib/embed-direct';
 import { probeThumbnail, thumbnailUrlFor } from '@/lib/thumbnail-validate';
 import { upsertVector } from '@/lib/vector-db';
 
@@ -136,8 +137,8 @@ export async function POST(req: NextRequest) {
   let embedding: number[] | null = null;
   try {
     const embeddings = target === 'combined_v2'
-      ? await batchEmbedGrouped(groups, cfg.model)
-      : await batchEmbedInputs(inputs, cfg.model);
+      ? await batchEmbedGroupedDirect(groups, cfg.model)
+      : await batchEmbedInputsDirect(inputs, cfg.model);
     embedding = embeddings[0] || null;
     steps.push({
       name: 'gemini_embed', ms: Date.now() - stepStart, ok: !!embedding && embedding.length > 0,
