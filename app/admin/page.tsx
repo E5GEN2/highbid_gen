@@ -8795,7 +8795,10 @@ interface EmbedRequest {
 function EmbedReqsTab({ active }: { active: boolean }) {
   const [requests, setRequests] = useState<EmbedRequest[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [statusFilter, setStatusFilter] = useState<'pending' | 'all'>('pending');
+  // 'active' = pending OR processing — what the operator usually wants
+  // to see. Keeps a row visible after Process is clicked (status flips
+  // to processing immediately, a pending-only filter would hide it).
+  const [statusFilter, setStatusFilter] = useState<'active' | 'all'>('active');
   const [loading, setLoading] = useState(false);
   const [updateBusy, setUpdateBusy] = useState<number | null>(null);
 
@@ -8887,7 +8890,7 @@ function EmbedReqsTab({ active }: { active: boolean }) {
 
       {/* Status filter pills */}
       <div className="flex items-center gap-1.5">
-        {(['pending', 'all'] as const).map(s => (
+        {(['active', 'all'] as const).map(s => (
           <button
             key={s}
             onClick={() => setStatusFilter(s)}

@@ -30,7 +30,13 @@ export async function GET(req: NextRequest) {
 
   const where: string[] = [];
   const params: (string | number)[] = [];
-  if (status !== 'all' && VALID_STATUSES.has(status)) {
+  // 'active' is the "in flight" virtual bucket — pending OR processing.
+  // Used by the admin UI default view so a row stays visible after the
+  // operator clicks Process (the status flips pending→processing
+  // immediately, and a strict status='pending' filter would hide it).
+  if (status === 'active') {
+    where.push(`er.status IN ('pending', 'processing')`);
+  } else if (status !== 'all' && VALID_STATUSES.has(status)) {
     params.push(status);
     where.push(`er.status = $${params.length}`);
   }
