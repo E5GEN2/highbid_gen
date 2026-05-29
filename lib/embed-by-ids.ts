@@ -38,7 +38,13 @@ import { upsertVector } from './vector-db';
 import { probeThumbnail, markThumbnailDead, thumbnailUrlFor } from './thumbnail-validate';
 
 const BATCH_SIZE = 5;
-const PER_BATCH_RETRIES = 3;
+// 8 retries to escape clustered per-project minute quotas. Each retry
+// picks a fresh random key; even with high project clustering in the
+// pool, ~3 fresh picks usually find a non-cooled project bucket. The
+// 250ms × attempt backoff gives the previous key's cooloff DB update
+// a moment to land so the next pick doesn't re-roll it.
+const PER_BATCH_RETRIES = 8;
+const RETRY_BACKOFF_MS  = 250;
 
 export interface TargetedEmbedResult {
   total: number;          // total ids requested
@@ -189,7 +195,7 @@ export async function embedSpecificVideos(
     let success = false;
     let lastErr: string | null = null;
     for (let attempt = 0; attempt < PER_BATCH_RETRIES && !success; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
+      if (attempt > 0) await new Promise(r => setTimeout(r, RETRY_BACKOFF_MS * attempt));
       try {
         const embeddings = target === 'combined_v2'
           ? await batchEmbedGroupedDirect(groups, cfg.model)
