@@ -526,8 +526,11 @@ export default function CustomNichePage() {
               })}
             </div>
 
-            {/* Coverage line — surfaces under-coverage so the user
-                understands why their Cluster button might be greyed out. */}
+            {/* Coverage line — surfaces under-coverage AND offers the
+                request flow any time there are missing embeddings, not
+                just when we can't cluster. At 294/356 the user can
+                cluster the 294 they have AND ask for the 62 missing
+                to be filled, then re-cluster with full coverage. */}
             {activeCov && activeCov.total > 0 && (
               <div className="mb-4 text-xs text-[#888]">
                 Coverage for <span className="text-white">{subSource}</span>:{' '}
@@ -535,7 +538,7 @@ export default function CustomNichePage() {
                   {activeCov.embedded}/{activeCov.total}
                 </span>{' '}
                 videos embedded
-                {!canCluster && covMissing > 0 && (
+                {covMissing > 0 && (
                   <>
                     {' · '}
                     <button
@@ -544,7 +547,7 @@ export default function CustomNichePage() {
                       disabled={subBusy}
                       className="text-amber-300 hover:text-amber-200 underline underline-offset-2 disabled:opacity-50"
                     >
-                      Request {covMissing} embedding{covMissing === 1 ? '' : 's'}
+                      Request {covMissing} missing embedding{covMissing === 1 ? '' : 's'}
                     </button>
                   </>
                 )}
