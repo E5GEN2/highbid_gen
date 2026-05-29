@@ -8830,6 +8830,27 @@ function EmbedReqsTab({ active }: { active: boolean }) {
     }
   };
 
+  // Actually run the embedding job for this request — generates Gemini
+  // embeddings for the request's video_ids and source, persists them,
+  // and flips the row to 'done' (or 'failed' if nothing landed).
+  const processRequest = async (id: number) => {
+    setUpdateBusy(id);
+    try {
+      const r = await fetch(`/api/admin/embedding-requests/${id}/process`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const d = await r.json();
+      if (!r.ok || d.ok === false) {
+        alert(`Process failed: ${d.error || `HTTP ${r.status}`}`);
+      }
+      await load();
+    } finally {
+      setUpdateBusy(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -8930,13 +8951,17 @@ function EmbedReqsTab({ active }: { active: boolean }) {
                   <td className="px-4 py-2 text-right whitespace-nowrap">
                     {r.status === 'pending' && (
                       <>
+                        {/* Primary action — runs the embedding job
+                            against the request's video_ids + source
+                            inline. Synchronous; the row flips to
+                            done/failed when this returns. */}
                         <button
                           type="button"
                           disabled={updateBusy === r.id}
-                          onClick={() => updateStatus(r.id, 'processing')}
-                          className="px-2 py-0.5 text-[10px] text-cyan-300 border border-cyan-500/30 rounded hover:bg-cyan-500/10 transition mr-1.5 disabled:opacity-50"
+                          onClick={() => processRequest(r.id)}
+                          className="px-2 py-0.5 text-[10px] font-semibold text-black bg-amber-400 rounded hover:bg-amber-300 transition mr-1.5 disabled:opacity-50"
                         >
-                          Mark processing
+                          {updateBusy === r.id ? 'Processing…' : `Process ${r.videoCount}`}
                         </button>
                         <button
                           type="button"
