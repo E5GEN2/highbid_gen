@@ -18,7 +18,8 @@
  * coherent with the cluster pipeline.
  */
 
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { fetch as undiciFetch } from 'undici';
+import { dispatcherFor } from './proxy-dispatcher';
 import { getPool } from './db';
 import { pickRandomActiveYtPair } from './yt-keys';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
@@ -117,7 +118,7 @@ async function batchEmbedGroupedViaProxy(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
-    dispatcher: new ProxyAgent({ uri: proxyUrl, connectTimeout: 8_000, bodyTimeout: 20_000, headersTimeout: 15_000 }),
+    dispatcher: dispatcherFor(proxyUrl, { connectTimeout: 8_000, bodyTimeout: 20_000, headersTimeout: 15_000 }),
     signal: AbortSignal.timeout(20_000),
   });
 

@@ -101,10 +101,19 @@ def main():
         if proxy_url:
             from urllib.parse import urlparse
             parsed = urlparse(proxy_url)
-            proxy_host = f'http://{parsed.hostname}:{parsed.port}'
-            proxy_user = f'{parsed.username}:{parsed.password}'
-            cmd.extend(['--proxy', proxy_host, '--proxy-user', proxy_user,
-                        '--proxy-insecure'])
+            scheme = (parsed.scheme or 'http').lower()
+            # curl accepts socks5(h)://host:port and http://host:port natively
+            # on -x. socks5h:// keeps DNS resolution on the proxy side, which
+            # is what we want when the source IP shouldn't be visible.
+            if scheme.startswith('socks'):
+                normalised = 'socks5h' if scheme == 'socks5' else scheme
+                cmd.extend(['--proxy', f'{normalised}://{parsed.hostname}:{parsed.port}',
+                            '--proxy-user', f'{parsed.username}:{parsed.password}'])
+            else:
+                proxy_host = f'http://{parsed.hostname}:{parsed.port}'
+                proxy_user = f'{parsed.username}:{parsed.password}'
+                cmd.extend(['--proxy', proxy_host, '--proxy-user', proxy_user,
+                            '--proxy-insecure'])
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 

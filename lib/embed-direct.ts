@@ -20,11 +20,10 @@
  * a fresh key.
  */
 
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
-import { SocksProxyAgent } from 'socks-proxy-agent';
-import type { Dispatcher } from 'undici';
+import { fetch as undiciFetch } from 'undici';
 import { getPool } from './db';
 import { getRandomHealthyProxy } from './xgodo-proxy';
+import { dispatcherFor } from './proxy-dispatcher';
 import type { EmbedInput } from './embeddings';
 
 interface AiKeyRow { id: number; key: string }
@@ -79,24 +78,6 @@ function cooloffKey(keyId: number, seconds: number = 90): void {
 function partToGeminiPart(p: EmbedInput): Record<string, unknown> {
   if (p.type === 'image') return { inlineData: { mimeType: p.mimeType, data: p.data } };
   return { text: p.text ?? '' };
-}
-
-/**
- * Build the right dispatcher for the proxy URL — undici's ProxyAgent
- * for HTTP(S), socks-proxy-agent's SocksProxyAgent for socks5(h)://.
- * undici accepts the SOCKS agent as a dispatcher via its node-style
- * Agent interface.
- */
-function dispatcherFor(proxyUrl: string): Dispatcher {
-  if (/^socks/i.test(proxyUrl)) {
-    return new SocksProxyAgent(proxyUrl) as unknown as Dispatcher;
-  }
-  return new ProxyAgent({
-    uri: proxyUrl,
-    connectTimeout: 8_000,
-    bodyTimeout: 30_000,
-    headersTimeout: 15_000,
-  });
 }
 
 /**

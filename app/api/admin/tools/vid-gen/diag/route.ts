@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { fetch as undiciFetch } from 'undici';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
 import { getRandomProxy, getProxyStats } from '@/lib/xgodo-proxy';
+import { dispatcherFor } from '@/lib/proxy-dispatcher';
 
 /**
  * GET /api/admin/tools/vid-gen/diag?n=10
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest) {
     let status: number | null = null, error: string | null = null, bodyPreview: string | null = null;
     try {
       const res = proxy?.url
-        ? await undiciFetch(url, { ...init, dispatcher: new ProxyAgent(proxy.url) })
+        ? await undiciFetch(url, { ...init, dispatcher: dispatcherFor(proxy.url) })
         : await fetch(url, init);
       status = res.status;
       if (!res.ok) {
