@@ -25,9 +25,21 @@ def main():
 
     if proxy_url:
         parsed = urlparse(proxy_url)
-        proxy_host = f'http://{parsed.hostname}:{parsed.port}'
-        proxy_user = f'{parsed.username}:{parsed.password}'
-        cmd.extend(['--proxy', proxy_host, '--proxy-user', proxy_user, '--proxy-insecure'])
+        scheme = parsed.scheme.lower() or 'http'
+        # curl supports both http:// and socks5:// schemes natively on -x.
+        # SOCKS5 is used for the temporary static-proxy list while the
+        # xgodo HTTP broker is degraded; HTTP is the xgodo path.
+        if scheme.startswith('socks'):
+            # socks5h:// keeps DNS resolution on the proxy side, which
+            # is what we want when the source IP shouldn't be visible.
+            normalised = 'socks5h' if scheme == 'socks5' else scheme
+            proxy_arg = f'{normalised}://{parsed.hostname}:{parsed.port}'
+            cmd.extend(['--proxy', proxy_arg,
+                        '--proxy-user', f'{parsed.username}:{parsed.password}'])
+        else:
+            proxy_host = f'http://{parsed.hostname}:{parsed.port}'
+            proxy_user = f'{parsed.username}:{parsed.password}'
+            cmd.extend(['--proxy', proxy_host, '--proxy-user', proxy_user, '--proxy-insecure'])
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
 

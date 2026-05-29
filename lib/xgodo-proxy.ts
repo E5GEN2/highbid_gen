@@ -24,6 +24,7 @@
  */
 
 import { getPool } from './db';
+import { hasStaticProxies, listStaticProxies } from './static-proxies';
 
 const XGODO_PROXIES_URL = 'https://xgodo.com/server/api/v2/admin/devices/proxies';
 // 54.36.178.74:1082 is the working SOCKS/HTTP gateway for the new
@@ -164,8 +165,40 @@ async function refreshProxies(): Promise<ProxyInfo[]> {
   }
 }
 
-/** Get all available proxies (cached, refreshes every 5 min). */
+/**
+ * Synthetic ProxyInfo[] built from the temporary static SOCKS5 list.
+ * Surface them with deviceId = "static:host:port" so the proxy-health
+ * sweep keys on a stable id, and country='static' so the existing
+ * country filter doesn't drop them.
+ */
+function staticAsProxyInfos(): ProxyInfo[] {
+  return listStaticProxies().map(p => ({
+    url: p.url,
+    deviceId: `static:${p.id}`,
+    country: 'us',
+    name: `static:${p.id}`,
+  }));
+}
+
+/**
+ * Get all available proxies (cached, refreshes every 5 min).
+ *
+ * When the temporary static SOCKS5 list (lib/static-proxies.ts) is
+ * populated we use ONLY that list — xgodo's HTTP broker is degraded
+ * (last health sweep: 78% TCP-dead) and we're routing around it.
+ * Empty the static list to re-enable the dealer path.
+ */
 export async function getProxies(): Promise<ProxyInfo[]> {
+  if (hasStaticProxies()) {
+    // Refresh the cache anyway so getProxyStats still shows accurate
+    // counts in the admin UI.
+    cachedProxies = staticAsProxyInfos();
+    cachedTotal = cachedProxies.length;
+    cachedOnline = cachedProxies.length;
+    lastFetchTime = Date.now();
+    lastError = null;
+    return cachedProxies;
+  }
   if (Date.now() - lastFetchTime > CACHE_TTL || cachedProxies.length === 0) {
     await refreshProxies();
   }

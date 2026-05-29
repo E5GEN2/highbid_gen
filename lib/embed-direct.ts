@@ -21,6 +21,8 @@
  */
 
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+import type { Dispatcher } from 'undici';
 import { getPool } from './db';
 import { getRandomHealthyProxy } from './xgodo-proxy';
 import type { EmbedInput } from './embeddings';
@@ -80,11 +82,28 @@ function partToGeminiPart(p: EmbedInput): Record<string, unknown> {
 }
 
 /**
+ * Build the right dispatcher for the proxy URL — undici's ProxyAgent
+ * for HTTP(S), socks-proxy-agent's SocksProxyAgent for socks5(h)://.
+ * undici accepts the SOCKS agent as a dispatcher via its node-style
+ * Agent interface.
+ */
+function dispatcherFor(proxyUrl: string): Dispatcher {
+  if (/^socks/i.test(proxyUrl)) {
+    return new SocksProxyAgent(proxyUrl) as unknown as Dispatcher;
+  }
+  return new ProxyAgent({
+    uri: proxyUrl,
+    connectTimeout: 8_000,
+    bodyTimeout: 30_000,
+    headersTimeout: 15_000,
+  });
+}
+
+/**
  * POST to Gemini with proxy rotation. Each attempt picks a fresh
- * random xgodo proxy. If the proxy collapses (network error), we
- * silently roll to the next one. If Gemini responds with anything
- * (200, 429, 403, …) we surface it — that's a key/quota signal, not
- * a proxy issue, and the caller's key-hygiene needs to see it.
+ * proxy from the (currently static-list-backed) pool. If the proxy
+ * collapses, roll to the next. Any HTTP response from Gemini (200,
+ * 429, 403, …) short-circuits — those are key/quota signals.
  *
  * Throws if all PROXY_ATTEMPTS proxies fail to connect.
  */
@@ -106,17 +125,11 @@ async function postGeminiViaProxy(url: string, body: string): Promise<Response> 
     try {
       const res = await undiciFetch(url, {
         ...init,
-        dispatcher: new ProxyAgent({
-          uri: proxy.url,
-          connectTimeout: 8_000,
-          bodyTimeout: 30_000,
-          headersTimeout: 15_000,
-        }),
+        dispatcher: dispatcherFor(proxy.url),
       });
       return res as unknown as Response;
     } catch (err) {
-      lastErr = (err as Error).message?.slice(0, 120) || 'proxy fail';
-      // Try next proxy.
+      lastErr = `${proxy.deviceId}: ${(err as Error).message?.slice(0, 100) || 'proxy fail'}`;
     }
   }
   throw new Error(`all ${PROXY_ATTEMPTS} proxy attempts failed: ${lastErr}`);
