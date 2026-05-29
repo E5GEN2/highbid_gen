@@ -1,33 +1,37 @@
 /**
- * Direct-fetch Gemini embedding helper — same shape as the
- * batchEmbedInputs / batchEmbedGrouped pair in lib/embeddings.ts, but
- * routed via native fetch with no xgodo proxy and no Python subprocess.
+ * Gemini embedding helper — proxied via xgodo, no Python subprocess.
  *
- * Why: production debug via /admin/embed-debug/embed-one showed the
- * proxied path failing 75% with `curl exit 56` (proxy collapses
- * mid-request) and 25% with 429s. With 3 retries per batch that's a
- * ~1.5% success rate — matches stuck embedding_requests rows sitting
- * at 0/62 for tens of minutes.
+ * Why undici + ProxyAgent (vs lib/embeddings.ts's Python+curl path):
+ * the curl path's failure signature was `curl exit 56` (proxy collapse
+ * mid-request) at ~75%. undici uses a different transport stack so
+ * proxies that curl can't keep open often work here. We rotate across
+ * fresh random proxies per attempt — most "this proxy is down right
+ * now" failures recover by re-rolling.
  *
- * Direct fetch from Railway → Gemini is much cleaner at the volumes
- * embedding requests run at (a typical request is 50-100 videos in
- * batches of 5 = ~10-20 calls, well under any per-IP rate limit).
- * Same approach has been load-bearing for vid-gen prompt generation
- * since b7ec349.
+ * No direct fallback. Always proxied to keep Gemini from seeing
+ * Railway's single egress IP as the consumer for every call.
  *
- * Key hygiene mirrors the vid-gen pattern:
- *   - pickHealthyAiKey filters status='active' AND banned_until<NOW
+ * Key hygiene:
+ *   - pickHealthyAiKey: status='active' AND banned_until<NOW
  *   - 403 PERMISSION_DENIED → mark key invalid permanently
  *   - 429 → 90s cooloff via banned_until
  *
- * Throws the underlying error so the caller (embedSpecificVideos)
- * can retry with a fresh key.
+ * Throws on any non-recoverable failure so the caller can retry with
+ * a fresh key.
  */
 
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { getPool } from './db';
+import { getRandomProxy } from './xgodo-proxy';
 import type { EmbedInput } from './embeddings';
 
 interface AiKeyRow { id: number; key: string }
+
+// How many fresh proxies to try before giving up on one Gemini call.
+// At ~50% proxy live-rate, 6 attempts give (1-0.5^6) = ~98% chance of
+// landing on at least one good proxy. Each attempt has its own 30s
+// budget; the outer 45s timeout caps the whole call.
+const PROXY_ATTEMPTS = 6;
 
 async function pickHealthyAiKey(): Promise<AiKeyRow | null> {
   const pool = await getPool();
@@ -76,9 +80,51 @@ function partToGeminiPart(p: EmbedInput): Record<string, unknown> {
 }
 
 /**
- * Direct-fetch equivalent of batchEmbedInputs: one request per input
- * (each input becomes a single-part content). Returns one embedding
- * per input in submission order.
+ * POST to Gemini with proxy rotation. Each attempt picks a fresh
+ * random xgodo proxy. If the proxy collapses (network error), we
+ * silently roll to the next one. If Gemini responds with anything
+ * (200, 429, 403, …) we surface it — that's a key/quota signal, not
+ * a proxy issue, and the caller's key-hygiene needs to see it.
+ *
+ * Throws if all PROXY_ATTEMPTS proxies fail to connect.
+ */
+async function postGeminiViaProxy(url: string, body: string): Promise<Response> {
+  const init = {
+    method: 'POST' as const,
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    signal: AbortSignal.timeout(45_000),
+  };
+
+  let lastErr: string | null = null;
+  for (let i = 0; i < PROXY_ATTEMPTS; i++) {
+    const proxy = await getRandomProxy().catch(() => null);
+    if (!proxy?.url) {
+      lastErr = 'no_proxy_available';
+      continue;
+    }
+    try {
+      const res = await undiciFetch(url, {
+        ...init,
+        dispatcher: new ProxyAgent({
+          uri: proxy.url,
+          connectTimeout: 8_000,
+          bodyTimeout: 30_000,
+          headersTimeout: 15_000,
+        }),
+      });
+      return res as unknown as Response;
+    } catch (err) {
+      lastErr = (err as Error).message?.slice(0, 120) || 'proxy fail';
+      // Try next proxy.
+    }
+  }
+  throw new Error(`all ${PROXY_ATTEMPTS} proxy attempts failed: ${lastErr}`);
+}
+
+/**
+ * One Gemini call equivalent of batchEmbedInputs: each input becomes a
+ * single-part content; returns one embedding per input in order.
  */
 export async function batchEmbedInputsDirect(
   inputs: EmbedInput[],
@@ -92,14 +138,8 @@ export async function batchEmbedInputsDirect(
     model: `models/${modelName}`,
     content: { parts: [partToGeminiPart(p)] },
   }));
-
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:batchEmbedContents?key=${keyRow.key}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requests }),
-    signal: AbortSignal.timeout(45_000),
-  });
+  const res = await postGeminiViaProxy(url, JSON.stringify({ requests }));
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
@@ -121,7 +161,7 @@ export async function batchEmbedInputsDirect(
 }
 
 /**
- * Direct-fetch equivalent of batchEmbedGrouped: each input group
+ * One Gemini call equivalent of batchEmbedGrouped: each input group
  * becomes one multi-part content, producing ONE joint embedding per
  * group (used for the combined_v2 title+thumbnail multimodal vector).
  */
@@ -137,14 +177,8 @@ export async function batchEmbedGroupedDirect(
     model: `models/${modelName}`,
     content: { parts: group.map(partToGeminiPart) },
   }));
-
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:batchEmbedContents?key=${keyRow.key}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requests }),
-    signal: AbortSignal.timeout(45_000),
-  });
+  const res = await postGeminiViaProxy(url, JSON.stringify({ requests }));
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
