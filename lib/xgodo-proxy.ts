@@ -233,8 +233,18 @@ export async function getRandomProxy(): Promise<ProxyInfo | null> {
  * device (never been probed). Falls back further to the unfiltered
  * pool if the sweep hasn't run yet — so we never starve callers on
  * a cold start.
+ *
+ * Static-proxy mode short-circuits the filter entirely: the static
+ * list is small (~30 entries) and operator-curated, so one bad probe
+ * shouldn't yank 18% of the pool out for 12h. Transient failures get
+ * naturally tolerated by the per-call retry loop in embed-direct.
  */
 export async function getRandomHealthyProxy(): Promise<ProxyInfo | null> {
+  if (hasStaticProxies()) {
+    // No health filtering — pool is hand-curated, retry-on-fail in the
+    // caller is enough to route around momentary blips.
+    return getRandomProxy();
+  }
   const proxies = await getProxies();
   if (proxies.length === 0) return null;
 
