@@ -629,6 +629,11 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_embreq_pending ON embedding_requests(created_at DESC) WHERE status = 'pending'`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_embreq_niche ON embedding_requests(custom_niche_id, source, created_at DESC)`).catch(() => {});
+    // Live progress columns — updated after every batch by the
+    // background worker (POST /process). Surfaces in the admin tab as
+    // "Processing 24/62" while in flight.
+    await client.query(`ALTER TABLE embedding_requests ADD COLUMN IF NOT EXISTS processed INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+    await client.query(`ALTER TABLE embedding_requests ADD COLUMN IF NOT EXISTS errors INTEGER NOT NULL DEFAULT 0`).catch(() => {});
 
     // One-time backfill: copy channel-level data we already collected on the
     // videos table into the new channels table. Idempotent via ON CONFLICT.

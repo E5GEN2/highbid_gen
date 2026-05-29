@@ -8782,6 +8782,8 @@ interface EmbedRequest {
   nicheDescription: string | null;
   source: string;
   videoCount: number;
+  processed: number;
+  errors: number;
   requestedBy: string | null;
   requesterLabel: string | null;
   status: 'pending' | 'processing' | 'done' | 'failed' | 'dismissed';
@@ -8816,6 +8818,16 @@ function EmbedReqsTab({ active }: { active: boolean }) {
     load();
   }, [active, load]);
 
+  // Poll while anything is processing. 2s cadence is brisk enough that
+  // the "x/62 processed" counter looks live without spamming the DB.
+  useEffect(() => {
+    if (!active) return;
+    const anyProcessing = requests.some(r => r.status === 'processing');
+    if (!anyProcessing) return;
+    const t = setInterval(load, 2000);
+    return () => clearInterval(t);
+  }, [active, requests, load]);
+
   const updateStatus = async (id: number, status: EmbedRequest['status']) => {
     setUpdateBusy(id);
     try {
@@ -8830,9 +8842,10 @@ function EmbedReqsTab({ active }: { active: boolean }) {
     }
   };
 
-  // Actually run the embedding job for this request — generates Gemini
-  // embeddings for the request's video_ids and source, persists them,
-  // and flips the row to 'done' (or 'failed' if nothing landed).
+  // Kicks off the embedding job in the background. POST returns
+  // immediately with status='processing'; the worker writes incremental
+  // progress to embedding_requests.processed/.errors/.note and the poll
+  // effect above keeps the row's progress cell live.
   const processRequest = async (id: number) => {
     setUpdateBusy(id);
     try {
@@ -8940,13 +8953,22 @@ function EmbedReqsTab({ active }: { active: boolean }) {
                     {r.requesterLabel || r.requestedBy?.slice(0, 12) || '—'}
                   </td>
                   <td className="px-4 py-2">
-                    <span className={`text-xs ${
+                    <div className={`text-xs ${
                       r.status === 'pending'    ? 'text-amber-400' :
                       r.status === 'processing' ? 'text-cyan-400 animate-pulse' :
                       r.status === 'done'       ? 'text-emerald-400' :
                       r.status === 'failed'     ? 'text-red-400' :
                                                   'text-zinc-500'
-                    }`}>{r.status}</span>
+                    }`}>{r.status}</div>
+                    {/* Live progress while processing; final counts
+                        once done/failed. Note tooltip surfaces the
+                        full per-batch summary from the worker. */}
+                    {(r.status === 'processing' || r.status === 'done' || r.status === 'failed') && (
+                      <div className="text-[10px] text-gray-500 mt-0.5 font-mono" title={r.note || ''}>
+                        {r.processed}/{r.videoCount}
+                        {r.errors > 0 && <span className="text-red-400 ml-1">· {r.errors} err</span>}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right whitespace-nowrap">
                     {r.status === 'pending' && (

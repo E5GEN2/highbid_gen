@@ -59,10 +59,17 @@ interface VidRow {
  * Embed each video in `videoIds` for `target` and persist. Returns
  * counters so the caller can summarise the run. Never throws — failure
  * modes are surfaced via the `errors` count + `lastError` string.
+ *
+ * `onProgress` (optional) is called after every batch with the running
+ * counters so the caller can persist live progress (the admin
+ * "Processing 24/62" UI uses this to update the embedding_requests row).
+ * Failures inside onProgress are swallowed — progress reporting must
+ * never tank the embed job.
  */
 export async function embedSpecificVideos(
   videoIds: number[],
   target: EmbeddingTarget,
+  onProgress?: (partial: TargetedEmbedResult) => void | Promise<void>,
 ): Promise<TargetedEmbedResult> {
   const result: TargetedEmbedResult = {
     total: videoIds.length,
@@ -228,6 +235,12 @@ export async function embedSpecificVideos(
     if (!success) {
       result.errors += items.length;
       result.lastError = lastErr;
+    }
+    // Surface progress to the caller (typically a DB write that the
+    // admin UI polls). Errors swallowed — a slow progress UPDATE
+    // mustn't slow the embed loop, and certainly mustn't fail it.
+    if (onProgress) {
+      try { await onProgress({ ...result }); } catch { /* never throw from progress */ }
     }
   }
 

@@ -7,25 +7,25 @@ import type { EmbeddingTarget } from '@/lib/embeddings';
 /**
  * POST /api/admin/embedding-requests/[id]/process
  *
- * Actually run the embedding job for a request — generate Gemini
- * embeddings for the request's video_ids and source, persist them
- * (main DB column + vector-DB row), then flip the request to 'done'
- * with a note summarising what happened.
+ * Kicks off the embedding job for a request and returns immediately.
+ * The job runs in the background, writing live progress to
+ * embedding_requests.processed / .errors / .note after every batch.
+ * The admin UI polls the requests list to show "Processing 24/62".
  *
- * Body: {} (no params)
+ * On completion the row flips to 'done' (any embeddings landed) or
+ * 'failed' (zero landed). On uncaught exception: 'failed' with the
+ * error in `note`.
  *
- * Response:
- *   { ok, processed, errors, alreadyEmbedded, thumbDropped, batches, lastError }
+ * Body: {} (no params).
  *
- * On any uncaught exception during the embed run the request flips to
- * 'failed' with the error in `note` so the admin can decide whether
- * to retry.
+ * Response: { ok, status: 'processing', requestId, totalVideos }.
+ *
+ * The actual embedding work uses lib/embed-by-ids.ts which reuses
+ * batchEmbedInputs / batchEmbedGrouped / probeThumbnail / upsertVector
+ * — identical primitives to the niche-explorer's runEmbeddingJob, so
+ * results are consistent with what that pipeline would produce.
  *
  * Auth: admin Bearer token.
- *
- * NOTE: synchronous — a typical request is a few dozen to a few
- * hundred videos which fits comfortably in the route's maxDuration.
- * For huge requests we'd queue this off to a worker; not worth it yet.
  */
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -38,18 +38,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (Number.isNaN(requestId)) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
 
   const pool = await getPool();
-  // Atomic claim: only one admin can process the same row at a time.
-  // We move pending → processing in a single UPDATE and refuse if the
-  // row wasn't actually pending (already done, already in-flight, etc).
-  const claim = await pool.query<{ source: string; video_ids: number[]; custom_niche_id: number }>(
+  // Atomic claim: pending → processing. Refuses if anything else.
+  // Also resets the live counters in case this row was retried after
+  // a 'failed' (we PATCH it back to 'pending' to retry).
+  const claim = await pool.query<{ source: string; video_ids: number[]; video_count: number }>(
     `UPDATE embedding_requests
-        SET status = 'processing'
+        SET status = 'processing',
+            processed = 0,
+            errors = 0,
+            note = NULL,
+            processed_at = NULL
       WHERE id = $1 AND status = 'pending'
-      RETURNING source, video_ids, custom_niche_id`,
+      RETURNING source, video_ids, video_count`,
     [requestId],
   );
   if (claim.rows.length === 0) {
-    // Tell the caller WHY — already processed, dismissed, in flight, etc.
     const cur = await pool.query<{ status: string }>(
       `SELECT status FROM embedding_requests WHERE id = $1`,
       [requestId],
@@ -60,26 +63,62 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       { status: 409 },
     );
   }
-  const { source, video_ids: videoIds } = claim.rows[0];
+  const { source, video_ids: videoIds, video_count: totalVideos } = claim.rows[0];
 
-  try {
-    const result = await embedSpecificVideos(videoIds, source as EmbeddingTarget);
-    const note = `processed=${result.processed} errors=${result.errors} alreadyEmbedded=${result.alreadyEmbedded} thumbDropped=${result.thumbDropped} batches=${result.batches}${result.lastError ? ` lastErr=${result.lastError}` : ''}`;
-    // 'done' if any embeddings landed, otherwise 'failed' (we did the
-    // work but produced nothing — likely a key-pool / proxy collapse
-    // the operator should see).
-    const newStatus = result.processed > 0 ? 'done' : 'failed';
-    await pool.query(
-      `UPDATE embedding_requests SET status = $1, note = $2, processed_at = NOW() WHERE id = $3`,
-      [newStatus, note.slice(0, 1000), requestId],
-    );
-    return NextResponse.json({ ok: true, status: newStatus, ...result });
-  } catch (err) {
-    const msg = (err as Error).message?.slice(0, 1000) || 'unknown';
-    await pool.query(
-      `UPDATE embedding_requests SET status='failed', note=$1, processed_at=NOW() WHERE id=$2`,
-      [`uncaught: ${msg}`, requestId],
-    );
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
-  }
+  // Fire-and-forget — the request row is the durable progress log.
+  // The route returns immediately; the admin UI polls for status +
+  // progress updates.
+  void (async () => {
+    try {
+      const result = await embedSpecificVideos(
+        videoIds,
+        source as EmbeddingTarget,
+        async (partial) => {
+          // After each batch: stamp processed + errors + a one-line
+          // running note. Throttle via a tiny try/catch — a stalled
+          // UPDATE shouldn't bubble up and break the embed loop.
+          try {
+            await pool.query(
+              `UPDATE embedding_requests
+                  SET processed = $1,
+                      errors = $2,
+                      note = $3
+                WHERE id = $4`,
+              [
+                partial.processed,
+                partial.errors,
+                `batch ${partial.batches}: processed=${partial.processed}/${partial.total} errors=${partial.errors} thumbDropped=${partial.thumbDropped} alreadyEmbedded=${partial.alreadyEmbedded}${partial.lastError ? ` lastErr=${partial.lastError.slice(0, 100)}` : ''}`.slice(0, 1000),
+                requestId,
+              ],
+            );
+          } catch { /* swallow — progress writes mustn't tank the embed */ }
+        },
+      );
+      const finalNote = `processed=${result.processed} errors=${result.errors} alreadyEmbedded=${result.alreadyEmbedded} thumbDropped=${result.thumbDropped} batches=${result.batches}${result.lastError ? ` lastErr=${result.lastError}` : ''}`;
+      const newStatus = result.processed > 0 ? 'done' : 'failed';
+      await pool.query(
+        `UPDATE embedding_requests
+            SET status = $1, processed = $2, errors = $3, note = $4, processed_at = NOW()
+          WHERE id = $5`,
+        [newStatus, result.processed, result.errors, finalNote.slice(0, 1000), requestId],
+      ).catch(err => console.warn(`[embed-req ${requestId}] finalize failed:`, (err as Error).message));
+      console.log(`[embed-req ${requestId}] ${newStatus}: ${finalNote}`);
+    } catch (err) {
+      const msg = (err as Error).message?.slice(0, 1000) || 'unknown';
+      await pool.query(
+        `UPDATE embedding_requests
+            SET status='failed', note=$1, processed_at=NOW()
+          WHERE id=$2`,
+        [`uncaught: ${msg}`, requestId],
+      ).catch(() => {});
+      console.error(`[embed-req ${requestId}] uncaught:`, err);
+    }
+  })();
+
+  return NextResponse.json({
+    ok: true,
+    status: 'processing',
+    requestId,
+    totalVideos,
+  });
 }

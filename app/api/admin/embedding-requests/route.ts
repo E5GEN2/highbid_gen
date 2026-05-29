@@ -43,6 +43,7 @@ export async function GET(req: NextRequest) {
   const r = await pool.query(
     `SELECT er.id, er.custom_niche_id, er.source, er.video_count,
             er.requested_by, er.requester_label, er.status, er.note,
+            er.processed, er.errors,
             er.created_at, er.processed_at,
             n.name AS niche_name, n.description AS niche_description
        FROM embedding_requests er
@@ -70,6 +71,8 @@ export async function GET(req: NextRequest) {
       nicheDescription: row.niche_description,
       source: row.source,
       videoCount: row.video_count,
+      processed: row.processed ?? 0,
+      errors:    row.errors    ?? 0,
       requestedBy: row.requested_by,
       requesterLabel: row.requester_label,
       status: row.status,
