@@ -188,6 +188,60 @@ export async function getRandomProxy(): Promise<ProxyInfo | null> {
   return proxies[Math.floor(Math.random() * proxies.length)];
 }
 
+/**
+ * Random pick filtered against the xgodo_proxy_health sweep verdict.
+ *
+ * The dealer's "online" flag is a per-device heartbeat; it tells us
+ * the device is reachable but NOT whether it can carry our actual
+ * HTTPS traffic. Live probe sweeps (POST /api/admin/tools/proxy-health)
+ * mark TCP-dead devices with banned_until > NOW. We skip those here.
+ *
+ * Falls back to any healthy/unknown proxy if there's no row for a
+ * device (never been probed). Falls back further to the unfiltered
+ * pool if the sweep hasn't run yet — so we never starve callers on
+ * a cold start.
+ */
+export async function getRandomHealthyProxy(): Promise<ProxyInfo | null> {
+  const proxies = await getProxies();
+  if (proxies.length === 0) return null;
+
+  try {
+    const pool = await getPool();
+    // Pull the ban list for the device IDs we currently have.
+    const deviceIds = proxies.map(p => p.deviceId);
+    const banRes = await pool.query<{ device_id: string; status: string; banned_until: Date | null }>(
+      `SELECT device_id, status, banned_until
+         FROM xgodo_proxy_health
+        WHERE device_id = ANY($1::text[])`,
+      [deviceIds],
+    );
+    const banByDevice = new Map<string, { status: string; banUntil: number }>();
+    for (const r of banRes.rows) {
+      banByDevice.set(r.device_id, {
+        status: r.status,
+        banUntil: r.banned_until ? r.banned_until.getTime() : 0,
+      });
+    }
+    const now = Date.now();
+    const healthy = proxies.filter(p => {
+      const entry = banByDevice.get(p.deviceId);
+      if (!entry) return true;                   // never probed → assume usable
+      if (entry.banUntil > now) return false;    // sweep-marked dead
+      return entry.status !== 'dead';
+    });
+    if (healthy.length === 0) {
+      // Pool is sweep-empty (likely no sweep run recently). Fall back
+      // to the unfiltered random pick so we don't starve the caller.
+      console.warn('[proxy] getRandomHealthyProxy: no healthy proxies after filter, falling back to unfiltered');
+      return proxies[Math.floor(Math.random() * proxies.length)];
+    }
+    return healthy[Math.floor(Math.random() * healthy.length)];
+  } catch (err) {
+    console.warn('[proxy] getRandomHealthyProxy: filter query failed, falling back:', (err as Error).message);
+    return proxies[Math.floor(Math.random() * proxies.length)];
+  }
+}
+
 /** Force-refresh the proxy cache. Useful after admin_config changes. */
 export async function reloadProxies(): Promise<ProxyInfo[]> {
   lastFetchTime = 0;

@@ -22,7 +22,7 @@
 
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { getPool } from './db';
-import { getRandomProxy } from './xgodo-proxy';
+import { getRandomHealthyProxy } from './xgodo-proxy';
 import type { EmbedInput } from './embeddings';
 
 interface AiKeyRow { id: number; key: string }
@@ -98,7 +98,7 @@ async function postGeminiViaProxy(url: string, body: string): Promise<Response> 
 
   let lastErr: string | null = null;
   for (let i = 0; i < PROXY_ATTEMPTS; i++) {
-    const proxy = await getRandomProxy().catch(() => null);
+    const proxy = await getRandomHealthyProxy().catch(() => null);
     if (!proxy?.url) {
       lastErr = 'no_proxy_available';
       continue;
