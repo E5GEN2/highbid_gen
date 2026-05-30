@@ -7141,6 +7141,51 @@ function VideoSeedTab({ active }: { active: boolean }) {
         </div>
       )}
 
+      {/* Error-category breakdown — derived client-side from the rows
+          currently in view so the operator can spot the bottleneck
+          (which pool is failing) without scrolling the table. Same
+          classifier as the per-row Error column below. */}
+      {(() => {
+        const cats: Record<string, number> = {};
+        for (const r of rows) {
+          if (!r.errorMessage) continue;
+          const m = r.errorMessage;
+          let cat: string;
+          if (/^thumb_fetch_failed/.test(m))         cat = 'thumb';
+          else if (/^missing_title_or_thumb/.test(m)) cat = 'meta';
+          else if (/^metadata fetch failed/.test(m)) cat = 'yt-key';
+          else if (/^embed_api_failed/.test(m))      cat = 'ai-key';
+          else if (/^persist_failed/.test(m))        cat = 'db';
+          else if (/^no embedding/.test(m))          cat = 'no-emb';
+          else                                         cat = 'other';
+          cats[cat] = (cats[cat] ?? 0) + 1;
+        }
+        const totalErr = Object.values(cats).reduce((a, b) => a + b, 0);
+        if (totalErr === 0) return null;
+        const colourClass: Record<string, string> = {
+          'thumb':  'bg-amber-500/10 text-amber-300 border-amber-500/30',
+          'meta':   'bg-amber-500/10 text-amber-300 border-amber-500/30',
+          'yt-key': 'bg-orange-500/10 text-orange-300 border-orange-500/30',
+          'ai-key': 'bg-red-500/10 text-red-300 border-red-500/30',
+          'db':     'bg-fuchsia-500/10 text-fuchsia-300 border-fuchsia-500/30',
+          'no-emb': 'bg-zinc-500/10 text-zinc-300 border-zinc-500/30',
+          'other':  'bg-zinc-500/10 text-zinc-300 border-zinc-500/30',
+        };
+        const order = ['ai-key', 'yt-key', 'thumb', 'meta', 'db', 'no-emb', 'other'];
+        return (
+          <div className="flex items-center gap-2 flex-wrap text-[11px]">
+            <span className="text-[#666] uppercase tracking-wider text-[10px]">
+              Errors by category (loaded rows · {totalErr}):
+            </span>
+            {order.filter(c => cats[c]).map(c => (
+              <span key={c} className={`inline-block rounded px-2 py-0.5 font-mono border ${colourClass[c]}`}>
+                {c} {cats[c]} ({((cats[c] / totalErr) * 100).toFixed(0)}%)
+              </span>
+            ))}
+          </div>
+        );
+      })()}
+
       <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] uppercase tracking-wider text-[#666]">Task:</span>
@@ -7179,13 +7224,14 @@ function VideoSeedTab({ active }: { active: boolean }) {
         </div>
       ) : (
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
-          <div className="grid grid-cols-[160px_2fr_24px_2fr_90px_70px_120px_90px] gap-3 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
+          <div className="grid grid-cols-[140px_2fr_20px_2fr_70px_60px_180px_100px_70px] gap-2 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
             <div>Time</div>
             <div>Seed</div>
             <div></div>
             <div>Candidate</div>
             <div className="text-right">Similarity</div>
             <div className="text-center">Matched</div>
+            <div>Error</div>
             <div>Task</div>
             <div>Keyword</div>
           </div>
@@ -7194,7 +7240,7 @@ function VideoSeedTab({ active }: { active: boolean }) {
               const simPct = r.similarity != null ? (r.similarity * 100).toFixed(1) : null;
               const ts = r.detectedAt ? new Date(r.detectedAt) : null;
               return (
-                <div key={r.id} className="grid grid-cols-[160px_2fr_24px_2fr_90px_70px_120px_90px] gap-3 px-3 py-2 items-center hover:bg-[#181818] transition">
+                <div key={r.id} className="grid grid-cols-[140px_2fr_20px_2fr_70px_60px_180px_100px_70px] gap-2 px-3 py-2 items-center hover:bg-[#181818] transition">
                   <div className="text-[11px] text-[#888] font-mono">
                     {ts ? `${ts.toLocaleTimeString()}.${String(ts.getMilliseconds()).padStart(3,'0')}` : '—'}
                   </div>
@@ -7246,6 +7292,45 @@ function VideoSeedTab({ active }: { active: boolean }) {
                     ) : (
                       <span className="text-[10px] text-[#444]">—</span>
                     )}
+                  </div>
+                  {/* Error column — category badge + full message tooltip so
+                      operator can see at-a-glance whether the bottleneck is
+                      AI keys (embed), YT keys (metadata), thumbnail fetch,
+                      DB persist, etc. */}
+                  <div className="min-w-0">
+                    {r.errorMessage ? (() => {
+                      const msg = r.errorMessage;
+                      // Categorise — strings match what lib/video-seed.ts emits
+                      // via the EmbedOutcome union plus the expandFromSeed
+                      // fallback branches.
+                      let cat: string; let colour: string;
+                      if (/^thumb_fetch_failed/.test(msg))        { cat = 'thumb';   colour = 'amber'; }
+                      else if (/^missing_title_or_thumb/.test(msg)) { cat = 'meta';   colour = 'amber'; }
+                      else if (/^metadata fetch failed/.test(msg)) { cat = 'yt-key'; colour = 'orange'; }
+                      else if (/^embed_api_failed/.test(msg))     { cat = 'ai-key'; colour = 'red'; }
+                      else if (/^persist_failed/.test(msg))       { cat = 'db';     colour = 'fuchsia'; }
+                      else if (/^no embedding/.test(msg))         { cat = 'no-emb'; colour = 'zinc'; }
+                      else                                          { cat = 'other';  colour = 'zinc'; }
+                      const colourClass = {
+                        amber:   'bg-amber-500/15 text-amber-300 border-amber-500/30',
+                        orange:  'bg-orange-500/15 text-orange-300 border-orange-500/30',
+                        red:     'bg-red-500/15 text-red-300 border-red-500/30',
+                        fuchsia: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
+                        zinc:    'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
+                      }[colour];
+                      // Detail = everything after the first colon if present
+                      const detail = msg.includes(':') ? msg.slice(msg.indexOf(':') + 1).trim() : '';
+                      return (
+                        <div className="flex items-center gap-1.5 min-w-0" title={msg}>
+                          <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-mono border flex-shrink-0 ${colourClass}`}>
+                            {cat}
+                          </span>
+                          <span className="text-[10px] text-[#888] font-mono truncate">
+                            {detail || msg}
+                          </span>
+                        </div>
+                      );
+                    })() : <span className="text-[10px] text-[#444]">—</span>}
                   </div>
                   <div className="text-[11px] text-[#888] font-mono truncate" title={r.taskId ?? ''}>
                     {r.taskId ? r.taskId.slice(-12) : '—'}
