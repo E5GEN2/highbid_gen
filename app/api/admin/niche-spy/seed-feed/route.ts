@@ -89,7 +89,6 @@ export async function GET(req: NextRequest) {
   // Z errors" tiles when polling for since=<ts>.
   const statsRes = await pool.query<{
     total: string;
-    matched_count: string;
     error_count: string;
     avg_sim: number | null;
     distinct_seeds: string;
@@ -97,7 +96,6 @@ export async function GET(req: NextRequest) {
   }>(
     `SELECT
        COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE e.matched) AS matched_count,
        COUNT(*) FILTER (WHERE e.error_message IS NOT NULL) AS error_count,
        AVG(e.similarity) FILTER (WHERE e.similarity IS NOT NULL) AS avg_sim,
        COUNT(DISTINCT e.seed_video_id) AS distinct_seeds,
@@ -119,8 +117,8 @@ export async function GET(req: NextRequest) {
       candidateTitle: r.candidate_title,
       candidateThumbnail: r.candidate_thumbnail,
       similarity: r.similarity,
-      matched: r.matched,
-      threshold: r.threshold,
+      // matched + threshold deprecated — no longer returned. The columns
+      // stay in the DB for back-compat but are always false / NULL now.
       rankInBatch: r.rank_in_batch,
       taskId: r.task_id,
       keyword: r.keyword,
@@ -129,7 +127,6 @@ export async function GET(req: NextRequest) {
     })),
     stats: {
       total:           parseInt(statsRes.rows[0].total),
-      matched:         parseInt(statsRes.rows[0].matched_count),
       errors:          parseInt(statsRes.rows[0].error_count),
       avgSimilarity:   statsRes.rows[0].avg_sim != null ? parseFloat(String(statsRes.rows[0].avg_sim)) : null,
       distinctSeeds:   parseInt(statsRes.rows[0].distinct_seeds),

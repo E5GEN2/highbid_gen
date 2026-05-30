@@ -201,8 +201,7 @@ export interface SeedCandidate {
   title: string | null;
   thumbnail: string | null;
   similarity: number | null;       // cosine in combined_v2 vs seed; null on failure
-  matched: boolean;
-  rank: number;
+  rank: number;                    // rank by similarity descending (1 = best)
   error?: string;
 }
 
@@ -216,10 +215,7 @@ export interface SeedExpandResult {
     embeddingCached: boolean;      // true if a vector already existed; false if we attempted to generate one this call
     embedError?: string;           // populated only when generation was attempted AND failed
   };
-  candidates: SeedCandidate[];     // every candidate we processed, in submitted order
-  matches: SeedCandidate[];        // filtered subset (above threshold OR top-K)
-  threshold: number | null;
-  topK: number | null;
+  candidates: SeedCandidate[];     // every candidate we processed, ranked by similarity descending
   taskId: string | null;
   keyword: string | null;
   /** ms timings for ops, useful for the admin debug panel. */
@@ -529,12 +525,11 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
   if (opts.candidateUrls.length === 0) throw new Error('candidateUrls is empty');
   if (opts.candidateUrls.length > 200) throw new Error('candidateUrls capped at 200 per request');
 
-  const topK = opts.topK ?? null;
-  const threshold = opts.minSimilarity ?? null;
-  if (topK == null && threshold == null) {
-    // Default: top 20 if neither specified
-    opts.topK = 20;
-  }
+  // Note: topK / minSimilarity inputs are now ignored. Caller wants
+  // raw cosine scores on every candidate — no server-side match/no-match
+  // verdict, which was unreliable anyway because reasonable thresholds
+  // varied wildly by niche. The candidates array is still ranked by
+  // similarity descending for convenience.
 
   // ── Step 1: resolve seed + candidates in one combined batch so the
   //    YT Data API call covers everything (1 quota unit for up to 50 ids).
@@ -589,13 +584,13 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
   }
   const similarityMs = Date.now() - t2;
 
-  // ── Step 4: build per-candidate result, rank, decide matched.
-  const candidates: SeedCandidate[] = candidateRows.map((c, i) => {
+  // ── Step 4: build per-candidate result + rank by similarity desc.
+  const built: SeedCandidate[] = candidateRows.map((c) => {
     if (!c.row) {
       return {
         videoId: null, ytId: extractYtVideoId(c.url) ?? '',
         url: c.url, title: null, thumbnail: null,
-        similarity: null, matched: false, rank: i + 1,
+        similarity: null, rank: 0,
         error: 'metadata fetch failed',
       };
     }
@@ -617,39 +612,24 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
       videoId: c.row.videoId, ytId: c.row.ytId,
       url: c.url, title: c.row.title, thumbnail: c.row.thumbnail,
       similarity: sim,
-      matched: false,   // populated below
-      rank: i + 1,
+      rank: 0,                       // assigned below
       error,
     };
   });
 
-  // Sort by similarity descending (nulls last) to rank, then mark matched.
-  const ranked = [...candidates].sort((a, b) => {
+  // Rank: similarity descending, nulls last. Rank #1 = best score.
+  const candidates = [...built].sort((a, b) => {
     if (a.similarity == null && b.similarity == null) return 0;
     if (a.similarity == null) return 1;
     if (b.similarity == null) return -1;
     return b.similarity - a.similarity;
   });
-  if (topK != null) {
-    for (let i = 0; i < ranked.length && i < topK; i++) {
-      if (ranked[i].similarity != null) ranked[i].matched = true;
-    }
-  }
-  if (threshold != null) {
-    for (const r of ranked) {
-      if (r.similarity != null && r.similarity >= threshold) r.matched = true;
-    }
-  }
-  // Reflect matched back into the original-order array.
-  const matchedSet = new Set(ranked.filter(r => r.matched).map(r => r.url));
-  for (const c of candidates) if (matchedSet.has(c.url)) c.matched = true;
-  // Re-assign rank based on sorted order so the UI can show rank #1 = best match.
-  ranked.forEach((r, idx) => {
-    const orig = candidates.find(c => c.url === r.url);
-    if (orig) orig.rank = idx + 1;
-  });
+  candidates.forEach((c, i) => { c.rank = i + 1; });
 
   // ── Step 5: persist to niche_seed_expansions for the live admin feed.
+  // matched / threshold columns kept in the schema for back-compat but
+  // we no longer compute them — passing NULL on the threshold column
+  // and FALSE on matched (the column is NOT NULL in the schema).
   const t3 = Date.now();
   if (candidates.length > 0) {
     const rows: string[] = [];
@@ -660,7 +640,7 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
       args.push(
         seedRow.videoId, seedRow.url,
         c.videoId, c.url, c.title, c.thumbnail,
-        c.similarity, c.matched, threshold,
+        c.similarity, false /* matched — deprecated, always false */, null /* threshold */,
         c.rank, opts.taskId ?? null, opts.keyword ?? null,
         c.error ?? null,
       );
@@ -693,9 +673,6 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
       embedError: seedEmbedError,
     },
     candidates,
-    matches: candidates.filter(c => c.matched),
-    threshold,
-    topK,
     taskId: opts.taskId ?? null,
     keyword: opts.keyword ?? null,
     timings: { metadataMs, embeddingMs, similarityMs, persistMs },

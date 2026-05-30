@@ -7030,8 +7030,6 @@ interface SeedFeedRow {
   candidateTitle: string | null;
   candidateThumbnail: string | null;
   similarity: number | null;
-  matched: boolean;
-  threshold: number | null;
   rankInBatch: number | null;
   taskId: string | null;
   keyword: string | null;
@@ -7041,7 +7039,6 @@ interface SeedFeedRow {
 
 interface SeedFeedStats {
   total: number;
-  matched: number;
   errors: number;
   avgSimilarity: number | null;
   distinctSeeds: number;
@@ -7054,7 +7051,6 @@ function VideoSeedTab({ active }: { active: boolean }) {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [taskFilter, setTaskFilter] = useState('');
   const [keywordFilter, setKeywordFilter] = useState('');
-  const [matchedOnly, setMatchedOnly] = useState(false);
   const [minSimFilter, setMinSimFilter] = useState('');
   const [error, setError] = useState<string | null>(null);
   const seenIds = useRef<Set<string>>(new Set());
@@ -7065,7 +7061,6 @@ function VideoSeedTab({ active }: { active: boolean }) {
       sp.set('limit', '200');
       if (taskFilter.trim()) sp.set('taskId', taskFilter.trim());
       if (keywordFilter.trim()) sp.set('keyword', keywordFilter.trim());
-      if (matchedOnly) sp.set('matched', 'true');
       if (minSimFilter.trim()) sp.set('minSim', minSimFilter.trim());
       const r = await fetch(`/api/admin/niche-spy/seed-feed?${sp.toString()}`);
       const d = await r.json();
@@ -7077,7 +7072,7 @@ function VideoSeedTab({ active }: { active: boolean }) {
     } catch (err) {
       setError((err as Error).message);
     }
-  }, [taskFilter, keywordFilter, matchedOnly, minSimFilter]);
+  }, [taskFilter, keywordFilter, minSimFilter]);
 
   // Initial load + filter-change reload.
   useEffect(() => {
@@ -7102,7 +7097,7 @@ function VideoSeedTab({ active }: { active: boolean }) {
             every (seed, candidate, cosine similarity) tuple xgodo agents submit via
             <code className="text-emerald-400 text-[11px] mx-1">/api/niche-spy/video-seed/expand</code>.
             Each candidate is compared against its seed video in the combined_v2 multimodal embedding
-            space; the &quot;matched&quot; flag reflects whether it passed the request&apos;s topK / threshold.
+            space — every candidate is scored, no server-side match/no-match verdict (thresholds were too niche-dependent to be useful).
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -7127,7 +7122,6 @@ function VideoSeedTab({ active }: { active: boolean }) {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
           {[
             { label: 'Total events', value: stats.total.toLocaleString(), color: 'text-white' },
-            { label: 'Matched', value: stats.matched.toLocaleString(), color: 'text-emerald-400' },
             { label: 'Errors', value: stats.errors.toLocaleString(), color: stats.errors > 0 ? 'text-red-400' : 'text-[#666]' },
             { label: 'Avg sim', value: stats.avgSimilarity != null ? stats.avgSimilarity.toFixed(3) : '—', color: 'text-blue-400' },
             { label: 'Distinct seeds', value: stats.distinctSeeds.toLocaleString(), color: 'text-[#888]' },
@@ -7211,10 +7205,6 @@ function VideoSeedTab({ active }: { active: boolean }) {
             className="w-20 px-2 h-7 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-emerald-500"
           />
         </div>
-        <label className="flex items-center gap-1.5 text-xs text-[#888] cursor-pointer">
-          <input type="checkbox" checked={matchedOnly} onChange={e => setMatchedOnly(e.target.checked)} className="accent-emerald-500" />
-          Matched only
-        </label>
       </div>
 
       {rows.length === 0 ? (
@@ -7224,13 +7214,12 @@ function VideoSeedTab({ active }: { active: boolean }) {
         </div>
       ) : (
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
-          <div className="grid grid-cols-[140px_2fr_20px_2fr_70px_60px_180px_100px_70px] gap-2 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
+          <div className="grid grid-cols-[140px_2fr_20px_2fr_80px_200px_120px_80px] gap-2 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
             <div>Time</div>
             <div>Seed</div>
             <div></div>
             <div>Candidate</div>
             <div className="text-right">Similarity</div>
-            <div className="text-center">Matched</div>
             <div>Error</div>
             <div>Task</div>
             <div>Keyword</div>
@@ -7240,7 +7229,7 @@ function VideoSeedTab({ active }: { active: boolean }) {
               const simPct = r.similarity != null ? (r.similarity * 100).toFixed(1) : null;
               const ts = r.detectedAt ? new Date(r.detectedAt) : null;
               return (
-                <div key={r.id} className="grid grid-cols-[140px_2fr_20px_2fr_70px_60px_180px_100px_70px] gap-2 px-3 py-2 items-center hover:bg-[#181818] transition">
+                <div key={r.id} className="grid grid-cols-[140px_2fr_20px_2fr_80px_200px_120px_80px] gap-2 px-3 py-2 items-center hover:bg-[#181818] transition">
                   <div className="text-[11px] text-[#888] font-mono">
                     {ts ? `${ts.toLocaleTimeString()}.${String(ts.getMilliseconds()).padStart(3,'0')}` : '—'}
                   </div>
@@ -7273,25 +7262,11 @@ function VideoSeedTab({ active }: { active: boolean }) {
                   </div>
                   <div className={`text-right text-xs font-mono ${
                     r.similarity == null ? 'text-[#444]' :
-                    r.similarity >= 0.5  ? 'text-emerald-400' :
-                    r.similarity >= 0.3  ? 'text-yellow-400' :
-                                           'text-[#666]'
+                    r.similarity >= 0.7  ? 'text-emerald-400' :
+                    r.similarity >= 0.5  ? 'text-yellow-400' :
+                                           'text-[#888]'
                   }`}>
-                    {r.errorMessage ? <span className="text-red-400" title={r.errorMessage}>err</span> :
-                     simPct != null ? `${simPct}%` : '—'}
-                  </div>
-                  <div className="text-center">
-                    {r.matched ? (
-                      <span className="inline-block bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                        match
-                      </span>
-                    ) : r.errorMessage ? (
-                      <span className="inline-block bg-red-500/15 text-red-400 border border-red-500/30 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                        err
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-[#444]">—</span>
-                    )}
+                    {simPct != null ? `${simPct}%` : '—'}
                   </div>
                   {/* Error column — category badge + full message tooltip so
                       operator can see at-a-glance whether the bottleneck is
