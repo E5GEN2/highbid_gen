@@ -36,6 +36,79 @@ interface VideoRow {
   added_at: string;
 }
 
+/**
+ * Hover/focus-revealed help bubble for the clustering tuning panel.
+ * Tooltips are written in plain English (no HDBSCAN / UMAP jargon) so
+ * non-ML users can actually use the dials without reading a paper.
+ *
+ * The bubble pops below-and-right of the ⓘ glyph. tabIndex=0 + focus-
+ * within visibility means keyboard users get the same affordance as
+ * mouse users.
+ */
+function Info({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="relative group inline-block align-middle ml-1">
+      <span
+        tabIndex={0}
+        aria-label="More info"
+        className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-[#444] text-[#888] text-[9px] font-bold leading-none hover:border-amber-400 hover:text-amber-300 focus:border-amber-400 focus:text-amber-300 focus:outline-none cursor-help select-none"
+      >
+        i
+      </span>
+      <span className="invisible group-hover:visible group-focus-within:visible absolute z-30 left-0 top-5 w-72 p-3 rounded-md bg-[#1a1a1a] border border-[#333] text-[11px] leading-relaxed text-[#ccc] shadow-2xl pointer-events-none">
+        {children}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * One row in the tuning panel — label + ⓘ + number input + default
+ * hint. Pulling it out keeps the five rows visually consistent without
+ * duplicating layout markup.
+ *
+ * Value is `undefined` when the user hasn't touched it (renders as
+ * empty + "Auto: N" hint). Setting it to a number pins that override
+ * onto the next cluster run; emptying the input clears it back to
+ * undefined so the server picks its default again.
+ */
+interface TuneRowProps {
+  label: string;
+  value: number | undefined;
+  onChange: (v: number | undefined) => void;
+  step: number;
+  min: number;
+  max: number;
+  defaultHint: string;
+  help: React.ReactNode;
+}
+function TuneRow({ label, value, onChange, step, min, max, defaultHint, help }: TuneRowProps) {
+  return (
+    <div className="flex items-center gap-3 py-2">
+      <div className="flex items-center min-w-0 flex-1">
+        <span className="text-xs text-[#ccc]">{label}</span>
+        <Info>{help}</Info>
+      </div>
+      <input
+        type="number"
+        step={step}
+        min={min}
+        max={max}
+        value={value ?? ''}
+        placeholder="auto"
+        onChange={e => {
+          const raw = e.target.value;
+          if (raw === '') { onChange(undefined); return; }
+          const n = Number(raw);
+          if (Number.isFinite(n)) onChange(n);
+        }}
+        className="w-20 px-2 py-1 text-xs text-white bg-[#0a0a0a] border border-[#2a2a2a] focus:border-amber-400 focus:outline-none rounded"
+      />
+      <span className="text-[10px] text-[#666] w-24 text-right">{defaultHint}</span>
+    </div>
+  );
+}
+
 export default function CustomNichePage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -98,6 +171,20 @@ export default function CustomNichePage() {
   const [subError, setSubError] = useState<string | null>(null);
   // Embedding request feedback (set after POST /request-embeddings).
   const [subReqMsg, setSubReqMsg] = useState<string | null>(null);
+
+  // Clustering tuning overrides. `undefined` means "use server default"
+  // — the API treats missing fields as "compute from N at runtime". The
+  // panel below the source pills lets the user override any of them
+  // before re-clustering; reset clears them all back to undefined.
+  interface TuneParams {
+    minClusterSize?: number;
+    minSamples?: number;
+    umapDims?: number;
+    nNeighbors?: number;
+    outlierIqrMult?: number;
+  }
+  const [tune, setTune] = useState<TuneParams>({});
+  const [tuneOpen, setTuneOpen] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -165,10 +252,20 @@ export default function CustomNichePage() {
     setSubError(null);
     setSubReqMsg(null);
     try {
+      // Only include tuning overrides the user actually set — leaving
+      // a field undefined lets the server pick its smart default for
+      // this niche's size. Otherwise we'd pin every run to whatever the
+      // panel happened to show.
+      const body: Record<string, unknown> = { source: subSource };
+      if (tune.minClusterSize)  body.minClusterSize  = tune.minClusterSize;
+      if (tune.minSamples)      body.minSamples      = tune.minSamples;
+      if (tune.umapDims)        body.umapDims        = tune.umapDims;
+      if (tune.nNeighbors)      body.nNeighbors      = tune.nNeighbors;
+      if (tune.outlierIqrMult)  body.outlierIqrMult  = tune.outlierIqrMult;
       const r = await fetch(`/api/niche-spy/custom-niches/${nicheId}/cluster`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: subSource }),
+        body: JSON.stringify(body),
       });
       const d = await r.json();
       if (!r.ok || d.ok === false) {
@@ -524,6 +621,131 @@ export default function CustomNichePage() {
                   </button>
                 );
               })}
+            </div>
+
+            {/* Clustering tuning panel. Collapsed by default — most
+                users let the server pick defaults. When the result
+                looks off (one giant blob, or way too many tiny groups)
+                the user opens this and turns a dial. Help bubbles on
+                each row spell out what each dial does in plain English
+                so they don't need to know HDBSCAN / UMAP. */}
+            <div className="mb-4">
+              <button
+                type="button"
+                onClick={() => setTuneOpen(o => !o)}
+                className="flex items-center gap-1.5 text-xs text-[#888] hover:text-amber-300 transition"
+                aria-expanded={tuneOpen}
+              >
+                <svg
+                  className={`w-3 h-3 transition-transform ${tuneOpen ? 'rotate-90' : ''}`}
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}
+                >
+                  <polyline points="9 6 15 12 9 18" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Tuning {Object.values(tune).some(v => v !== undefined) && (
+                  <span className="text-amber-300">· {Object.values(tune).filter(v => v !== undefined).length} override{Object.values(tune).filter(v => v !== undefined).length === 1 ? '' : 's'}</span>
+                )}
+              </button>
+
+              {tuneOpen && (
+                <div className="mt-3 p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f]">
+                  <div className="mb-3 text-[11px] text-[#888] leading-relaxed">
+                    Adjust how the clustering algorithm groups your videos. Leave any field
+                    empty to let the system pick a smart default for the size of this niche.
+                    Hit <span className="text-amber-300 font-medium">Re-cluster</span> up top
+                    to apply.
+                  </div>
+
+                  <TuneRow
+                    label="Smallest group size"
+                    value={tune.minClusterSize}
+                    onChange={v => setTune(t => ({ ...t, minClusterSize: v }))}
+                    step={1} min={2} max={100}
+                    defaultHint="Auto: ~7"
+                    help={
+                      <>
+                        The fewest videos that can form a sub-niche together.
+                        Lower it (3-5) to surface tighter sub-themes; raise it
+                        (10-20) if you&apos;re drowning in tiny groups.
+                      </>
+                    }
+                  />
+                  <TuneRow
+                    label="Group tightness"
+                    value={tune.minSamples}
+                    onChange={v => setTune(t => ({ ...t, minSamples: v }))}
+                    step={1} min={1} max={50}
+                    defaultHint="Auto: ~7"
+                    help={
+                      <>
+                        How tightly packed videos need to be before we count
+                        them as a real group. <span className="text-amber-300 font-medium">This is the main lever
+                        when everything collapses into one giant group</span> — drop it to 3.
+                        Raise it (8-10) if there&apos;s too much loose grouping.
+                      </>
+                    }
+                  />
+                  <TuneRow
+                    label="Detail level"
+                    value={tune.umapDims}
+                    onChange={v => setTune(t => ({ ...t, umapDims: v }))}
+                    step={5} min={5} max={200}
+                    defaultHint="Auto: 50"
+                    help={
+                      <>
+                        How much of each video&apos;s fingerprint to keep when
+                        comparing them. 50 is balanced. Higher (75-100) preserves
+                        more nuance but can blur the big picture; lower (20-30)
+                        gives cleaner, broader groups.
+                      </>
+                    }
+                  />
+                  <TuneRow
+                    label="Local vs global view"
+                    value={tune.nNeighbors}
+                    onChange={v => setTune(t => ({ ...t, nNeighbors: v }))}
+                    step={1} min={2} max={100}
+                    defaultHint="Auto: 15"
+                    help={
+                      <>
+                        Whether grouping focuses on each video&apos;s closest
+                        cousins (low: 5-10, finds tight cliques) or the broader
+                        topic neighbourhood (high: 30-50, builds bigger groups).
+                      </>
+                    }
+                  />
+                  <TuneRow
+                    label="Outlier strictness"
+                    value={tune.outlierIqrMult}
+                    onChange={v => setTune(t => ({ ...t, outlierIqrMult: v }))}
+                    step={0.5} min={1} max={10}
+                    defaultHint="Auto: 3.0"
+                    help={
+                      <>
+                        How extreme a video must be before it&apos;s kicked out
+                        of its group and marked unassigned. Lower (1.5-2.0) is
+                        strict and produces more unassigned videos; higher
+                        (4-5) keeps even odd-ones-out inside their group.
+                      </>
+                    }
+                  />
+
+                  <div className="mt-3 pt-3 border-t border-[#1f1f1f] flex items-center justify-between">
+                    <span className="text-[10px] text-[#666]">
+                      Tip: the safest first move when results look off is to
+                      drop <span className="text-[#ccc]">Group tightness</span> to 3.
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!Object.values(tune).some(v => v !== undefined)}
+                      onClick={() => setTune({})}
+                      className="text-[11px] text-[#888] hover:text-amber-300 disabled:opacity-40 disabled:hover:text-[#888]"
+                    >
+                      Reset to auto
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Coverage line — surfaces under-coverage AND offers the
