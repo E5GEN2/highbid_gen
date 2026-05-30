@@ -1783,7 +1783,7 @@ export async function runCustomNicheClusteringJob(opts: {
       [videoIds.length, source, opts.runId],
     );
 
-    const result = await runOneClusteringPipeline({
+    let result = await runOneClusteringPipeline({
       runId: opts.runId,
       source,
       videoIds,
@@ -1805,6 +1805,87 @@ export async function runCustomNicheClusteringJob(opts: {
         [result.error, opts.runId],
       );
       return;
+    }
+
+    // Degenerate-result auto-retry. HDBSCAN on tight embedding manifolds
+    // (very common with thumbnail_v2: every video in a topical niche is
+    // visually similar) hits the default min_cluster_size and collapses
+    // the whole corpus into 1-2 mega-clusters with zero noise. Detect
+    // that and retry once with smaller params so the manifold's
+    // sub-structure can poke through.
+    //
+    // Heuristic: trigger only when the user didn't pin params (no manual
+    // intent to test "two giant clusters"), the niche is big enough that
+    // 1-2 clusters is clearly wrong (≥50 videos), and HDBSCAN gave zero
+    // noise (the smoking gun — a real bimodal split usually has SOME
+    // noise points; zero means everything was absorbed).
+    const noUserParams = !opts.params?.minClusterSize && !opts.params?.minSamples;
+    const isDegenerate = result.numClusters <= 2 && result.numNoise === 0 && videoIds.length >= 50;
+    if (noUserParams && isDegenerate) {
+      const retryMinClusterSize = Math.max(4, Math.round(videoIds.length * 0.012));
+      const retryMinSamples     = Math.max(2, Math.floor(retryMinClusterSize / 2));
+      console.log(
+        `[niche-tree] custom-niche ${opts.customNicheId} (${source}) degenerate run ` +
+        `(${result.numClusters} clusters / 0 noise on N=${videoIds.length}); retrying with ` +
+        `minClusterSize=${retryMinClusterSize} minSamples=${retryMinSamples}`,
+      );
+      // Wipe THIS run's first-pass clusters + assignments so the retry
+      // can write fresh rows under the same run_id. cluster_vectors
+      // (niche_tree_cluster_vectors) keys off cluster_id so they go
+      // away via the cluster delete cascade-by-pk on insert (we just
+      // overwrite by cluster_id; old rows have different cluster_ids
+      // and stay orphaned in vector DB until next backfill — acceptable
+      // for the rare retry case).
+      await pool.query(
+        `DELETE FROM niche_tree_assignments WHERE run_id = $1`,
+        [opts.runId],
+      );
+      await pool.query(
+        `DELETE FROM niche_tree_clusters    WHERE run_id = $1`,
+        [opts.runId],
+      );
+      // Mark the run as still-running with a progress note so the UI
+      // doesn't briefly flash "done: 2 clusters" before the retry lands.
+      await pool.query(
+        `UPDATE niche_tree_runs SET
+           num_clusters = 0, num_noise = 0,
+           progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb
+           WHERE id = $2`,
+        [
+          JSON.stringify({
+            stage: 'retrying_degenerate',
+            retryMinClusterSize,
+            retryMinSamples,
+            firstPass: { numClusters: result.numClusters, numNoise: result.numNoise },
+            stageStartedAt: new Date().toISOString(),
+          }),
+          opts.runId,
+        ],
+      );
+
+      result = await runOneClusteringPipeline({
+        runId: opts.runId,
+        source,
+        videoIds,
+        parentClusterId: null,
+        level: 1,
+        minClusterSize: retryMinClusterSize,
+        minSamples: retryMinSamples,
+        umapDims:       opts.params?.umapDims  || 50,
+        nNeighbors:     opts.params?.nNeighbors || 15,
+        outlierIqrMult: opts.params?.outlierIqrMult ?? 3.0,
+        scriptKeyword:  `custom_niche:${opts.customNicheId}`,
+        pyTimeoutMs: 1_800_000,
+        executionMode:  opts.params?.executionMode,
+      });
+
+      if (result.ok === false) {
+        await pool.query(
+          `UPDATE niche_tree_runs SET status='error', error_message=$1, completed_at=NOW() WHERE id=$2`,
+          [`retry after degenerate first pass failed: ${result.error}`, opts.runId],
+        );
+        return;
+      }
     }
 
     await pool.query(
