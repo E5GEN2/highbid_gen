@@ -1822,8 +1822,20 @@ export async function runCustomNicheClusteringJob(opts: {
     const noUserParams = !opts.params?.minClusterSize && !opts.params?.minSamples;
     const isDegenerate = result.numClusters <= 2 && result.numNoise === 0 && videoIds.length >= 50;
     if (noUserParams && isDegenerate) {
-      const retryMinClusterSize = Math.max(4, Math.round(videoIds.length * 0.012));
-      const retryMinSamples     = Math.max(2, Math.floor(retryMinClusterSize / 2));
+      // Empirically (Faceless YouTube Niches, N=355, thumbnail_v2): the
+      // load-bearing lever for this collapse is min_samples, not
+      // min_cluster_size. Sweep at default min_cluster_size=7:
+      //   ms=7 → 2 clusters / 0 noise   (degenerate)
+      //   ms=5 → 2 clusters / 0 noise
+      //   ms=4 → 2 clusters / 0 noise
+      //   ms=3 → 16 clusters / 53 noise (clean)
+      //   ms=2 → 32 clusters / 33 noise (over-split)
+      // Dropping mcs to 4 with ms=2 over-splits without recovering more
+      // useful structure. The retry keeps the same min_cluster_size so
+      // tiny clusters don't proliferate, and just dials min_samples down
+      // to 3 — HDBSCAN's lower-bound for a stable density estimate.
+      const retryMinClusterSize = minClusterSize;
+      const retryMinSamples     = Math.max(2, Math.min(3, minClusterSize - 1));
       console.log(
         `[niche-tree] custom-niche ${opts.customNicheId} (${source}) degenerate run ` +
         `(${result.numClusters} clusters / 0 noise on N=${videoIds.length}); retrying with ` +
