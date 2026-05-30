@@ -81,7 +81,10 @@ export async function POST(req: NextRequest) {
           } catch { /* progress writes are best-effort */ }
         });
         const finalNote = `processed=${result.processed} errors=${result.errors} alreadyEmbedded=${result.alreadyEmbedded} thumbDropped=${result.thumbDropped} batches=${result.batches}${result.lastError ? ` lastErr=${result.lastError}` : ''}`;
-        const newStatus = result.processed > 0 ? 'done' : 'failed';
+        // Done only when every video has an embedding (or a terminal
+        // thumbnail failure). Anything else = failed → re-processable.
+        const completed = result.processed + result.alreadyEmbedded + result.thumbDropped;
+        const newStatus = completed >= result.total ? 'done' : 'failed';
         await pool.query(
           `UPDATE embedding_requests
               SET status = $1, processed = $2, errors = $3, note = $4, processed_at = NOW()

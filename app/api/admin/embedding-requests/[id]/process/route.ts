@@ -74,9 +74,6 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         videoIds,
         source as EmbeddingTarget,
         async (partial) => {
-          // After each batch: stamp processed + errors + a one-line
-          // running note. Throttle via a tiny try/catch — a stalled
-          // UPDATE shouldn't bubble up and break the embed loop.
           try {
             await pool.query(
               `UPDATE embedding_requests
@@ -91,18 +88,26 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
                 requestId,
               ],
             );
-          } catch { /* swallow — progress writes mustn't tank the embed */ }
+          } catch { /* progress writes are best-effort */ }
         },
       );
       const finalNote = `processed=${result.processed} errors=${result.errors} alreadyEmbedded=${result.alreadyEmbedded} thumbDropped=${result.thumbDropped} batches=${result.batches}${result.lastError ? ` lastErr=${result.lastError}` : ''}`;
-      const newStatus = result.processed > 0 ? 'done' : 'failed';
+      // Done only when EVERY video in the request has an embedding.
+      // processed counts newly-embedded; alreadyEmbedded counts ones
+      // skipped because they were already done; thumbDropped counts
+      // videos whose thumbnails are permanently unfetchable (terminal —
+      // they'll never be embedded so we treat them as completed for
+      // status purposes). Anything else is incomplete → failed so the
+      // operator can re-process.
+      const completed = result.processed + result.alreadyEmbedded + result.thumbDropped;
+      const newStatus = completed >= result.total ? 'done' : 'failed';
       await pool.query(
         `UPDATE embedding_requests
             SET status = $1, processed = $2, errors = $3, note = $4, processed_at = NOW()
           WHERE id = $5`,
         [newStatus, result.processed, result.errors, finalNote.slice(0, 1000), requestId],
       ).catch(err => console.warn(`[embed-req ${requestId}] finalize failed:`, (err as Error).message));
-      console.log(`[embed-req ${requestId}] ${newStatus}: ${finalNote}`);
+      console.log(`[embed-req ${requestId}] ${newStatus} (${completed}/${result.total}): ${finalNote}`);
     } catch (err) {
       const msg = (err as Error).message?.slice(0, 1000) || 'unknown';
       await pool.query(
