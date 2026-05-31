@@ -9173,6 +9173,30 @@ function AnalyzeVidsTab({ active }: { active: boolean }) {
   const [expandedClips, setExpandedClips] = useState<AnalyzeVidsClip[]>([]);
   const [expandedLoading, setExpandedLoading] = useState(false);
 
+  // Per-niche progress data (loaded when filterNicheId is set). Holds
+  // both the rollup tiles and the per-video grid so we don't have to
+  // refetch on filter changes inside the panel.
+  interface NicheProgress {
+    nicheName: string;
+    totalVideos: number;
+    statusCounts: { not_enqueued: number; pending: number; in_flight: number; done: number; error: number };
+    doneWithFailures: number;
+    clips: { analysed: number; expected: number; failed: number };
+    totalSegments: number;
+    perVideo: Array<{
+      videoId: number; title: string | null; url: string;
+      jobId: number | null; status: string;
+      numClips: number | null; numClipsDone: number | null; numClipsFailed: number | null;
+      totalSegments: number | null; durationS: number | null;
+      startedAt: string | null; completedAt: string | null; errorMessage: string | null;
+    }>;
+  }
+  const [nicheProgress, setNicheProgress] = useState<NicheProgress | null>(null);
+  const [nicheProgressLoading, setNicheProgressLoading] = useState(false);
+  // Per-video grid sub-filter (inside the niche progress panel).
+  type PerVideoFilter = 'all' | 'not_enqueued' | 'in_flight' | 'done' | 'done_with_failures' | 'error';
+  const [perVideoFilter, setPerVideoFilter] = useState<PerVideoFilter>('all');
+
   // Load custom niches once when the tab activates.
   useEffect(() => {
     if (!active) return;
@@ -9215,6 +9239,100 @@ function AnalyzeVidsTab({ active }: { active: boolean }) {
     const t = setInterval(loadJobs, 4000);
     return () => clearInterval(t);
   }, [active, stats.pending, stats.running, loadJobs]);
+
+  // Niche progress loader. Fires whenever the niche filter changes,
+  // and polls while anything is in flight within the niche.
+  const loadNicheProgress = useCallback(async () => {
+    if (filterNicheId === '') { setNicheProgress(null); return; }
+    setNicheProgressLoading(true);
+    try {
+      const qs = new URLSearchParams();
+      if (userEmail) qs.set('userEmail', userEmail);
+      const r = await fetch(`/api/admin/analyze-vids/niches/${filterNicheId}/progress?${qs.toString()}`);
+      const d = await r.json();
+      if (d.ok) {
+        setNicheProgress({
+          nicheName: d.nicheName,
+          totalVideos: d.totalVideos,
+          statusCounts: d.statusCounts,
+          doneWithFailures: d.doneWithFailures,
+          clips: d.clips,
+          totalSegments: d.totalSegments,
+          perVideo: d.perVideo,
+        });
+      }
+    } finally {
+      setNicheProgressLoading(false);
+    }
+  }, [filterNicheId, userEmail]);
+
+  useEffect(() => { if (active) loadNicheProgress(); }, [active, loadNicheProgress]);
+  useEffect(() => {
+    if (!active || filterNicheId === '' || !nicheProgress) return;
+    const inFlight = nicheProgress.statusCounts.in_flight + nicheProgress.statusCounts.pending;
+    if (inFlight === 0) return;
+    const t = setInterval(loadNicheProgress, 5000);
+    return () => clearInterval(t);
+  }, [active, filterNicheId, nicheProgress, loadNicheProgress]);
+
+  // Bulk: retry all failed clips across every job in the current niche
+  // filter. The server resets error→pending and fires the first N
+  // workers. Keeps already-done clips intact.
+  const handleBulkRetryFailed = async () => {
+    if (filterNicheId === '') { setErr('pick a niche in the filter first'); return; }
+    if (!confirm('Retry all failed clips for every job in this niche? Already-done clips stay done.')) return;
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      const r = await fetch('/api/admin/analyze-vids/retry-failed', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customNicheId: filterNicheId,
+          userEmail: userEmail || undefined,
+          concurrentStarts: 5,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.ok === false) {
+        setErr(d.error || `HTTP ${r.status}`);
+      } else {
+        setMsg(`Reset ${d.clipsReset} failed clip${d.clipsReset === 1 ? '' : 's'} across ${d.jobsReset} job${d.jobsReset === 1 ? '' : 's'} · ${d.started} starting now`);
+        await Promise.all([loadJobs(), loadNicheProgress()]);
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Bulk-enqueue every not-yet-analysed video in the filtered niche.
+  // Convenience over the form (which caps at the user-set limit).
+  const handleEnqueueRest = async () => {
+    if (filterNicheId === '' || !nicheProgress) return;
+    const remaining = nicheProgress.statusCounts.not_enqueued;
+    if (remaining === 0) { setMsg('all videos in this niche already have a job'); return; }
+    if (!confirm(`Enqueue ${remaining} not-yet-analysed video${remaining === 1 ? '' : 's'} from "${nicheProgress.nicheName}"?`)) return;
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      const r = await fetch('/api/admin/analyze-vids/jobs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customNicheId: filterNicheId,
+          userEmail: userEmail || undefined,
+          limit: remaining,
+          concurrentStarts: 5,
+          skipAnalysed: true,
+          autoStart: true,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.ok === false) setErr(d.error || `HTTP ${r.status}`);
+      else {
+        setMsg(`Enqueued ${d.created} new job${d.created === 1 ? '' : 's'} · ${d.startedNow} starting now`);
+        await Promise.all([loadJobs(), loadNicheProgress()]);
+      }
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
 
   const handleEnqueue = async () => {
     if (pickNicheId === '') { setErr('pick a custom niche'); return; }
@@ -9307,6 +9425,7 @@ function AnalyzeVidsTab({ active }: { active: boolean }) {
     done: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
     error: 'bg-red-500/15 text-red-300 border-red-500/30',
     cancelled: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
+    not_enqueued: 'bg-[#1a1a1a] text-[#888] border-[#333]',
   };
 
   return (
@@ -9452,6 +9571,178 @@ function AnalyzeVidsTab({ active }: { active: boolean }) {
           {loading ? 'Refreshing…' : '↻ Refresh'}
         </button>
       </div>
+
+      {/* ── Niche progress panel ───────────────────────────────────────
+          Only renders when a specific niche is picked in the filter.
+          Surfaces the overall "X of N analysed" picture plus the
+          per-video grid so the operator can spot which exact videos
+          still need work without scrolling the global job list. */}
+      {filterNicheId !== '' && nicheProgress && (() => {
+        const sc = nicheProgress.statusCounts;
+        const totalEnqueued = sc.pending + sc.in_flight + sc.done + sc.error;
+        const overallPct = nicheProgress.totalVideos > 0
+          ? Math.round((sc.done / nicheProgress.totalVideos) * 100) : 0;
+        const filteredVideos = nicheProgress.perVideo.filter(v => {
+          if (perVideoFilter === 'all') return true;
+          if (perVideoFilter === 'not_enqueued') return v.status === 'not_enqueued';
+          if (perVideoFilter === 'in_flight') return ['pending', 'downloading', 'splitting', 'analyzing', 'collapsing'].includes(v.status);
+          if (perVideoFilter === 'done') return v.status === 'done';
+          if (perVideoFilter === 'done_with_failures') return v.status === 'done' && (v.numClipsFailed ?? 0) > 0;
+          if (perVideoFilter === 'error') return v.status === 'error';
+          return true;
+        });
+        return (
+          <div className="mb-4 p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f]">
+            <div className="flex items-start justify-between gap-4 flex-wrap mb-3">
+              <div>
+                <div className="text-xs font-semibold text-white">
+                  Niche progress · {nicheProgress.nicheName}
+                  {nicheProgressLoading && <span className="ml-2 text-[10px] text-[#666] animate-pulse">refreshing…</span>}
+                </div>
+                <div className="text-[11px] text-[#888] mt-1">
+                  {sc.done} of {nicheProgress.totalVideos} videos analysed ({overallPct}%)
+                  {nicheProgress.doneWithFailures > 0 && (
+                    <span className="text-amber-300"> · {nicheProgress.doneWithFailures} with missing clips</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {sc.not_enqueued > 0 && (
+                  <button
+                    type="button" disabled={busy}
+                    onClick={handleEnqueueRest}
+                    className="px-3 py-1 text-[11px] font-semibold bg-teal-400 text-black rounded hover:bg-teal-300 transition disabled:opacity-40"
+                  >
+                    Enqueue {sc.not_enqueued} not-yet-analysed
+                  </button>
+                )}
+                {nicheProgress.clips.failed > 0 && (
+                  <button
+                    type="button" disabled={busy}
+                    onClick={handleBulkRetryFailed}
+                    className="px-3 py-1 text-[11px] font-semibold text-amber-300 border border-amber-500/40 hover:bg-amber-500/10 rounded transition disabled:opacity-40"
+                    title={`Retry ${nicheProgress.clips.failed} failed clip${nicheProgress.clips.failed === 1 ? '' : 's'} across all jobs in this niche`}
+                  >
+                    ↻ Retry {nicheProgress.clips.failed} failed clip{nicheProgress.clips.failed === 1 ? '' : 's'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Niche-level tiles */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
+              {[
+                { label: 'Total videos',    v: nicheProgress.totalVideos, c: 'text-white' },
+                { label: 'Done',            v: sc.done,                   c: 'text-emerald-300' },
+                { label: 'In flight',       v: sc.in_flight + sc.pending, c: 'text-teal-300' },
+                { label: 'Errored',         v: sc.error,                  c: 'text-red-300' },
+                { label: 'Not enqueued',    v: sc.not_enqueued,           c: 'text-zinc-300' },
+              ].map(s => (
+                <div key={s.label} className="p-2.5 rounded-lg bg-[#0a0a0a] border border-[#1f1f1f]">
+                  <div className="text-[10px] text-[#666] uppercase tracking-wider">{s.label}</div>
+                  <div className={`text-base font-bold ${s.c}`}>{s.v}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Clip-level summary line */}
+            <div className="mb-3 text-[11px] text-[#888]">
+              Across enqueued videos ({totalEnqueued}/{nicheProgress.totalVideos}):{' '}
+              <span className="text-emerald-300">{nicheProgress.clips.analysed}</span> /{' '}
+              <span className="text-[#ccc]">{nicheProgress.clips.expected || '?'}</span> clips analysed
+              {nicheProgress.clips.failed > 0 && (
+                <> · <span className="text-red-300">{nicheProgress.clips.failed} failed</span></>
+              )}
+              {nicheProgress.totalSegments > 0 && (
+                <> · <span className="text-white">{nicheProgress.totalSegments.toLocaleString()}</span> segments produced</>
+              )}
+            </div>
+
+            {/* Per-video table — sub-filtered by the pill row below */}
+            <div className="flex items-center gap-1.5 mb-2 text-[10px]">
+              <span className="text-[#666] mr-1">SHOW:</span>
+              {([
+                { k: 'all',                label: `all (${nicheProgress.totalVideos})` },
+                { k: 'not_enqueued',       label: `not enqueued (${sc.not_enqueued})` },
+                { k: 'in_flight',          label: `in flight (${sc.in_flight + sc.pending})` },
+                { k: 'done',               label: `done (${sc.done})` },
+                { k: 'done_with_failures', label: `done w/ gaps (${nicheProgress.doneWithFailures})` },
+                { k: 'error',              label: `errored (${sc.error})` },
+              ] as Array<{ k: PerVideoFilter; label: string }>).map(p => (
+                <button
+                  key={p.k}
+                  onClick={() => setPerVideoFilter(p.k)}
+                  className={`px-2 py-0.5 rounded-full border transition ${
+                    perVideoFilter === p.k
+                      ? 'bg-teal-500/15 text-teal-300 border-teal-500/40'
+                      : 'text-[#888] border-[#222] hover:border-[#444]'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="rounded-lg bg-[#0a0a0a] border border-[#1f1f1f] max-h-[420px] overflow-y-auto">
+              {filteredVideos.length === 0 ? (
+                <div className="p-4 text-center text-[11px] text-[#666]">No videos matching this sub-filter.</div>
+              ) : (
+                <table className="w-full text-[11px]">
+                  <thead className="sticky top-0 bg-[#0a0a0a] z-10">
+                    <tr className="text-[10px] text-[#666] uppercase tracking-wider border-b border-[#1f1f1f]">
+                      <th className="text-left px-3 py-2">Video</th>
+                      <th className="text-left px-2 py-2 w-[110px]">Status</th>
+                      <th className="text-left px-2 py-2 w-[120px]">Clips</th>
+                      <th className="text-left px-2 py-2 w-[80px]">Segments</th>
+                      <th className="text-left px-2 py-2 w-[70px]">Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredVideos.map(v => {
+                      const pct = v.numClips != null && v.numClips > 0
+                        ? Math.round(((v.numClipsDone ?? 0) / v.numClips) * 100) : 0;
+                      return (
+                        <tr key={v.videoId} className="border-t border-[#141414] hover:bg-[#0f0f0f]">
+                          <td className="px-3 py-1.5 min-w-0">
+                            <div className="truncate text-white max-w-[420px]">{v.title ?? v.url}</div>
+                            <div className="text-[10px] text-[#666] truncate max-w-[420px]">
+                              {v.url}
+                              {v.jobId != null && <> · job #{v.jobId}</>}
+                            </div>
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] border ${STATUS_COLOUR[v.status] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30'}`}>
+                              {v.status === 'not_enqueued' ? 'not enqueued' : v.status}
+                            </span>
+                            {v.status === 'done' && (v.numClipsFailed ?? 0) > 0 && (
+                              <span className="ml-1 text-[9px] text-amber-300">·gaps</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-1.5 text-[#ccc]">
+                            {v.numClips != null ? (
+                              <>
+                                {v.numClipsDone ?? 0}/{v.numClips}
+                                {(v.numClipsFailed ?? 0) > 0 && <span className="text-red-300"> · {v.numClipsFailed} err</span>}
+                                {v.numClips > 0 && (
+                                  <div className="mt-0.5 h-1 bg-[#1a1a1a] rounded overflow-hidden w-[100px]">
+                                    <div className="h-full bg-teal-400" style={{ width: `${pct}%` }} />
+                                  </div>
+                                )}
+                              </>
+                            ) : '—'}
+                          </td>
+                          <td className="px-2 py-1.5 text-[#888]">{v.totalSegments ?? '—'}</td>
+                          <td className="px-2 py-1.5 text-[#888]">{v.durationS != null ? `${Math.round(v.durationS)}s` : '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Job list */}
       <div className="rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] overflow-hidden">
