@@ -30,7 +30,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1619,6 +1619,7 @@ export default function AdminPage() {
     { key: 'tools',          label: 'Tools',           dot: 'bg-yellow-500/70' },
     { key: 'vid-gen',        label: 'Vid Gen',         dot: 'bg-rose-500/70' },
     { key: 'embed-reqs',     label: 'Embed reqs',      dot: 'bg-cyan-400/70' },
+    { key: 'analyze-vids',   label: 'Analyze Vids',    dot: 'bg-teal-400/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5931,6 +5932,15 @@ export default function AdminPage() {
         <div style={{ display: adminSection === 'embed-reqs' ? 'block' : 'none' }}>
           <EmbedReqsTab active={adminSection === 'embed-reqs'} />
         </div>
+
+        {/* Analyze Vids — full per-video timeline generator. Each row
+            in a niche becomes one job: yt-dlp download → ffmpeg split
+            into ~60s clips → Gemini 2.5 Flash per clip (via our keys
+            + proxy pool, no papaiapi) → collapse into a single
+            per-video timeline JSON. */}
+        <div style={{ display: adminSection === 'analyze-vids' ? 'block' : 'none' }}>
+          <AnalyzeVidsTab active={adminSection === 'analyze-vids'} />
+        </div>
       </div>
     </div>
   );
@@ -9083,6 +9093,514 @@ function EmbedReqsTab({ active }: { active: boolean }) {
               ))}
             </tbody>
           </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Analyze Vids tab — operator UI for the video-analysis pipeline.
+//
+// Top: enqueue form (custom niche + user email + limit + concurrency).
+// Stats strip: pending / running / done / error.
+// Filters: niche pill, status pills, recency selector.
+// Job list: one row per video. Click to expand and see per-clip
+// progress + attempt history.
+// ────────────────────────────────────────────────────────────────────
+interface AnalyzeVidsJob {
+  id: number;
+  videoId: number | null;
+  customNicheId: number | null;
+  userId: string | null;
+  youtubeUrl: string;
+  title: string | null;
+  durationS: number | null;
+  numClips: number;
+  numClipsDone: number;
+  numClipsFailed: number;
+  totalSegments: number | null;
+  status: string;
+  stage: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastProgressAt: string | null;
+  createdAt: string;
+}
+interface AnalyzeVidsStats { pending: number; running: number; done: number; error: number; total: number; }
+interface AnalyzeVidsClip {
+  id: number;
+  clipIndex: number;
+  durationS: number | null;
+  sizeBytes: number | null;
+  status: string;
+  attempts: Array<{ n: number; elapsed_s: number; category: string; http_status: number | null; detail: string | null }>;
+  attemptCount: number;
+  segmentsCount: number | null;
+  errorCategory: string | null;
+  errorDetail: string | null;
+  hasRawDebug: boolean;
+  elapsedS: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+function AnalyzeVidsTab({ active }: { active: boolean }) {
+  const [rows, setRows] = useState<AnalyzeVidsJob[]>([]);
+  const [stats, setStats] = useState<AnalyzeVidsStats>({ pending: 0, running: 0, done: 0, error: 0, total: 0 });
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Enqueue form state.
+  const [customNiches, setCustomNiches] = useState<Array<{ id: number; name: string; videoCount: number }>>([]);
+  const [pickNicheId, setPickNicheId] = useState<number | ''>('');
+  const [userEmail, setUserEmail] = useState('sigadiga@gmail.com');
+  const [enqueueLimit, setEnqueueLimit] = useState(10);
+  const [concurrentStarts, setConcurrentStarts] = useState(5);
+  const [skipAnalysed, setSkipAnalysed] = useState(true);
+
+  // Filter state.
+  const [filterNicheId, setFilterNicheId] = useState<number | ''>('');
+  const [filterStatus, setFilterStatus] = useState<string>('all');   // all|active|done|error
+  const [filterRecent, setFilterRecent] = useState<'24h' | '7d' | 'all'>('24h');
+
+  // Per-row drill-in state — only fetch clips when expanded to keep
+  // the list query cheap when the operator just glances.
+  const [expandedJobId, setExpandedJobId] = useState<number | null>(null);
+  const [expandedClips, setExpandedClips] = useState<AnalyzeVidsClip[]>([]);
+  const [expandedLoading, setExpandedLoading] = useState(false);
+
+  // Load custom niches once when the tab activates.
+  useEffect(() => {
+    if (!active) return;
+    fetch('/api/niche-spy/custom-niches?limit=200')
+      .then(r => r.json())
+      .then(d => setCustomNiches(d.niches || d.rows || []))
+      .catch(() => {});
+  }, [active]);
+
+  const loadJobs = useCallback(async () => {
+    setLoading(true);
+    try {
+      const qs = new URLSearchParams();
+      if (filterNicheId !== '') qs.set('customNicheId', String(filterNicheId));
+      if (filterStatus === 'active') qs.set('status', 'pending,downloading,splitting,analyzing,collapsing');
+      else if (filterStatus === 'done')  qs.set('status', 'done');
+      else if (filterStatus === 'error') qs.set('status', 'error');
+      if (filterRecent !== 'all') {
+        const h = filterRecent === '24h' ? 24 : 24 * 7;
+        qs.set('since', new Date(Date.now() - h * 3600_000).toISOString());
+      }
+      qs.set('limit', '200');
+      const r = await fetch(`/api/admin/analyze-vids/jobs?${qs.toString()}`);
+      const d = await r.json();
+      if (d.ok) {
+        setRows(d.rows || []);
+        setStats(d.stats || { pending: 0, running: 0, done: 0, error: 0, total: 0 });
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [filterNicheId, filterStatus, filterRecent]);
+
+  useEffect(() => { if (active) loadJobs(); }, [active, loadJobs]);
+
+  // Live poll while the tab is active and anything is in flight.
+  useEffect(() => {
+    if (!active) return;
+    if (stats.pending === 0 && stats.running === 0) return;
+    const t = setInterval(loadJobs, 4000);
+    return () => clearInterval(t);
+  }, [active, stats.pending, stats.running, loadJobs]);
+
+  const handleEnqueue = async () => {
+    if (pickNicheId === '') { setErr('pick a custom niche'); return; }
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      const r = await fetch('/api/admin/analyze-vids/jobs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customNicheId: pickNicheId,
+          userEmail: userEmail || undefined,
+          limit: enqueueLimit,
+          concurrentStarts,
+          skipAnalysed,
+          autoStart: true,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.ok === false) {
+        setErr(d.error || `HTTP ${r.status}`);
+      } else {
+        setMsg(`Enqueued ${d.created} job${d.created === 1 ? '' : 's'}` + (d.skipped ? ` (skipped ${d.skipped} already-analysed)` : '') + (d.startedNow ? ` — ${d.startedNow} starting now` : ''));
+        await loadJobs();
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleProcessPending = async () => {
+    setBusy(true); setErr(null); setMsg(null);
+    try {
+      const r = await fetch('/api/admin/analyze-vids/process-pending', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 10 }),
+      });
+      const d = await r.json();
+      if (d.ok) { setMsg(`Claimed ${d.claimed} job${d.claimed === 1 ? '' : 's'} to run.`); await loadJobs(); }
+      else setErr(d.error || `HTTP ${r.status}`);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const handleRetry = async (jobId: number) => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await fetch(`/api/admin/analyze-vids/jobs/${jobId}/retry`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) { setMsg(`Retrying job ${jobId}`); await loadJobs(); }
+      else setErr(d.error || `HTTP ${r.status}`);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const handleCancel = async (jobId: number) => {
+    if (!confirm(`Cancel job ${jobId}? Already-finished clips keep their results.`)) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/admin/analyze-vids/jobs/${jobId}/cancel`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) await loadJobs(); else setErr(d.error || `HTTP ${r.status}`);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const handleExpand = async (jobId: number) => {
+    if (expandedJobId === jobId) { setExpandedJobId(null); setExpandedClips([]); return; }
+    setExpandedJobId(jobId); setExpandedClips([]); setExpandedLoading(true);
+    try {
+      const r = await fetch(`/api/admin/analyze-vids/jobs/${jobId}`);
+      const d = await r.json();
+      if (d.ok) setExpandedClips(d.clips || []);
+    } finally {
+      setExpandedLoading(false);
+    }
+  };
+
+  // Live poll the expanded job for clip-level progress too.
+  useEffect(() => {
+    if (!active || expandedJobId == null) return;
+    const t = setInterval(() => { handleExpand(expandedJobId); }, 4000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, expandedJobId]);
+
+  const STATUS_COLOUR: Record<string, string> = {
+    pending: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
+    downloading: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+    splitting: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+    analyzing: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+    collapsing: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+    done: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+    error: 'bg-red-500/15 text-red-300 border-red-500/30',
+    cancelled: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
+  };
+
+  return (
+    <div>
+      {/* Header + brief explainer */}
+      <div className="mb-6">
+        <h2 className="text-base font-semibold text-white mb-1">Video analysis pipeline</h2>
+        <p className="text-xs text-[#888] leading-relaxed max-w-3xl">
+          Each job downloads one YouTube video, splits it into ~60 second clips, asks Gemini 2.5 Flash to describe what&apos;s happening in every second (visual + speech + audio), and stitches the result into a single timeline JSON. Runs through our key pool and proxies — no papaiapi. Roughly $0.045 per 14-min video.
+        </p>
+      </div>
+
+      {/* Enqueue form */}
+      <div className="mb-4 p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f]">
+        <div className="text-xs font-semibold text-white mb-3">Enqueue new jobs</div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-[#888]">Source niche</span>
+            <select
+              value={pickNicheId}
+              onChange={e => setPickNicheId(e.target.value === '' ? '' : parseInt(e.target.value))}
+              className="px-2 py-1.5 text-xs bg-[#0a0a0a] border border-[#2a2a2a] rounded text-white min-w-[14rem]"
+            >
+              <option value="">— pick a custom niche —</option>
+              {customNiches.map(n => (
+                <option key={n.id} value={n.id}>
+                  {n.name} ({n.videoCount ?? 0})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-[#888]">User email</span>
+            <input
+              type="email" value={userEmail}
+              onChange={e => setUserEmail(e.target.value)}
+              placeholder="optional"
+              className="px-2 py-1.5 text-xs bg-[#0a0a0a] border border-[#2a2a2a] rounded text-white min-w-[16rem]"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-[#888]">Max jobs to create</span>
+            <input
+              type="number" min={1} max={1000} value={enqueueLimit}
+              onChange={e => setEnqueueLimit(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))}
+              className="px-2 py-1.5 text-xs bg-[#0a0a0a] border border-[#2a2a2a] rounded text-white w-20"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-[#888]">Start now (parallel)</span>
+            <input
+              type="number" min={1} max={20} value={concurrentStarts}
+              onChange={e => setConcurrentStarts(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
+              className="px-2 py-1.5 text-xs bg-[#0a0a0a] border border-[#2a2a2a] rounded text-white w-16"
+            />
+          </label>
+
+          <label className="flex items-center gap-1.5 text-xs text-[#ccc] pb-2">
+            <input type="checkbox" checked={skipAnalysed} onChange={e => setSkipAnalysed(e.target.checked)} />
+            Skip already-analysed
+          </label>
+
+          <button
+            type="button" disabled={busy || pickNicheId === ''}
+            onClick={handleEnqueue}
+            className="ml-auto px-4 py-1.5 text-xs font-semibold bg-teal-400 text-black rounded-md hover:bg-teal-300 transition disabled:opacity-40"
+          >
+            {busy ? 'Working…' : 'Enqueue'}
+          </button>
+          <button
+            type="button" disabled={busy}
+            onClick={handleProcessPending}
+            className="px-3 py-1.5 text-xs font-semibold text-teal-300 border border-teal-500/40 hover:bg-teal-500/10 rounded-md transition disabled:opacity-40"
+            title="Atomically claim up to 10 pending jobs and start their workers"
+          >
+            Drain queue
+          </button>
+        </div>
+        {msg && <div className="mt-3 text-xs text-emerald-300">{msg}</div>}
+        {err && <div className="mt-3 text-xs text-red-300">{err}</div>}
+      </div>
+
+      {/* Stats strip */}
+      <div className="mb-4 grid grid-cols-2 sm:grid-cols-5 gap-2">
+        {[
+          { label: 'Pending',  v: stats.pending, c: 'text-zinc-300' },
+          { label: 'Running',  v: stats.running, c: 'text-teal-300' },
+          { label: 'Done',     v: stats.done,    c: 'text-emerald-300' },
+          { label: 'Errors',   v: stats.error,   c: 'text-red-300' },
+          { label: 'Total',    v: stats.total,   c: 'text-white' },
+        ].map(s => (
+          <div key={s.label} className="p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f]">
+            <div className="text-[10px] text-[#666] uppercase tracking-wider">{s.label}</div>
+            <div className={`text-lg font-bold ${s.c}`}>{s.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-[10px] text-[#666]">FILTER:</span>
+        <select
+          value={filterNicheId}
+          onChange={e => setFilterNicheId(e.target.value === '' ? '' : parseInt(e.target.value))}
+          className="px-2 py-1 bg-[#0a0a0a] border border-[#2a2a2a] rounded text-white"
+        >
+          <option value="">all niches</option>
+          {customNiches.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}
+        </select>
+        {(['all', 'active', 'done', 'error'] as const).map(s => (
+          <button
+            key={s}
+            onClick={() => setFilterStatus(s)}
+            className={`px-2.5 py-0.5 rounded-full border transition ${
+              filterStatus === s
+                ? 'bg-teal-500/15 text-teal-300 border-teal-500/40'
+                : 'text-[#888] border-[#333] hover:border-[#555]'
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+        {(['24h', '7d', 'all'] as const).map(s => (
+          <button
+            key={s}
+            onClick={() => setFilterRecent(s)}
+            className={`px-2.5 py-0.5 rounded-full border transition ${
+              filterRecent === s
+                ? 'bg-teal-500/15 text-teal-300 border-teal-500/40'
+                : 'text-[#888] border-[#333] hover:border-[#555]'
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+        <button
+          onClick={loadJobs} disabled={loading}
+          className="ml-auto px-2 py-0.5 text-[10px] text-[#888] hover:text-white disabled:opacity-50"
+        >
+          {loading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
+      </div>
+
+      {/* Job list */}
+      <div className="rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] overflow-hidden">
+        {rows.length === 0 ? (
+          <div className="p-6 text-center text-xs text-[#888]">
+            {loading ? 'Loading…' : 'No jobs in view. Enqueue some above.'}
+          </div>
+        ) : (
+          <div className="divide-y divide-[#1a1a1a]">
+            <div className="px-3 py-2 grid grid-cols-[60px_1fr_120px_120px_100px_180px] gap-2 text-[10px] text-[#666] uppercase tracking-wider">
+              <div>ID</div>
+              <div>Video</div>
+              <div>Status</div>
+              <div>Clips</div>
+              <div>Duration</div>
+              <div className="text-right">Actions</div>
+            </div>
+            {rows.map(r => {
+              const pct = r.numClips > 0 ? Math.round((r.numClipsDone / r.numClips) * 100) : 0;
+              const isExpanded = expandedJobId === r.id;
+              return (
+                <div key={r.id}>
+                  <div
+                    className="px-3 py-2 grid grid-cols-[60px_1fr_120px_120px_100px_180px] gap-2 items-center text-xs hover:bg-[#141414] cursor-pointer"
+                    onClick={() => handleExpand(r.id)}
+                  >
+                    <div className="text-[#666] font-mono">{r.id}</div>
+                    <div className="min-w-0">
+                      <div className="text-white truncate">{r.title ?? r.youtubeUrl}</div>
+                      <div className="text-[10px] text-[#666] truncate">{r.youtubeUrl}</div>
+                    </div>
+                    <div>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] border ${STATUS_COLOUR[r.status] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30'}`}>
+                        {r.status}
+                      </span>
+                    </div>
+                    <div className="text-[#ccc]">
+                      {r.numClipsDone}/{r.numClips || '?'}
+                      {r.numClipsFailed > 0 && <span className="text-red-300"> · {r.numClipsFailed} err</span>}
+                      {r.numClips > 0 && (
+                        <div className="mt-1 h-1 bg-[#1a1a1a] rounded overflow-hidden">
+                          <div className="h-full bg-teal-400" style={{ width: `${pct}%` }} />
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-[#888]">
+                      {r.durationS ? `${Math.round(r.durationS)}s` : '—'}
+                      {r.totalSegments != null && (
+                        <div className="text-[10px] text-[#666]">{r.totalSegments} segs</div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 justify-end" onClick={e => e.stopPropagation()}>
+                      {r.status === 'done' && (
+                        <a
+                          href={`/api/admin/analyze-vids/jobs/${r.id}/timeline`}
+                          download
+                          className="px-2 py-0.5 text-[10px] text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/10 rounded"
+                          title="Download collapsed timeline JSON"
+                        >
+                          ⬇ Timeline
+                        </a>
+                      )}
+                      {(r.status === 'error' || (r.status === 'done' && r.numClipsFailed > 0)) && (
+                        <button
+                          onClick={() => handleRetry(r.id)}
+                          disabled={busy}
+                          className="px-2 py-0.5 text-[10px] text-amber-300 border border-amber-500/30 hover:bg-amber-500/10 rounded disabled:opacity-50"
+                          title="Re-analyze failed clips"
+                        >
+                          ↻ Retry
+                        </button>
+                      )}
+                      {(r.status !== 'done' && r.status !== 'error' && r.status !== 'cancelled') && (
+                        <button
+                          onClick={() => handleCancel(r.id)}
+                          disabled={busy}
+                          className="px-2 py-0.5 text-[10px] text-[#888] border border-[#333] hover:border-red-500/40 hover:text-red-300 rounded disabled:opacity-50"
+                          title="Stop the job"
+                        >
+                          ✕ Cancel
+                        </button>
+                      )}
+                      <span className="text-[10px] text-[#666] w-3 text-center">
+                        {isExpanded ? '▾' : '▸'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Expanded clip detail */}
+                  {isExpanded && (
+                    <div className="px-3 pb-3 bg-[#0a0a0a]">
+                      {r.errorMessage && (
+                        <div className="mb-2 p-2 text-[11px] text-red-300 border border-red-500/30 rounded bg-red-500/5">
+                          <span className="font-semibold">Job error:</span> {r.errorMessage}
+                        </div>
+                      )}
+                      {expandedLoading && expandedClips.length === 0 ? (
+                        <div className="text-[11px] text-[#666] py-2">Loading clips…</div>
+                      ) : expandedClips.length === 0 ? (
+                        <div className="text-[11px] text-[#666] py-2">No clips yet — still downloading/splitting.</div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[11px]">
+                            <thead>
+                              <tr className="text-[10px] text-[#666] uppercase tracking-wider">
+                                <th className="text-left pr-3 py-1">#</th>
+                                <th className="text-left pr-3 py-1">Status</th>
+                                <th className="text-left pr-3 py-1">Duration</th>
+                                <th className="text-left pr-3 py-1">Segments</th>
+                                <th className="text-left pr-3 py-1">Attempts</th>
+                                <th className="text-left pr-3 py-1">Elapsed</th>
+                                <th className="text-left pr-3 py-1">Last error</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {expandedClips.map(c => (
+                                <tr key={c.id} className="border-t border-[#1a1a1a]">
+                                  <td className="pr-3 py-1 text-[#888] font-mono">{c.clipIndex}</td>
+                                  <td className="pr-3 py-1">
+                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] border ${STATUS_COLOUR[c.status] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30'}`}>
+                                      {c.status}
+                                    </span>
+                                  </td>
+                                  <td className="pr-3 py-1 text-[#ccc]">{c.durationS != null ? `${c.durationS.toFixed(1)}s` : '—'}</td>
+                                  <td className="pr-3 py-1 text-[#ccc]">{c.segmentsCount ?? '—'}</td>
+                                  <td className="pr-3 py-1 text-[#ccc]">
+                                    {c.attemptCount}
+                                    {c.attempts && c.attempts.length > 0 && (
+                                      <span className="ml-1 text-[#666]">
+                                        ({c.attempts.map(a => a.category).join(', ')})
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="pr-3 py-1 text-[#888]">{c.elapsedS != null ? `${c.elapsedS.toFixed(1)}s` : '—'}</td>
+                                  <td className="pr-3 py-1 text-[#888] max-w-[300px] truncate" title={c.errorDetail ?? ''}>
+                                    {c.errorCategory ? `${c.errorCategory}: ${c.errorDetail?.slice(0, 80) ?? ''}` : ''}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>

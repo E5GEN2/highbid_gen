@@ -1443,6 +1443,83 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vrj_status ON vizard_refresh_jobs(status, started_at DESC)`).catch(() => {});
 
+    // Video Analysis pipeline — per-video job + per-clip child rows.
+    // One job = one YouTube URL through: download → split into ~60s
+    // clips → analyze each clip via Gemini 2.5 Flash (Google AI Studio
+    // keys + our proxy pool) → collapse per-clip JSONs into a single
+    // per-video timeline. Clip-level rows let us track per-clip retries
+    // independently and resume after partial failures without re-paying
+    // for already-successful clips.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS video_analysis_jobs (
+        id                       SERIAL PRIMARY KEY,
+        video_id                 INTEGER REFERENCES niche_spy_videos(id) ON DELETE SET NULL,
+        custom_niche_id          INTEGER REFERENCES custom_niches(id)    ON DELETE SET NULL,
+        user_id                  UUID    REFERENCES users(id)            ON DELETE SET NULL,
+        youtube_url              TEXT NOT NULL,
+        source_video_title       TEXT,
+        source_video_duration_s  REAL,
+        source_mp4_path          TEXT,
+        clips_dir                TEXT,
+        num_clips                INTEGER NOT NULL DEFAULT 0,
+        num_clips_done           INTEGER NOT NULL DEFAULT 0,
+        num_clips_failed         INTEGER NOT NULL DEFAULT 0,
+        clip_durations           REAL[],
+        total_segments           INTEGER,
+        timeline_jsonb           JSONB,
+        -- status transitions: pending → downloading → splitting →
+        -- analyzing → collapsing → done. error is terminal. cancelled
+        -- is operator-initiated.
+        status                   TEXT NOT NULL DEFAULT 'pending',
+        stage                    TEXT,
+        error_message            TEXT,
+        error_category           TEXT,
+        started_at               TIMESTAMPTZ,
+        completed_at             TIMESTAMPTZ,
+        created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_progress_at         TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_status      ON video_analysis_jobs(status, created_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_niche       ON video_analysis_jobs(custom_niche_id, created_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_user        ON video_analysis_jobs(user_id, created_at DESC)`).catch(() => {});
+    // Used by enqueue to skip videos already analysed for the same
+    // url+user combo so a "re-run niche" doesn't double-charge per
+    // unchanged video. NOT unique — a job can be retried after a hard
+    // failure, and re-running a niche after the video moved is allowed.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_video_user  ON video_analysis_jobs(video_id, user_id, created_at DESC)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS video_analysis_clips (
+        id                 SERIAL PRIMARY KEY,
+        job_id             INTEGER NOT NULL REFERENCES video_analysis_jobs(id) ON DELETE CASCADE,
+        clip_index         INTEGER NOT NULL,
+        clip_path          TEXT,
+        duration_s         REAL,
+        size_bytes         BIGINT,
+        -- status: pending → running → done|error
+        status             TEXT NOT NULL DEFAULT 'pending',
+        -- One element per HTTP attempt:
+        --   { n, elapsed_s, category, http_status, detail }
+        -- so the UI can render "ok on attempt 2 after 1 http_502".
+        attempts           JSONB NOT NULL DEFAULT '[]'::jsonb,
+        attempt_count      INTEGER NOT NULL DEFAULT 0,
+        segments_jsonb     JSONB,
+        segments_count     INTEGER,
+        error_category     TEXT,
+        error_detail       TEXT,
+        -- Raw Gemini body cached when parse_error happens; otherwise NULL.
+        -- Capped at 200KB at write time to avoid blowing the row.
+        raw_debug_text     TEXT,
+        elapsed_s          REAL,
+        started_at         TIMESTAMPTZ,
+        completed_at       TIMESTAMPTZ,
+        UNIQUE (job_id, clip_index)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vac_job         ON video_analysis_clips(job_id, clip_index)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vac_status      ON video_analysis_clips(status)`).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
