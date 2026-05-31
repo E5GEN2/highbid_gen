@@ -931,3 +931,11 @@ Instructions
 
 Analyze the entire video now. Do not skip any part. Output the complete JSON.`;
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Module-load side effect — eagerly start the watchdog whenever this
+// lib is imported (which happens automatically when any analyze-vids
+// API route is loaded). Ensures the autopilot survives Railway
+// redeploys without needing a fresh POST to wake it up.
+// ────────────────────────────────────────────────────────────────────
+ensureWatchdog();
