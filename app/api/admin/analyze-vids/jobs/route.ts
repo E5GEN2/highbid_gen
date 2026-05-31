@@ -193,12 +193,15 @@ export async function GET(req: NextRequest) {
     completed_at: Date | null;
     last_progress_at: Date | null;
     created_at: Date;
+    auto_retry_count: number;
+    last_auto_retry_at: Date | null;
   }>(
     `SELECT j.id, j.video_id, j.custom_niche_id, j.user_id, j.youtube_url,
             j.source_video_title, j.source_video_duration_s,
             j.num_clips, j.num_clips_done, j.num_clips_failed, j.total_segments,
             j.status, j.stage, j.error_message,
-            j.started_at, j.completed_at, j.last_progress_at, j.created_at
+            j.started_at, j.completed_at, j.last_progress_at, j.created_at,
+            j.auto_retry_count, j.last_auto_retry_at
        FROM video_analysis_jobs j
        ${where}
        ORDER BY j.created_at DESC
@@ -242,6 +245,8 @@ export async function GET(req: NextRequest) {
       completedAt: r.completed_at?.toISOString() ?? null,
       lastProgressAt: r.last_progress_at?.toISOString() ?? null,
       createdAt: r.created_at.toISOString(),
+      autoRetryCount: r.auto_retry_count,
+      lastAutoRetryAt: r.last_auto_retry_at?.toISOString() ?? null,
     })),
     stats: {
       pending: parseInt(statsRes.rows[0].pending),

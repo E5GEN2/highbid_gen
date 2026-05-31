@@ -9127,6 +9127,8 @@ interface AnalyzeVidsJob {
   completedAt: string | null;
   lastProgressAt: string | null;
   createdAt: string;
+  autoRetryCount?: number;
+  lastAutoRetryAt?: string | null;
 }
 interface AnalyzeVidsStats { pending: number; running: number; done: number; error: number; total: number; }
 interface AnalyzeVidsClip {
@@ -9778,6 +9780,14 @@ function AnalyzeVidsTab({ active }: { active: boolean }) {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] border ${STATUS_COLOUR[r.status] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30'}`}>
                         {r.status}
                       </span>
+                      {(r.autoRetryCount ?? 0) > 0 && (
+                        <span
+                          className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] border bg-purple-500/15 text-purple-300 border-purple-500/30"
+                          title={`Watchdog auto-retried this job ${r.autoRetryCount} time${r.autoRetryCount === 1 ? '' : 's'}${r.lastAutoRetryAt ? ` (last: ${new Date(r.lastAutoRetryAt).toLocaleTimeString()})` : ''}`}
+                        >
+                          ↻{r.autoRetryCount}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[#ccc]">
                       {r.numClipsDone}/{r.numClips || '?'}

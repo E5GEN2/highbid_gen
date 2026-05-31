@@ -1488,6 +1488,13 @@ export async function initSchema(): Promise<void> {
     // unchanged video. NOT unique — a job can be retried after a hard
     // failure, and re-running a niche after the video moved is allowed.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_video_user  ON video_analysis_jobs(video_id, user_id, created_at DESC)`).catch(() => {});
+    // Self-healing autopilot — every watchdog tick resets errored /
+    // stuck / done-with-gaps jobs back to pending so by morning the
+    // queue is 100% done without operator clicks. Capped at
+    // MAX_AUTO_RETRIES so a genuinely-broken video (geo-blocked,
+    // age-restricted, deleted) can't loop forever burning $.
+    await client.query(`ALTER TABLE video_analysis_jobs ADD COLUMN IF NOT EXISTS auto_retry_count INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+    await client.query(`ALTER TABLE video_analysis_jobs ADD COLUMN IF NOT EXISTS last_auto_retry_at TIMESTAMPTZ`).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS video_analysis_clips (

@@ -57,6 +57,26 @@ const PER_ATTEMPT_TIMEOUT_MS = 300_000;
 // (one bad key only ruins one call before rotation) without coming
 // close to per-minute quota at the pool aggregate.
 const GLOBAL_CLIP_CONCURRENCY = 20;
+
+// Autopilot knobs.
+// MAX_AUTO_RETRIES — how many times the watchdog will reset a job
+//   before giving up. Each manual click on Retry does NOT increment
+//   this, so the operator can always push past the cap. 5 covers
+//   key-pool turbulence; beyond that the video is usually genuinely
+//   unsalvageable (geo-blocked, age-restricted, deleted) and burning
+//   more $ won't help.
+// STUCK_AFTER_MINUTES — a job in flight whose last_progress_at hasn't
+//   moved this long is treated as dead worker → reset to pending.
+//   Conservative: a single clip can legitimately take ~5 min if all
+//   four 300s attempts time out, so 15 min covers one clip stack-up
+//   without false-positive-killing healthy jobs.
+// TARGET_WORKERS — steady-state worker count the watchdog tops up to.
+//   Matches the Enqueue form's `concurrentStarts` default.
+// WATCHDOG_TICK_MS — period between heal/top-up passes.
+const MAX_AUTO_RETRIES   = 5;
+const STUCK_AFTER_MINUTES = 15;
+const TARGET_WORKERS      = 5;
+const WATCHDOG_TICK_MS    = 90_000;
 let inflightClips = 0;
 const clipQueue: Array<() => void> = [];
 
@@ -74,6 +94,10 @@ async function acquireClipSlot(): Promise<() => void> {
   };
 }
 
+// In-memory active worker count. Watchdog reads this to know how many
+// more workers to spawn to maintain TARGET_WORKERS steady state.
+let inflightJobs = 0;
+
 // ────────────────────────────────────────────────────────────────────
 // Public entry
 // ────────────────────────────────────────────────────────────────────
@@ -87,6 +111,11 @@ async function acquireClipSlot(): Promise<() => void> {
  * caller can fire-and-forget without leaking promise rejections.
  */
 export async function runAnalysisJob(jobId: number): Promise<void> {
+  // Boot the autopilot lazily on first job. setInterval persists in
+  // the Node process; deduped via globalThis so dev-mode hot reload
+  // doesn't stack multiple watchdogs.
+  ensureWatchdog();
+  inflightJobs++;
   try {
     const job = await loadJob(jobId);
     const dir = path.join(CLIPS_DIR, 'video_analysis', String(jobId));
@@ -123,6 +152,7 @@ export async function runAnalysisJob(jobId: number): Promise<void> {
     console.error(`[video-analysis] job ${jobId} failed:`, err);
     await markJobError(jobId, msg);
   } finally {
+    inflightJobs--;
     // Self-perpetuating queue drain. Once this worker exits (done,
     // error, whatever), atomically claim the next pending job and fire
     // its worker. The /jobs POST starts N workers — each one chains
@@ -139,6 +169,143 @@ export async function runAnalysisJob(jobId: number): Promise<void> {
 }
 
 /**
+ * Self-heal queue — resurrect anything stuck or failed-but-retriable.
+ * Returns counts for telemetry. Called at every watchdog tick AND
+ * before each chain-step claim so progress is continuous.
+ *
+ * Three buckets, all capped at MAX_AUTO_RETRIES per job:
+ *   1. errored        — status='error' (whole-job failure, e.g. download)
+ *   2. stuck-in-flight — downloading/splitting/analyzing/collapsing
+ *                        with no last_progress_at update for STUCK_AFTER_MINUTES
+ *   3. done-with-gaps  — status='done' but num_clips_failed > 0
+ *
+ * Increments auto_retry_count and stamps last_auto_retry_at; resets
+ * relevant clip rows back to pending so the worker picks them up.
+ */
+async function selfHealQueue(): Promise<{ resetErrored: number; resetStuck: number; resetGaps: number }> {
+  const pool = await getPool();
+
+  // 1. Errored jobs → pending if under retry cap.
+  const erroredRes = await pool.query<{ id: number }>(
+    `UPDATE video_analysis_jobs
+        SET status='pending', stage='pending',
+            error_message=NULL, error_category=NULL,
+            num_clips_failed=0, completed_at=NULL,
+            auto_retry_count = auto_retry_count + 1,
+            last_auto_retry_at = NOW(),
+            last_progress_at  = NOW()
+      WHERE status='error' AND auto_retry_count < $1
+      RETURNING id`,
+    [MAX_AUTO_RETRIES],
+  );
+  if (erroredRes.rows.length > 0) {
+    await pool.query(
+      `UPDATE video_analysis_clips
+          SET status='pending', attempts='[]'::jsonb, attempt_count=0,
+              error_category=NULL, error_detail=NULL, raw_debug_text=NULL,
+              elapsed_s=NULL, started_at=NULL, completed_at=NULL
+        WHERE job_id = ANY($1::int[]) AND status='error'`,
+      [erroredRes.rows.map(r => r.id)],
+    );
+  }
+
+  // 2. Stuck-in-flight → pending. Worker died mid-stage; reset any
+  // 'running' clips so the next worker doesn't trip over zombies.
+  const stuckRes = await pool.query<{ id: number }>(
+    `UPDATE video_analysis_jobs
+        SET status='pending', stage='pending',
+            auto_retry_count = auto_retry_count + 1,
+            last_auto_retry_at = NOW(),
+            last_progress_at  = NOW()
+      WHERE status IN ('downloading','splitting','analyzing','collapsing')
+        AND last_progress_at < NOW() - ($1 || ' minutes')::interval
+        AND auto_retry_count < $2
+      RETURNING id`,
+    [String(STUCK_AFTER_MINUTES), MAX_AUTO_RETRIES],
+  );
+  if (stuckRes.rows.length > 0) {
+    await pool.query(
+      `UPDATE video_analysis_clips
+          SET status='pending', started_at=NULL
+        WHERE job_id = ANY($1::int[]) AND status='running'`,
+      [stuckRes.rows.map(r => r.id)],
+    );
+  }
+
+  // 3. Done-with-gaps → pending. Reset just the failed clips so the
+  // worker only re-runs them (already-done clips stay done — no
+  // re-paying for successful work). The collapse step rewrites the
+  // timeline JSON on completion.
+  const gappyRes = await pool.query<{ id: number }>(
+    `UPDATE video_analysis_jobs
+        SET status='pending', stage='pending',
+            num_clips_failed=0, completed_at=NULL,
+            auto_retry_count = auto_retry_count + 1,
+            last_auto_retry_at = NOW(),
+            last_progress_at  = NOW()
+      WHERE status='done' AND num_clips_failed > 0
+        AND auto_retry_count < $1
+      RETURNING id`,
+    [MAX_AUTO_RETRIES],
+  );
+  if (gappyRes.rows.length > 0) {
+    await pool.query(
+      `UPDATE video_analysis_clips
+          SET status='pending', attempts='[]'::jsonb, attempt_count=0,
+              error_category=NULL, error_detail=NULL, raw_debug_text=NULL,
+              elapsed_s=NULL, started_at=NULL, completed_at=NULL
+        WHERE job_id = ANY($1::int[]) AND status='error'`,
+      [gappyRes.rows.map(r => r.id)],
+    );
+  }
+
+  const out = {
+    resetErrored: erroredRes.rows.length,
+    resetStuck:   stuckRes.rows.length,
+    resetGaps:    gappyRes.rows.length,
+  };
+  if (out.resetErrored + out.resetStuck + out.resetGaps > 0) {
+    console.log(
+      `[video-analysis] watchdog reset: ${out.resetErrored} errored, ` +
+      `${out.resetStuck} stuck, ${out.resetGaps} done-with-gaps`,
+    );
+  }
+  return out;
+}
+
+/**
+ * Ensure inflightJobs is at TARGET_WORKERS by claiming + firing as
+ * many pending jobs as needed. Idempotent — safe to call repeatedly.
+ */
+async function topUpWorkers(): Promise<void> {
+  const need = Math.max(0, TARGET_WORKERS - inflightJobs);
+  for (let i = 0; i < need; i++) {
+    await claimAndRunNextPending();
+  }
+}
+
+// Module-level watchdog. Persists until process restart.
+// globalThis dedup prevents dev-mode hot reload from stacking multiple
+// timers; in prod the module loads exactly once.
+declare global {
+
+  var __videoAnalysisWatchdog: NodeJS.Timeout | undefined;
+}
+
+function ensureWatchdog(): void {
+  if (globalThis.__videoAnalysisWatchdog) return;
+  globalThis.__videoAnalysisWatchdog = setInterval(async () => {
+    try {
+      await selfHealQueue();
+      await topUpWorkers();
+    } catch (err) {
+      console.error('[video-analysis] watchdog tick failed:', err);
+    }
+  }, WATCHDOG_TICK_MS);
+  console.log(`[video-analysis] watchdog started (tick=${WATCHDOG_TICK_MS}ms, target_workers=${TARGET_WORKERS}, max_auto_retries=${MAX_AUTO_RETRIES})`);
+}
+
+/**
  * Atomically claim one pending job and fire runAnalysisJob on it.
  * Called from runAnalysisJob's finally so each completed worker
  * picks up the next pending — turning a batch of 354 jobs into a
@@ -147,6 +314,13 @@ export async function runAnalysisJob(jobId: number): Promise<void> {
  * Returns silently if no pending job; the chain just ends there.
  */
 async function claimAndRunNextPending(): Promise<void> {
+  // Pre-claim self-heal pass. If pending is empty but error/stuck/gap
+  // jobs exist, this resurrects them so the next claim has something
+  // to pick up. Cheap (3 indexed UPDATEs); safe to repeat.
+  await selfHealQueue().catch(err => {
+    console.error('[video-analysis] inline self-heal failed:', err);
+  });
+
   const pool = await getPool();
   const r = await pool.query<{ id: number }>(
     `WITH claimed AS (
@@ -365,6 +539,18 @@ async function runOneClip(jobId: number, clipRowId: number, clipPath: string, du
         const s = BACKOFF_SECONDS[Math.min(attemptN - 1, BACKOFF_SECONDS.length - 1)];
         await new Promise(r => setTimeout(r, s * 1000));
       }
+      // Bump attempt_count + job last_progress_at on each attempt
+      // start so the watchdog's stuck-detection (last_progress_at >
+      // STUCK_AFTER_MINUTES) doesn't false-positive a worker that's
+      // legitimately retrying.
+      await pool.query(
+        `UPDATE video_analysis_clips SET attempt_count=$1 WHERE id=$2`,
+        [attemptN, clipRowId],
+      ).catch(() => {});
+      await pool.query(
+        `UPDATE video_analysis_jobs SET last_progress_at=NOW() WHERE id=$1`,
+        [jobId],
+      ).catch(() => {});
       const aT0 = Date.now();
       const result = await callGeminiForClip(clipPath, durationS);
       const elapsed = (Date.now() - aT0) / 1000;
