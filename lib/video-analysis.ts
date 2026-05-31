@@ -122,7 +122,54 @@ export async function runAnalysisJob(jobId: number): Promise<void> {
     const msg = (err as Error).message || 'unknown';
     console.error(`[video-analysis] job ${jobId} failed:`, err);
     await markJobError(jobId, msg);
+  } finally {
+    // Self-perpetuating queue drain. Once this worker exits (done,
+    // error, whatever), atomically claim the next pending job and fire
+    // its worker. The /jobs POST starts N workers — each one chains
+    // into the next until pending is empty. No cron, no Drain queue
+    // button mashing.
+    //
+    // Single-job claim per chain step (not batched) keeps the in-
+    // flight worker count constant at the initial N; the FOR UPDATE
+    // SKIP LOCKED makes concurrent chains safe.
+    void claimAndRunNextPending().catch(err => {
+      console.error('[video-analysis] queue chain failed:', err);
+    });
   }
+}
+
+/**
+ * Atomically claim one pending job and fire runAnalysisJob on it.
+ * Called from runAnalysisJob's finally so each completed worker
+ * picks up the next pending — turning a batch of 354 jobs into a
+ * drainable queue with N always-running workers.
+ *
+ * Returns silently if no pending job; the chain just ends there.
+ */
+async function claimAndRunNextPending(): Promise<void> {
+  const pool = await getPool();
+  const r = await pool.query<{ id: number }>(
+    `WITH claimed AS (
+       SELECT id FROM video_analysis_jobs
+        WHERE status = 'pending'
+        ORDER BY created_at ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+     )
+     UPDATE video_analysis_jobs j
+        SET status = 'downloading', stage = 'downloading',
+            started_at = COALESCE(j.started_at, NOW()),
+            last_progress_at = NOW()
+       FROM claimed
+      WHERE j.id = claimed.id
+     RETURNING j.id`,
+  );
+  if (r.rows.length === 0) return;
+  const nextId = r.rows[0].id;
+  // Fire — runAnalysisJob's own finally will chain to whatever's next.
+  void runAnalysisJob(nextId).catch(err => {
+    console.error(`[video-analysis] chained job ${nextId} threw:`, err);
+  });
 }
 
 // ────────────────────────────────────────────────────────────────────
