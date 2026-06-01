@@ -713,6 +713,15 @@ async function callGeminiForClip(clipPath: string, durationS: number): Promise<C
   }
 
   if (!res.ok) {
+    // For http_400 ("INVALID_ARGUMENT"), nuke any cached low-res mp4
+    // before returning. Gemini returning 400 on a video upload almost
+    // always means the bytes are bad; our cache may have a corrupt
+    // transcode output from a prior partial write. Forcing a fresh
+    // transcode on the next attempt usually fixes it.
+    if (res.status === 400) {
+      const lowPath = clipPath.replace(/\.mp4$/, '.low.mp4');
+      try { if (fs.existsSync(lowPath)) fs.unlinkSync(lowPath); } catch { /* ignore */ }
+    }
     return mapHttpError(res.status, txt, keyRow.id);
   }
 
@@ -772,7 +781,14 @@ function mapHttpError(status: number, body: string, keyId: number): CallResult {
     cooloffKey(keyId, 90);
     return { ok: false, category: 'http_429', httpStatus: 429, detail, retriable: true };
   }
-  if (status === 400) return { ok: false, category: 'http_400', httpStatus: 400, detail, retriable: false };
+  if (status === 400) {
+    // Flip to retriable=true because we just nuked the cached low-res
+    // mp4 (see callGeminiForClip). The next attempt will re-transcode
+    // from the original source and try again. If it's a genuine
+    // INVALID_ARGUMENT (e.g. safety filter), all 4 attempts will
+    // exhaust and the clip ends up in 'error' anyway.
+    return { ok: false, category: 'http_400', httpStatus: 400, detail, retriable: true };
+  }
   if (status === 401) return { ok: false, category: 'http_401', httpStatus: 401, detail, retriable: false };
   if (status === 413) return { ok: false, category: 'http_413', httpStatus: 413, detail, retriable: false };
   if (status >= 500 && status < 600) return { ok: false, category: `http_${status}`, httpStatus: status, detail, retriable: true };
