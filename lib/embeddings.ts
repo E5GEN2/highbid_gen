@@ -73,7 +73,11 @@ async function migrateLegacyOnce(): Promise<void> {
     const pool = await getPool();
     const r = await pool.query("SELECT value FROM admin_config WHERE key = 'niche_google_api_keys'");
     const raw: string = r.rows[0]?.value || '';
-    const keys = raw.split('\n').map(k => k.trim()).filter(k => /^AIzaSy[A-Za-z0-9_-]{33}$/.test(k));
+    // Accept both AIzaSy… (classic) and AQ.… (newer) formats —
+    // matches the extractor in lib/ai-studio-key-import.ts so legacy
+    // migration doesn't silently drop AQ. keys if any exist in the
+    // admin_config newline list.
+    const keys = raw.split('\n').map(k => k.trim()).filter(k => /^(?:AIzaSy[A-Za-z0-9_-]{33}|AQ\.[A-Za-z0-9_-]{40,})$/.test(k));
     if (keys.length === 0) return;
     let migrated = 0;
     for (const k of keys) {

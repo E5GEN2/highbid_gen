@@ -44,8 +44,22 @@ const VALIDATION_MODEL = 'gemini-embedding-2-preview';
  *  exported here as the operator's default. */
 export const DEFAULT_AI_STUDIO_KEY_JOB_ID = '69f499d56730e5906b1eb576';
 
-/** Standard Google AI Studio key shape: AIzaSy + 33 chars. */
-const KEY_REGEX = /AIzaSy[A-Za-z0-9_-]{33}/g;
+/**
+ * Google AI Studio accepts TWO key formats:
+ *
+ *   1. Classic       — AIzaSy + 33 url-safe chars (39 total)
+ *   2. Newer "AQ."   — AQ. + base64url body (typically ~47 chars after
+ *                       the dot). Behaves identically: same query-param /
+ *                       x-goog-api-key auth, same generateContent +
+ *                       embedContent surface. Empirically pulled by
+ *                       running both flavours against ListModels and
+ *                       gemini-embedding-2-preview — both succeed.
+ *
+ * Workers on xgodo were submitting both, but the original regex only
+ * caught AIzaSy…, so every AQ. key was bucketed as "no key" and
+ * thrown away. We accept either now.
+ */
+const KEY_REGEX = /(?:AIzaSy[A-Za-z0-9_-]{33}|AQ\.[A-Za-z0-9_-]{40,})/g;
 
 interface XgodoTask {
   _id: string;
