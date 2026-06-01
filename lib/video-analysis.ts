@@ -619,7 +619,25 @@ async function callGeminiForClip(clipPath: string, durationS: number): Promise<C
     const stat = fs.statSync(clipPath);
     if (stat.size > MAX_CLIP_BYTES) {
       const lowPath = clipPath.replace(/\.mp4$/, '.low.mp4');
+      const tmpPath = lowPath + '.tmp';
+
+      // If a cached low-res mp4 exists but is suspiciously tiny (likely
+      // a partial output from a previous transcode that crashed mid-
+      // write), nuke it so we re-transcode from scratch. Earlier
+      // version reused these and ended up sending garbage to Gemini →
+      // http_400 INVALID_ARGUMENT.
+      if (fs.existsSync(lowPath)) {
+        try {
+          const s = fs.statSync(lowPath);
+          if (s.size < 50 * 1024) {  // < 50 KB = definitely broken
+            fs.unlinkSync(lowPath);
+          }
+        } catch { /* ignore */ }
+      }
+
       if (!fs.existsSync(lowPath)) {
+        // Always clean up any tmp residue before writing.
+        try { fs.unlinkSync(tmpPath); } catch { /* not there, fine */ }
         try {
           await execFileAsync('ffmpeg', [
             '-y', '-hide_banner', '-loglevel', 'error',
@@ -628,9 +646,26 @@ async function callGeminiForClip(clipPath: string, durationS: number): Promise<C
             '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '400k', '-maxrate', '500k', '-bufsize', '800k',
             '-c:a', 'aac', '-b:a', '64k',
             '-movflags', '+faststart',
-            lowPath,
-          ], { timeout: 90_000 });
+            tmpPath,
+          ], { timeout: 120_000 });
         } catch (e) {
+          // ffmpeg crashed — wipe any partial tmp so the next attempt
+          // re-runs from scratch.
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          return { ok: false, category: 'transcode_failed', httpStatus: null, detail: (e as Error).message.slice(0, 500), retriable: true };
+        }
+        // Validate the tmp output is plausible before atomically
+        // renaming to lowPath. Atomic rename means lowPath never
+        // contains a half-written file.
+        try {
+          const tmpStat = fs.statSync(tmpPath);
+          if (tmpStat.size < 50 * 1024) {
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            return { ok: false, category: 'transcode_failed', httpStatus: null, detail: `transcode produced suspicious ${tmpStat.size}-byte output`, retriable: true };
+          }
+          fs.renameSync(tmpPath, lowPath);
+        } catch (e) {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           return { ok: false, category: 'transcode_failed', httpStatus: null, detail: (e as Error).message.slice(0, 500), retriable: true };
         }
       }
