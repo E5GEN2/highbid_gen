@@ -122,6 +122,32 @@ export async function register() {
       }
     }
 
+    /**
+     * XG vid download poller. Calls /api/cron/xg-vid-download which
+     * fetches up to 10 pending review tasks from xgodo, inserts any
+     * new ones into xg_video_downloads, then drains up to 25 in-flight
+     * rows with 3 workers concurrent. Per-row attempts/last_polled_at
+     * guards make this safe to run every minute even with a slow
+     * worker pool.
+     */
+    async function runXgVidDownloadTick() {
+      try {
+        const pool = await getPool();
+        const config = await getConfig(pool);
+        if (!config.cron_secret) return;
+        const port = process.env.PORT || '3000';
+        const res = await fetch(`http://localhost:${port}/api/cron/xg-vid-download`, {
+          headers: { 'Authorization': `Bearer ${config.cron_secret}` },
+        });
+        const data = await res.json();
+        if (data && (data.fetched > 0 || data.drained > 0 || data.failed > 0)) {
+          console.log('[xg-vid-download]', `fetched=${data.fetched} inserted=${data.inserted} drained=${data.drained} confirmed=${data.confirmed} failed=${data.failed}`);
+        }
+      } catch (err) {
+        console.error('[xg-vid-download] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAutoPost() {
       try {
         const pool = await getPool();
@@ -164,6 +190,10 @@ export async function register() {
       // each per minute when idle.
       await runVizardClipsTick();
       await runVizardUploadTick();
+      // XG vid download — same per-minute cadence as vizard. Idle-safe:
+      // returns drained=0 when the queue is empty so cost stays at one
+      // SELECT FOR UPDATE SKIP LOCKED + one xgodo fetch per tick.
+      await runXgVidDownloadTick();
     }
 
     // Check every 60 seconds whether a sync/schedule is due
