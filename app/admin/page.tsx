@@ -8142,6 +8142,17 @@ function VidGenTab({ active }: { active: boolean }) {
   const [autoMsg, setAutoMsg] = useState<string | null>(null);
   const [autoDirty, setAutoDirty] = useState(false);
 
+  // Target render model (Veo Lite vs Veo Omni) the CLIENT will use to
+  // render each prompt. Stored on vid_gen_settings + stamped onto every
+  // new prompt row at insert time so clients see the choice as part of
+  // /api/video_prompt's response. Changing the dropdown only affects
+  // prompts generated AFTER the save — existing rows keep what they
+  // were stamped with.
+  type TargetModel = 'veo-lite' | 'veo-omni';
+  const [targetModel, setTargetModel] = useState<TargetModel>('veo-omni');
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelMsg, setModelMsg] = useState<string | null>(null);
+
   // Debounce search input — 300ms.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -8233,10 +8244,41 @@ function VidGenTab({ active }: { active: boolean }) {
           setAutoRefillThreshold(typeof d.autoRefillThreshold === 'number' ? d.autoRefillThreshold : 500);
           setAutoRefillTarget(typeof d.autoRefillTarget === 'number' ? d.autoRefillTarget : 500);
           setAutoDirty(false);
+          if (d.targetModel === 'veo-lite' || d.targetModel === 'veo-omni') {
+            setTargetModel(d.targetModel);
+          }
         }
       } catch { /* silent */ }
     })();
   }, [active]);
+
+  // Persist a target_model change. Fires on dropdown change — no
+  // separate Save button, the choice is binary and atomic.
+  const saveTargetModel = async (next: TargetModel) => {
+    const prev = targetModel;
+    setTargetModel(next);            // optimistic
+    setModelBusy(true);
+    setModelMsg(null);
+    try {
+      const r = await fetch('/api/admin/tools/vid-gen/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetModel: next }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setModelMsg(`Saved — new prompts will tag as ${next === 'veo-lite' ? 'Veo Lite' : 'Veo Omni'}`);
+      } else {
+        setTargetModel(prev);        // rollback
+        setModelMsg(d.error || 'Failed');
+      }
+    } catch (e) {
+      setTargetModel(prev);
+      setModelMsg((e as Error).message);
+    } finally {
+      setModelBusy(false);
+    }
+  };
 
   // Save suffix config. Called from both the explicit Save button and
   // implicitly when the toggle flips, so flipping the switch never
@@ -8481,6 +8523,41 @@ function VidGenTab({ active }: { active: boolean }) {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Target render model — Veo Lite vs Veo Omni. Stamped onto every
+          new prompt row at insert time and returned to clients in the
+          public /api/video_prompt response. Lets clients route each
+          prompt to the right Veo flavour without a second lookup.
+          Changing the dropdown only affects future inserts; existing
+          rows keep what they were originally stamped with. */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-white">Render model for new prompts</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Which Veo flavour clients will use to render each prompt. Sent back
+              with every <code className="text-rose-300">GET /api/video_prompt</code>{' '}
+              response as <code className="text-rose-300">model</code>. Switching here
+              only tags prompts generated <em>after</em> the change.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 whitespace-nowrap">
+            <select
+              value={targetModel}
+              disabled={modelBusy}
+              onChange={e => saveTargetModel(e.target.value as TargetModel)}
+              className="px-3 py-1.5 text-xs bg-black border border-gray-800 rounded-md text-white focus:outline-none focus:border-rose-500/50"
+            >
+              <option value="veo-omni">Veo Omni</option>
+              <option value="veo-lite">Veo Lite</option>
+            </select>
+            {modelBusy && <span className="text-xs text-gray-500">Saving…</span>}
+          </div>
+        </div>
+        {modelMsg && (
+          <div className="mt-2 text-xs text-emerald-300">{modelMsg}</div>
+        )}
       </div>
 
       {/* Auto-refill — keeps the queue topped up automatically using a

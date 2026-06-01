@@ -117,7 +117,8 @@ export async function GET(req: NextRequest) {
   const pool = await getPool();
   const r = await pool.query(
     `SELECT id, prompt, source, generation_meta, created_at,
-            served_at, served_to, claim_token, confirmed_at, confirmation_meta
+            served_at, served_to, claim_token, confirmed_at, confirmation_meta,
+            target_model
        FROM video_prompts
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY created_at DESC
@@ -140,6 +141,7 @@ export async function GET(req: NextRequest) {
       claimToken: row.claim_token,
       confirmedAt: row.confirmed_at,
       confirmationMeta: row.confirmation_meta,
+      targetModel: row.target_model,
     })),
     limit, offset,
   });
@@ -172,14 +174,24 @@ export async function POST(req: NextRequest) {
   }
 
   const pool = await getPool();
+  // Stamp each manual-add row with the admin's current target_model
+  // choice (Veo Lite / Veo Omni) so the public /api/video_prompt
+  // response carries it. Falls back to 'veo-omni' if the settings row
+  // isn't there yet.
+  const settingsRes = await pool.query<{ target_model: string }>(
+    `SELECT target_model FROM vid_gen_settings WHERE id = 1`,
+  ).catch(() => ({ rows: [] as Array<{ target_model: string }> }));
+  const targetModel = settingsRes.rows[0]?.target_model || 'veo-omni';
   // Bulk INSERT with VALUES expansion + ON CONFLICT DO NOTHING on the
   // UNIQUE prompt column so an existing identical row stays put.
-  const placeholders = cleaned.map((_, i) => `($${i + 1}, 'manual')`).join(',');
+  const placeholders = cleaned
+    .map((_, i) => `($${i + 1}, 'manual', $${cleaned.length + 1})`)
+    .join(',');
   const r = await pool.query<{ id: number }>(
-    `INSERT INTO video_prompts (prompt, source) VALUES ${placeholders}
+    `INSERT INTO video_prompts (prompt, source, target_model) VALUES ${placeholders}
        ON CONFLICT (prompt) DO NOTHING
        RETURNING id`,
-    cleaned,
+    [...cleaned, targetModel],
   );
 
   const counts = await fetchCounts();

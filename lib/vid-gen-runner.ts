@@ -163,17 +163,37 @@ async function runOneBatchWithRetry(n: number, theme: string | null, model: stri
   return { prompts: [], attempts: PER_BATCH_RETRIES, lastError };
 }
 
+/** Read the current target_model setting. Falls back to 'veo-omni' if
+ *  the settings row is missing or doesn't have the column populated
+ *  (defensive — schema migration adds the column with a NOT NULL default,
+ *  so this fallback only fires on never-initialised DBs). */
+async function readTargetModel(): Promise<string> {
+  const pool = await getPool();
+  const r = await pool.query<{ target_model: string }>(
+    `SELECT target_model FROM vid_gen_settings WHERE id = 1`,
+  ).catch(() => ({ rows: [] as Array<{ target_model: string }> }));
+  return r.rows[0]?.target_model || 'veo-omni';
+}
+
 async function insertPrompts(prompts: string[], batchId: string, model: string, theme: string | null): Promise<{ inserted: number; duplicates: number }> {
   if (prompts.length === 0) return { inserted: 0, duplicates: 0 };
   const unique = [...new Set(prompts)];
+  const targetModel = await readTargetModel();
   const pool = await getPool();
-  const placeholders = unique.map((_, i) => `($${i + 1}, 'ai-generated', $${unique.length + 1}::jsonb)`).join(',');
+  // Placeholders: $1..$N prompt strings, then a shared meta JSON
+  // ($N+1) and the target_model ($N+2). Stamping target_model from
+  // settings on insert means clients see today's choice on rows
+  // generated today; flipping the setting later only affects future
+  // inserts (existing rows keep what they were stamped with).
+  const placeholders = unique
+    .map((_, i) => `($${i + 1}, 'ai-generated', $${unique.length + 1}::jsonb, $${unique.length + 2})`)
+    .join(',');
   const meta = JSON.stringify({ batchId, model, theme });
   const ins = await pool.query(
-    `INSERT INTO video_prompts (prompt, source, generation_meta) VALUES ${placeholders}
+    `INSERT INTO video_prompts (prompt, source, generation_meta, target_model) VALUES ${placeholders}
        ON CONFLICT (prompt) DO NOTHING
        RETURNING id`,
-    [...unique, meta],
+    [...unique, meta, targetModel],
   );
   const inserted = ins.rowCount ?? 0;
   return { inserted, duplicates: unique.length - inserted };

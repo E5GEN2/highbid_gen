@@ -237,18 +237,35 @@ async function runOneBatchWithRetry(n: number, theme: string | null, model: stri
   return { prompts: [], attempts: PER_BATCH_RETRIES, lastError };
 }
 
-/** Insert prompts. ON CONFLICT DO NOTHING handles cross-batch dedupe. */
+/** Read the admin-selected target_model from vid_gen_settings — the
+ *  Veo Lite / Veo Omni choice clients receive alongside each prompt.
+ *  Defensive default so a never-initialised settings row doesn't break
+ *  the insert. */
+async function readTargetModel(): Promise<string> {
+  const pool = await getPool();
+  const r = await pool.query<{ target_model: string }>(
+    `SELECT target_model FROM vid_gen_settings WHERE id = 1`,
+  ).catch(() => ({ rows: [] as Array<{ target_model: string }> }));
+  return r.rows[0]?.target_model || 'veo-omni';
+}
+
+/** Insert prompts. ON CONFLICT DO NOTHING handles cross-batch dedupe.
+ *  Each row is stamped with the admin-selected target_model so the
+ *  client knows which Veo flavour to render with. */
 async function insertPrompts(prompts: string[], batchId: string, model: string, theme: string | null): Promise<{ inserted: number; duplicates: number }> {
   if (prompts.length === 0) return { inserted: 0, duplicates: 0 };
   const unique = [...new Set(prompts)];
+  const targetModel = await readTargetModel();
   const pool = await getPool();
-  const placeholders = unique.map((_, i) => `($${i + 1}, 'ai-generated', $${unique.length + 1}::jsonb)`).join(',');
+  const placeholders = unique
+    .map((_, i) => `($${i + 1}, 'ai-generated', $${unique.length + 1}::jsonb, $${unique.length + 2})`)
+    .join(',');
   const meta = JSON.stringify({ batchId, model, theme });
   const ins = await pool.query(
-    `INSERT INTO video_prompts (prompt, source, generation_meta) VALUES ${placeholders}
+    `INSERT INTO video_prompts (prompt, source, generation_meta, target_model) VALUES ${placeholders}
        ON CONFLICT (prompt) DO NOTHING
        RETURNING id`,
-    [...unique, meta],
+    [...unique, meta, targetModel],
   );
   const inserted = ins.rowCount ?? 0;
   return { inserted, duplicates: unique.length - inserted };

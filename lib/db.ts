@@ -1232,6 +1232,14 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE vid_gen_settings ADD COLUMN IF NOT EXISTS auto_refill_threshold INT NOT NULL DEFAULT 500`).catch(() => {});
     await client.query(`ALTER TABLE vid_gen_settings ADD COLUMN IF NOT EXISTS auto_refill_target INT NOT NULL DEFAULT 500`).catch(() => {});
 
+    // Target generation model — the model the CLIENT will use to render
+    // the video from each prompt (Veo Lite vs. Veo Omni). Independent
+    // of the LLM that wrote the prompt. Stamped onto every new prompt
+    // row at insert time so clients see it as part of /api/video_prompt's
+    // response and can route to the right pipeline.
+    await client.query(`ALTER TABLE vid_gen_settings ADD COLUMN IF NOT EXISTS target_model TEXT NOT NULL DEFAULT 'veo-omni'`).catch(() => {});
+    await client.query(`ALTER TABLE video_prompts    ADD COLUMN IF NOT EXISTS target_model TEXT NOT NULL DEFAULT 'veo-omni'`).catch(() => {});
+
     // Agent task tracking — first-seen/last-seen per xgodo task
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_task_log (

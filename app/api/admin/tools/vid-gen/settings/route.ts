@@ -23,6 +23,11 @@ export const revalidate = 0;
 
 const MAX_SUFFIX_LEN = 500;
 const MAX_THEME_LEN  = 2000;
+// Two-only allowlist for the target_model field. Keeps the public API
+// surface predictable for clients consuming /api/video_prompt — they
+// can switch-case on these two strings, no surprise values.
+const TARGET_MODELS = ['veo-lite', 'veo-omni'] as const;
+type TargetModel = typeof TARGET_MODELS[number];
 
 interface SettingsRow {
   suffix: string;
@@ -31,10 +36,11 @@ interface SettingsRow {
   auto_refill_enabled: boolean;
   auto_refill_threshold: number;
   auto_refill_target: number;
+  target_model: string;
   updated_at: string;
 }
 
-const FIELDS = `suffix, suffix_enabled, auto_theme, auto_refill_enabled, auto_refill_threshold, auto_refill_target, updated_at`;
+const FIELDS = `suffix, suffix_enabled, auto_theme, auto_refill_enabled, auto_refill_threshold, auto_refill_target, target_model, updated_at`;
 
 function shape(s: SettingsRow) {
   return {
@@ -44,6 +50,7 @@ function shape(s: SettingsRow) {
     autoRefillEnabled: s.auto_refill_enabled,
     autoRefillThreshold: s.auto_refill_threshold,
     autoRefillTarget: s.auto_refill_target,
+    targetModel: s.target_model,
     updatedAt: s.updated_at,
   };
 }
@@ -71,6 +78,7 @@ export async function PUT(req: NextRequest) {
     suffix?: string; suffixEnabled?: boolean;
     autoTheme?: string; autoRefillEnabled?: boolean;
     autoRefillThreshold?: number; autoRefillTarget?: number;
+    targetModel?: string;
   };
 
   const sets: string[] = [];
@@ -109,6 +117,13 @@ export async function PUT(req: NextRequest) {
     const v = Math.max(1, Math.min(Math.floor(body.autoRefillTarget), 1000));
     params.push(v);
     sets.push(`auto_refill_target = $${params.length}`);
+  }
+  if (typeof body.targetModel === 'string') {
+    if (!(TARGET_MODELS as readonly string[]).includes(body.targetModel)) {
+      return NextResponse.json({ error: `targetModel must be one of: ${TARGET_MODELS.join(', ')}` }, { status: 400 });
+    }
+    params.push(body.targetModel as TargetModel);
+    sets.push(`target_model = $${params.length}`);
   }
 
   if (sets.length === 0) {

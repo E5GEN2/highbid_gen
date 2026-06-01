@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
   `;
 
   const popPromise = autoConfirm
-    ? pool.query<{ id: number; prompt: string }>(
+    ? pool.query<{ id: number; prompt: string; target_model: string }>(
         `UPDATE video_prompts
             SET served_at = NOW(),
                 served_to = $1,
@@ -56,10 +56,10 @@ export async function GET(req: NextRequest) {
              LIMIT 1
              FOR UPDATE SKIP LOCKED
           )
-          RETURNING id, prompt`,
+          RETURNING id, prompt, target_model`,
         [user.tokenId || 'anonymous'],
       )
-    : pool.query<{ id: number; prompt: string }>(
+    : pool.query<{ id: number; prompt: string; target_model: string }>(
         `UPDATE video_prompts
             SET served_at = NOW(),
                 served_to = $1
@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
              LIMIT 1
              FOR UPDATE SKIP LOCKED
           )
-          RETURNING id, prompt`,
+          RETURNING id, prompt, target_model`,
         [user.tokenId || 'anonymous'],
       );
 
@@ -105,5 +105,13 @@ export async function GET(req: NextRequest) {
     console.warn('[video_prompt] auto-refill check failed:', (err as Error).message);
   });
 
-  return NextResponse.json({ id: popRes.rows[0].id, prompt });
+  return NextResponse.json({
+    id: popRes.rows[0].id,
+    prompt,
+    // Veo model flavour to render this prompt with — 'veo-lite' or
+    // 'veo-omni'. Stamped at insert time from vid_gen_settings, so
+    // changing the admin dropdown only affects prompts generated after
+    // the change.
+    model: popRes.rows[0].target_model,
+  });
 }
