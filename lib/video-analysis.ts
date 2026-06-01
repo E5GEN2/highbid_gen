@@ -288,28 +288,38 @@ async function selfHealQueue(): Promise<{ resetErrored: number; resetStuck: numb
  * never ran its finally{} to decrement the counter, so the counter
  * lies and topUpWorkers thinks the pool is full.
  *
- * "Actively making progress" = in flight AND last_progress_at within
- * the last STUCK_AFTER_MINUTES window. Dead workers fail this check;
- * the watchdog's stuck-reset already moves their job rows to pending,
- * but topUpWorkers fires fresh workers immediately so we don't waste
- * a tick.
+ * "Actively making progress" here = wrote to DB in the last 2 minutes.
+ * Much tighter than the 15-minute STUCK_AFTER_MINUTES used for hard
+ * resets — because the gap between "slow but alive" (12 min stale)
+ * and "stuck enough to reset" (15 min stale) was where zombies hid.
+ * Now: if a worker hasn't written in 2 min, treat it as dead for the
+ * purpose of spawning replacements (even though the watchdog won't
+ * force-reset it until 15 min). Slow workers don't get killed; they
+ * just get parallel companions.
+ *
+ * Caps "need" at the actual pending count so we never claim non-
+ * existent work, and never spawn more than TARGET_WORKERS overall.
  *
  * Idempotent. Safe to call repeatedly.
  */
 async function topUpWorkers(): Promise<void> {
   const pool = await getPool();
-  const r = await pool.query<{ active: string }>(
-    `SELECT COUNT(*)::text AS active
-       FROM video_analysis_jobs
-      WHERE status IN ('downloading','splitting','analyzing','collapsing')
-        AND last_progress_at > NOW() - ($1 || ' minutes')::interval`,
-    [String(STUCK_AFTER_MINUTES)],
+  const r = await pool.query<{ active: string; pending: string }>(
+    `SELECT
+       COUNT(*) FILTER (WHERE status IN ('downloading','splitting','analyzing','collapsing')
+                          AND last_progress_at > NOW() - INTERVAL '2 minutes')::text AS active,
+       COUNT(*) FILTER (WHERE status = 'pending')::text AS pending
+       FROM video_analysis_jobs`,
   );
-  const activeCount = parseInt(r.rows[0].active) || 0;
+  const activeCount  = parseInt(r.rows[0].active)  || 0;
+  const pendingCount = parseInt(r.rows[0].pending) || 0;
   // Re-sync in-memory counter to DB truth so other call sites that
   // read it (rare, but defensive) don't drift either.
   inflightJobs = activeCount;
-  const need = Math.max(0, TARGET_WORKERS - activeCount);
+  const need = Math.max(0, Math.min(pendingCount, TARGET_WORKERS - activeCount));
+  if (need > 0) {
+    console.log(`[video-analysis] topUpWorkers spawning ${need} workers (active=${activeCount}, pending=${pendingCount})`);
+  }
   for (let i = 0; i < need; i++) {
     await claimAndRunNextPending();
   }
