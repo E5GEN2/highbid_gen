@@ -674,6 +674,12 @@ async function callGeminiForClip(clipPath: string, durationS: number): Promise<C
             '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '400k', '-maxrate', '500k', '-bufsize', '800k',
             '-c:a', 'aac', '-b:a', '64k',
             '-movflags', '+faststart',
+            // Force mp4 container — without this, ffmpeg infers from
+            // the output extension. Since we write to <foo>.low.mp4.tmp
+            // for atomic rename safety, the trailing .tmp confused
+            // ffmpeg into "Unable to find a suitable output format".
+            // EVERY oversized clip's transcode failed because of this.
+            '-f', 'mp4',
             tmpPath,
           ], { timeout: 120_000 });
         } catch (e) {
