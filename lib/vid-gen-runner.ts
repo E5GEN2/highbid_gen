@@ -325,6 +325,22 @@ export async function triggerAutoRefillIfNeeded(): Promise<{ triggered: boolean;
   if (!s) return { triggered: false, reason: 'no_settings_row' };
   if (!s.auto_refill_enabled) return { triggered: false, reason: 'disabled' };
 
+  // Self-heal stale 'running' rows before checking for in-flight runs.
+  // A run that crashed mid-flight (deploy interrupted the worker, OOM,
+  // function instance recycled) leaves status='running' forever — and
+  // without this sweep that wedged row blocks auto-refill indefinitely
+  // because the in-flight check below sees it as still active. 10min
+  // is comfortably above the generate route's maxDuration (300s) so we
+  // won't kill a legitimately-active run.
+  await pool.query(
+    `UPDATE vid_gen_runs
+        SET status = 'failed',
+            completed_at = NOW(),
+            last_error = COALESCE(last_error, 'stale: exceeded 10min without completion')
+      WHERE status = 'running'
+        AND started_at < NOW() - INTERVAL '10 minutes'`,
+  ).catch(() => {});
+
   // Cheap atomic check: is any generation already running?
   const running = await pool.query<{ id: string }>(
     `SELECT id FROM vid_gen_runs WHERE status = 'running' LIMIT 1`,

@@ -82,6 +82,15 @@ export async function GET(req: NextRequest) {
   ]);
 
   if (popRes.rows.length === 0) {
+    // Empty queue — fire the auto-refill check BEFORE returning 503.
+    // Without this, a queue that has hit zero stays at zero forever:
+    // every client pop returns 503 and the refill trigger lower in
+    // this function never runs. The trigger is idempotent (skips if
+    // a refill is already in flight) so it's safe to fire on every
+    // 503. Fire-and-forget so the client still gets the 503 fast.
+    void triggerAutoRefillIfNeeded().catch(err => {
+      console.warn('[video_prompt] empty-queue auto-refill failed:', (err as Error).message);
+    });
     return NextResponse.json(
       { detail: 'Prompts are being generated, try again shortly' },
       { status: 503 },
