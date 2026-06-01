@@ -138,9 +138,12 @@ export async function submitDownloadTask(
   jobId: string = DEFAULT_DOWNLOAD_JOB_ID,
 ): Promise<{ ok: true; plannedTaskId: string } | { ok: false; error: string }> {
   const token = await getXgodoToken();
-  // The worker only needs the URL. Match the {video_url: ...} shape the
-  // vizard upload job uses for consistency across our planned tasks.
-  const taskInput = { video_url: videoUrl };
+  // The download job's worker expects { url: ... } as its job variable
+  // (xgodo rejects { video_url: ... } here with "jobVariables.url is
+  // required"). Different schema from the vizard YT-upload job which
+  // takes { video_url, title, description } — the schema is per-job on
+  // xgodo, not per-account. Live-tested against a 10-task probe.
+  const taskInput = { url: videoUrl };
   const res = await fetch(`${XGODO_API}/planned_tasks/submit`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
