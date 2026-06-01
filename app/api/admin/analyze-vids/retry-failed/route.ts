@@ -84,11 +84,18 @@ export async function POST(req: NextRequest) {
   // num_clips_done stays — those segments are still valid; the
   // pipeline picks up where it left off and rewrites the timeline on
   // collapse.
+  //
+  // Also resets auto_retry_count to 0. Rationale: a manual bulk retry
+  // is the operator saying "the prior cap was spent on broken-pipeline
+  // failures; give these jobs a fresh runway." Without this, jobs that
+  // hit the cap during a bad deploy stay permanently abandoned by the
+  // watchdog even after we ship a fix.
   await pool.query(
     `UPDATE video_analysis_jobs
         SET status='pending', stage='pending',
             error_message=NULL, error_category=NULL,
             num_clips_failed=0,
+            auto_retry_count=0,
             completed_at=NULL,
             last_progress_at=NOW()
       WHERE id = ANY($1::int[])`,
