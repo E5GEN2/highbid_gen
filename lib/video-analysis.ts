@@ -211,17 +211,22 @@ async function selfHealQueue(): Promise<{ resetErrored: number; resetStuck: numb
 
   // 2. Stuck-in-flight → pending. Worker died mid-stage; reset any
   // 'running' clips so the next worker doesn't trip over zombies.
+  //
+  // Crucially: stuck reset does NOT respect MAX_AUTO_RETRIES and does
+  // NOT increment auto_retry_count. A dead worker isn't a job failure
+  // — the work never actually got a fair shot. Counting it as a retry
+  // means a job that hit a deploy gap, OOM, or zombie state burns the
+  // whole retry budget without ever genuinely failing, and then sits
+  // permanently abandoned. The retry cap should only catch true
+  // repeat-failures (error or done-with-gaps), not interrupted runs.
   const stuckRes = await pool.query<{ id: number }>(
     `UPDATE video_analysis_jobs
         SET status='pending', stage='pending',
-            auto_retry_count = auto_retry_count + 1,
-            last_auto_retry_at = NOW(),
-            last_progress_at  = NOW()
+            last_progress_at = NOW()
       WHERE status IN ('downloading','splitting','analyzing','collapsing')
         AND last_progress_at < NOW() - ($1 || ' minutes')::interval
-        AND auto_retry_count < $2
       RETURNING id`,
-    [String(STUCK_AFTER_MINUTES), MAX_AUTO_RETRIES],
+    [String(STUCK_AFTER_MINUTES)],
   );
   if (stuckRes.rows.length > 0) {
     await pool.query(
@@ -274,11 +279,34 @@ async function selfHealQueue(): Promise<{ resetErrored: number; resetStuck: numb
 }
 
 /**
- * Ensure inflightJobs is at TARGET_WORKERS by claiming + firing as
- * many pending jobs as needed. Idempotent — safe to call repeatedly.
+ * Ensure TARGET_WORKERS workers are actively making progress. Uses the
+ * DB as source of truth instead of the in-memory inflightJobs counter
+ * — a worker that died mid-await (Gemini hang, ffmpeg zombie, OOM)
+ * never ran its finally{} to decrement the counter, so the counter
+ * lies and topUpWorkers thinks the pool is full.
+ *
+ * "Actively making progress" = in flight AND last_progress_at within
+ * the last STUCK_AFTER_MINUTES window. Dead workers fail this check;
+ * the watchdog's stuck-reset already moves their job rows to pending,
+ * but topUpWorkers fires fresh workers immediately so we don't waste
+ * a tick.
+ *
+ * Idempotent. Safe to call repeatedly.
  */
 async function topUpWorkers(): Promise<void> {
-  const need = Math.max(0, TARGET_WORKERS - inflightJobs);
+  const pool = await getPool();
+  const r = await pool.query<{ active: string }>(
+    `SELECT COUNT(*)::text AS active
+       FROM video_analysis_jobs
+      WHERE status IN ('downloading','splitting','analyzing','collapsing')
+        AND last_progress_at > NOW() - ($1 || ' minutes')::interval`,
+    [String(STUCK_AFTER_MINUTES)],
+  );
+  const activeCount = parseInt(r.rows[0].active) || 0;
+  // Re-sync in-memory counter to DB truth so other call sites that
+  // read it (rare, but defensive) don't drift either.
+  inflightJobs = activeCount;
+  const need = Math.max(0, TARGET_WORKERS - activeCount);
   for (let i = 0; i < need; i++) {
     await claimAndRunNextPending();
   }
