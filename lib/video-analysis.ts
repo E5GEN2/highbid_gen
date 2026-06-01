@@ -60,11 +60,14 @@ const GLOBAL_CLIP_CONCURRENCY = 20;
 
 // Autopilot knobs.
 // MAX_AUTO_RETRIES — how many times the watchdog will reset a job
-//   before giving up. Each manual click on Retry does NOT increment
-//   this, so the operator can always push past the cap. 5 covers
-//   key-pool turbulence; beyond that the video is usually genuinely
-//   unsalvageable (geo-blocked, age-restricted, deleted) and burning
-//   more $ won't help.
+//   before giving up. Each manual click on Retry resets to 0, so the
+//   operator can always push past the cap. Bumped from 5 → 20: with
+//   real key-pool turbulence (intermittent http_503, conn drops, key
+//   bans), 5 rounds wasn't enough to grind out residual clip gaps
+//   without operator clicks. Cost per round on a done-with-gaps job
+//   is ~$0.003 × failed-clip-count (already-done clips aren't
+//   re-paid), so 20 rounds is bounded at ~$1 per video worst-case
+//   even for the gnarliest cases.
 // STUCK_AFTER_MINUTES — a job in flight whose last_progress_at hasn't
 //   moved this long is treated as dead worker → reset to pending.
 //   Conservative: a single clip can legitimately take ~5 min if all
@@ -73,7 +76,7 @@ const GLOBAL_CLIP_CONCURRENCY = 20;
 // TARGET_WORKERS — steady-state worker count the watchdog tops up to.
 //   Matches the Enqueue form's `concurrentStarts` default.
 // WATCHDOG_TICK_MS — period between heal/top-up passes.
-const MAX_AUTO_RETRIES   = 5;
+const MAX_AUTO_RETRIES   = 20;
 const STUCK_AFTER_MINUTES = 15;
 const TARGET_WORKERS      = 5;
 const WATCHDOG_TICK_MS    = 90_000;

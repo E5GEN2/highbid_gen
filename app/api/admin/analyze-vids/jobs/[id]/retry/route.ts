@@ -50,10 +50,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     [jobId],
   );
   // Reset job counters; runAnalysisJob recomputes as clips complete.
+  // Also resets auto_retry_count = 0. Rationale: manual retry is the
+  // operator saying "give this job a fresh shot." Without this, jobs
+  // that hit the watchdog cap during turbulence stay at the cap and
+  // the watchdog ignores them after one more failure — meaning a
+  // single manual click only buys one attempt. With the reset, manual
+  // retry gives the watchdog a fresh 20-retry budget to grind out any
+  // residual flakiness without further operator input.
   await pool.query(
     `UPDATE video_analysis_jobs
         SET status='pending', stage='pending', error_message=NULL, error_category=NULL,
             num_clips_failed = 0,
+            auto_retry_count = 0,
             completed_at = NULL,
             last_progress_at = NOW()
       WHERE id = $1`,

@@ -142,7 +142,7 @@ export async function GET(req: NextRequest) {
     targetWorkers:         5,
     globalClipConcurrency: 20,
     stuckAfterMinutes:     15,
-    maxAutoRetries:        5,
+    maxAutoRetries:        20,
     watchdogTickMs:        90_000,
   };
 
