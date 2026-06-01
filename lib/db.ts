@@ -1072,6 +1072,62 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xphr_started ON xgodo_proxy_health_runs(started_at DESC)`).catch(() => {});
 
+    // xg vid download pipeline. Bridges two xgodo jobs:
+    //   review_job_id    — workers post videoUrl/remote_device_id as
+    //                      job_proof; row status 'pending' = awaiting our
+    //                      review. We pop those, schedule a download.
+    //   download_job_id  — workers click the labs.google download button,
+    //                      upload the mp4 to xgodo's /server/temp/ and
+    //                      return prompt/model/uploadedUrl as job_proof.
+    //
+    // We then fetch the mp4 to the Railway volume, verify size>0, and
+    // mark BOTH original xgodo tasks 'confirmed' (xgodo's term for
+    // operator-satisfied). One DB row per review task — local_path
+    // stamps when the file landed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xg_video_downloads (
+        id SERIAL PRIMARY KEY,
+        review_task_id TEXT NOT NULL UNIQUE,
+            -- _id of the row from review_job_id (job 6a02e4e48c…)
+        review_job_id TEXT NOT NULL,
+        review_worker_name TEXT,
+        source_video_url TEXT NOT NULL,
+            -- the labs.google/fx/.../shared/video/... URL
+        remote_device_id TEXT,
+            -- captured from the review task's job_proof
+        download_task_id TEXT,
+            -- planned_task_id we get back when we submit to job
+            -- 6a12c740d914a97f7c2bd0db. NULL until first submit.
+        download_job_id TEXT,
+        prompt TEXT,
+            -- captured from the download task's job_proof on success
+        model TEXT,
+            -- e.g. "Veo 3.1 - Lite"
+        uploaded_url TEXT,
+            -- xgodo.com/server/temp/... URL the worker uploaded to
+        local_path TEXT,
+            -- absolute path on the Railway volume after we fetched it
+        file_bytes BIGINT,
+            -- size in bytes from the on-disk file (sanity for >0 check)
+        status TEXT NOT NULL DEFAULT 'queued',
+            -- 'queued'     | 'submitted'  | 'running' | 'downloaded'
+            -- | 'confirmed' | 'failed'    | 'gone'
+        error_message TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        submitted_at TIMESTAMPTZ,
+        last_polled_at TIMESTAMPTZ,
+        downloaded_at TIMESTAMPTZ,
+        confirmed_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xvd_status ON xg_video_downloads(status)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xvd_created ON xg_video_downloads(created_at DESC)`).catch(() => {});
+    // Partial index for the worker queue — tiny, only covers in-flight
+    // rows so the SKIP LOCKED claim stays O(active).
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xvd_inflight ON xg_video_downloads(id) WHERE status IN ('queued','submitted','running','downloaded')`).catch(() => {});
+
     // Video-prompt queue — the "Vid Gen" admin tool fills this with
     // either manually-added or AI-generated short video prompts;
     // GET /api/video_prompt pops one at a time for client consumers.

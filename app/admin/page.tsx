@@ -30,7 +30,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1620,6 +1620,7 @@ export default function AdminPage() {
     { key: 'vid-gen',        label: 'Vid Gen',         dot: 'bg-rose-500/70' },
     { key: 'embed-reqs',     label: 'Embed reqs',      dot: 'bg-cyan-400/70' },
     { key: 'analyze-vids',   label: 'Analyze Vids',    dot: 'bg-teal-400/70' },
+    { key: 'xg-vid-dl',      label: 'XG vid download', dot: 'bg-orange-400/70' },
   ];
   const activeTab = tabs.find(t => t.key === adminSection);
 
@@ -5941,6 +5942,16 @@ export default function AdminPage() {
         <div style={{ display: adminSection === 'analyze-vids' ? 'block' : 'none' }}>
           <AnalyzeVidsTab active={adminSection === 'analyze-vids'} />
         </div>
+
+        {/* XG vid download — bridges two xgodo jobs:
+              review_job_id   (workers post videoUrl + remote_device_id)
+              download_job_id (workers click labs.google download,
+                               upload mp4 to xgodo.com/server/temp/)
+            then we pull the mp4 to the Railway volume and mark both
+            tasks confirmed. */}
+        <div style={{ display: adminSection === 'xg-vid-dl' ? 'block' : 'none' }}>
+          <XgVidDownloadTab active={adminSection === 'xg-vid-dl'} />
+        </div>
       </div>
     </div>
   );
@@ -9903,6 +9914,344 @@ function AnalyzeVidsTab({ active }: { active: boolean }) {
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ *  XG vid download tab — bridges xgodo review job → download job →
+ *  Railway-volume mp4 → confirm both xgodo tasks. Matches the visual
+ *  language of Analyze Vids so the operator's eye doesn't have to
+ *  re-learn another panel.
+ * ────────────────────────────────────────────────────────────────── */
+interface XgVidDownloadRow {
+  id: number;
+  reviewTaskId: string;
+  reviewWorkerName: string | null;
+  sourceVideoUrl: string;
+  remoteDeviceId: string | null;
+  downloadTaskId: string | null;
+  prompt: string | null;
+  model: string | null;
+  uploadedUrl: string | null;
+  localPath: string | null;
+  fileBytes: number | null;
+  status: string;
+  errorMessage: string | null;
+  attempts: number;
+  createdAt: string;
+  submittedAt: string | null;
+  downloadedAt: string | null;
+  confirmedAt: string | null;
+}
+
+function XgVidDownloadTab({ active }: { active: boolean }) {
+  const [rows, setRows] = useState<XgVidDownloadRow[]>([]);
+  const [stats, setStats] = useState<{ pending: number; running: number; done: number; errors: number; total: number }>({ pending: 0, running: 0, done: 0, errors: 0, total: 0 });
+  const [filter, setFilter] = useState<'all' | 'queued' | 'submitted' | 'running' | 'downloaded' | 'confirmed' | 'failed' | 'gone'>('all');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Enqueue form — same shape as the Analyze Vids enqueue card so the
+  // operator's muscle memory carries across.
+  const [maxJobs, setMaxJobs] = useState(10);
+  const [parallel, setParallel] = useState(5);
+
+  const load = useCallback(async () => {
+    try {
+      const qs = new URLSearchParams({ status: filter, limit: '100' });
+      const r = await fetch(`/api/admin/xg-vid-download?${qs.toString()}`);
+      const d = await r.json();
+      if (d.ok) {
+        setRows(d.rows || []);
+        setStats({
+          pending: d.pending ?? 0,
+          running: d.running ?? 0,
+          done:    d.done    ?? 0,
+          errors:  d.errors  ?? 0,
+          total:   d.total   ?? 0,
+        });
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }, [filter]);
+
+  // Initial fetch + every 5s while the tab is visible. Cheap GET so
+  // the polling cost is minimal and rows shift through statuses live.
+  useEffect(() => { if (active) load(); }, [active, load]);
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [active, load]);
+
+  async function handleEnqueue() {
+    setBusy(true); setMsg(null); setErr(null);
+    try {
+      const r = await fetch('/api/admin/xg-vid-download/enqueue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxJobs, parallel }),
+      });
+      const d = await r.json();
+      if (!d.ok) {
+        setErr(d.error || `HTTP ${r.status}`);
+      } else {
+        setMsg(
+          `Fetched ${d.fetched} from xgodo · inserted ${d.inserted} new · skipped ${d.skipped} · drained ${d.drained}` +
+          (d.results?.length ? ` (${d.results.filter((x: { finalStatus: string }) => x.finalStatus === 'confirmed').length} confirmed, ${d.results.filter((x: { finalStatus: string }) => x.finalStatus === 'failed').length} failed)` : ''),
+        );
+        await load();
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDrain() {
+    setBusy(true); setMsg(null); setErr(null);
+    try {
+      const r = await fetch('/api/admin/xg-vid-download/drain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 25, parallel }),
+      });
+      const d = await r.json();
+      if (!d.ok) {
+        setErr(d.error || `HTTP ${r.status}`);
+      } else {
+        const confirmed = (d.results || []).filter((x: { finalStatus: string }) => x.finalStatus === 'confirmed').length;
+        const failed    = (d.results || []).filter((x: { finalStatus: string }) => x.finalStatus === 'failed').length;
+        setMsg(`Drained ${d.claimed} · ${confirmed} confirmed · ${failed} failed`);
+        await load();
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function statusBadge(status: string): { colour: string; text: string } {
+    switch (status) {
+      case 'queued':     return { colour: 'bg-[#1f1f1f] text-[#aaa] border-[#333]',                          text: 'queued' };
+      case 'submitted':  return { colour: 'bg-amber-500/15 text-amber-300 border-amber-500/30',              text: 'submitted' };
+      case 'running':    return { colour: 'bg-amber-500/15 text-amber-300 border-amber-500/30 animate-pulse',text: 'running' };
+      case 'downloaded': return { colour: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',                 text: 'downloaded' };
+      case 'confirmed':  return { colour: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',        text: 'confirmed' };
+      case 'failed':     return { colour: 'bg-red-500/15 text-red-300 border-red-500/30',                    text: 'failed' };
+      case 'gone':       return { colour: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',        text: 'gone' };
+      default:           return { colour: 'bg-[#1f1f1f] text-[#888] border-[#333]',                          text: status };
+    }
+  }
+
+  function fmtBytes(n: number | null): string {
+    if (!n) return '—';
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
+    if (n >= 1_000)     return `${(n / 1_000).toFixed(1)} KB`;
+    return `${n} B`;
+  }
+
+  return (
+    <div className="px-2 sm:px-6 py-6 max-w-7xl mx-auto">
+      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">XG vid download</h2>
+      <p className="text-sm text-[#888] mb-1">rofe.ai · data operations</p>
+
+      <div className="mt-6">
+        <h3 className="text-base font-semibold text-white mb-2">Two-job xgodo pipeline</h3>
+        <p className="text-sm text-[#aaa] leading-relaxed max-w-3xl">
+          Pulls pending review tasks from xgodo (workers submit a labs.google videoUrl + their
+          remote_device_id), schedules a download task on the second job so a worker clicks the
+          download button and uploads the mp4 to xgodo&apos;s temp store, then fetches that mp4
+          to the Railway volume at <code className="text-[#ccc] bg-[#1a1a1a] px-1.5 py-0.5 rounded">/data/xg_videos</code>.
+          Once the file&apos;s on disk we mark both xgodo tasks confirmed in one go.
+        </p>
+      </div>
+
+      {/* Enqueue + Drain card — mirrors Analyze Vids. */}
+      <div className="mt-6 p-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f]">
+        <h4 className="text-sm font-semibold text-white mb-3">Process pending review tasks</h4>
+        <div className="flex items-end gap-4 flex-wrap">
+          <div className="flex flex-col">
+            <label className="text-[11px] text-[#888] mb-1">Max review tasks to pull</label>
+            <input
+              type="number" min={1} max={50}
+              value={maxJobs}
+              onChange={e => setMaxJobs(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+              className="w-24 px-3 py-1.5 text-sm text-white bg-[#0a0a0a] border border-[#2a2a2a] focus:border-amber-400 focus:outline-none rounded"
+            />
+          </div>
+          <div className="flex flex-col">
+            <label className="text-[11px] text-[#888] mb-1">Parallel workers</label>
+            <input
+              type="number" min={1} max={10}
+              value={parallel}
+              onChange={e => setParallel(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))}
+              className="w-24 px-3 py-1.5 text-sm text-white bg-[#0a0a0a] border border-[#2a2a2a] focus:border-amber-400 focus:outline-none rounded"
+            />
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={handleEnqueue}
+            className="px-4 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-40 bg-transparent text-orange-300 border border-orange-500/40 hover:bg-orange-500/10"
+            title="Pull N pending review tasks from xgodo, insert any new ones, then push the queue forward."
+          >
+            {busy ? 'Working…' : 'Enqueue + process'}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={handleDrain}
+            className="px-4 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-40 bg-transparent text-amber-300 border border-amber-500/40 hover:bg-amber-500/10"
+            title="Don't pull anything new — just walk already-queued rows one step further."
+          >
+            Drain queue
+          </button>
+          <button
+            type="button"
+            onClick={load}
+            className="ml-auto text-xs text-[#888] hover:text-amber-300"
+          >
+            ↻ Refresh
+          </button>
+        </div>
+        {msg && <div className="mt-3 text-[12px] text-emerald-300">{msg}</div>}
+        {err && <div className="mt-3 text-[12px] text-red-300">{err}</div>}
+      </div>
+
+      {/* Stats tiles */}
+      <div className="mt-6 grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f]">
+          <div className="text-[10px] uppercase tracking-wider text-[#666] mb-1">Pending</div>
+          <div className="text-xl font-bold text-amber-300">{stats.pending}</div>
+        </div>
+        <div className="p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f]">
+          <div className="text-[10px] uppercase tracking-wider text-[#666] mb-1">Running</div>
+          <div className="text-xl font-bold text-amber-300">{stats.running}</div>
+        </div>
+        <div className="p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f]">
+          <div className="text-[10px] uppercase tracking-wider text-[#666] mb-1">Confirmed</div>
+          <div className="text-xl font-bold text-emerald-300">{stats.done}</div>
+        </div>
+        <div className="p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f]">
+          <div className="text-[10px] uppercase tracking-wider text-[#666] mb-1">Errors</div>
+          <div className="text-xl font-bold text-red-300">{stats.errors}</div>
+        </div>
+        <div className="p-3 rounded-lg bg-[#0f0f0f] border border-[#1f1f1f]">
+          <div className="text-[10px] uppercase tracking-wider text-[#666] mb-1">Total</div>
+          <div className="text-xl font-bold text-white">{stats.total}</div>
+        </div>
+      </div>
+
+      {/* Status filter pills */}
+      <div className="mt-6 flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-[#666] mr-1">FILTER:</span>
+        {(['all', 'queued', 'submitted', 'running', 'downloaded', 'confirmed', 'failed', 'gone'] as const).map(k => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setFilter(k)}
+            className={`px-2.5 py-1 rounded-full text-[11px] transition ${
+              filter === k
+                ? 'bg-orange-400/15 text-orange-300 border border-orange-400/40'
+                : 'text-[#888] border border-[#333] hover:border-[#555]'
+            }`}
+          >
+            {k}
+          </button>
+        ))}
+      </div>
+
+      {/* Rows table */}
+      <div className="mt-4 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f] overflow-hidden">
+        <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-[#666] grid gap-2 border-b border-[#1f1f1f]"
+             style={{ gridTemplateColumns: '60px 1fr 1.4fr 100px 110px 90px 100px' }}>
+          <span>#</span>
+          <span>Source / prompt</span>
+          <span>Model · device</span>
+          <span>Status</span>
+          <span>File</span>
+          <span>Created</span>
+          <span></span>
+        </div>
+        {rows.length === 0 && (
+          <div className="px-3 py-6 text-center text-xs text-[#666]">No rows match this filter.</div>
+        )}
+        {rows.map(r => {
+          const sb = statusBadge(r.status);
+          return (
+            <div key={r.id} className="px-3 py-2.5 grid gap-2 border-b border-[#1a1a1a] hover:bg-[#141414]"
+                 style={{ gridTemplateColumns: '60px 1fr 1.4fr 100px 110px 90px 100px' }}>
+              <span className="text-[11px] text-[#666]">#{r.id}</span>
+              <div className="min-w-0">
+                <a
+                  href={r.sourceVideoUrl}
+                  target="_blank" rel="noreferrer"
+                  className="text-[11px] text-amber-300 hover:text-amber-200 truncate block"
+                  title={r.sourceVideoUrl}
+                >
+                  {r.sourceVideoUrl.replace(/^https:\/\/labs\.google\/fx\/tools\/flow\/shared\/video\//, '…/')}
+                </a>
+                {r.prompt && (
+                  <div className="text-[11px] text-[#ccc] truncate mt-0.5" title={r.prompt}>
+                    {r.prompt}
+                  </div>
+                )}
+                {r.errorMessage && (
+                  <div className="text-[11px] text-red-300 truncate mt-0.5" title={r.errorMessage}>
+                    ⚠ {r.errorMessage}
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0">
+                {r.model && <div className="text-[11px] text-[#ccc] truncate" title={r.model}>{r.model}</div>}
+                {r.reviewWorkerName && <div className="text-[10px] text-[#666] truncate">@{r.reviewWorkerName}</div>}
+                {r.remoteDeviceId && <div className="text-[10px] text-[#666] truncate" title={r.remoteDeviceId}>dev {r.remoteDeviceId.slice(0, 8)}…</div>}
+              </div>
+              <div>
+                <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] border ${sb.colour}`}>
+                  {sb.text}
+                </span>
+                {r.attempts > 1 && (
+                  <span className="text-[10px] text-[#666] ml-1">×{r.attempts}</span>
+                )}
+              </div>
+              <span className="text-[11px] text-[#888]">{fmtBytes(r.fileBytes)}</span>
+              <span className="text-[11px] text-[#888]">
+                {timeAgo(new Date(r.createdAt))}
+              </span>
+              <div className="text-right">
+                {r.localPath ? (
+                  <a
+                    href={`/api/admin/xg-vid-download/${r.id}/file`}
+                    target="_blank" rel="noreferrer"
+                    className="text-[11px] text-emerald-300 hover:text-emerald-200"
+                    title={r.localPath}
+                  >
+                    open ↗
+                  </a>
+                ) : r.uploadedUrl ? (
+                  <a
+                    href={r.uploadedUrl}
+                    target="_blank" rel="noreferrer"
+                    className="text-[11px] text-amber-300 hover:text-amber-200"
+                    title="xgodo temp url (no local copy yet)"
+                  >
+                    xgodo ↗
+                  </a>
+                ) : (
+                  <span className="text-[11px] text-[#444]">—</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
