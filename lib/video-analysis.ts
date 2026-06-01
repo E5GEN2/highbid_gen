@@ -606,16 +606,45 @@ async function callGeminiForClip(clipPath: string, durationS: number): Promise<C
     return { ok: false, category: 'no_proxy', httpStatus: null, detail: 'no proxy available', retriable: true };
   }
 
-  // Read + size-check the clip. Larger than the cap = non-retriable
-  // since waiting won't shrink it.
+  // Read + size-check the clip. If it exceeds Gemini's inline cap, run
+  // it through an ffmpeg 480p / 400kbps downscale pass. Most 1080p
+  // YouTube content produces 60s mp4 segments > 14MB at source bitrate
+  // (8-12 Mbps); 480p@400kbps shrinks to ~3-5MB regardless of source,
+  // which Gemini handles just as well for the descriptive task here.
+  // The downscaled file is cached next to the source so retries reuse
+  // it for free.
   let buf: Buffer;
+  let clipPathForGemini = clipPath;
   try {
-    buf = fs.readFileSync(clipPath);
+    const stat = fs.statSync(clipPath);
+    if (stat.size > MAX_CLIP_BYTES) {
+      const lowPath = clipPath.replace(/\.mp4$/, '.low.mp4');
+      if (!fs.existsSync(lowPath)) {
+        try {
+          await execFileAsync('ffmpeg', [
+            '-y', '-hide_banner', '-loglevel', 'error',
+            '-i', clipPath,
+            '-vf', 'scale=-2:480',
+            '-c:v', 'libx264', '-preset', 'veryfast', '-b:v', '400k', '-maxrate', '500k', '-bufsize', '800k',
+            '-c:a', 'aac', '-b:a', '64k',
+            '-movflags', '+faststart',
+            lowPath,
+          ], { timeout: 90_000 });
+        } catch (e) {
+          return { ok: false, category: 'transcode_failed', httpStatus: null, detail: (e as Error).message.slice(0, 500), retriable: true };
+        }
+      }
+      clipPathForGemini = lowPath;
+    }
+    buf = fs.readFileSync(clipPathForGemini);
   } catch (e) {
     return { ok: false, category: 'clip_read_failed', httpStatus: null, detail: (e as Error).message, retriable: false };
   }
+  // Hard fall-through guard. Should never fire after transcode, but if
+  // a clip is so weirdly large that even 480p/400kbps doesn't shrink
+  // it under the cap, bail out and let ops inspect.
   if (buf.length > MAX_CLIP_BYTES) {
-    return { ok: false, category: 'too_large', httpStatus: null, detail: `${buf.length} bytes > ${MAX_CLIP_BYTES} cap`, retriable: false };
+    return { ok: false, category: 'too_large', httpStatus: null, detail: `${buf.length} bytes > ${MAX_CLIP_BYTES} cap even after transcode`, retriable: false };
   }
 
   const body = JSON.stringify({
