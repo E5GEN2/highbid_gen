@@ -8720,10 +8720,19 @@ function VidGenTab({ active }: { active: boolean }) {
                 type="text"
                 value={genTheme}
                 onChange={e => setGenTheme(e.target.value)}
-                placeholder="optional — e.g. 'urban legend horror shorts'"
+                placeholder={autoTheme.trim() ? 'leave empty to use saved Auto-refill theme' : "optional — e.g. 'urban legend horror shorts'"}
                 className="flex-1 px-2 py-1 text-sm bg-black border border-gray-800 rounded-md text-white placeholder-gray-600 focus:outline-none focus:border-rose-500/50"
               />
             </div>
+            {/* Hint: when the user has a saved theme but the bulk input
+                is empty, the server will fall back to the saved theme.
+                Without this hint the operator can't tell whether their
+                manual generation will inherit the steering. */}
+            {autoTheme.trim() && !genTheme.trim() && (
+              <div className="text-[11px] text-emerald-300/80 pl-[5.5rem]">
+                Will use saved Auto-refill theme ({autoTheme.trim().length} chars).
+              </div>
+            )}
           </div>
           <div className="flex items-center justify-between mt-3">
             {genMsg && <span className="text-xs text-rose-300 truncate flex-1 mr-3">{genMsg}</span>}

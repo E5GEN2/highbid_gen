@@ -390,7 +390,26 @@ export async function POST(req: NextRequest) {
   };
   const background = !!body.background;
   const count = Math.max(1, Math.min(body.count ?? 50, background ? BG_CAP : SYNC_CAP));
-  const theme = body.theme?.trim() || null;
+  // Theme resolution order:
+  //   1. body.theme           (caller wants a one-off steering for this run)
+  //   2. vid_gen_settings.auto_theme  (the saved theme — what the auto-refill
+  //                                    path uses)
+  //   3. null                 (truly no steering — Gemini gets the generic
+  //                            prompt)
+  // Without step 2, clicking "Generate 50" with the theme field empty
+  // produced unsteered random prompts even when the operator had a saved
+  // theme — confusing because the auto-refill path WAS using it.
+  let theme: string | null = body.theme?.trim() || null;
+  if (theme === null) {
+    try {
+      const pool = await getPool();
+      const r = await pool.query<{ auto_theme: string }>(
+        `SELECT auto_theme FROM vid_gen_settings WHERE id = 1`,
+      );
+      const saved = r.rows[0]?.auto_theme?.trim();
+      if (saved) theme = saved;
+    } catch { /* settings missing — fall through with null */ }
+  }
   const model = body.model?.trim() || DEFAULT_MODEL;
   const concurrency = background
     ? Math.max(1, Math.min(body.concurrency ?? 6, 12))
