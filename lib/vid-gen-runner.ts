@@ -25,7 +25,15 @@ const PER_BATCH_RETRIES = 8;
 // the response gets truncated mid-string, breaking JSON.parse.
 // Auto-shrink to 8 when the theme implies long output.
 const VERBOSE_THEME_CHARS = 1000;
-const VERBOSE_BATCH_SIZE  = 8;
+// One-at-a-time for verbose themes. Empirically Gemini occasionally
+// writes a single mega-prompt that consumes the entire output budget
+// before the JSON array can close — even at maxOutputTokens=16384.
+// Batch=1 gives every call the full token headroom for ONE prompt,
+// so truncation can't happen unless Gemini writes 16k tokens of prose
+// for a single prompt (vanishingly rare). The cost is more HTTP calls
+// per run, but concurrency=6 amortises that well — 500 prompts in
+// ~10 minutes wall-time.
+const VERBOSE_BATCH_SIZE  = 1;
 function batchSizeFor(theme: string | null): number {
   if (theme && theme.length > VERBOSE_THEME_CHARS) return VERBOSE_BATCH_SIZE;
   return BATCH_SIZE;

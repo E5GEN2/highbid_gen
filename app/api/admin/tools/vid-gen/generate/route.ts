@@ -62,7 +62,11 @@ const BG_CAP = 1000;
 // budget and the JSON gets truncated mid-string. Auto-shrink so each
 // batch fits comfortably under maxOutputTokens.
 const VERBOSE_THEME_CHARS = 1000;
-const VERBOSE_BATCH_SIZE  = 8;
+// One prompt per call for verbose themes — see lib/vid-gen-runner.ts
+// for the full rationale. tl;dr Gemini sometimes writes a single
+// mega-prompt that consumes the full token budget; batch=1 means
+// every call has the full headroom for one prompt.
+const VERBOSE_BATCH_SIZE  = 1;
 function batchSizeFor(theme: string | null): number {
   if (theme && theme.length > VERBOSE_THEME_CHARS) return VERBOSE_BATCH_SIZE;
   return BATCH_SIZE;
