@@ -44,23 +44,36 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Operator toggle. When admin_config.xg_vid_download_autopull = 'off'
+  // we skip pulling new review tasks from xgodo but STILL drain what's
+  // already in the queue — so in-flight rows finish naturally instead
+  // of stranding. Default behavior (key missing) is to auto-pull,
+  // matching how the system has been running.
+  const pullCfg = await pool.query<{ value: string }>(
+    `SELECT value FROM admin_config WHERE key = 'xg_vid_download_autopull' LIMIT 1`,
+  );
+  const autoPullEnabled = (pullCfg.rows[0]?.value ?? 'on') === 'on';
+
   let fetched = 0, inserted = 0, skipped = 0;
-  try {
-    const tasks = await fetchPendingReviewTasks(10);
-    fetched = tasks.length;
-    const e = await enqueueReviewTasks(tasks);
-    inserted = e.inserted;
-    skipped  = e.skipped;
-  } catch (err) {
-    // Soft-fail the fetch leg — still try to drain whatever's already
-    // queued. The cron's drain is what actually moves work forward,
-    // pulling new tasks is a nice-to-have that shouldn't block it.
-    console.warn('[xg-vid-download cron] fetch leg failed:', (err as Error).message);
+  if (autoPullEnabled) {
+    try {
+      const tasks = await fetchPendingReviewTasks(10);
+      fetched = tasks.length;
+      const e = await enqueueReviewTasks(tasks);
+      inserted = e.inserted;
+      skipped  = e.skipped;
+    } catch (err) {
+      // Soft-fail the fetch leg — still try to drain whatever's already
+      // queued. The cron's drain is what actually moves work forward,
+      // pulling new tasks is a nice-to-have that shouldn't block it.
+      console.warn('[xg-vid-download cron] fetch leg failed:', (err as Error).message);
+    }
   }
 
   const drain = await drainPending(25, 3);
   const summary = {
     ok: true,
+    autoPull: autoPullEnabled,
     fetched, inserted, skipped,
     drained: drain.claimed,
     confirmed: drain.results.filter(r => r.finalStatus === 'confirmed').length,

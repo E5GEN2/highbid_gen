@@ -10055,6 +10055,38 @@ function XgVidDownloadTab({ active }: { active: boolean }) {
   const [maxJobs, setMaxJobs] = useState(10);
   const [parallel, setParallel] = useState(5);
 
+  // Auto-pull toggle. When 'off' the cron tick (and the cron endpoint)
+  // still drain in-flight rows so nothing strands, but skip pulling
+  // new pending review tasks from xgodo. Lets the operator stop the
+  // intake without killing the pipeline. State lives in admin_config
+  // so it survives redeploys.
+  const [autoPull, setAutoPull] = useState<'on' | 'off' | 'loading'>('loading');
+  const [togglingPull, setTogglingPull] = useState(false);
+  const loadSettings = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/xg-vid-download/settings');
+      const d = await r.json();
+      if (d.ok) setAutoPull(d.autoPull === 'off' ? 'off' : 'on');
+    } catch { /* leave whatever state we had */ }
+  }, []);
+  useEffect(() => { if (active) loadSettings(); }, [active, loadSettings]);
+  async function flipAutoPull() {
+    if (autoPull === 'loading') return;
+    setTogglingPull(true);
+    const next = autoPull === 'on' ? 'off' : 'on';
+    try {
+      const r = await fetch('/api/admin/xg-vid-download/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoPull: next }),
+      });
+      const d = await r.json();
+      if (d.ok) setAutoPull(d.autoPull);
+    } finally {
+      setTogglingPull(false);
+    }
+  }
+
   const load = useCallback(async () => {
     try {
       const qs = new URLSearchParams({ status: filter, limit: '100' });
@@ -10155,8 +10187,52 @@ function XgVidDownloadTab({ active }: { active: boolean }) {
 
   return (
     <div className="px-2 sm:px-6 py-6 max-w-7xl mx-auto">
-      <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">XG vid download</h2>
-      <p className="text-sm text-[#888] mb-1">rofe.ai · data operations</p>
+      <div className="flex items-start justify-between gap-4 flex-wrap mb-2">
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-white">XG vid download</h2>
+          <p className="text-sm text-[#888]">rofe.ai · data operations</p>
+        </div>
+
+        {/* Auto-pull switch. Single source of truth for the cron's
+            fetch leg — when OFF the every-minute tick still drains
+            in-flight rows so the pipeline empties cleanly, but stops
+            adding new pending review tasks from xgodo. Persists in
+            admin_config so a redeploy doesn't silently re-enable it. */}
+        <div className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[#0f0f0f] border border-[#1f1f1f]">
+          <div className="flex flex-col text-right">
+            <span className="text-xs text-[#ccc] font-medium">
+              Auto-pull from xgodo
+            </span>
+            <span className="text-[10px] text-[#666]">
+              {autoPull === 'on'
+                ? 'cron fetches new tasks every minute'
+                : autoPull === 'off'
+                  ? 'cron only drains in-flight rows'
+                  : 'loading…'}
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={togglingPull || autoPull === 'loading'}
+            onClick={flipAutoPull}
+            aria-pressed={autoPull === 'on'}
+            title={autoPull === 'on'
+              ? 'Click to pause auto-pull. Drain keeps running.'
+              : autoPull === 'off'
+                ? 'Click to resume auto-pull.'
+                : 'Loading toggle state…'}
+            className={`relative inline-flex w-12 h-6 items-center rounded-full transition disabled:opacity-50 ${
+              autoPull === 'on' ? 'bg-emerald-500/70' : 'bg-[#333]'
+            }`}
+          >
+            <span
+              className={`inline-block w-5 h-5 bg-white rounded-full shadow transform transition ${
+                autoPull === 'on' ? 'translate-x-6' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+      </div>
 
       <div className="mt-6">
         <h3 className="text-base font-semibold text-white mb-2">Two-job xgodo pipeline</h3>
