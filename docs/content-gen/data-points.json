@@ -1,0 +1,366 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "source_corpus": {
+    "custom_niche_id": 2,
+    "custom_niche_name": "Faceless YouTube Niches",
+    "video_count": 352,
+    "english_video_count": 320,
+    "segment_count": 110587,
+    "clip_count": 5352,
+    "exported_at": "2026-06-02T07:09:04Z",
+    "extracted_at": "2026-06-02T00:30:00Z"
+  },
+  "decisions": {
+    "growth_in_period_source": "first_video.posted_at — computed as (NOW - first_video.posted_at), total views from YT API",
+    "rpm_source": "Gemini via PapaiAPI proxy, keyed by (niche, sub_niche, geography), cached per niche",
+    "rpm_presentation": "Output the $ outcome only — DO NOT expose 'views × RPM = $' math (winner videos hide the calculation, RPM-direct mentions are loser-coded 0.75x)",
+    "phase_1_target": "Clone Money Groot ('11 Hidden Faceless YouTube Niches Explained', videoId 14563, 121507 views) structurally + layer in missing winner-coded tricks (Social Blade overlay, $earnings callout, glitch SFX, faster pacing)",
+    "phase_2_target": "Add proprietary slots (cohort.saturation_rank, cohort.growth_multiplier, novelty.embedding_distance, cohort.first_mover) once Phase 1 ships"
+  },
+  "data_points": [
+    {
+      "id": "money.yearly",
+      "category": "monetization",
+      "label": "Annual earnings claim",
+      "regex": "\\$\\s*(\\d[\\d,.]*\\s*[kKmM]?)\\s*(?:per|a|/)\\s*year\\b",
+      "corpus": { "win_pct": 6.8, "lose_pct": 1.1, "uplift": 3.5, "occurrences": 19, "distinct_videos": 14 },
+      "example_winner": { "viewCount": 1369943, "text": "$1,100,000 per year" },
+      "availability": "derive",
+      "db_source": "computed: niche_rpm × (channels.total_views / max(months_active, 1)) × 12",
+      "slot_role": "REQUIRED_OF_DOLLAR_TRIO",
+      "presentation_rule": "Round to 2 sig figs ($1.1M/year, not $1,127,433/year). Use when impressive (>$50k/year).",
+      "phase": "P1"
+    },
+    {
+      "id": "channel.upload_rate",
+      "category": "channel_scale",
+      "label": "Upload cadence",
+      "regex": "\\b(\\d+)\\s*videos?\\s*(per|a)\\s*(week|month|day|year)\\b",
+      "corpus": { "win_pct": 2.3, "lose_pct": 0.0, "uplift": 3.0, "occurrences": 16, "distinct_videos": 11 },
+      "example_winner": { "viewCount": 387338, "text": "3 VIDEO PER DAY" },
+      "availability": "derive",
+      "db_source": "COUNT(shorts_videos) / max(months_active, 1) per channel",
+      "slot_role": "HIGH_LEVERAGE",
+      "presentation_rule": "Integer when ≥1/week ('3 videos a day', '2 videos a week'). For rare cadence use 'one every N days'. No fractions ('0.7/week' → '3 a month').",
+      "phase": "P1"
+    },
+    {
+      "id": "money.daily",
+      "category": "monetization",
+      "label": "Daily earnings claim",
+      "regex": "\\$\\s*(\\d[\\d,.]*\\s*[kKmM]?)\\s*(?:per|a|/)\\s*day\\b",
+      "corpus": { "win_pct": 18.2, "lose_pct": 8.0, "uplift": 2.1, "occurrences": 79, "distinct_videos": 43 },
+      "example_winner": { "viewCount": 917257, "text": "$1,000 per day" },
+      "availability": "derive",
+      "db_source": "computed: niche_rpm × (channels.total_views / max(days_active, 1))",
+      "slot_role": "REQUIRED_OF_DOLLAR_TRIO",
+      "presentation_rule": "Use when daily $ rounds nicely ($100/day, $1k/day). If awkward ($47.83/day), pick yearly/monthly instead.",
+      "phase": "P1"
+    },
+    {
+      "id": "growth.in_period",
+      "category": "growth",
+      "label": "Views/subs gained in a known time window",
+      "regex": "\\b(?:got|reached|hit|grew\\s*to)\\s+(\\d[\\d,.]*\\s*[kKmM]?)\\s+(?:subs|subscribers|views)\\s+(?:in|within)\\s+(\\d+\\s*(?:days|weeks|months|year|years))\\b",
+      "corpus": { "win_pct": 1.1, "lose_pct": 0.0, "uplift": 2.0, "occurrences": 3, "distinct_videos": 3 },
+      "example_winner": { "viewCount": 102871, "text": "got 200,000 views in 11 months" },
+      "availability": "derive",
+      "db_source": "(total_views_now, NOW - first_video.posted_at) → 'X views in N months'. Reserve for channels under 18mo old.",
+      "slot_role": "HIGH_LEVERAGE_UNDERUSED",
+      "presentation_rule": "Wide-open lane: only 3 corpus videos use it but 2.0× uplift. Use on ≥2 of N items per generated video for variety. Best framing: 'just N months old and already at X views'.",
+      "phase": "P1",
+      "notes": "Strongest 'this is recent and scaling' frame. Format months as integer ('11 months', not '10.7 months')."
+    },
+    {
+      "id": "money.monthly",
+      "category": "monetization",
+      "label": "Monthly earnings claim",
+      "regex": "\\$\\s*(\\d[\\d,.]*\\s*[kKmM]?)\\s*(?:per|a|/)\\s*month\\b",
+      "corpus": { "win_pct": 54.5, "lose_pct": 31.8, "uplift": 1.7, "occurrences": 973, "distinct_videos": 181 },
+      "example_winner": { "viewCount": 1369943, "text": "$300 per month" },
+      "availability": "derive",
+      "db_source": "computed: niche_rpm × (channels.total_views / max(months_active, 1))",
+      "slot_role": "REQUIRED_OF_DOLLAR_TRIO",
+      "presentation_rule": "Default $ slot when yearly is too small ($<50k) and daily is too odd. Most-used in corpus but the 'boring middle' — yearly/daily preferred when available.",
+      "phase": "P1"
+    },
+    {
+      "id": "video.top_video",
+      "category": "per_video",
+      "label": "Most popular video on the channel",
+      "regex": "\\b(?:their\\s+(?:most|top)\\s+(?:popular|viewed|viral)|the\\s+biggest|the\\s+top)\\s+(?:video|upload)\\b",
+      "corpus": { "win_pct": 18.2, "lose_pct": 11.4, "uplift": 1.6, "occurrences": 84, "distinct_videos": 56 },
+      "example_winner": { "viewCount": 753277, "text": "The top video" },
+      "availability": "yes",
+      "db_source": "MAX(view_count) per channel from shorts_videos; join on channel_id",
+      "slot_role": "HIGH_LEVERAGE_PER_ITEM",
+      "presentation_rule": "Always pair with the view count of that specific video. Visual direction: cut to that video's thumbnail while stating views.",
+      "phase": "P1"
+    },
+    {
+      "id": "channel.age",
+      "category": "channel_scale",
+      "label": "Channel age",
+      "regex": "\\b(?:(\\d+)\\s*(?:month|year)s?\\s*(?:old|ago|on\\s+youtube)|started\\s*(?:posting\\s*)?(?:only\\s*)?(\\d+)\\s*(?:months?|years?))\\b",
+      "corpus": { "win_pct": 69.3, "lose_pct": 51.1, "uplift": 1.4, "occurrences": 1099, "distinct_videos": 220 },
+      "example_winner": { "viewCount": 1369943, "text": "5 years ago" },
+      "availability": "yes",
+      "db_source": "channel.createdAt if available, else first_video.posted_at",
+      "slot_role": "REQUIRED",
+      "presentation_rule": "Round phrasing: 'almost 2 years old', 'just 6 months old', '5 years ago'. The 'just N months old' framing drives the 'this is recent and replicable' narrative.",
+      "phase": "P1"
+    },
+    {
+      "id": "money.per_video",
+      "category": "monetization",
+      "label": "Earnings per video",
+      "regex": "\\$\\s*(\\d[\\d,.]*\\s*[kKmM]?)\\s*(?:per|a|/)\\s*(?:video|upload)\\b",
+      "corpus": { "win_pct": 8.0, "lose_pct": 5.7, "uplift": 1.3, "occurrences": 49, "distinct_videos": 25 },
+      "example_winner": { "viewCount": 232000, "text": "$70 a video" },
+      "availability": "derive",
+      "db_source": "computed: niche_rpm × avg_views_per_video",
+      "slot_role": "OPTIONAL",
+      "presentation_rule": "Strongest when paired with low video count ('3 videos. $70 each. That's $210 from 3 uploads.')",
+      "phase": "P1"
+    },
+    {
+      "id": "niche.category",
+      "category": "niche",
+      "label": "Specific niche/topic name",
+      "regex": "\\b(?:niche|category|genre|topic)(?:\\s+is|\\s+called)?\\s*[:\\-]?\\s*([A-Z][a-zA-Z\\s]{3,40})\\b",
+      "corpus": { "win_pct": 48.9, "lose_pct": 37.5, "uplift": 1.3, "occurrences": 355, "distinct_videos": 160 },
+      "example_winner": { "viewCount": 121507, "text": "Funny stickman fails" },
+      "availability": "yes",
+      "db_source": "channel_analysis.sub_niche (preferred) or .niche; or cluster label from niche_tree_clusters",
+      "slot_role": "REQUIRED",
+      "presentation_rule": "Maximum specificity. 'Health' is weak; 'ASMR sleep stories' is strong. Pull the most granular tag we have.",
+      "phase": "P1"
+    },
+    {
+      "id": "competition.saturated",
+      "category": "competition",
+      "label": "Niche is saturated",
+      "regex": "\\b(saturated|crowded|oversaturated|too\\s*many\\s*channels)\\b",
+      "corpus": { "win_pct": 29.5, "lose_pct": 22.7, "uplift": 1.3, "occurrences": 208, "distinct_videos": 99 },
+      "availability": "derive",
+      "db_source": "niche_tree_clusters.video_count > saturation_threshold (e.g. 200) for the cluster this channel belongs to",
+      "slot_role": "HIGH_LEVERAGE_WHY_BEAT",
+      "presentation_rule": "Use as 'why this matters' beat. Strongest as a contrast: 'most YouTube niches are saturated — this one isn't'.",
+      "phase": "P1"
+    },
+    {
+      "id": "competition.zero",
+      "category": "competition",
+      "label": "Zero or low competition",
+      "regex": "\\b(zero|0|no|low)\\s*competition\\b",
+      "corpus": { "win_pct": 20.5, "lose_pct": 15.9, "uplift": 1.3, "occurrences": 236, "distinct_videos": 62 },
+      "availability": "derive",
+      "db_source": "niche_tree_clusters.video_count < low_competition_threshold (e.g. 20) for the cluster; also surface channel count from our index",
+      "slot_role": "HIGH_LEVERAGE_WHY_BEAT",
+      "presentation_rule": "Pair with our absolute channel count: 'We track 8 channels in this niche — that's basically open water.'",
+      "phase": "P1"
+    },
+    {
+      "id": "channel.total_views",
+      "category": "channel_scale",
+      "label": "Total lifetime views on channel",
+      "regex": "\\b(\\d[\\d,.]*\\s*(million|m|k|billion|b)?)\\s*(?:total\\s*views?|views?\\s*total|views?\\s*across|views?\\s*on\\s*the\\s*channel)\\b",
+      "corpus": { "win_pct": 15.9, "lose_pct": 12.5, "uplift": 1.3, "occurrences": 83, "distinct_videos": 51 },
+      "availability": "yes",
+      "db_source": "YT API channel.statistics.viewCount",
+      "slot_role": "HIGH_LEVERAGE",
+      "presentation_rule": "Strong 'across the channel' anchor. Format readable (52M total views, not 52,418,773).",
+      "phase": "P1"
+    },
+    {
+      "id": "format.tool_named",
+      "category": "format",
+      "label": "Tool used to make the content",
+      "regex": "\\b(ElevenLabs|HeyGen|InVideo|Canva|Midjourney|Stable\\s*Diffusion|ChatGPT|Claude|Gemini|Pictory|Synthesia|D-ID|Runway|Veo|Sora|CapCut|Premier|DaVinci|Descript|Murf|Filmora)\\b",
+      "corpus": { "win_pct": 80.7, "lose_pct": 65.9, "uplift": 1.2, "occurrences": 7032, "distinct_videos": 254 },
+      "availability": "partial",
+      "db_source": "Inferred from channel_analysis.content_style + is_ai_generated. Phase 1 heuristic: 'AI voiceover' → ElevenLabs; 'static images + Ken Burns' → Canva/Pictory. Phase 2 build real classifier.",
+      "slot_role": "HIGH_LEVERAGE_HOW_BEAT",
+      "presentation_rule": "The 'how to start' beat. Name 1-2 tools per item. Show their logos on screen.",
+      "phase": "P1"
+    },
+    {
+      "id": "channel.video_count",
+      "category": "channel_scale",
+      "label": "Number of videos uploaded",
+      "regex": "\\b(\\d[\\d,.]*)\\s*videos?\\b",
+      "corpus": { "win_pct": 94.3, "lose_pct": 83.0, "uplift": 1.1, "occurrences": 4018, "distinct_videos": 316 },
+      "availability": "yes",
+      "db_source": "COUNT(*) FROM shorts_videos WHERE channel_id = X",
+      "slot_role": "REQUIRED",
+      "presentation_rule": "Format as integer (120 videos, not 119.6). Use 'only N' when count is small (<30) — drives 'they did this with barely any content' narrative.",
+      "phase": "P1"
+    },
+    {
+      "id": "channel.subscribers",
+      "category": "channel_scale",
+      "label": "Subscriber count",
+      "regex": "\\b(\\d[\\d,.]*\\s*[kKmM]?)\\s*(subscribers?|subs)\\b",
+      "corpus": { "win_pct": 95.5, "lose_pct": 87.5, "uplift": 1.1, "occurrences": 5415, "distinct_videos": 330 },
+      "availability": "yes",
+      "db_source": "YT API channel.statistics.subscriberCount",
+      "slot_role": "REQUIRED",
+      "presentation_rule": "Format readable (436K subscribers, 1.2M subscribers).",
+      "phase": "P1"
+    },
+    {
+      "id": "money.lump_sum",
+      "category": "monetization",
+      "label": "One-shot dollar figure",
+      "regex": "\\$\\s*(\\d{1,3}(?:,\\d{3})+|\\d{4,})\\b",
+      "corpus": { "win_pct": 81.8, "lose_pct": 75.0, "uplift": 1.1, "occurrences": 3905, "distinct_videos": 289 },
+      "availability": "derive",
+      "db_source": "Same RPM math, presented as one-shot. Best for 'one viral video paid X' framings.",
+      "slot_role": "HIGH_LEVERAGE",
+      "presentation_rule": "Use when narrating top-video earnings: 'that one video has probably made around $29,000'.",
+      "phase": "P1"
+    },
+    {
+      "id": "time.posting_year",
+      "category": "time",
+      "label": "Calendar year reference",
+      "regex": "\\b(2023|2024|2025|2026|2027)\\b",
+      "corpus": { "win_pct": 83.0, "lose_pct": 76.1, "uplift": 1.1, "occurrences": 2442, "distinct_videos": 292 },
+      "availability": "yes",
+      "db_source": "Current year + reference dates",
+      "slot_role": "REQUIRED_FRAMING",
+      "presentation_rule": "Frame the whole video as 'in [current_year]'. Use in title + opening line.",
+      "phase": "P1"
+    },
+    {
+      "id": "video.views",
+      "category": "per_video",
+      "label": "Specific video view count",
+      "regex": "\\b(\\d[\\d,.]*)\\s*(million|m|k|billion|b)?\\s*views\\b",
+      "corpus": { "win_pct": 96.6, "lose_pct": 90.9, "uplift": 1.1, "occurrences": 7675, "distinct_videos": 329 },
+      "availability": "yes",
+      "db_source": "shorts_videos.view_count",
+      "slot_role": "REQUIRED",
+      "presentation_rule": "Most common claim in corpus — every item must cite at least one specific video's view count.",
+      "phase": "P1"
+    },
+    {
+      "id": "format.production_type",
+      "category": "format",
+      "label": "How the video is produced",
+      "regex": "\\b(ai\\s*generated|ai\\s*voice|stock\\s*footage|animat(?:ed|ion)|screen\\s*recording|cartoon|drawing|whiteboard|text\\s*to\\s*video|narrated|voice\\s*over)\\b",
+      "corpus": { "win_pct": 100.0, "lose_pct": 100.0, "uplift": 1.0, "occurrences": 21107, "distinct_videos": 352 },
+      "availability": "yes",
+      "db_source": "channel_analysis.content_style + is_ai_generated",
+      "slot_role": "REQUIRED",
+      "presentation_rule": "Universal across corpus. Always mention. Example: 'AI voiceover + animated visuals'.",
+      "phase": "P1"
+    },
+    {
+      "id": "money.rpm_exposed",
+      "category": "monetization",
+      "label": "RPM/CPM directly cited",
+      "regex": "\\$\\s*(\\d[\\d,.]*)\\s*rpm\\b|\\brpm\\s*of\\s*\\$\\s*(\\d[\\d,.]*)\\b|\\bcpm\\s*of\\s*\\$\\s*(\\d[\\d,.]*)\\b|\\$(\\d[\\d,.]*)\\s*cpm\\b",
+      "corpus": { "win_pct": 19.3, "lose_pct": 26.1, "uplift": 0.75, "occurrences": 430, "distinct_videos": 94 },
+      "availability": "n/a",
+      "slot_role": "AVOID",
+      "presentation_rule": "DO NOT FILL. Winners hide the calculation. Use RPM internally to compute $; output only the dollar conclusion.",
+      "phase": "AVOID"
+    },
+    {
+      "id": "social.likes",
+      "category": "social",
+      "label": "Like count on a video",
+      "regex": "\\b(\\d[\\d,.]*)\\s*likes\\b",
+      "corpus": { "win_pct": 4.5, "lose_pct": 8.0, "uplift": 0.6, "occurrences": 40, "distinct_videos": 22 },
+      "availability": "yes",
+      "slot_role": "AVOID",
+      "presentation_rule": "DO NOT FILL. Like counts are weaker social proof than view counts. Loser-coded.",
+      "phase": "AVOID"
+    },
+    {
+      "id": "time.posting_window",
+      "category": "time",
+      "label": "Time-windowed claim ('past 90 days')",
+      "regex": "\\b(?:in|over|past)\\s*(?:the\\s*)?(?:last|past)\\s*(\\d+)\\s*(days|weeks|months|year|years)\\b",
+      "corpus": { "win_pct": 18.2, "lose_pct": 35.2, "uplift": 0.53, "occurrences": 313, "distinct_videos": 106 },
+      "availability": "derive",
+      "slot_role": "AVOID",
+      "presentation_rule": "DO NOT FILL with 'past N days' framing — sounds hedgy. Drop the 'past' modifier: 'in 90 days' instead of 'in the past 90 days'.",
+      "phase": "AVOID"
+    },
+
+    { "id": "cohort.saturation_rank",          "category": "proprietary", "label": "Rank within niche cluster",          "availability": "derive", "db_source": "RANK() OVER channel_count in same niche_tree_clusters row", "slot_role": "PROPRIETARY", "presentation_rule": "'4th most-active channel in this niche cluster (47 channels indexed)'", "phase": "P2" },
+    { "id": "cohort.growth_multiplier",        "category": "proprietary", "label": "Growth vs cohort median",            "availability": "derive", "db_source": "this_channel.views_per_day / median(cohort.views_per_day)",                "slot_role": "PROPRIETARY", "presentation_rule": "'3.2× the cluster median views-per-day'",                                                "phase": "P2" },
+    { "id": "novelty.embedding_distance",      "category": "proprietary", "label": "How geometrically isolated",          "availability": "yes",    "db_source": "niche_spy_videos.novelty_score (already computed)",                                  "slot_role": "PROPRIETARY", "presentation_rule": "'Only 3 channels in our index sit within thumbnail similarity 0.85'",                  "phase": "P2" },
+    { "id": "cohort.ai_rank",                  "category": "proprietary", "label": "Rank among AI-generated peers",       "availability": "derive", "db_source": "RANK OVER channels in niche WHERE is_ai_generated = TRUE",                          "slot_role": "PROPRIETARY", "presentation_rule": "'#2 highest-performing AI-generated channel in this niche'",                          "phase": "P2" },
+    { "id": "cohort.first_mover",              "category": "proprietary", "label": "Recently-created top performer",     "availability": "derive", "db_source": "(NOW - channel.createdAt < 60d) AND (rank in cluster < top 5%)",                     "slot_role": "PROPRIETARY", "presentation_rule": "'Created 41 days ago, already top 5% of its cluster'",                                "phase": "P2" },
+    { "id": "niche.emergence_rate",            "category": "proprietary", "label": "New channels in niche per period",    "availability": "derive", "db_source": "COUNT channels WHERE createdAt > NOW-60d AND in cluster X",                          "slot_role": "PROPRIETARY", "presentation_rule": "'28 new channels entered this niche in the past 60 days'",                             "phase": "P2" },
+    { "id": "cross_niche.format_import",       "category": "proprietary", "label": "Style dominant in other niche",     "availability": "derive", "db_source": "channel.content_style dominant in cluster A but rare in this cluster B",            "slot_role": "PROPRIETARY", "presentation_rule": "'This format dominates in [other niche]; only 4 channels exploit it here'",            "phase": "P2" }
+  ],
+  "slot_fill_priority": [
+    "niche.category",
+    "channel.subscribers",
+    "channel.video_count",
+    "channel.age",
+    "video.top_video",
+    "video.views",
+    "one_of_dollar_trio",
+    "channel.upload_rate",
+    "growth.in_period",
+    "competition.zero_or_saturated",
+    "format.production_type",
+    "format.tool_named",
+    "channel.total_views",
+    "money.lump_sum"
+  ],
+  "avoid_list": ["money.rpm_exposed", "social.likes", "time.posting_window"],
+  "phase_1_reference_videos": [
+    {
+      "videoId": 14563,
+      "title": "11 Hidden Faceless YouTube Niches Explained",
+      "channel": "Money Groot",
+      "viewCount": 121507,
+      "subs": 41900,
+      "views_to_subs_ratio": 2.9,
+      "role": "structural backbone — clone its pacing, listicle structure, and proof-first cold-open"
+    },
+    {
+      "videoId": 14435,
+      "title": "20 Easy Faceless Niches Explained in 17 Minutes",
+      "channel": "Money Groot",
+      "viewCount": 175000,
+      "subs": 36400,
+      "views_to_subs_ratio": 4.81,
+      "role": "secondary reference — strongest views/subs ratio in corpus; same creator iterating"
+    }
+  ],
+  "tricks_to_add_from_corpus_winners": [
+    {
+      "trick": "Social Blade statistics overlay during channel reveals",
+      "uplift": 9.0,
+      "source": "visual_description winner mining"
+    },
+    {
+      "trick": "'Estimated monthly earnings $X,XXX/month' callout overlay",
+      "uplift": 10.0,
+      "source": "visual_description winner mining"
+    },
+    {
+      "trick": "Glitch SFX between niche reveals",
+      "uplift": 7.5,
+      "source": "audio_description winner mining"
+    },
+    {
+      "trick": "Whoosh SFX on cuts within a niche segment",
+      "uplift": 6.0,
+      "source": "audio_description winner mining"
+    },
+    {
+      "trick": "First segment ≤2s (cold-open snappier than Money Groot's 1.42s baseline)",
+      "uplift": null,
+      "source": "pacing analysis"
+    }
+  ]
+}
