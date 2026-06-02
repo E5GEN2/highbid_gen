@@ -145,6 +145,110 @@ export async function GET(req: NextRequest) {
     [customNicheId, userId],
   );
 
+  // Sub-niche assignments — for each of the three clustering sources
+  // (title_v2 / thumbnail_v2 / combined_v2), find the latest 'done'
+  // niche_tree_run scoped to this custom niche, then load every
+  // video's cluster assignment within it. Pre-fetched once per source
+  // so the per-video loop is just a Map lookup.
+  const subNicheSources = ['title_v2', 'thumbnail_v2', 'combined_v2'] as const;
+  type SubSource = typeof subNicheSources[number];
+  interface SubNicheRunInfo {
+    runId: number;
+    startedAt: string | null;
+    completedAt: string | null;
+    numClusters: number;
+    numNoise: number;
+    totalClusterCount: number;
+  }
+  interface SubNicheAssignment {
+    clusterId: number | null;       // null = HDBSCAN classified the video as noise
+    clusterIndex: number | null;
+    label: string | null;
+    autoLabel: string | null;
+    clusterVideoCount: number | null;
+    distanceToCentroid: number | null;
+  }
+  interface SubNicheLoad {
+    run: SubNicheRunInfo | null;    // null = this source has never been clustered for the niche
+    assignments: Map<number, SubNicheAssignment>;
+  }
+
+  async function loadSubNicheSource(source: SubSource): Promise<SubNicheLoad> {
+    const runRes = await pool.query<{
+      id: number; started_at: Date | null; completed_at: Date | null;
+      num_clusters: number; num_noise: number;
+    }>(
+      `SELECT id, started_at, completed_at, num_clusters, num_noise
+         FROM niche_tree_runs
+        WHERE kind = 'custom_niche'
+          AND custom_niche_id = $1
+          AND source = $2
+          AND status = 'done'
+        ORDER BY started_at DESC
+        LIMIT 1`,
+      [customNicheId, source],
+    );
+    if (runRes.rows.length === 0) return { run: null, assignments: new Map() };
+    const run = runRes.rows[0];
+    const assignRes = await pool.query<{
+      video_id: number;
+      cluster_id: number | null;
+      cluster_index: number;
+      distance_to_centroid: number | null;
+      label: string | null;
+      auto_label: string | null;
+      video_count: number | null;
+    }>(
+      `SELECT a.video_id, a.cluster_id, a.cluster_index, a.distance_to_centroid,
+              c.label, c.auto_label, c.video_count
+         FROM niche_tree_assignments a
+         LEFT JOIN niche_tree_clusters c ON c.id = a.cluster_id
+        WHERE a.run_id = $1`,
+      [run.id],
+    );
+    const assignments = new Map<number, SubNicheAssignment>();
+    for (const row of assignRes.rows) {
+      assignments.set(row.video_id, {
+        clusterId:    row.cluster_id,
+        clusterIndex: row.cluster_index,
+        label:        row.label,
+        autoLabel:    row.auto_label,
+        clusterVideoCount:  row.video_count,
+        distanceToCentroid: row.distance_to_centroid,
+      });
+    }
+    return {
+      run: {
+        runId:             run.id,
+        startedAt:         run.started_at?.toISOString() ?? null,
+        completedAt:       run.completed_at?.toISOString() ?? null,
+        numClusters:       run.num_clusters,
+        numNoise:          run.num_noise,
+        totalClusterCount: run.num_clusters,
+      },
+      assignments,
+    };
+  }
+
+  const subNiches: Record<SubSource, SubNicheLoad> = {
+    title_v2:     await loadSubNicheSource('title_v2'),
+    thumbnail_v2: await loadSubNicheSource('thumbnail_v2'),
+    combined_v2:  await loadSubNicheSource('combined_v2'),
+  };
+
+  // Per-video sub-niche entry. Three flavours:
+  //   - source never clustered for niche → run: null, assignment: null
+  //   - video not in run                → run: <info>, assignment: null
+  //   - video in run as noise           → run: <info>, assignment.clusterId: null
+  //   - video assigned to cluster       → run: <info>, assignment populated
+  function buildSubNicheEntry(source: SubSource, videoId: number | null) {
+    const load = subNiches[source];
+    if (!load.run) return { run: null, assignment: null };
+    if (videoId == null) return { run: load.run, assignment: null };
+    const a = load.assignments.get(videoId);
+    return { run: load.run, assignment: a ?? null };
+  }
+
   const zip = new JSZip();
 
   // Manifest header — counts, niche metadata, run timestamp.
@@ -161,6 +265,14 @@ export async function GET(req: NextRequest) {
       totalSegments: 0,
       totalClipsAnalysed: 0,
       totalClipsFailed: 0,
+    },
+    // Latest sub-niche clustering run per source. Each video's per-source
+    // sub-niche entry is scoped to one of these runs — consumers can
+    // reconcile cluster_ids across videos by checking this block.
+    subNicheRuns: {
+      title_v2:     subNiches.title_v2.run,
+      thumbnail_v2: subNiches.thumbnail_v2.run,
+      combined_v2:  subNiches.combined_v2.run,
     },
     videos: [] as Array<{
       videoId: number | null;
@@ -232,6 +344,17 @@ export async function GET(req: NextRequest) {
         timeline:        r.timeline_jsonb,  // the full collapsed segment array
         completedAt:     r.completed_at?.toISOString() ?? null,
         createdAt:       r.job_created_at.toISOString(),
+      },
+      // HDBSCAN sub-niche assignments per source. Pulled from the
+      // latest 'done' niche_tree_run for each (custom_niche, source)
+      // pair. If a source has never been clustered for this niche, the
+      // entry's `run` is null; if the video is in the run but landed
+      // in noise (HDBSCAN couldn't fit it), `assignment.clusterId` is
+      // null but other fields are present.
+      subNiches: {
+        title_v2:     buildSubNicheEntry('title_v2',     r.video_id),
+        thumbnail_v2: buildSubNicheEntry('thumbnail_v2', r.video_id),
+        combined_v2:  buildSubNicheEntry('combined_v2',  r.video_id),
       },
     };
 
