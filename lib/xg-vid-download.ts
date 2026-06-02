@@ -380,15 +380,47 @@ export async function enqueueReviewTasks(tasks: XgodoTask[]): Promise<{
   return { inserted: inserted.length, skipped, rows: inserted };
 }
 
+/**
+ * After this many attempts on a transient error, give up and stop
+ * re-claiming. xgodo's MongoDB pool resets / 5xx flakes typically clear
+ * within a minute or two; 8 tries at 60s cron cadence = ~8 minutes of
+ * patience before declaring a row dead, which matches the worst
+ * xgodo-side blip we've seen empirically.
+ */
+const MAX_TRANSIENT_RETRIES = 8;
+
+/**
+ * Patterns that mean "xgodo (or the network) was temporarily flaky,
+ * try again next tick". Anything not matching is treated as terminal
+ * (bad task data, schema mismatch, missing worker proof, etc.).
+ *
+ * Kept conservative: only obvious transient signatures so we don't
+ * silently mask real bugs by retrying them forever.
+ */
+const TRANSIENT_RE = /(Connection pool|pool was cleared|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network|timeout|xgodo (poll|submit) 5\d\d|download 5\d\d|HTTP\/[\d.]+ 5\d\d)/i;
+
+export function isTransientError(msg: string | null | undefined): boolean {
+  if (!msg) return false;
+  return TRANSIENT_RE.test(msg);
+}
+
 /** Atomically claim up to N in-flight rows. Used by both the manual
  *  Drain button and the cron tick — SKIP LOCKED makes parallel callers
- *  partition the queue between themselves cleanly. */
+ *  partition the queue between themselves cleanly.
+ *
+ *  Also pulls in `failed` rows that match a transient-error signature
+ *  and haven't blown past MAX_TRANSIENT_RETRIES — so an xgodo blip
+ *  doesn't strand a row forever. Once attempts >= MAX, the row stays
+ *  in `failed` and stops being claimed (operator-only recovery). */
 async function claimRows(limit: number): Promise<XgVidDownloadRow[]> {
   const pool = await getPool();
   const r = await pool.query<RawRow>(
     `WITH claimed AS (
        SELECT id FROM xg_video_downloads
         WHERE status IN ('queued', 'submitted', 'running', 'downloaded')
+           OR (status = 'failed'
+               AND attempts < $2
+               AND error_message ~* $3)
         ORDER BY id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT $1
@@ -398,8 +430,23 @@ async function claimRows(limit: number): Promise<XgVidDownloadRow[]> {
        FROM claimed
       WHERE x.id = claimed.id
       RETURNING x.*`,
-    [limit],
+    [limit, MAX_TRANSIENT_RETRIES, TRANSIENT_RE.source],
   );
+  // When we re-claim a previously-failed-but-transient row, reset its
+  // status back to the working state it was in when it failed. The
+  // safest re-entry is whatever stage in the state machine corresponds
+  // to the row's existing data — submit happened? go to 'submitted'.
+  // No submit yet? back to 'queued'. processOneRow tolerates both.
+  for (const raw of r.rows) {
+    if (raw.status === 'failed') {
+      const reEntry = raw.download_task_id ? 'submitted' : 'queued';
+      await pool.query(
+        `UPDATE xg_video_downloads SET status = $1 WHERE id = $2`,
+        [reEntry, raw.id],
+      );
+      raw.status = reEntry;
+    }
+  }
   return r.rows.map(mapRow);
 }
 
@@ -418,6 +465,37 @@ async function updateRow(id: number, patch: Record<string, unknown>): Promise<vo
 
 // ─── orchestrator ───────────────────────────────────────────────────
 
+/**
+ * Self-healing failure recording. If the error matches a known
+ * transient pattern AND the row hasn't already burned through
+ * MAX_TRANSIENT_RETRIES, we KEEP the row in its working state
+ * (`keepStatus`) and just stamp the latest error_message — the next
+ * cron tick will re-claim and retry.
+ *
+ * Otherwise (terminal error, or we've given up after N tries) the row
+ * goes to `failed` and stops being claimed. Operator can manually
+ * reset if they want.
+ */
+async function recordFailure(opts: {
+  rowId: number;
+  attempts: number;
+  errorMsg: string;
+  keepStatus: 'queued' | 'submitted' | 'running' | 'downloaded';
+}): Promise<{ finalStatus: string; note: string }> {
+  const msg = (opts.errorMsg || 'unknown').slice(0, 500);
+  const transient = isTransientError(msg);
+  if (transient && opts.attempts < MAX_TRANSIENT_RETRIES) {
+    await updateRow(opts.rowId, {
+      status: opts.keepStatus,
+      error_message: msg,
+      last_polled_at: new Date(),
+    });
+    return { finalStatus: opts.keepStatus, note: `transient (retry ${opts.attempts}/${MAX_TRANSIENT_RETRIES}): ${msg.slice(0, 100)}` };
+  }
+  await updateRow(opts.rowId, { status: 'failed', error_message: msg, last_polled_at: new Date() });
+  return { finalStatus: 'failed', note: msg };
+}
+
 /** Move one row forward by exactly one xgodo round-trip + at most one
  *  download. Returns the post-step status so the caller knows whether
  *  to drop it (terminal) or hold for next tick. */
@@ -429,8 +507,11 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
     if (row.status === 'queued') {
       const r = await submitDownloadTask(row.sourceVideoUrl);
       if (r.ok === false) {
-        await updateRow(row.id, { status: 'failed', error_message: r.error });
-        return { id: row.id, finalStatus: 'failed', note: r.error };
+        const fail = await recordFailure({
+          rowId: row.id, attempts: row.attempts, errorMsg: `submit: ${r.error}`,
+          keepStatus: 'queued',
+        });
+        return { id: row.id, ...fail };
       }
       await updateRow(row.id, {
         status: 'submitted',
@@ -459,6 +540,10 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
         return { id: row.id, finalStatus: 'running' };
       }
       if (s === 'failed' || s === 'declined') {
+        // Worker reported its own failure — terminal from our POV, no
+        // amount of retry will fix it. Bypass the transient classifier
+        // and mark failed directly so we don't burn retries on a dead
+        // task xgodo will never re-run.
         await updateRow(row.id, {
           status: 'failed', last_polled_at: new Date(),
           error_message: task.comment || `xgodo ${s}`,
@@ -477,6 +562,10 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
       const prompt = (proof.prompt as string | undefined) || null;
       const model  = (proof.model  as string | undefined) || null;
       if (!uploaded) {
+        // Worker's proof shape doesn't match what we expect — could be
+        // an early-build worker. Terminal: retrying won't change the
+        // proof shape, but recordFailure() will keep it transient-
+        // eligible if the message ever matches the regex in future.
         await updateRow(row.id, {
           status: 'failed', last_polled_at: new Date(),
           error_message: 'worker proof missing uploadedUrl',
@@ -509,11 +598,14 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
         });
         row = { ...row, localPath: p, fileBytes: bytes };
       } catch (err) {
-        await updateRow(row.id, {
-          status: 'failed',
-          error_message: (err as Error).message?.slice(0, 500) || 'download failed',
+        const fail = await recordFailure({
+          rowId: row.id, attempts: row.attempts,
+          errorMsg: `download: ${(err as Error).message || 'failed'}`,
+          // Keep in 'downloaded' status — proof + uploaded_url are
+          // captured; next tick re-tries just the file fetch.
+          keepStatus: 'downloaded',
         });
-        return { id: row.id, finalStatus: 'failed', note: (err as Error).message };
+        return { id: row.id, ...fail };
       }
     }
 
@@ -547,11 +639,20 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
 
     return { id: row.id, finalStatus: row.status };
   } catch (err) {
-    await updateRow(row.id, {
-      status: 'failed',
-      error_message: (err as Error).message?.slice(0, 500) || 'unknown',
+    // Catchall — covers thrown errors from xgodo wire calls (poll
+    // throws on unexpected 5xx, submit can throw on network blips).
+    // Keep the row in whatever step it was in so the cron's next tick
+    // re-enters processOneRow at the same place.
+    const keepStatus =
+      row.status === 'submitted' || row.status === 'running' || row.status === 'downloaded'
+        ? row.status
+        : 'queued';
+    const fail = await recordFailure({
+      rowId: row.id, attempts: row.attempts,
+      errorMsg: (err as Error).message || 'unknown',
+      keepStatus,
     });
-    return { id: row.id, finalStatus: 'failed', note: (err as Error).message };
+    return { id: row.id, ...fail };
   }
 }
 
