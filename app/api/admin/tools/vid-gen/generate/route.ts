@@ -57,6 +57,16 @@ const DEFAULT_MODEL = 'gemini-flash-latest';
 const PER_BATCH_RETRIES = 8;
 const SYNC_CAP = 50;
 const BG_CAP = 1000;
+// Verbose themes (>1000 chars of instructions) tell Gemini to emit
+// long per-prompt prose. Asking for 25 long prompts blows the token
+// budget and the JSON gets truncated mid-string. Auto-shrink so each
+// batch fits comfortably under maxOutputTokens.
+const VERBOSE_THEME_CHARS = 1000;
+const VERBOSE_BATCH_SIZE  = 8;
+function batchSizeFor(theme: string | null): number {
+  if (theme && theme.length > VERBOSE_THEME_CHARS) return VERBOSE_BATCH_SIZE;
+  return BATCH_SIZE;
+}
 
 interface BatchAttempt {
   prompts: string[];
@@ -149,7 +159,10 @@ Example output for n=3:
     generationConfig: {
       temperature: 1.0,
       topP: 0.95,
-      maxOutputTokens: 4096,
+      // 16384 covers the verbose-theme case (8 prompts × ~300 words ≈
+      // 3600 tokens) with headroom. Gemini bills on actual output, so
+      // raising the cap is free.
+      maxOutputTokens: 16384,
       responseMimeType: 'application/json',
     },
   });
@@ -206,12 +219,36 @@ Example output for n=3:
     .trim();
   let parsed: unknown;
   try { parsed = JSON.parse(cleaned); }
-  catch { throw new Error(`Failed to parse Gemini JSON: ${cleaned.slice(0, 200)}`); }
+  catch {
+    // Salvage truncated-by-token-cap responses. Gemini cuts off
+    // mid-string when it hits maxOutputTokens, leaving JSON like
+    // `["a", "b", "partial...`. Recover everything before the last
+    // `",` so we get whatever complete strings made it through.
+    parsed = trySalvageTruncatedArray(cleaned);
+    if (parsed === null) {
+      throw new Error(`Failed to parse Gemini JSON: ${cleaned.slice(0, 200)}`);
+    }
+  }
   if (!Array.isArray(parsed)) throw new Error('Gemini response was not a JSON array');
   return parsed
     .filter((s): s is string => typeof s === 'string')
     .map(s => s.trim())
     .filter(s => s.length > 0 && s.length <= 2000);
+}
+
+/** Recover a truncated JSON-array-of-strings — see vid-gen-runner.ts
+ *  for the full explanation. Same salvage logic lives in both files
+ *  because both have their own copy of generateOneBatch. */
+function trySalvageTruncatedArray(raw: string): string[] | null {
+  const lastBoundary = raw.lastIndexOf('",');
+  if (lastBoundary < 0) return null;
+  const repaired = raw.slice(0, lastBoundary + 1) + ']';
+  try {
+    const parsed = JSON.parse(repaired);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -331,10 +368,11 @@ async function runGeneration(opts: {
   model: string;
   concurrency: number;
 }): Promise<void> {
+  const batchSize = batchSizeFor(opts.theme);
   const queue: number[] = [];
   let remaining = opts.count;
   while (remaining > 0) {
-    const n = Math.min(BATCH_SIZE, remaining);
+    const n = Math.min(batchSize, remaining);
     queue.push(n);
     remaining -= n;
   }

@@ -19,6 +19,17 @@ import { fetchViaProxy } from './proxy-dispatcher';
 export const BATCH_SIZE = 25;
 export const DEFAULT_MODEL = 'gemini-flash-latest';
 const PER_BATCH_RETRIES = 8;
+// Verbose themes (>1000 chars of instructions, e.g. multi-paragraph
+// style guides) cause Gemini to generate longer per-prompt output.
+// Asking for 25 long-prose prompts blows past the token budget and
+// the response gets truncated mid-string, breaking JSON.parse.
+// Auto-shrink to 8 when the theme implies long output.
+const VERBOSE_THEME_CHARS = 1000;
+const VERBOSE_BATCH_SIZE  = 8;
+function batchSizeFor(theme: string | null): number {
+  if (theme && theme.length > VERBOSE_THEME_CHARS) return VERBOSE_BATCH_SIZE;
+  return BATCH_SIZE;
+}
 
 interface BatchAttempt {
   prompts: string[];
@@ -93,7 +104,11 @@ Example output for n=3:
   const body = JSON.stringify({
     contents: [{ parts: [{ text: metaPrompt }] }],
     generationConfig: {
-      temperature: 1.0, topP: 0.95, maxOutputTokens: 4096,
+      // 16384 covers the verbose-theme case (8 prompts × ~300 words ≈
+      // 3600 tokens) with headroom. The shorter default-theme path
+      // (25 × 1 sentence) uses only a fraction. Gemini bills on actual
+      // output tokens, not the cap, so raising the cap is free.
+      temperature: 1.0, topP: 0.95, maxOutputTokens: 16384,
       responseMimeType: 'application/json',
     },
   });
@@ -140,12 +155,47 @@ Example output for n=3:
   const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
   let parsed: unknown;
   try { parsed = JSON.parse(cleaned); }
-  catch { throw new Error(`Failed to parse Gemini JSON: ${cleaned.slice(0, 200)}`); }
+  catch {
+    // Salvage path — Gemini truncates mid-string when output hits the
+    // token cap, leaving `["complete", "complete", "partial...` with
+    // no closing bracket. Walk back to the last `",` separator, slice
+    // up to there, append `]`, retry. Recovers every complete string
+    // in the array instead of returning zero.
+    parsed = trySalvageTruncatedArray(cleaned);
+    if (parsed === null) {
+      throw new Error(`Failed to parse Gemini JSON: ${cleaned.slice(0, 200)}`);
+    }
+  }
   if (!Array.isArray(parsed)) throw new Error('Gemini response was not a JSON array');
   return parsed
     .filter((s): s is string => typeof s === 'string')
     .map(s => s.trim())
     .filter(s => s.length > 0 && s.length <= 2000);
+}
+
+/**
+ * Try to recover a truncated JSON-array-of-strings response. Gemini
+ * stops emitting tokens mid-string when it hits maxOutputTokens, so
+ * the raw text ends like:  `["a", "b", "partial...`
+ *
+ * We find the last `",` (which means the prior string closed cleanly)
+ * and rebuild a valid JSON array out of everything up to that point.
+ * Returns null if salvage isn't possible (e.g. no complete strings).
+ */
+function trySalvageTruncatedArray(raw: string): string[] | null {
+  // Last successful boundary between two strings in a JSON array.
+  // Specifically `",\n` or `", ` or `",` — using lastIndexOf('",') is
+  // good enough for Gemini's output (it doesn't emit quotes inside
+  // strings without escaping).
+  const lastBoundary = raw.lastIndexOf('",');
+  if (lastBoundary < 0) return null;
+  const repaired = raw.slice(0, lastBoundary + 1) + ']';
+  try {
+    const parsed = JSON.parse(repaired);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 async function runOneBatchWithRetry(n: number, theme: string | null, model: string): Promise<BatchAttempt> {
@@ -250,10 +300,11 @@ export async function runGeneration(opts: {
   model: string;
   concurrency: number;
 }): Promise<void> {
+  const batchSize = batchSizeFor(opts.theme);
   const queue: number[] = [];
   let remaining = opts.count;
   while (remaining > 0) {
-    const n = Math.min(BATCH_SIZE, remaining);
+    const n = Math.min(batchSize, remaining);
     queue.push(n);
     remaining -= n;
   }
