@@ -9716,6 +9716,16 @@ function AnalyzeVidsTab({ active }: { active: boolean }) {
                     ↻ Retry {nicheProgress.clips.failed} failed clip{nicheProgress.clips.failed === 1 ? '' : 's'}
                   </button>
                 )}
+                {sc.done > 0 && (
+                  <a
+                    href={`/api/admin/analyze-vids/export?customNicheId=${filterNicheId}${userEmail ? `&userEmail=${encodeURIComponent(userEmail)}` : ''}`}
+                    download
+                    className="px-3 py-1 text-[11px] font-semibold text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/10 rounded transition"
+                    title={`Download a ZIP of all ${sc.done} analyzed videos: timelines + YouTube metadata (channel, views, dates, thumbnail) per video. No clip mp4s.`}
+                  >
+                    ⬇ Export {sc.done} as ZIP
+                  </a>
+                )}
               </div>
             </div>
 
