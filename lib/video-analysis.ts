@@ -240,6 +240,40 @@ async function selfHealQueue(): Promise<{ resetErrored: number; resetStuck: numb
     );
   }
 
+  // 2b. Orphan running clips. A worker can set a clip to 'running',
+  // start a Gemini call, then die before writing the terminal status.
+  // The parent job's collapse may have already marked the JOB 'done'
+  // by that point, so the watchdog's done-with-gaps path doesn't
+  // catch it (no clips in 'error'). Result: clip stays at 'running'
+  // forever, job sits at 'done' with phantom gaps.
+  //
+  // Detection: clip.status='running' AND started_at older than
+  // STUCK_AFTER_MINUTES. Reset clip to pending; if parent job is
+  // 'done', also flip job to pending so a worker picks it up. Does
+  // NOT increment auto_retry_count (zombie ≠ failed).
+  const orphanClipsRes = await pool.query<{ job_id: number }>(
+    `UPDATE video_analysis_clips
+        SET status='pending', attempts='[]'::jsonb, attempt_count=0,
+            error_category=NULL, error_detail=NULL, raw_debug_text=NULL,
+            elapsed_s=NULL, started_at=NULL, completed_at=NULL
+      WHERE status = 'running'
+        AND started_at < NOW() - ($1 || ' minutes')::interval
+      RETURNING job_id`,
+    [String(STUCK_AFTER_MINUTES)],
+  );
+  if (orphanClipsRes.rows.length > 0) {
+    const orphanJobIds = Array.from(new Set(orphanClipsRes.rows.map(r => r.job_id)));
+    await pool.query(
+      `UPDATE video_analysis_jobs
+          SET status='pending', stage='pending',
+              num_clips_failed = 0,
+              completed_at = NULL,
+              last_progress_at = NOW()
+        WHERE id = ANY($1::int[]) AND status = 'done'`,
+      [orphanJobIds],
+    );
+  }
+
   // 3. Done-with-gaps → pending. Reset just the failed clips so the
   // worker only re-runs them (already-done clips stay done — no
   // re-paying for successful work). The collapse step rewrites the
@@ -271,11 +305,13 @@ async function selfHealQueue(): Promise<{ resetErrored: number; resetStuck: numb
     resetErrored: erroredRes.rows.length,
     resetStuck:   stuckRes.rows.length,
     resetGaps:    gappyRes.rows.length,
+    resetOrphanClips: orphanClipsRes.rows.length,
   };
-  if (out.resetErrored + out.resetStuck + out.resetGaps > 0) {
+  if (out.resetErrored + out.resetStuck + out.resetGaps + out.resetOrphanClips > 0) {
     console.log(
       `[video-analysis] watchdog reset: ${out.resetErrored} errored, ` +
-      `${out.resetStuck} stuck, ${out.resetGaps} done-with-gaps`,
+      `${out.resetStuck} stuck, ${out.resetGaps} done-with-gaps, ` +
+      `${out.resetOrphanClips} orphan running clips`,
     );
   }
   return out;

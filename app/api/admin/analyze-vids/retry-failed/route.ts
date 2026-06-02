@@ -69,13 +69,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, jobsReset: 0, clipsReset: 0, started: 0, note: 'no jobs with failed clips in scope' });
   }
 
-  // Reset error clips → pending for these jobs.
+  // Reset error AND zombie running clips → pending for these jobs.
+  // The 'running' clips are orphans: a previous worker set status to
+  // 'running' but then died before writing the terminal status. The
+  // job's collapse step still marks the job 'done' (because the worker
+  // crashed AFTER analyzeClipsParallel returned). On manual retry the
+  // operator's intent is "fix all gaps," so we sweep zombies too.
+  // Already-done clips stay done — no re-paying for successful work.
   const clipRes = await pool.query<{ id: number }>(
     `UPDATE video_analysis_clips
         SET status='pending', attempts='[]'::jsonb, attempt_count=0,
             error_category=NULL, error_detail=NULL, raw_debug_text=NULL,
             elapsed_s=NULL, started_at=NULL, completed_at=NULL
-      WHERE job_id = ANY($1::int[]) AND status = 'error'
+      WHERE job_id = ANY($1::int[]) AND status IN ('error', 'running')
       RETURNING id`,
     [jobIds],
   );
