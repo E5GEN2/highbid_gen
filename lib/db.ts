@@ -1127,6 +1127,12 @@ export async function initSchema(): Promise<void> {
     // Partial index for the worker queue — tiny, only covers in-flight
     // rows so the SKIP LOCKED claim stays O(active).
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xvd_inflight ON xg_video_downloads(id) WHERE status IN ('queued','submitted','running','downloaded')`).catch(() => {});
+    // Resubmission counter for the worker-side terminal recovery flow
+    // (xgodo task failed/declined → submit a fresh task with a new
+    // worker). Different lifecycle from `attempts` (which tracks
+    // total claims). Capped in lib/xg-vid-download.ts so a fundamentally
+    // broken input doesn't loop forever.
+    await client.query(`ALTER TABLE xg_video_downloads ADD COLUMN IF NOT EXISTS resubmissions INTEGER NOT NULL DEFAULT 0`).catch(() => {});
 
     // Video-prompt queue — the "Vid Gen" admin tool fills this with
     // either manually-added or AI-generated short video prompts;

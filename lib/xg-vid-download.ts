@@ -283,6 +283,7 @@ export interface XgVidDownloadRow {
   status: string;
   errorMessage: string | null;
   attempts: number;
+  resubmissions: number;
   createdAt: string;
   submittedAt: string | null;
   lastPolledAt: string | null;
@@ -307,6 +308,7 @@ interface RawRow {
   status: string;
   error_message: string | null;
   attempts: number;
+  resubmissions: number;
   created_at: Date;
   submitted_at: Date | null;
   last_polled_at: Date | null;
@@ -332,6 +334,7 @@ function mapRow(r: RawRow): XgVidDownloadRow {
     status: r.status,
     errorMessage: r.error_message,
     attempts: r.attempts,
+    resubmissions: r.resubmissions ?? 0,
     createdAt: r.created_at.toISOString(),
     submittedAt:  r.submitted_at?.toISOString() ?? null,
     lastPolledAt: r.last_polled_at?.toISOString() ?? null,
@@ -381,13 +384,30 @@ export async function enqueueReviewTasks(tasks: XgodoTask[]): Promise<{
 }
 
 /**
- * After this many attempts on a transient error, give up and stop
- * re-claiming. xgodo's MongoDB pool resets / 5xx flakes typically clear
- * within a minute or two; 8 tries at 60s cron cadence = ~8 minutes of
- * patience before declaring a row dead, which matches the worst
- * xgodo-side blip we've seen empirically.
+ * Hard ceiling on retries-per-minute behaviour. Past this, the cron
+ * leaves the row alone for the next backoff window (TRANSIENT_BACKOFF_MIN)
+ * before re-attempting. Set high (200) — the throttle is what keeps us
+ * polite to xgodo, not this cap.
  */
-const MAX_TRANSIENT_RETRIES = 8;
+const MAX_ATTEMPTS_HARD_CEILING = 200;
+
+/**
+ * Minimum gap between successive retries of a failed-but-transient row.
+ * Within an active outage we want to retry every cron tick; once we've
+ * burned past the in-window threshold (the row's age exceeds this) we
+ * back off to one retry per this many minutes — forever — so a multi-
+ * hour xgodo MongoDB outage eventually heals on its own.
+ */
+const TRANSIENT_BACKOFF_MIN = 30;
+
+/**
+ * Resubmission cap. When the xgodo task itself is dead (worker timed
+ * out, declined, xgodo /server/temp URL expired with 404), we clear
+ * the dead download_task_id and submit a FRESH download task with a
+ * new worker. After this many fresh tries we give up — at that point
+ * the labs.google source URL is probably itself dead.
+ */
+const MAX_RESUBMISSIONS = 3;
 
 /**
  * Patterns that mean "xgodo (or the network) was temporarily flaky,
@@ -399,19 +419,40 @@ const MAX_TRANSIENT_RETRIES = 8;
  */
 const TRANSIENT_RE = /(Connection pool|pool was cleared|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network|timeout|xgodo (poll|submit) 5\d\d|download 5\d\d|HTTP\/[\d.]+ 5\d\d)/i;
 
+/**
+ * Patterns that mean "the current xgodo task is dead, but submitting a
+ * fresh download task could still get us the mp4". Worker-side failures:
+ * timeout, device unhealthy, xgodo's /server/temp URL aged out, the
+ * worker explicitly declined the task.
+ */
+const RESUBMITTABLE_RE = /(Time limit exceeded|Device uptime|download 4\d\d|download 3\d\d|task declined|xgodo declined|worker declined)/i;
+
 export function isTransientError(msg: string | null | undefined): boolean {
   if (!msg) return false;
   return TRANSIENT_RE.test(msg);
+}
+
+export function isResubmittableError(msg: string | null | undefined): boolean {
+  if (!msg) return false;
+  return RESUBMITTABLE_RE.test(msg);
 }
 
 /** Atomically claim up to N in-flight rows. Used by both the manual
  *  Drain button and the cron tick — SKIP LOCKED makes parallel callers
  *  partition the queue between themselves cleanly.
  *
- *  Also pulls in `failed` rows that match a transient-error signature
- *  and haven't blown past MAX_TRANSIENT_RETRIES — so an xgodo blip
- *  doesn't strand a row forever. Once attempts >= MAX, the row stays
- *  in `failed` and stops being claimed (operator-only recovery). */
+ *  Self-healing claim policy:
+ *    - In-flight rows (queued/submitted/running/downloaded): claim
+ *      every tick.
+ *    - Failed rows with TRANSIENT_RE error: claim if last_polled_at is
+ *      older than TRANSIENT_BACKOFF_MIN (default 30min). No hard
+ *      attempts cap until MAX_ATTEMPTS_HARD_CEILING — a multi-hour
+ *      xgodo outage eventually heals on its own.
+ *    - Failed rows with RESUBMITTABLE_RE error: claim if
+ *      resubmissions < MAX_RESUBMISSIONS AND last_polled_at older than
+ *      backoff. processOneRow will then submit a FRESH xgodo task.
+ *    - Truly terminal failures (auth, schema, malformed proof): never
+ *      re-claimed. */
 async function claimRows(limit: number): Promise<XgVidDownloadRow[]> {
   const pool = await getPool();
   const r = await pool.query<RawRow>(
@@ -420,7 +461,10 @@ async function claimRows(limit: number): Promise<XgVidDownloadRow[]> {
         WHERE status IN ('queued', 'submitted', 'running', 'downloaded')
            OR (status = 'failed'
                AND attempts < $2
-               AND error_message ~* $3)
+               AND (last_polled_at IS NULL
+                    OR last_polled_at < NOW() - ($3 || ' minutes')::interval)
+               AND (error_message ~* $4
+                    OR (error_message ~* $5 AND resubmissions < $6)))
         ORDER BY id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT $1
@@ -430,15 +474,44 @@ async function claimRows(limit: number): Promise<XgVidDownloadRow[]> {
        FROM claimed
       WHERE x.id = claimed.id
       RETURNING x.*`,
-    [limit, MAX_TRANSIENT_RETRIES, TRANSIENT_RE.source],
+    [
+      limit,
+      MAX_ATTEMPTS_HARD_CEILING,
+      String(TRANSIENT_BACKOFF_MIN),
+      TRANSIENT_RE.source,
+      RESUBMITTABLE_RE.source,
+      MAX_RESUBMISSIONS,
+    ],
   );
-  // When we re-claim a previously-failed-but-transient row, reset its
-  // status back to the working state it was in when it failed. The
-  // safest re-entry is whatever stage in the state machine corresponds
-  // to the row's existing data — submit happened? go to 'submitted'.
-  // No submit yet? back to 'queued'. processOneRow tolerates both.
+  // Restore the right re-entry status for each re-claimed failed row
+  // before processOneRow sees it:
+  //   - Resubmittable failure → 'queued' AND clear download_task_id /
+  //     uploaded_url / local_path / file_bytes so the orchestrator
+  //     submits a fresh xgodo task.
+  //   - Transient failure with download_task_id → 'submitted' (just
+  //     re-poll the existing task).
+  //   - Transient failure pre-submit → 'queued' (re-attempt submit).
   for (const raw of r.rows) {
-    if (raw.status === 'failed') {
+    if (raw.status !== 'failed') continue;
+    if (isResubmittableError(raw.error_message)) {
+      await pool.query(
+        `UPDATE xg_video_downloads
+            SET status = 'queued',
+                download_task_id = NULL,
+                uploaded_url = NULL,
+                local_path = NULL,
+                file_bytes = NULL,
+                resubmissions = resubmissions + 1
+          WHERE id = $1`,
+        [raw.id],
+      );
+      raw.status = 'queued';
+      raw.download_task_id = null;
+      raw.uploaded_url = null;
+      raw.local_path = null;
+      raw.file_bytes = null;
+      raw.resubmissions = (raw.resubmissions ?? 0) + 1;
+    } else {
       const reEntry = raw.download_task_id ? 'submitted' : 'queued';
       await pool.query(
         `UPDATE xg_video_downloads SET status = $1 WHERE id = $2`,
@@ -483,17 +556,67 @@ async function recordFailure(opts: {
   keepStatus: 'queued' | 'submitted' | 'running' | 'downloaded';
 }): Promise<{ finalStatus: string; note: string }> {
   const msg = (opts.errorMsg || 'unknown').slice(0, 500);
+  // Always keep transient failures on the retry path. The claim query's
+  // backoff (TRANSIENT_BACKOFF_MIN once status flips to 'failed') is
+  // what keeps us polite to xgodo — not a hard attempts cap, which
+  // stranded rows when xgodo outages ran longer than 8 minutes.
   const transient = isTransientError(msg);
-  if (transient && opts.attempts < MAX_TRANSIENT_RETRIES) {
+  if (transient) {
     await updateRow(opts.rowId, {
       status: opts.keepStatus,
       error_message: msg,
       last_polled_at: new Date(),
     });
-    return { finalStatus: opts.keepStatus, note: `transient (retry ${opts.attempts}/${MAX_TRANSIENT_RETRIES}): ${msg.slice(0, 100)}` };
+    return { finalStatus: opts.keepStatus, note: `transient retry: ${msg.slice(0, 100)}` };
   }
   await updateRow(opts.rowId, { status: 'failed', error_message: msg, last_polled_at: new Date() });
   return { finalStatus: 'failed', note: msg };
+}
+
+/**
+ * Worker-side terminal failure recovery. xgodo's worker timed out, our
+ * download 404'd because xgodo's /server/temp URL aged out, or xgodo's
+ * worker explicitly declined — the CURRENT xgodo task is dead, but we
+ * can submit a FRESH download task and likely get a different worker
+ * to succeed.
+ *
+ * Clears the dead download_task_id + uploaded_url + local_path +
+ * file_bytes so the orchestrator's step 1 (submit) gets re-entered on
+ * the next tick. Increments resubmissions; once we've hit the cap
+ * (MAX_RESUBMISSIONS), the labs.google source is probably itself dead
+ * and we mark truly failed.
+ */
+async function recordResubmittableFailure(opts: {
+  rowId: number;
+  resubmissions: number;
+  errorMsg: string;
+}): Promise<{ finalStatus: string; note: string }> {
+  const msg = (opts.errorMsg || 'unknown').slice(0, 500);
+  if (opts.resubmissions >= MAX_RESUBMISSIONS) {
+    await updateRow(opts.rowId, {
+      status: 'failed',
+      error_message: `gave up after ${opts.resubmissions} resubmissions; last: ${msg}`,
+      last_polled_at: new Date(),
+    });
+    return {
+      finalStatus: 'failed',
+      note: `exhausted ${MAX_RESUBMISSIONS} resubmissions: ${msg.slice(0, 80)}`,
+    };
+  }
+  await updateRow(opts.rowId, {
+    status: 'queued',
+    download_task_id: null,
+    uploaded_url: null,
+    local_path: null,
+    file_bytes: null,
+    resubmissions: opts.resubmissions + 1,
+    error_message: `resubmitting (#${opts.resubmissions + 1}/${MAX_RESUBMISSIONS}): ${msg.slice(0, 200)}`,
+    last_polled_at: new Date(),
+  });
+  return {
+    finalStatus: 'queued',
+    note: `resubmitting (#${opts.resubmissions + 1}/${MAX_RESUBMISSIONS}) after: ${msg.slice(0, 80)}`,
+  };
 }
 
 /** Move one row forward by exactly one xgodo round-trip + at most one
@@ -540,15 +663,19 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
         return { id: row.id, finalStatus: 'running' };
       }
       if (s === 'failed' || s === 'declined') {
-        // Worker reported its own failure — terminal from our POV, no
-        // amount of retry will fix it. Bypass the transient classifier
-        // and mark failed directly so we don't burn retries on a dead
-        // task xgodo will never re-run.
-        await updateRow(row.id, {
-          status: 'failed', last_polled_at: new Date(),
-          error_message: task.comment || `xgodo ${s}`,
+        // Worker reported its own failure — the current xgodo task is
+        // dead, but a fresh task with a different worker could still
+        // succeed. Route to the resubmit recovery (up to
+        // MAX_RESUBMISSIONS fresh tasks). When all resubmissions are
+        // exhausted recordResubmittableFailure marks the row 'failed'
+        // for real, with a clear "gave up after N" message.
+        const reason = task.comment || `xgodo task ${s}`;
+        const fail = await recordResubmittableFailure({
+          rowId: row.id,
+          resubmissions: row.resubmissions,
+          errorMsg: reason,
         });
-        return { id: row.id, finalStatus: 'failed', note: task.comment || s };
+        return { id: row.id, ...fail };
       }
       // 'pending' or 'confirmed' → worker submitted proof. Pull
       // prompt/model/uploadedUrl from job_proof and move to download
@@ -598,11 +725,24 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
         });
         row = { ...row, localPath: p, fileBytes: bytes };
       } catch (err) {
+        const msg = `download: ${(err as Error).message || 'failed'}`;
+        // 4xx on the uploaded_url means xgodo's /server/temp aged out;
+        // re-trying the same fetch will never succeed. Resubmit a
+        // fresh xgodo download task so a new worker uploads to a new
+        // temp URL. 5xx / network errors → transient retry.
+        if (isResubmittableError(msg)) {
+          const fail = await recordResubmittableFailure({
+            rowId: row.id,
+            resubmissions: row.resubmissions,
+            errorMsg: msg,
+          });
+          return { id: row.id, ...fail };
+        }
         const fail = await recordFailure({
           rowId: row.id, attempts: row.attempts,
-          errorMsg: `download: ${(err as Error).message || 'failed'}`,
-          // Keep in 'downloaded' status — proof + uploaded_url are
-          // captured; next tick re-tries just the file fetch.
+          errorMsg: msg,
+          // Proof + uploaded_url still in hand; next tick re-tries just
+          // the file fetch.
           keepStatus: 'downloaded',
         });
         return { id: row.id, ...fail };
