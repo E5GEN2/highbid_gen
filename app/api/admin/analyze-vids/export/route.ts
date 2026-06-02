@@ -64,10 +64,12 @@ export async function GET(req: NextRequest) {
   // metadata we keep on niche_spy_videos and channel_analysis. Picks
   // the latest non-cancelled job per video so multiple retries don't
   // produce duplicate entries.
+  // Aliases: CTE row uses `lj`; the outer WHERE references `lj.status`
+  // (NOT `j.status` — the inner `j` alias is only visible inside the
+  // CTE).
   const statusFilter = includeFailed
-    ? `j.status IN ('done', 'error')`
-    : `j.status = 'done'`;
-  const userFilter   = userId ? `AND j.user_id = '${userId}'::uuid` : ``;
+    ? `lj.status IN ('done', 'error')`
+    : `lj.status = 'done'`;
   const rowsRes = await pool.query<{
     job_id: number;
     video_id: number | null;
@@ -104,12 +106,11 @@ export async function GET(req: NextRequest) {
     ca_category: string | null;
   }>(
     `WITH latest_job AS (
-       SELECT DISTINCT ON (j.video_id)
-              j.*
+       SELECT DISTINCT ON (j.video_id) j.*
          FROM video_analysis_jobs j
         WHERE j.custom_niche_id = $1
           AND j.status <> 'cancelled'
-          ${userFilter}
+          AND ($2::uuid IS NULL OR j.user_id = $2)
         ORDER BY j.video_id, j.created_at DESC
      )
      SELECT lj.id AS job_id,
@@ -137,12 +138,11 @@ export async function GET(req: NextRequest) {
             nsv.fetched_at AS nsv_fetched_at,
             ca.category AS ca_category
        FROM latest_job lj
-       LEFT JOIN niche_spy_videos v ON v.id = lj.video_id   -- (the join above already uses the SELECT alias)
        LEFT JOIN niche_spy_videos nsv ON nsv.id = lj.video_id
        LEFT JOIN channel_analysis ca ON ca.channel_id = nsv.channel_id
        WHERE ${statusFilter}
        ORDER BY lj.video_id`,
-    [customNicheId],
+    [customNicheId, userId],
   );
 
   const zip = new JSZip();
