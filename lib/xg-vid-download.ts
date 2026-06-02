@@ -610,31 +610,100 @@ export async function processOneRow(row: XgVidDownloadRow): Promise<{
     }
 
     // 4. Local file in hand → mark both xgodo tasks 'confirmed'.
+    //
+    // The mark step has three failure modes we classify separately
+    // because they each want different action:
+    //
+    //   a) Transient (xgodo 5xx, network blip)
+    //        → keep status='downloaded', let next tick retry the mark.
+    //
+    //   b) Task gone (404 / "No job found" / "no unpaid task")
+    //        → xgodo no longer has the row to mark. Either the review
+    //          task already got paid out by some other path, or xgodo
+    //          aged it out. Retrying won't bring it back. We have the
+    //          mp4 + prompt locally so this is operator-success.
+    //          → status='confirmed' with a no-op note in error_message
+    //            so the audit trail is honest about what happened.
+    //
+    //   c) Other 4xx (auth, schema, etc.)
+    //        → terminal. Mark failed; operator needs to look.
+    //
+    // Before this classifier, row #12971 hit case (b) once and the
+    // cron then re-claimed and retried 555 times over 9 hours — the
+    // exact "system can't self-handle this" failure mode this fix is
+    // for.
+    function classifyMarkError(err: string | undefined): 'transient' | 'task_gone' | 'terminal' {
+      const m = err || '';
+      if (isTransientError(m)) return 'transient';
+      if (/no job found|no unpaid task|task not found|404/i.test(m)) return 'task_gone';
+      return 'terminal';
+    }
+
     if (row.status === 'downloaded' && row.localPath && (row.fileBytes ?? 0) > 0) {
       const reviewMark = await markTask(
         row.reviewJobId, [row.reviewTaskId], 'confirmed',
         `xg vid download #${row.id} ok (${row.fileBytes} bytes)`,
       );
+      let reviewGone = false;
       if (!reviewMark.ok) {
-        await updateRow(row.id, {
-          error_message: `review mark failed: ${reviewMark.error}`,
-        });
-        return { id: row.id, finalStatus: 'downloaded', note: 'review mark failed' };
+        const kind = classifyMarkError(reviewMark.error);
+        if (kind === 'transient') {
+          const fail = await recordFailure({
+            rowId: row.id, attempts: row.attempts,
+            errorMsg: `review mark: ${reviewMark.error}`,
+            keepStatus: 'downloaded',
+          });
+          return { id: row.id, ...fail };
+        }
+        if (kind === 'task_gone') {
+          // Treat as already-confirmed. We've got the mp4 locally; the
+          // xgodo side is unreachable but irreversibly so.
+          reviewGone = true;
+        } else {
+          // Terminal — terminate cleanly so the cron stops claiming.
+          await updateRow(row.id, {
+            status: 'failed',
+            error_message: `review mark terminal: ${reviewMark.error}`,
+          });
+          return { id: row.id, finalStatus: 'failed', note: `review mark: ${reviewMark.error}` };
+        }
       }
+      let downloadGone = false;
       if (row.downloadTaskId && row.downloadJobId) {
         const dlMark = await markTask(
           row.downloadJobId, [row.downloadTaskId], 'confirmed',
           `xg vid download #${row.id} ok (${row.fileBytes} bytes)`,
         );
         if (!dlMark.ok) {
-          await updateRow(row.id, {
-            error_message: `download mark failed: ${dlMark.error}`,
-          });
-          return { id: row.id, finalStatus: 'downloaded', note: 'download mark failed' };
+          const kind = classifyMarkError(dlMark.error);
+          if (kind === 'transient') {
+            const fail = await recordFailure({
+              rowId: row.id, attempts: row.attempts,
+              errorMsg: `download mark: ${dlMark.error}`,
+              keepStatus: 'downloaded',
+            });
+            return { id: row.id, ...fail };
+          }
+          if (kind === 'task_gone') {
+            downloadGone = true;
+          } else {
+            await updateRow(row.id, {
+              status: 'failed',
+              error_message: `download mark terminal: ${dlMark.error}`,
+            });
+            return { id: row.id, finalStatus: 'failed', note: `download mark: ${dlMark.error}` };
+          }
         }
       }
-      await updateRow(row.id, { status: 'confirmed', confirmed_at: new Date(), error_message: null });
-      return { id: row.id, finalStatus: 'confirmed' };
+      const noteParts: string[] = [];
+      if (reviewGone)   noteParts.push('review task gone on xgodo');
+      if (downloadGone) noteParts.push('download task gone on xgodo');
+      await updateRow(row.id, {
+        status: 'confirmed',
+        confirmed_at: new Date(),
+        error_message: noteParts.length ? noteParts.join('; ') : null,
+      });
+      return { id: row.id, finalStatus: 'confirmed', note: noteParts.join('; ') || undefined };
     }
 
     return { id: row.id, finalStatus: row.status };
