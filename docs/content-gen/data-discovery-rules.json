@@ -10,7 +10,16 @@
   "hard_filters": {
     "A_scale": {
       "A1_subscriber_band": { "min": 10000, "max": 5000000, "rationale": "Below 10K = no monetization proof; above 5M = breaks replicability framing (corpus: 95% of picks in this band)" },
-      "A2_top_video_views_floor": { "min": 1000000, "rationale": "Top video must have crossed 1M views (corpus: 73% of picks have ≥1M, 94% have ≥100K). The proof anchor." },
+      "A2_top_video_views_floor_tiered": {
+        "tiers": [
+          { "channel_age_days_range": "> 365",      "min_top_video_views": 1000000, "label": "mature, corpus standard" },
+          { "channel_age_days_range": "180 - 365",  "min_top_video_views":  500000, "label": "mid-young, slight relaxation" },
+          { "channel_age_days_range": "90 - 180",   "min_top_video_views":  200000, "label": "young, recency excuses lower views" },
+          { "channel_age_days_range": "≤ 90",       "min_top_video_views":  100000, "label": "ultra-young, emergence signal" }
+        ],
+        "rationale": "The corpus 1M floor reflects what HUMAN listicle creators could find via manual research — by the time a viral channel crosses 1M, they're often >9 months old and out of the recency sweet spot. Our proprietary edge is systematic discovery of channels at 100K-1M who are 3-6 months old and growing hockey-stick. Catch them before competitors can.",
+        "edge_framing": "competitive_blindspot_unlock"
+      },
       "A3_views_to_subs_ratio_floor": { "min": 5, "rationale": "Top video reaches ≥5× subscriber base (corpus median: 33×). Filters out mature channels with no recent virality." }
     },
     "B_recency": {
@@ -197,6 +206,27 @@
       "median_to_top_ratio": 0.05,
       "expected": "PASS",
       "verdict": "Exactly the 'fresh and breaking' channel listicle creators love — extreme recency bonus"
+    },
+    {
+      "name": "Ultra-young emergence (60d, 8K subs, 250K top, 6 videos)",
+      "subscribers": 8000,
+      "top_video_views": 250000,
+      "ratio": 31,
+      "age_days": 60,
+      "video_count": 6,
+      "expected": "FAIL on A1 subscriber floor",
+      "verdict": "Edge case — channel passes the new ultra-young A2 tier (≥100K) but fails A1 (10K floor). Keep A1 floor: pre-monetization channels can't deliver earnings slot claims."
+    },
+    {
+      "name": "3-month young channel with 300K-view top (the new sweet spot)",
+      "subscribers": 30000,
+      "top_video_views": 300000,
+      "ratio": 10,
+      "age_days": 90,
+      "video_count": 12,
+      "median_to_top_ratio": 0.08,
+      "expected": "PASS (new — was REJECTED under old 1M floor)",
+      "verdict": "This is the channel class our age-tiered rule unlocks. Under the competitor's 1M floor this fails. We catch it 6+ months earlier than they could."
     }
   ],
   "default_parameters": {

@@ -13,8 +13,13 @@ A channel passes discovery if it sits in the right size range, has at least one 
 ```
 Channel picks if ALL of:
   10K ≤ subscribers ≤ 5M
-  top_video.view_count ≥ 1M
-  top_video.view_count / subscribers ≥ 5  (ratio = recent virality signal)
+  top_video.view_count ≥ tiered_floor_by_age(channel_age_days)
+    where the floor relaxes for younger channels:
+      mature (>365d)   : ≥ 1M views
+      mid (180-365d)   : ≥ 500K views
+      young (90-180d)  : ≥ 200K views
+      ultra-young(≤90d): ≥ 100K views    ← our edge: catch them early
+  top_video.view_count / subscribers ≥ 5  (recent virality signal, all tiers)
   channel_age_days ≤ 730  (prefer ≤365, ideal ≤180)
   top_video.posted_at ≥ NOW() - 12 months
   channel sits in the requested niche cluster
@@ -100,9 +105,21 @@ Median 2, mean 3.9, p75 = 5. **Generated listicles should cover 5-12 channels pe
 
 ```
 A1. 10_000 ≤ channel.subscribers ≤ 5_000_000
-A2. max(shorts_videos.view_count WHERE channel_id) ≥ 1_000_000
+
+A2. AGE-TIERED top-video floor:
+       channel_age_days > 365           : top_video_views ≥ 1_000_000   (corpus standard)
+       180 < channel_age_days ≤ 365     : top_video_views ≥   500_000   (mid-young)
+        90 < channel_age_days ≤ 180     : top_video_views ≥   200_000   (young)
+        channel_age_days ≤ 90           : top_video_views ≥   100_000   (ultra-young, emergence)
+
 A3. max(shorts_videos.view_count) / channel.subscribers ≥ 5
+    (ratio floor unchanged across all tiers — it's the recent-virality
+     signal regardless of channel age)
 ```
+
+**Why age-tiered.** The corpus's 1M-views floor reflects what HUMAN listicle creators could find through manual research, not what's optimal. A 3-month-old channel hasn't had time to accumulate 1M+ views even if it's growing at hockey-stick rate. By the time it crosses 1M, it's 9-12 months old and no longer in the ultra-young window. **Our edge is catching them earlier — we can surface a 90-day-old channel with a 200K-view debut video that no manual researcher could compile at scale.**
+
+The A3 ratio rule (views ≥ 5× subs) still filters mature-dead channels at every tier — a 50K-sub channel with a 100K-view top is only 2× ratio (mature, not picked), but a 5K-sub channel with a 100K top is 20× ratio (viral, surface it).
 
 ### B. RECENCY filters (hard cuts)
 
@@ -253,7 +270,14 @@ async function discoverChannelsForNiche(
     SELECT *
     FROM channel_stats
     WHERE subscribers BETWEEN 10_000 AND 5_000_000        -- A1
-      AND top_video_views >= 1_000_000                    -- A2
+      AND top_video_views >= (                            -- A2 tiered
+        CASE
+          WHEN EXTRACT(EPOCH FROM (NOW() - created_at))/86400 > 365  THEN 1_000_000
+          WHEN EXTRACT(EPOCH FROM (NOW() - created_at))/86400 > 180  THEN   500_000
+          WHEN EXTRACT(EPOCH FROM (NOW() - created_at))/86400 >  90  THEN   200_000
+          ELSE                                                                100_000
+        END
+      )
       AND top_video_views::float / subscribers >= 5       -- A3
       AND EXTRACT(EPOCH FROM (NOW() - created_at))/86400 <= 730  -- B1
       AND top_video_posted_at >= NOW() - INTERVAL '12 months'    -- B2
@@ -333,6 +357,24 @@ The full listicle assembly then applies Gates 1, 2, 3 across the N×K candidate 
 - video count: maybe only 5-8 videos → ✅ passes D1
 - BUT: if their median views are <100K (since they only had ONE breakout) → D2 floor of 5% means median / top ≥ 100K / 2M = 5% → barely passes
 - **PASS** — exactly the kind of "fresh and breaking" channel listicle creators love.
+
+### Case 5: Ultra-young emergence (60 days old, 8K subs, 250K-view top, 6 videos)
+- subscribers: 8K → ❌ FAILS A1 floor (10K) — actually wait, this is the kind of channel we WANT to surface
+- top video: 250K → ✅ passes A2 ultra-young tier (≥100K)
+- ratio: 250K/8K = **31×** → ✅
+- age: 60 days → ✅ in ultra-young tier
+- video count: 6 → ✅
+- median/top: assume 0.10 → ✅
+- **REJECTED on subscriber floor** — this is the edge case where the rules SHOULD allow it but A1 still blocks. **Decision needed:** either lower A1 floor to 5K for ultra-young tier, OR keep the floor and accept missing pre-monetization channels. We're leaning **keep 10K floor** — channels below monetization threshold can't be "earning $X/month" claims, which breaks the slot fill.
+
+### Case 6: 3-month young channel with 300K-view top (the new sweet spot)
+- subscribers: 30K → ✅
+- top video: 300K → ✅ passes A2 young tier (≥200K)
+- ratio: 300K/30K = **10×** → ✅
+- age: 90 days → ✅ in young tier
+- video count: 12 → ✅
+- median/top: 0.08 → ✅
+- **PASS** — under the old 1M floor this would have failed. Under the new age-tiered rule, it surfaces. **This is the channel class our edge unlocks.**
 
 ---
 
