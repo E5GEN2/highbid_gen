@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "class": "B",
+  "scope": "Script-generation skeleton for Class B. NOT literal templates — a structural formula with per-beat Gemini prompt recipes that reference variables (slot data) and contain tone-calibration examples + variation constraints. One Gemini call per video produces the complete timestamped script.",
+  "architecture": {
+    "model": "single Gemini call per generated video",
+    "input": ["script_skeleton (system prompt)", "filled_slot_data (per-niche channel data + computed money math + content analysis)", "variation_history (rolling window of past phrases)", "listicle_meta"],
+    "output": "JSON with timestamped beat-by-beat script — { intro, niches[], cta }",
+    "downstream": "ElevenLabs TTS per beat → WAV files → mix into audio bed per audio-sfx-class-b.json"
+  },
+  "global_voice_constraints": {
+    "register": "calm, educational, matter-of-fact male documentary narrator",
+    "pitch": "mid-pitch single voice throughout",
+    "tense": "active voice, present tense (default)",
+    "concreteness": "concrete numbers always, never 'a lot' / 'many'",
+    "direct_address_frequency": "viewer addressed ~3-4× per video max",
+    "enthusiasm_modifiers": {
+      "allowed_max_per_video": { "'absolutely unbelievable'": 2, "'mind-blowing'": 1, "'literally'": 3 },
+      "rationale": "restrained — not every claim is incredible"
+    }
+  },
+  "vocabulary_taboos": [
+    "'Today, I'm going to share'",
+    "'What if I told you'",
+    "'Imagine if you could'",
+    "'Let's talk about'",
+    "'Every single day'",
+    "'Click the link in the description' (alone, as sole CTA)",
+    "'I hope to see each other in another one of our videos'",
+    "Exposing RPM math in speech (present outcome only — never 'views × RPM = $')"
+  ],
+  "pacing_constraints": {
+    "median_segment_length_seconds": [1.5, 2.5],
+    "rule": "each beat narrator text readable in allotted hold_seconds × 1.05 (slight padding for TTS pacing)",
+    "max_hold_seconds_default": 2.5,
+    "exception": "money_shot card can exceed for emphasis"
+  },
+  "beats_per_niche": [
+    {
+      "beat_id": "intro_card",
+      "has_narration": true,
+      "recipe_type": "bank_based",
+      "variables": ["niche_number"],
+      "bank": ["Number {N}:", "Number {N}.", "Number {N},"],
+      "output_spec": { "word_count": [2, 4], "hold_seconds": 0.8 },
+      "variation_rule": "alternate punctuation across niches; never use the same form 3× in a row"
+    },
+    {
+      "beat_id": "niche_name_card",
+      "has_narration": true,
+      "recipe_type": "hybrid",
+      "variables": ["niche_category_label"],
+      "bank": ["{niche_category_label}.", "{niche_category_label}, {short_qualifier}."],
+      "output_spec": { "word_count_max": 6, "hold_seconds": 1.5 },
+      "skip_if": "niche label already combined into beat 1 (e.g. 'Number 6, Personality Quizzes')"
+    },
+    {
+      "beat_id": "mascot_mosaic",
+      "has_narration": false,
+      "recipe_type": "silent_visual",
+      "variables": [],
+      "output_spec": { "hold_seconds": 2.0 }
+    },
+    {
+      "beat_id": "channel_proof_1",
+      "has_narration": true,
+      "recipe_type": "gemini_generate",
+      "variables": ["channel_name", "subs", "video_count", "channel_age_phrase", "channel_index_in_listicle"],
+      "tone_examples": [
+        "This channel already has more than 400,000 subscribers.",
+        "This channel makes explanation style videos",
+        "This channel literally ranks letters and numbers",
+        "There is another channel that started making the same kind of videos just 3 months ago",
+        "This channel has posted only 20 videos and already gained almost 80,000 subscribers"
+      ],
+      "opener_selection_rule": {
+        "1st_channel_of_niche": "'This channel...'",
+        "2nd_or_3rd_channel_of_niche": "'There's another channel that...' OR 'And there's another channel...'"
+      },
+      "output_spec": { "sentence_count": 1, "word_count": [15, 25], "hold_seconds": 1.8 }
+    },
+    {
+      "beat_id": "channel_proof_2",
+      "has_narration": true,
+      "recipe_type": "gemini_generate",
+      "variables": ["channel_age_phrase", "total_views", "video_count"],
+      "tone_examples": [
+        "The channel has already gained over 13 million total views.",
+        "And their channel has a mind-blowing total of more than 800 million views.",
+        "Now, it has gained 50k subscribers and is doing..."
+      ],
+      "modifier_rotation": ["already", "over", "more than", "almost", "mind-blowing total", "literally"],
+      "skip_if": "beat 4 already used 'total views' or covered age phrase",
+      "output_spec": { "sentence_count": 1, "word_count": [12, 20], "hold_seconds": 1.5 }
+    },
+    {
+      "beat_id": "top_video_callout",
+      "has_narration": true,
+      "recipe_type": "gemini_generate",
+      "variables": ["top_video_views", "top_video_age_months", "top_video_title_snippet"],
+      "tone_examples": [
+        "Their most popular video has more than 1 million views.",
+        "That video got over 1 million views.",
+        "this channel made a video called {title} and it got {views} views"
+      ],
+      "variation_rule": "alternate between 'their most popular video' / 'their top video' / 'this one video' — never same phrase twice in a row across listicle",
+      "output_spec": { "sentence_count": 1, "word_count": [10, 18], "hold_seconds": 2.0 }
+    },
+    {
+      "beat_id": "top_views_seq",
+      "has_narration": true,
+      "recipe_type": "rapid_sequence",
+      "variables": ["top_video_views_array"],
+      "tone_examples": ["29 million views,", "10 million views,", "8.8 million views..."],
+      "output_spec": { "phrase_count": [3, 5], "words_per_phrase": [2, 4], "hold_seconds_per": 1.0 },
+      "final_phrase_rule": "optionally prepend 'and' to the last phrase for natural rhythm"
+    },
+    {
+      "beat_id": "top_views_pano",
+      "has_narration": true,
+      "recipe_type": "gemini_generate",
+      "variables": ["view_consistency_phrase", "typical_median_views"],
+      "tone_examples": [
+        "and almost every single upload pulls in hundreds of thousands of views.",
+        "And their videos consistently pull really good views.",
+        "And their view consistency is amazing."
+      ],
+      "output_spec": { "sentence_count": 1, "word_count": [10, 15], "hold_seconds": 3.0 }
+    },
+    {
+      "beat_id": "money_math",
+      "has_narration": true,
+      "recipe_type": "hybrid_card_sequence",
+      "variables": ["rpm_used", "base_views", "result_dollars", "high_cpm_countries_optional"],
+      "tone_examples_full_sequences": [
+        ["Let's take that video", "with 29 million views.", "Even if we assume", "just a $1 RPM,", "that one video alone has probably made around", "29,000", "from ads."],
+        ["If we assume a $3 RPM, that's", "roughly $21,000 from ads."],
+        ["If we assume a $6 RPM,", "because the videos are long and most viewers... likely are from countries like", "the US and UK.", "This would translate to", "about $6,000", "from ads."]
+      ],
+      "card_sequence_template": {
+        "card_1_optional": ["'Let's take that video'", "'Take their top video'"],
+        "card_2": ["'If we assume'", "'Even if we assume'"],
+        "card_3": ["'$X RPM,'", "'just $X RPM,'"],
+        "card_4": ["'this would translate to'", "'that's roughly'", "'the estimated earnings are'", "'that one video alone has probably made around'"],
+        "card_5_money_shot": "'{result_dollars}' (huge green text, ding SFX)",
+        "card_6_closer": "'from ads.'"
+      },
+      "geo_context_insertion": {
+        "condition": "rpm_used > $5",
+        "probability": 0.3,
+        "insertion": "between card 3 and card 4: 'because viewers are from {high_cpm_countries}' (e.g. 'because the videos are long and most viewers likely are from the US and UK')"
+      },
+      "rpm_modifier_rule": {
+        "low_rpm_$1_$3": "use 'just' or 'Even if we assume' minimizer",
+        "higher_rpm_$6_$10": "use 'if we assume' without minimizer; consider geo-context insertion"
+      },
+      "output_spec": { "card_count": [4, 6], "words_per_card": [1, 6] }
+    },
+    {
+      "beat_id": "recipe_demo",
+      "has_narration": true,
+      "recipe_type": "gemini_generate_multi_beat",
+      "variables": ["recipe_formula", "recipe_extras", "clip_segment_count"],
+      "tone_examples": [
+        "This channel simply records gameplay of a funny stickman game and uploads it.",
+        "When you look at their videos, the editing style is extremely simple.",
+        "They just record the gameplay, add those viral troll or skull face effects...",
+        "On top of that, they use viral phonk music in the background..."
+      ],
+      "structure": {
+        "beat_1": "opening recipe summary ('This channel simply...' or 'They take...' or 'When you look at their videos...')",
+        "beat_2": "editing/production specifics ('They just...' / 'On top of that, they...')",
+        "beat_3_to_N": "additional elements + outcome ('which makes the audience watch till the end' / 'and keeps the videos engaging')"
+      },
+      "connector_rotation": ["And", "On top of that,", "When you look at...", "They also...", "What's interesting is..."],
+      "tone_calibration_by_recipe_type": {
+        "low_effort_gameplay_screenrec": "emphasize 'simply', 'just', 'extremely simple' — drives 'you could do this'",
+        "higher_skill_animation_scripted": "emphasize 'the storytelling is very strong' — implies effort but achievable"
+      },
+      "output_spec": { "narration_count": "N (matches clip_segment_count)", "words_per_narration": [12, 22] }
+    },
+    {
+      "beat_id": "concept_tag",
+      "has_narration": true,
+      "recipe_type": "hybrid",
+      "variables": ["concept_word"],
+      "tone_examples": [
+        "The number one thing you must focus on in this niche is storytelling.",
+        "Here's the thing — what makes these channels work is consistency.",
+        "What separates the top channels here is timing."
+      ],
+      "frequency_rule": "max once per niche",
+      "output_spec": { "sentence_count": 1, "word_count": [10, 14], "hold_seconds": 1.2 }
+    },
+    {
+      "beat_id": "appreciation_optional",
+      "has_narration": true,
+      "recipe_type": "bank_based_low_probability",
+      "variables": [],
+      "bank": [
+        "And if you're watching this far, I really appreciate it.",
+        "By the way, if you're still here, thank you.",
+        "Real quick — if you've made it this far, that means a lot."
+      ],
+      "trigger_probability": 0.30,
+      "max_per_video": 2,
+      "preferred_positions": ["mid_body_~50_60_percent_through", "before_cta_optional"],
+      "output_spec": { "sentence_count": 1, "word_count": [8, 15] }
+    },
+    {
+      "beat_id": "transition",
+      "has_narration": false,
+      "recipe_type": "bank_based_optional",
+      "variables": ["next_niche_index"],
+      "bank": ["Moving on,", "Next up,", "And finally..."],
+      "default_behavior": "silent (whoosh SFX + glitch transition does the work)",
+      "vocal_cue_probability": 0.20,
+      "output_spec": { "word_count_max": 3 }
+    }
+  ],
+  "video_level_beats": {
+    "intro": {
+      "beat_id": "video_intro",
+      "duration_seconds_max": 15,
+      "recipe_type": "conditional_preamble",
+      "variables": ["niche_count", "hook_framing", "open_with_preamble"],
+      "default_behavior": "SKIP preamble — Money Groot's cold-open style — go straight to niche 1's intro_card",
+      "preamble_variant_probability": 0.30,
+      "preamble_tone_examples": [
+        "I went through hundreds of faceless YouTube channels...",
+        "These {niche_count} faceless niches are quietly making creators..."
+      ],
+      "output_spec": "empty (default) OR 1 sentence (preamble variant)"
+    },
+    "cta": {
+      "beat_id": "video_cta",
+      "duration_seconds_max": 30,
+      "recipe_type": "gemini_generate",
+      "variables": ["niche_count", "cta_target_video_title", "cta_topic_phrase"],
+      "tone_examples": [
+        "So, these are the 11 faceless niches.",
+        "And each one has huge potential if you're serious about starting a channel.",
+        "And if you want to discover 20 more faceless niches,",
+        "just click on this video right here."
+      ],
+      "required_structure": [
+        { "card": 1, "role": "closer", "examples": ["'So, these are the {N} faceless niches.'"] },
+        { "card": 2, "role": "light_value_claim", "examples": ["'And each one has huge potential'", "'Any one of these could become a real channel'"] },
+        { "card": 3, "role": "next_video_tease", "examples": ["'And if you want to {cta_topic_phrase},'"] },
+        { "card": 4, "role": "cta_action", "examples": ["'just click on this video right here.'", "'check out this one.'", "'you'll want to see this one.'"], "rule": "must contain 'check out [this/next] video' phrase (17× winner uplift)" }
+      ],
+      "explicit_exclusions": [
+        "'I hope to see each other in another one of our videos' (0× winners use this)",
+        "'click the link in the description' alone (sponsor-read tone)",
+        "Money Groot's pre-CTA personal anecdote ('A while back I thought about starting a channel...')",
+        "Money Groot's self-promotion fluff ('I'll keep bringing you more valuable content completely free')"
+      ],
+      "output_spec": { "card_count": 4, "words_per_card": [4, 12] }
+    }
+  },
+  "variation_rules": {
+    "within_video": {
+      "channel_intro_openers": "never use 'This channel...' for both channels of the same niche; never the same opener twice in any 3-niche stretch",
+      "money_math_connectors": "rotate 'Even if we assume' / 'If we assume' / 'Let's say we assume' across niches",
+      "recipe_demo_openers": "rotate 'This channel simply...' / 'When you look at their videos...' / 'What's interesting is...' across niches",
+      "transition_phrases": "when used, rotate 'And finally' / 'Moving on' / 'Next up'",
+      "enthusiasm_modifiers": "'already' / 'more than' / 'literally' — can be reused but never 3× in same paragraph"
+    },
+    "across_generations": {
+      "tracking_window": "rolling window of last 50 narrator phrases per beat_id",
+      "retention_policy": "purge entries older than 7 days OR keep most recent 50 per beat_id (whichever smaller)",
+      "usage": "passed to Gemini as variation_history_for_beat_{beat_id} — Gemini avoids exact reuse, paraphrases instead",
+      "scope_keyed_by": "beat_id (channel_intro phrases tracked separately from money_math connectors)"
+    }
+  },
+  "meta_prompt_assembly": {
+    "system_prompt_includes": [
+      "this skeleton (beat recipes)",
+      "global_voice_constraints",
+      "vocabulary_taboos",
+      "pacing_constraints",
+      "variation_rules",
+      "output_schema (JSON spec for the script)"
+    ],
+    "user_prompt_includes": [
+      "filled_slot_data (per-niche channel data + computed money math + content analysis labels + concept tags)",
+      "variation_history (rolling-window of recent phrases per beat_id)",
+      "listicle_parameters (niche_count, open_with_preamble flag, cta_target_video_title, cta_topic_phrase)"
+    ]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "intro": {
+        "oneOf": [
+          { "type": "null" },
+          { "type": "object", "properties": { "text": { "type": "string" }, "duration_s": { "type": "number" } } }
+        ]
+      },
+      "niches": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "niche_index": { "type": "integer" },
+            "beats": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "beat_id": { "type": "string" },
+                  "text": { "type": "string" },
+                  "hold_s": { "type": "number" },
+                  "audio_cue": { "type": "object" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "cta": {
+        "type": "object",
+        "properties": {
+          "cards": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "hold_s": { "type": "number" } } } }
+        }
+      }
+    }
+  },
+  "next_checkpoints": [
+    "asset-acquisition-spec.md — per-primitive Playwright/yt-dlp/AI-image-gen recipes",
+    "pipeline-architecture.md — worker topology orchestrating the whole stack",
+    "icon-library-asset-spec.md — AI-image-gen prompts for the 15 line-drawing icons",
+    "script-skeleton-class-a.md — brand-studio template when we add Class A"
+  ]
+}
