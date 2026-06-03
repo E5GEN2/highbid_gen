@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "class": "B",
+  "scope": "Couples data-points.json × visual-packaging-class-b.json × audio-sfx-class-b.json into a per-slot render contract.",
+  "render_contract_fields": {
+    "bg_mode":         "white | dark_gray  (from visual System A)",
+    "composition":     "text_card | yt_screenshot_card | thumbnail_card | thumbnail_grid | mini_player_card | annotated_screenshot | chalkboard_card | icon_card",
+    "primitive":       "specific named primitive from visual-packaging-class-b.json (when one applies)",
+    "icon":            "icon id from line-drawing icon library (when applicable)",
+    "color_treatment": "neutral | money_shot_green | inline_green | inline_red | yellow_ring | chalk_cream",
+    "hold_seconds":    "duration card is on screen",
+    "audio_cue":       "{music_change?, sfx?[]}",
+    "notes":           "freeform implementation guidance"
+  },
+  "slot_renderings": {
+    "money.yearly": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'this could mean'",     "color": "neutral",            "hold_s": 0.8, "sfx": ["subtle_whoosh"] },
+        { "bg_mode": "white", "composition": "text_card", "content": "'$X/year' or '$X.YM/year'", "color": "money_shot_green", "hold_s": 1.8, "sfx": ["ding_high_pitch"] },
+        { "bg_mode": "white", "composition": "text_card", "content": "'from ads'",            "color": "neutral",            "hold_s": 0.8, "sfx": ["subtle_whoosh"] }
+      ],
+      "notes": "Round to 2 sig figs. Use yearly framing when the figure is impressive (≥$50K/year)."
+    },
+    "money.daily": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'that's'",  "color": "neutral", "hold_s": 0.8 },
+        { "bg_mode": "white", "composition": "text_card", "content": "'$X/day'",  "color": "money_shot_green", "hold_s": 1.5, "sfx": ["ding"] },
+        { "bg_mode": "white", "composition": "text_card", "content": "'from ads'","color": "neutral", "hold_s": 0.8 }
+      ]
+    },
+    "money.monthly": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'that's around'", "color": "neutral", "hold_s": 0.8 },
+        { "bg_mode": "white", "composition": "text_card", "content": "'$X/month'",      "color": "money_shot_green", "hold_s": 1.5, "sfx": ["ding"] },
+        { "bg_mode": "white", "composition": "text_card", "content": "'from ads'",      "color": "neutral", "hold_s": 0.8 }
+      ]
+    },
+    "money.per_video": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'about $X per video'", "color": "inline_green_on_$X", "hold_s": 1.5, "sfx": ["ding"] }
+      ]
+    },
+    "money.lump_sum": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'Even if we assume'", "color": "neutral", "hold_s": 0.8 },
+        { "bg_mode": "white", "composition": "icon_card", "icon": "shrug_with_question_marks", "content": "'$X RPM'", "color": "inline_green_on_$X", "hold_s": 1.5 },
+        { "bg_mode": "dark_gray", "composition": "thumbnail_card", "content": "the cited top video", "hold_s": 1.5 },
+        { "bg_mode": "white", "composition": "text_card", "content": "'this would translate to'", "color": "neutral", "hold_s": 0.8 },
+        { "bg_mode": "white", "composition": "text_card", "content": "'$X,XXX'",         "color": "money_shot_green", "hold_s": 1.8, "sfx": ["ding_high_pitch"] },
+        { "bg_mode": "white", "composition": "text_card", "content": "'from ads'",        "color": "neutral", "hold_s": 0.8 }
+      ],
+      "notes": "Full 6-card RPM-math sequence. The shrug-character beat is how MG signals 'we're estimating' without exposing the RPM math directly."
+    },
+    "channel.subscribers": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "annotated_screenshot",
+        "primitive": "yellow_circle_screenshot_annotation",
+        "screenshot_source": "yt_channel_page_mock OR yt_about_page_mock",
+        "annotation_target": "the subs number",
+        "color": "yellow_ring",
+        "hold_s": 1.8,
+        "sfx": ["whoosh_on_load", "ding_on_circle_reveal"]
+      }
+    },
+    "channel.video_count": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "yt_screenshot_card",
+        "screenshot_source": "yt_channel_page_mock",
+        "color": "yellow_ring (optional)",
+        "hold_s": 1.2,
+        "sfx": ["subtle_whoosh"]
+      }
+    },
+    "channel.total_views": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "annotated_screenshot",
+        "primitive": "yellow_circle_screenshot_annotation",
+        "screenshot_source": "yt_about_page_mock",
+        "annotation_target": "total views number",
+        "color": "yellow_ring",
+        "hold_s": 1.5,
+        "sfx": ["whoosh", "ding"]
+      }
+    },
+    "channel.age": {
+      "primary": {
+        "bg_mode": "white",
+        "composition": "text_card",
+        "content": "'just N months old' OR 'started N years ago'",
+        "color": "neutral",
+        "hold_s": 1.2,
+        "sfx": ["subtle_whoosh"]
+      }
+    },
+    "channel.upload_rate": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "yt_screenshot_card",
+        "screenshot_source": "yt_channel_page_mock (video grid showing upload dates)",
+        "overlay_text": "'N videos per day' OR 'N videos a week'",
+        "overlay_color": "inline_green",
+        "hold_s": 1.5,
+        "sfx": ["subtle_whoosh", "optional_click"]
+      }
+    },
+    "video.top_video": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "most_popular_callout_card",
+        "primitive": "most_popular_callout_card",
+        "data_shown": "thumbnail + title + 'X views • N ago'",
+        "annotation": "yellow ring on view count (optional)",
+        "hold_s": 2.0,
+        "sfx": ["ding_on_card_entry"]
+      }
+    },
+    "video.views_sequence": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "thumbnail_card_rapid_fire",
+        "description": "3-5 single thumbnail-cards in quick succession, each holding ~1s",
+        "hold_s_per_card": 1.0,
+        "sfx_per_card": ["whoosh"]
+      },
+      "notes": "Used when narration enumerates multiple top videos: '29M views, 10M views, 8.8M views…'"
+    },
+    "video.views_panoramic": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "thumbnail_grid",
+        "data_shown": "grid of 8-12 of the channel's top videos with view counts",
+        "hold_s": 3.0,
+        "sfx": ["whoosh_on_grid_reveal"]
+      }
+    },
+    "niche.category": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'Number N'", "color": "neutral", "hold_s": 0.8, "sfx": ["whoosh", "ding"] },
+        { "bg_mode": "white", "composition": "text_card", "content": "the niche name", "color": "neutral_or_inline_green_on_keyword", "hold_s": 1.5, "sfx": ["whoosh"] }
+      ]
+    },
+    "niche.concept_emphasis": {
+      "primary": {
+        "bg_mode": "dark_gray",
+        "composition": "chalkboard_card",
+        "primitive": "chalkboard_concept_tag",
+        "content": "single conceptual word (e.g. STORYTELLING)",
+        "color": "chalk_cream",
+        "hold_s": 1.2,
+        "sfx": ["soft_chimes"]
+      },
+      "frequency_rule": "at most once per niche segment"
+    },
+    "competition.zero": {
+      "primary": {
+        "bg_mode": "white",
+        "composition": "text_card",
+        "content": "'only N channels in this niche'",
+        "color": "inline_green_on_count",
+        "hold_s": 1.5,
+        "sfx": ["whoosh", "subtle_ding"]
+      }
+    },
+    "competition.saturated": {
+      "primary": {
+        "bg_mode": "white",
+        "composition": "text_card",
+        "content": "'most channels avoid this'",
+        "color": "inline_red_on_avoid",
+        "hold_s": 1.5,
+        "sfx": ["whoosh"]
+      }
+    },
+    "format.production_type": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'the format is simple:'", "color": "neutral", "hold_s": 1.0, "sfx": ["subtle_whoosh"] },
+        { "bg_mode": "white", "composition": "icon_card", "icon": "checkmark_green_circle", "content": "first element (e.g. 'AI voiceover')", "color": "neutral", "hold_s": 1.0, "sfx": ["subtle_whoosh"] },
+        { "bg_mode": "white", "composition": "icon_card", "icon": "checkmark_green_circle", "content": "second element (e.g. 'animated visuals')", "color": "neutral", "hold_s": 1.0, "sfx": ["subtle_whoosh"] }
+      ],
+      "notes": "List the production-style elements as checkmark cards."
+    },
+    "format.tool_named": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'they use'", "color": "neutral", "hold_s": 0.8 },
+        { "bg_mode": "dark_gray", "composition": "mini_player_card", "content": "tool screenshot or logo", "hold_s": 1.5, "sfx": ["subtle_whoosh", "optional_click"] }
+      ]
+    },
+    "recipe.formula": {
+      "primary": {
+        "bg_mode": "mixed",
+        "composition": "narration_with_content_demo",
+        "description": "Alternates white-bg narration text-cards with dark_gray-bg mini-player-cards showing the actual channel's content while narrator describes the recipe.",
+        "diegetic_audio": true,
+        "audio_rule": "Use the source channel's native audio under the mini-player content. Duck under narrator. Music returns to baseline when content clip ends.",
+        "hold_per_content_sample_s": "2-4",
+        "sfx": ["whoosh_on_transitions"]
+      }
+    },
+    "time.posting_year": {
+      "primary": {
+        "bg_mode": "white",
+        "composition": "text_card_in_title_sequence",
+        "content": "year reference (e.g. 'in 2026')",
+        "color": "neutral",
+        "notes": "Folded into the video's intro title sequence, not a standalone slot reveal."
+      }
+    },
+    "growth.in_period": {
+      "sequence": [
+        { "bg_mode": "white", "composition": "text_card", "content": "'they got'", "color": "neutral", "hold_s": 0.8 },
+        { "bg_mode": "dark_gray", "composition": "thumbnail_card", "content": "the top video with view count visible", "annotation": "yellow ring on view count", "hold_s": 1.5, "sfx": ["whoosh", "ding"] },
+        { "bg_mode": "white", "composition": "text_card", "content": "'in just N months'", "color": "inline_green_on_N", "hold_s": 1.2, "sfx": ["subtle_whoosh"] }
+      ]
+    },
+    "cta.viewer_appreciation": {
+      "primary": {
+        "bg_mode": "white",
+        "composition": "icon_card",
+        "icon": "cat_thumbs_up",
+        "content": "'if you're watching this far, I appreciate it'",
+        "color": "neutral",
+        "hold_s": 2.0,
+        "audio_cue": "music_ducks_deeper",
+        "sfx": []
+      },
+      "frequency_rule": "Can appear once mid-body (around 60% point) or once at start of CTA."
+    },
+    "cta.subscribe_ask": {
+      "primary": {
+        "bg_mode": "white",
+        "composition": "text_card",
+        "content": "'hit subscribe'",
+        "color": "inline_green_on_subscribe (optional)",
+        "hold_s": 1.5,
+        "sfx": []
+      },
+      "notes": "MG uses no audio cue for subscribe — clean text card. No animated button overlay (Class A pattern, excluded)."
+    },
+    "cta.next_video_pitch": {
+      "primary": {
+        "bg_mode": "white",
+        "composition": "icon_card",
+        "icon": "pointing_hand",
+        "content": "'check out this video where I…'",
+        "color": "inline_green_on_'check out this video'",
+        "hold_s": 2.2,
+        "audio_cue": "ascending_electronic_sting on final beat"
+      }
+    }
+  },
+  "avoid_slots": {
+    "money.rpm_exposed":   "Skip render entirely. Compute RPM internally; show only the $ outcome.",
+    "social.likes":        "Skip render entirely.",
+    "time.posting_window": "Skip render entirely. If a time window is unavoidable, drop the 'past' modifier ('in 90 days' instead of 'in the past 90 days')."
+  },
+  "phase_2_proprietary_slots": {
+    "cohort.saturation_rank": {
+      "primary": { "bg_mode": "white", "composition": "text_card", "content": "'Nth most-active channel in this niche'", "color": "inline_green_on_rank", "hold_s": 1.5, "sfx": ["ding"] }
+    },
+    "cohort.growth_multiplier": {
+      "primary": { "bg_mode": "white", "composition": "text_card", "content": "'N× the cluster median views per day'", "color": "inline_green_on_multiplier", "hold_s": 1.5, "sfx": ["ding_rising_pitch"] }
+    },
+    "novelty.embedding_distance": {
+      "primary": { "bg_mode": "white", "composition": "text_card", "content": "'only N channels in our index look like this'", "color": "inline_green_on_count", "hold_s": 1.5, "sfx": ["soft_chimes"] }
+    },
+    "cohort.first_mover": {
+      "primary": { "bg_mode": "white", "composition": "text_card", "content": "'created N days ago, already top X%'", "color": "inline_green_on_both", "hold_s": 2.0, "sfx": ["ding_×2"] }
+    },
+    "niche.emergence_rate": {
+      "primary": { "bg_mode": "white", "composition": "text_card", "content": "'N new channels entered this niche in 60 days'", "color": "inline_green_on_count", "hold_s": 1.5, "sfx": ["ding"] }
+    }
+  },
+  "per_niche_beat_sequence": {
+    "description": "The composed sequence of slot renderings that make up one full niche-reveal segment.",
+    "median_duration_seconds": 50,
+    "beats": [
+      { "beat": "intro_card",       "slot": "niche.category (Number N)",     "hold_s": 0.8 },
+      { "beat": "niche_name_card",  "slot": "niche.category (name)",         "hold_s": 1.5 },
+      { "beat": "mascot_mosaic",    "slot": "niche.examples_mosaic",         "hold_s": 2.0 },
+      { "beat": "channel_proof_1",  "slot": "channel.subscribers + .video_count", "hold_s": 2.5 },
+      { "beat": "channel_proof_2",  "slot": "channel.age + .total_views",    "hold_s": 2.0 },
+      { "beat": "top_video_callout","slot": "video.top_video",               "hold_s": 2.0 },
+      { "beat": "top_views_seq",    "slot": "video.views_sequence",          "hold_s": 3.0 },
+      { "beat": "top_views_pano",   "slot": "video.views_panoramic",         "hold_s": 3.0 },
+      { "beat": "money_math",       "slot": "money.lump_sum (full 6-card sequence)", "hold_s": 6.7 },
+      { "beat": "recipe_demo",      "slot": "recipe.formula (mixed mini-player + narration)", "hold_s": 8.0 },
+      { "beat": "concept_tag",      "slot": "niche.concept_emphasis (chalkboard)", "hold_s": 1.2 },
+      { "beat": "appreciation_optional", "slot": "cta.viewer_appreciation",  "hold_s": 2.0 },
+      { "beat": "transition",       "slot": "music_track_fade + whoosh",     "hold_s": 0.5 }
+    ]
+  },
+  "next_checkpoints": [
+    "script-skeleton-class-b — narrator-text-per-beat template tying it all together",
+    "render-template-stack — HTML/CSS templates for each composition primitive",
+    "icon-library-asset-spec — SVG design spec for the 15 line-drawing icons",
+    "slot-rendering-class-a — same map for brand-studio template when we build it",
+    "slot-rendering-class-c — same map for Hindi listicle template"
+  ]
+}

@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "class": "B",
+  "scope": "Audio/SFX vocabulary for Class B (indie faceless / Money Groot grammar). Companion to visual-packaging-class-b.json.",
+  "source_video": {
+    "videoId": 14563,
+    "title": "11 Hidden Faceless YouTube Niches Explained",
+    "channel": "Money Groot",
+    "segment_count": 454,
+    "duration_seconds": 844,
+    "music_transitions_detected": 14,
+    "sfx_events_detected": 70
+  },
+  "systems": [
+    {
+      "id": "multi_track_music_rotation",
+      "label": "Multi-track music rotation by section semantic",
+      "rule": "Music isn't one track throughout — switch tracks at semantic boundaries. The track choice IS a signal of what mode the video is in.",
+      "transition_triggers": [
+        "section_boundary (new niche / tips section / CTA)",
+        "mode_shift (narration ↔ demo ↔ proof)",
+        "topic_match (tech niche → tech-themed track; gameplay → phonk; etc.)"
+      ],
+      "ducking_rule": "music drops ~6dB when narrator speaks, returns over ~200ms on pause"
+    },
+    {
+      "id": "diegetic_sfx_mirroring",
+      "label": "Audio plays what's being shown, not what's described",
+      "rule": "When narration describes a content style or action, the audio plays that action.",
+      "examples": [
+        { "narrated": "they use phonk music", "audio_plays": "actual phonk music" },
+        { "narrated": "they count money", "audio_plays": "cash-counting SFX" },
+        { "narrated": "thumbnail appears", "audio_plays": "ding SFX synced to thumbnail entry" },
+        { "narrated": "click to navigate", "audio_plays": "click SFX paired with cursor" }
+      ],
+      "principle": "Collapses gap between description and demonstration — audio equivalent of System E (YouTube-native visual language)"
+    },
+    {
+      "id": "music_ducking_under_narration",
+      "label": "Standard sidechain ducking",
+      "rules": [
+        "Music ducks ~6dB when narrator speaks",
+        "Returns to full volume on visual cuts with no narration",
+        "Explicit fade-out at section boundaries before new track fades in",
+        "One track at a time — no cross-fading multiple beds"
+      ]
+    },
+    {
+      "id": "single_male_narrator_calm",
+      "label": "Single male narrator, clear and measured",
+      "voice_spec": {
+        "gender": "male",
+        "energy": "calm/measured (NOT high-energy vlogger)",
+        "style": "documentary narrator / educational",
+        "articulation": "clear, mid-pitch",
+        "single_voice_throughout": true
+      }
+    }
+  ],
+  "music_tracks": [
+    {
+      "id": "upbeat_light",
+      "label": "Upbeat light",
+      "use_case": "default narration baseline",
+      "bpm": "~120",
+      "characteristics": "light electronic, no vocals, gentle",
+      "mg_segment_count": 157
+    },
+    {
+      "id": "upbeat_motivational",
+      "label": "Upbeat motivational",
+      "use_case": "proof / inspirational moments",
+      "bpm": "~125",
+      "characteristics": "uplifting, swelling",
+      "mg_segment_count": 74
+    },
+    {
+      "id": "upbeat_tech",
+      "label": "Upbeat tech-themed",
+      "use_case": "tech-niche topical match (AI, software, tools)",
+      "bpm": "~125",
+      "characteristics": "electronic, synth-heavy",
+      "mg_segment_count": 29
+    },
+    {
+      "id": "calm_uplifting",
+      "label": "Calm uplifting",
+      "use_case": "tips / educational moments",
+      "bpm": "~95",
+      "characteristics": "gentle, encouraging",
+      "mg_segment_count": 28
+    },
+    {
+      "id": "upbeat_calm",
+      "label": "Upbeat calm",
+      "use_case": "CTA outro",
+      "bpm": "~110",
+      "characteristics": "light, resolves cleanly",
+      "mg_segment_count": 1
+    },
+    {
+      "id": "upbeat_corporate",
+      "label": "Upbeat corporate-style",
+      "use_case": "section pivot transitions between niches",
+      "bpm": "~120",
+      "characteristics": "clean, neutral",
+      "mg_segment_count": 1
+    },
+    {
+      "id": "phonk_funk",
+      "label": "Phonk / electronic-funk",
+      "use_case": "DIEGETIC — used when demonstrating a niche whose content style uses this music",
+      "bpm": "~140",
+      "characteristics": "hype, distorted bass, vocal samples",
+      "mg_segment_count": 9
+    },
+    {
+      "id": "soft_calm",
+      "label": "Soft calm",
+      "use_case": "intimate / personal advice moments",
+      "bpm": "~80",
+      "characteristics": "gentle piano, ambient",
+      "mg_segment_count": 1,
+      "optional_expansion": true
+    },
+    {
+      "id": "upbeat_modern_inspirational",
+      "label": "Upbeat modern inspirational",
+      "use_case": "niche-specific (inspirational topics, motivational content)",
+      "bpm": "~120",
+      "characteristics": "modern pop-electronic, hopeful",
+      "mg_segment_count": 1,
+      "optional_expansion": true
+    },
+    {
+      "id": "energetic_dramatic",
+      "label": "Energetic dramatic",
+      "use_case": "hype peak moments",
+      "bpm": "~130",
+      "characteristics": "intense, builds, breaks",
+      "mg_segment_count": 1,
+      "optional_expansion": true
+    }
+  ],
+  "sfx_primitives": [
+    {
+      "id": "whoosh",
+      "label": "Whoosh",
+      "use": "primary transition SFX — every visual element entry/exit, every text-card cut, between niches",
+      "mg_usage_count": 43,
+      "variants": ["subtle (~200ms)", "sharp (~150ms)", "per-item (~150ms, used in rapid sequence)"],
+      "render_duration_ms": "150-400"
+    },
+    {
+      "id": "ding",
+      "label": "Ding",
+      "use": "exactly when a NUMBER or VALUE appears on screen",
+      "mg_usage_count": 5,
+      "render_duration_ms": "150",
+      "pitch_rule": "higher pitch for bigger numbers ($29k louder/higher than $6)"
+    },
+    {
+      "id": "click",
+      "label": "Click",
+      "use": "cursor clicks, scrolling, navigation actions",
+      "mg_usage_count": 5,
+      "render_duration_ms": "50-80"
+    },
+    {
+      "id": "keyboard_typing",
+      "label": "Keyboard typing",
+      "use": "when text appears on screen with typewriter effect",
+      "mg_usage_count": 4,
+      "render_duration_ms": "200-600 (3-6 keystrokes per word)"
+    },
+    {
+      "id": "bell_ring",
+      "label": "Bell ring",
+      "use": "affirmation / notification moments",
+      "mg_usage_count": 1,
+      "render_duration_ms": "400"
+    },
+    {
+      "id": "page_turn",
+      "label": "Page turn",
+      "use": "major section boundaries between topical shifts",
+      "mg_usage_count": 1,
+      "render_duration_ms": "300"
+    },
+    {
+      "id": "cash_counting",
+      "label": "Cash counting",
+      "use": "when referencing earnings totals / accumulating money",
+      "mg_usage_count": 1,
+      "render_duration_ms": "800-1200"
+    },
+    {
+      "id": "soft_chimes",
+      "label": "Soft chimes (rising)",
+      "use": "magical / positive reveal moments, 'the best part is…'",
+      "mg_usage_count": 1,
+      "render_duration_ms": "400-600"
+    },
+    {
+      "id": "mouse_click",
+      "label": "Mouse click",
+      "use": "proof navigation when actually demonstrating clicking through YouTube",
+      "mg_usage_count": 1,
+      "render_duration_ms": "50-80"
+    },
+    {
+      "id": "ascending_electronic_sting",
+      "label": "Ascending electronic sting",
+      "use": "final beat of CTA before the music ends",
+      "mg_usage_count": 1,
+      "render_duration_ms": "500"
+    },
+    {
+      "id": "generic_impact",
+      "label": "Generic impact / explosive",
+      "use": "rare hype moments",
+      "mg_usage_count": 2,
+      "render_duration_ms": "200"
+    }
+  ],
+  "diegetic_sfx_dynamic": {
+    "rule": "For per-niche content clips shown in rounded-rectangle frames, keep the source video's native audio underneath (ducked under narrator). Don't pre-bake diegetic SFX in the library.",
+    "examples_from_mg_niche_1_stickman": [
+      "crash sound",
+      "squish sound",
+      "whistle",
+      "water bubbling",
+      "engine revving",
+      "troll-face laughter",
+      "clapping"
+    ],
+    "implementation": "When generator pulls a content clip from a referenced channel, pull the matching audio segment with it. Mix at -12dB to -18dB under narration, full volume when narrator pauses."
+  },
+  "excluded_patterns": {
+    "rationale": "Class A audio signals — break the indie-faceless aesthetic.",
+    "patterns": [
+      "glitch_sfx_heavy_electronic_distortion",
+      "cinematic_orchestral_swells",
+      "multi_voice_narrator_mix",
+      "high_energy_vlogger_narration",
+      "loud_bang_explosion_on_number_reveal",
+      "multiple_sfx_stacked_on_single_cut",
+      "continuous_narration_no_music_gaps",
+      "subscribe_button_jingle_in_cta"
+    ]
+  },
+  "production_stack": {
+    "music_library": {
+      "minimum_tracks": 6,
+      "expanded_tracks": 10,
+      "sources": ["NoCopyrightSounds (NCS)", "Epidemic Sound", "Artlist", "YouTube Audio Library"],
+      "monthly_cost_estimate_usd": "0 to 15"
+    },
+    "sfx_library": {
+      "atomic_assets": 15,
+      "sources": ["YouTube Audio Library (free)", "freesound.org (free)", "Envato Elements (one-time pack)"],
+      "one_time_cost_estimate_usd": "0 to 20"
+    },
+    "voice": {
+      "provider_options": ["ElevenLabs", "Murf", "PlayHT"],
+      "voice_spec": "male, calm/measured, clear articulation, mid-pitch (documentary narrator style)",
+      "monthly_cost_estimate_usd": "5 to 22 (ElevenLabs Starter, ~30K characters/mo = several full videos)"
+    },
+    "mixing": {
+      "ducking_method": "sidechain compression OR FFmpeg sidechaincompress filter",
+      "ducking_amount_db": -6,
+      "release_time_ms": 200
+    }
+  },
+  "music_transitions_in_mg_source": [
+    { "at_seconds": 0,    "track": "upbeat_light",           "context": "video opens, niche 1 narration" },
+    { "at_seconds": 51,   "track": "phonk_funk",             "context": "DIEGETIC — gameplay demo begins" },
+    { "at_seconds": 62,   "track": "energetic_dramatic",     "context": "hype peak" },
+    { "at_seconds": 104,  "track": "phonk_funk",             "context": "DIEGETIC — back to demonstration" },
+    { "at_seconds": 121,  "track": "upbeat_light",           "context": "back to narration" },
+    { "at_seconds": 241,  "track": "upbeat_corporate",       "context": "niche 4 opens — section pivot" },
+    { "at_seconds": 300,  "track": "soft_calm",              "context": "personal tips section" },
+    { "at_seconds": 363,  "track": "calm_uplifting",         "context": "tips continue with slight uplift" },
+    { "at_seconds": 421,  "track": "upbeat_motivational",    "context": "proof-heavy niche begins" },
+    { "at_seconds": 541,  "track": "upbeat_tech",            "context": "niche 8: AI game development (topic match)" },
+    { "at_seconds": 600,  "track": "upbeat_light",           "context": "niche transition" },
+    { "at_seconds": 661,  "track": "upbeat_modern_inspirational", "context": "niche 10/11 inspirational" },
+    { "at_seconds": 722,  "track": "upbeat_light",           "context": "wrap-up of body" },
+    { "at_seconds": 781,  "track": "upbeat_calm",            "context": "CTA outro" }
+  ],
+  "audio_composition_example": {
+    "scenario": "Single niche reveal sequence aligned with visual composition example",
+    "sequence": [
+      { "visual": "Number 4 card (white bg)",                "music": "upbeat_corporate", "sfx": ["whoosh on entry", "ding on number"] },
+      { "visual": "Niche name card",                          "music": "continues",        "sfx": [] },
+      { "visual": "YT channel page + yellow circle on subs", "music": "ducks for narrator", "sfx": ["whoosh on page-load"] },
+      { "visual": "Shrug character + '$6 RPM' green inline", "music": "continues",        "sfx": ["ding when $6 appears"] },
+      { "visual": "Most-popular video callout card",          "music": "continues",        "sfx": ["ding when thumbnail lands"] },
+      { "visual": "Text card: 'this would translate to'",     "music": "continues",        "sfx": ["subtle whoosh"] },
+      { "visual": "Text card: '$6,000' huge green",           "music": "continues",        "sfx": ["ding (pitched higher — bigger number)"] },
+      { "visual": "Text card: 'from ads'",                    "music": "continues",        "sfx": ["subtle whoosh"] },
+      { "visual": "Chalkboard: STORYTELLING",                 "music": "continues",        "sfx": ["soft chime"] },
+      { "visual": "Cat thumbs-up + viewer appreciation",      "music": "ducks deeper for personal moment", "sfx": [] },
+      { "visual": "End of niche → next niche",                "music": "fades out → new track fades in", "sfx": ["whoosh on transition"] }
+    ]
+  }
+}
