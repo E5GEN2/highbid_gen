@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "class": "B",
+  "class_label": "Indie faceless (Money Groot grammar)",
+  "scope": "v1 default — no talking head, no studio, no motion-graphics designer. Every primitive is renderable from our DB + a small static asset library.",
+  "source_reference_videos": [
+    { "videoId": 14563, "title": "11 Hidden Faceless YouTube Niches Explained", "channel": "Money Groot", "viewCount": 121507 },
+    { "videoId": 14435, "title": "20 Easy Faceless Niches Explained in 17 Minutes", "channel": "Money Groot", "viewCount": 175000 }
+  ],
+  "systems": [
+    {
+      "id": "two_background_semantic",
+      "label": "Two-background semantic system",
+      "rule": "Every frame lives in ONE of two background modes; viewer subconsciously knows where they are (narration vs proof) from bg color alone.",
+      "modes": [
+        { "name": "white",     "color_hex": "#FFFFFF", "role": "narration / commentary / creator's voice", "corpus_count": 196 },
+        { "name": "dark_gray", "color_hex": "#2A2A2A", "role": "YouTube-world / proof / data",            "corpus_count": 92 }
+      ],
+      "violations_to_avoid": "putting narration text on dark gray bg, putting YT data on white bg — breaks the signaling"
+    },
+    {
+      "id": "card_with_padding_composition",
+      "label": "Card-with-padding composition",
+      "rule": "No content fills the frame edge-to-edge. Every YT screenshot, thumbnail, video clip is a padded card sitting on the background. The padding IS the layout.",
+      "render_spec": {
+        "outer_container": "full-frame solid background color (per two_background_semantic)",
+        "inner_card": "centered, max 80-85% of frame width, rounded corners 8-16px",
+        "padding_min_percent": 8
+      }
+    },
+    {
+      "id": "typographic_hierarchy_color_semantics",
+      "label": "Typographic hierarchy + color semantics within cards",
+      "rule": "Text within a card has hierarchy by size + weight + color. Key word emphasized, connectors neutral. Color is semantic.",
+      "color_semantics": {
+        "green":  { "hex": "#22C55E", "meaning": "money / opportunity / positive" },
+        "red":    { "hex": "#EF4444", "meaning": "warning / friction / 'don't do this'" },
+        "yellow": { "hex": "#FACC15", "meaning": "highlight / 'look here' — reserved for circles/backgrounds, NOT inline text" },
+        "black":  { "hex": "#111111", "meaning": "neutral narration on white bg" },
+        "white":  { "hex": "#FFFFFF", "meaning": "neutral narration on dark gray bg" }
+      },
+      "token_roles": [
+        { "name": "connector",   "size": "normal",       "weight": "regular", "color": "neutral",     "example": "this would translate to" },
+        { "name": "emphasis",    "size": "same/slightly bigger", "weight": "bold",    "color": "green/red", "example": "2 Tips, in high cpm countries" },
+        { "name": "money_shot",  "size": "much larger",  "weight": "bold",    "color": "green",       "example": "$29,000, $6,000" }
+      ],
+      "principle": "Visual equivalent of vocal stress — delivers the emphasis a talking head would convey with voice inflection."
+    },
+    {
+      "id": "line_drawing_host_proxy",
+      "label": "Line-drawing characters as faceless-host proxy",
+      "rule": "Stylized line-drawing icons substitute for the host's facial expressions. Every emotional/reaction beat → an icon.",
+      "principle": "The icon library is the host's face decomposed into reusable reactions. Without this, the video has no emotional register."
+    },
+    {
+      "id": "youtube_native_visual_language",
+      "label": "YouTube native visual language as the video's own",
+      "rule": "All proof-side visuals must visually match YouTube's actual rendering — channel pages, About pages, thumbnail cards ('29M views • 7 months ago'), search results, rounded-rectangle mini-player frames for content clips.",
+      "principle": "Authenticity by mimicry. Viewers instinctively trust what looks like YouTube. Removes need for custom motion-graphics."
+    }
+  ],
+  "primitives": [
+    {
+      "id": "icon_library",
+      "label": "Line-drawing icon library (host-reaction proxies)",
+      "category": "icon",
+      "icons": [
+        { "id": "shrug_with_question_marks", "use": "uncertainty, 'we don't know exactly', 'let's estimate'" },
+        { "id": "pointing_hand",             "use": "direct viewer address, 'this is for YOU'" },
+        { "id": "checkmark_green_circle",    "use": "confirmation, 'this works', 'this is safe'" },
+        { "id": "dollar_sign_green_circle",  "use": "monetization beat, 'you make money'" },
+        { "id": "cat_thumbs_up",             "use": "viewer-appreciation beat" },
+        { "id": "speaker_muted",             "use": "muted audio, 'you can't use this'" },
+        { "id": "speaker_with_sound_waves",  "use": "'audio is used here'" },
+        { "id": "shrug_emoji",               "use": "quick reaction beat" },
+        { "id": "cash_pile",                 "use": "money emphasis (sparingly)" }
+      ],
+      "render_spec": "flat single-color SVG (black on white bg / white on dark bg). Consistency of style across icons is mandatory — must look like the same line-drawing set.",
+      "asset_count_estimate": 15
+    },
+    {
+      "id": "most_popular_callout_card",
+      "label": "'Most popular video' isolated callout card",
+      "category": "composition",
+      "trigger": "speech references a specific top video (e.g. 'their most popular video has more than 1 million views')",
+      "render_spec": {
+        "background": "dark_gray",
+        "content": "single thumbnail centered with YT-native layout: thumbnail image + title text below + 'X views • N ago' timestamp",
+        "size_ratio": "~60% of card area (larger than grid items at ~30%)",
+        "hold_seconds": "1.5-2.5 (longer than rapid-fire grid cards)",
+        "no_grid_context": true
+      },
+      "distinct_from": "regular thumbnail cards in the per-niche proof grid"
+    },
+    {
+      "id": "yellow_circle_screenshot_annotation",
+      "label": "Yellow-circle / highlight annotation on element within a screenshot",
+      "category": "annotation",
+      "trigger": "speech references a specific element visible in the on-screen screenshot (e.g. subs number, view count, policy bullet)",
+      "render_spec": {
+        "overlay": "SVG circle/ring/box on top of screenshot",
+        "color_hex": "#FACC15",
+        "stroke_width_px": "4-6",
+        "fade_in_ms": 200,
+        "annotation_types": [
+          "ring around a specific number",
+          "background fill behind a number or word",
+          "highlight box around a row/bullet"
+        ]
+      }
+    },
+    {
+      "id": "inline_color_text_highlight",
+      "label": "Inline color highlighting within a text card",
+      "category": "typography",
+      "trigger": "emphasize a specific phrase within an otherwise-neutral text card",
+      "render_spec": {
+        "element": "<span> with color override",
+        "color_options": ["#22C55E (green, opportunity)", "#EF4444 (red, warning)"],
+        "size_rule": "same font size as surrounding text — NOT bigger (bigger is the money-shot full-card pattern)",
+        "weight": "bold"
+      },
+      "distinct_from": "money_shot_card (where the colored phrase is the whole-card content at much larger size)"
+    },
+    {
+      "id": "chalkboard_concept_tag",
+      "label": "Chalkboard concept tag",
+      "category": "annotation",
+      "trigger": "emphasize the load-bearing conceptual word of a niche segment",
+      "render_spec": {
+        "background": "dark green or black chalkboard texture",
+        "text_font": "serif chalk-style",
+        "text_color_hex": "#F8F4E3",
+        "centered": true,
+        "max_words": 3,
+        "hold_seconds": "1-2"
+      },
+      "frequency_rule": "at most once per niche segment — overusing dilutes the signal"
+    }
+  ],
+  "excluded_patterns": {
+    "rationale": "Class A signals. Including any of these in Class B output breaks the indie-faceless aesthetic.",
+    "patterns": [
+      "talking_head_on_camera",
+      "social_blade_overlay",
+      "custom_branded_earnings_callout",
+      "dark_grid_pattern_background",
+      "blue_gradient_background",
+      "particles_or_sparkles_animation",
+      "animated_word_by_word_text_reveal",
+      "vidiq_or_tubebuddy_overlay",
+      "subscribe_button_animation",
+      "end_card_video_thumbnail_grid",
+      "visible_browser_url_bar",
+      "corner_webcam_pip_host_overlay"
+    ]
+  },
+  "composition_example": {
+    "scenario": "Single niche reveal segment showing the systems + primitives in sequence",
+    "sequence": [
+      { "background": "white",     "card": "text", "content": "Number 4",                                    "systems_used": ["A", "B"],     "data_point": "niche.category" },
+      { "background": "white",     "card": "text", "content": "Movie & TV show breakdown",                   "systems_used": ["A", "B"],     "data_point": "niche.category" },
+      { "background": "dark_gray", "card": "screenshot+annotation", "content": "YT channel page + yellow circle on subs", "systems_used": ["A","B","E"], "primitives_used": ["yellow_circle_screenshot_annotation"], "data_point": "channel.subscribers" },
+      { "background": "white",     "card": "icon+text", "content": "shrug character + 'If we assume' + '$6 RPM' (green inline)", "systems_used": ["A","B","C","D"], "primitives_used": ["icon_library","inline_color_text_highlight"], "data_point": "money.rpm_silent" },
+      { "background": "dark_gray", "card": "most_popular_callout", "content": "Their most popular video — 1.3M views • 1 month ago", "systems_used": ["A","B","E"], "primitives_used": ["most_popular_callout_card"], "data_point": "video.top_video" },
+      { "background": "white",     "card": "text", "content": "this would translate to",                    "systems_used": ["A","B","C"], "token_role": "connector" },
+      { "background": "white",     "card": "text", "content": "$6,000",                                     "systems_used": ["A","B","C"], "token_role": "money_shot", "color": "green" },
+      { "background": "white",     "card": "text", "content": "from ads",                                   "systems_used": ["A","B","C"], "token_role": "connector" },
+      { "background": "dark_gray", "card": "chalkboard", "content": "STORYTELLING",                          "systems_used": ["A","B"],     "primitives_used": ["chalkboard_concept_tag"] },
+      { "background": "dark_gray", "card": "icon+text", "content": "cat-with-thumbs-up + 'if you're watching this far, I appreciate it'", "systems_used": ["A","B","D"], "primitives_used": ["icon_library"] }
+    ]
+  },
+  "render_feasibility": {
+    "asset_library_one_time_cost": [
+      "~15 SVG icons (line-drawing host-reaction set)",
+      "1 chalkboard texture asset",
+      "1 chalk-style font (free; e.g. Patrick Hand)",
+      "HTML/CSS templates: YT channel-page mock, YT About-page mock, YT thumbnail card, YT search-results mock"
+    ],
+    "render_stack": "HTML + CSS + static SVG. Backgrounds = solid colors. Text overlays = standard typography. Screenshots = templated and DB-fed.",
+    "no_required_assets": [
+      "stock footage",
+      "talking-head footage",
+      "motion-graphics library",
+      "third-party tool licenses (VidIQ, TubeBuddy, etc.)"
+    ]
+  },
+  "next_checkpoints": [
+    "audio-sfx-class-b — corpus mining of audio_description for music + SFX vocabulary",
+    "slot-rendering-class-b — for each data-points.json slot, which primitives deliver it",
+    "visual-packaging-class-a — brand-studio grammar when we decide to build it",
+    "visual-packaging-class-c — Hindi listicle grammar after Hindi corpus mining"
+  ]
+}
