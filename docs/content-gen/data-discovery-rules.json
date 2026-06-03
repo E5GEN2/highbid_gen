@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "scope": "Channel discovery rules — given a niche cluster, decide WHICH channels make it into a generated listicle.",
+  "source_corpus": {
+    "host_videos_analyzed": 320,
+    "channel_references_extracted": 679,
+    "method": "reverse-engineered from visual_description + speech_transcription mining of winners' listicle videos"
+  },
+  "hard_filters": {
+    "A_scale": {
+      "A1_subscriber_band": { "min": 10000, "max": 5000000, "rationale": "Below 10K = no monetization proof; above 5M = breaks replicability framing (corpus: 95% of picks in this band)" },
+      "A2_top_video_views_floor": { "min": 1000000, "rationale": "Top video must have crossed 1M views (corpus: 73% of picks have ≥1M, 94% have ≥100K). The proof anchor." },
+      "A3_views_to_subs_ratio_floor": { "min": 5, "rationale": "Top video reaches ≥5× subscriber base (corpus median: 33×). Filters out mature channels with no recent virality." }
+    },
+    "B_recency": {
+      "B1_channel_age_max_days": { "max": 730, "preferred_max": 365, "ideal_max": 180, "rationale": "Median picked channel age is 90 days. 'Brand new AND already viral' is the dominant narrative." },
+      "B2_top_video_max_age_months": { "max": 12, "rationale": "Top video posted within last 12 months — channel is currently relevant." }
+    },
+    "C_topical": {
+      "C1_cluster_membership": { "required": true, "rationale": "Channel has ≥1 video assigned to the requested niche_tree_clusters.id. No separate is_faceless check — cluster membership in a faceless cluster implies it." }
+    },
+    "D_proof_quality": {
+      "D1_minimum_video_count": { "min": 5, "rationale": "Excludes one-and-done channels — must have at least 5 uploads." },
+      "D2_not_one_viral_wonder": { "ratio_floor": 0.05, "formula": "median(view_count) / max(view_count) ≥ 0.05", "rationale": "Engage.one_viral_only was 0.25× loser-coded in corpus. Median performance must be at least 5% of top video." }
+    }
+  },
+  "proprietary_boosts": {
+    "rationale": "Don't exclude — re-rank candidates that already passed A-D. Phase 2 features.",
+    "boosts": [
+      {
+        "id": "E1_consensus_picks_count",
+        "description": "How often this channel has been referenced in our analyzed listicle corpus",
+        "weight_curve": "diminishing returns above 3 mentions; penalty above 4"
+      },
+      {
+        "id": "E2_cohort_growth_multiplier",
+        "description": "channel.views_per_day / median(cohort.views_per_day) within the same cluster"
+      },
+      {
+        "id": "E3_novelty_embedding_distance",
+        "description": "Mean cosine distance to K-nearest in combined_v2 embedding space. Already computed as novelty_score in our DB."
+      },
+      {
+        "id": "E4_niche_emergence_signal",
+        "description": "Channel created in last 60 days AND already in top-5% of its cluster by views_per_day"
+      }
+    ]
+  },
+  "assembly_gates": {
+    "rationale": "Applied at LISTICLE assembly time, not per-channel. Operate on the full candidate pool after per-niche discovery.",
+    "gates": [
+      {
+        "id": "gate_1_consensus_pick_cap",
+        "rule": "If channel.consensus_picks_count ≥ 5 in corpus, down-weight by 50% on tie-breaks",
+        "rationale": "Channels already featured in 5+ other listicles are over-exposed. Diminishing novelty value."
+      },
+      {
+        "id": "gate_2_niche_cluster_saturation",
+        "rule": "Each niche slot gets at most K=3 channels (default K=2 hero + supporting). No two niches in the same listicle may share cluster_id.",
+        "rationale": "Forces niche diversity per listicle. Prevents 5 channels from one viral sub-cluster being labeled 'Top 5 niches'."
+      },
+      {
+        "id": "gate_3_scale_diversity",
+        "rule": "Within one generated listicle, at least 1 channel ∈ [10K,100K], at least 1 ∈ [100K,1M], at least 1 ∈ [1M,5M]",
+        "rationale": "Listicles need rhythm — 'this tiny channel... AND this big one...' narrative variation."
+      }
+    ]
+  },
+  "composite_score_formula": {
+    "expression": "0.30*recency + 0.25*virality + 0.20*scale + 0.15*proof + 0.10*novelty + boost_consensus - penalty_overpicked",
+    "components": {
+      "recency_score":    { "formula": "exp(-channel_age_days / 365)", "range": "[0,1]" },
+      "virality_score":   { "formula": "min(views_to_subs_ratio / 100, 1.0)", "range": "[0,1]" },
+      "scale_score":      { "formula": "bell_curve(subscribers, mean=200000, sd=400000)", "range": "[0,1]" },
+      "proof_score":      { "formula": "min(top_video_views / 10_000_000, 1.0)", "range": "[0,1]" },
+      "novelty_score":    { "formula": "novelty.embedding_distance (already 0-1 in our DB)", "range": "[0,1]" },
+      "boost_consensus":  { "formula": "1 + 0.05 * min(consensus_picks_count, 4)", "range": "[1.0, 1.2]" },
+      "penalty_overpicked": { "formula": "max(1 - 0.10 * (consensus_picks_count - 4), 0.7)", "range": "[0.7, 1.0]" }
+    }
+  },
+  "discovery_function": {
+    "signature": "discoverChannelsForNiche(nicheClusterId: number, targetCount: number = 5): Promise<DiscoveredChannel[]>",
+    "steps": [
+      "1. SQL query: candidates passing A + B + C + D via JOIN niche_tree_assignments + shorts_channels + shorts_videos",
+      "2. Enrich with proprietary signals (novelty, cohort growth, consensus picks)",
+      "3. Compute composite score per candidate",
+      "4. Sort descending; return top targetCount",
+      "5. Listicle assembler applies Gates 1-3 across N×K candidate pool from N niches"
+    ]
+  },
+  "intentionally_excluded_rules": [
+    {
+      "rule": "aiCategory == 'brand_account'",
+      "reason": "No reliable classifier in our DB. Brand accounts producing good faceless content still prove the niche works."
+    },
+    {
+      "rule": "content-analysis SaaS-brand filter",
+      "reason": "Requires per-channel Gemini analysis we may not have run. Scale + cluster filters already exclude most marketing accounts."
+    },
+    {
+      "rule": "is_faceless == true",
+      "reason": "Redundant with cluster membership. Brittle binary classification — cluster handles it."
+    },
+    {
+      "rule": "hard cap >5M subs",
+      "reason": "Already covered by A1 (10K-5M band)."
+    },
+    {
+      "rule": "subscriber_count > video_count",
+      "reason": "Not a strong corpus signal. Some viral young channels have very few videos."
+    },
+    {
+      "rule": "like-to-view ratio",
+      "reason": "May not be in our DB consistently; noisier than view count alone."
+    },
+    {
+      "rule": "country / region of channel",
+      "reason": "Listicle creators don't filter by geography (English-speaking audience assumed)."
+    }
+  ],
+  "empirical_distributions_used_for_thresholds": {
+    "subscribers": {
+      "median": 132000,
+      "buckets": { "<1K": 0.7, "1K-10K": 11, "10K-50K": 21, "50K-100K": 13, "100K-500K": 23, "500K-1M": 8, "1M-5M": 19, ">5M": 5 }
+    },
+    "top_video_views": {
+      "median": 2100000,
+      "buckets": { "<100K": 6, "100K-1M": 27, "1M-10M": 45, "10M-100M": 18, ">100M": 3 }
+    },
+    "channel_age_days": {
+      "median": 90,
+      "buckets": { "<3mo": 45, "3-6mo": 14, "6-12mo": 19, "1-2yr": 7, ">2yr": 14 }
+    },
+    "views_to_subs_ratio": {
+      "median": 33.58,
+      "buckets": { "<1x": 12, "1-5x": 8, "5-20x": 20, "20-100x": 30, ">100x": 29 }
+    },
+    "earnings_monthly_usd_claimed": {
+      "median": 8000,
+      "buckets": { "<1K": 16, "1K-10K": 39, "10K-50K": 37, "50K-100K": 7, ">100K": 1 },
+      "note": "side-effect of other filters, not a discovery filter itself"
+    },
+    "channels_per_listicle_video": {
+      "median": 2,
+      "mean": 3.9,
+      "p75": 5
+    }
+  },
+  "consensus_picks_in_corpus": {
+    "note": "Channels referenced multiple times across our analyzed listicle videos — strong meta-signal of pick-worthiness",
+    "examples": [
+      { "channel": "Polar Ranks",       "picks": 7, "scale": "117K-592K subs" },
+      { "channel": "MagnatesMedia",     "picks": 7, "scale": "1.15M-1.33M subs" },
+      { "channel": "Chris Invests",     "picks": 7, "scale": "354K subs, 34M views" },
+      { "channel": "Felune",            "picks": 6, "scale": "87K-3.6M subs" },
+      { "channel": "Productive Peter",  "picks": 6, "scale": "266K-278K subs" },
+      { "channel": "Nick Invests",      "picks": 5, "scale": "100K-1.66M subs" },
+      { "channel": "Primate Economics", "picks": 5, "scale": "538K-560K subs" }
+    ]
+  },
+  "test_cases": [
+    {
+      "name": "VES STICK (Money Groot's #1 example)",
+      "subscribers": 437000,
+      "top_video_views": 29000000,
+      "ratio": 66,
+      "age_days": 150,
+      "video_count": 122,
+      "expected": "PASS",
+      "verdict": "All hard filters pass; strong virality score"
+    },
+    {
+      "name": "InVideo For Content Creators (brand account)",
+      "subscribers": 250000,
+      "top_video_views": 1370000,
+      "ratio": 5.5,
+      "age_days": 2200,
+      "expected": "FAIL on B1 recency (>730 days)",
+      "verdict": "Correctly rejected by recency rule even without an explicit brand-account filter — recency captures it"
+    },
+    {
+      "name": "Productive Peter (consensus pick × 6)",
+      "subscribers": 266000,
+      "top_video_views": "viral",
+      "consensus_picks_count": 6,
+      "expected": "PASS but ranked-down by penalty_overpicked",
+      "verdict": "Composite score reduced by overpicked penalty; can still appear but less likely top of list"
+    },
+    {
+      "name": "Brand-new channel (28d, 50K subs, 2M debut video)",
+      "subscribers": 50000,
+      "top_video_views": 2000000,
+      "ratio": 40,
+      "age_days": 28,
+      "video_count": 6,
+      "median_to_top_ratio": 0.05,
+      "expected": "PASS",
+      "verdict": "Exactly the 'fresh and breaking' channel listicle creators love — extreme recency bonus"
+    }
+  ],
+  "default_parameters": {
+    "channels_per_niche_target": 2,
+    "niches_per_listicle_target": 8,
+    "total_channels_per_listicle": 16,
+    "discovery_top_k_per_niche": 5,
+    "note": "Pull top-5 per niche then let assembly gates select final 2 per niche from those"
+  }
+}
