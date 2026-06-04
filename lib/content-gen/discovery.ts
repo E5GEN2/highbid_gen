@@ -87,6 +87,7 @@ export interface DiscoveryCandidate {
   top_video_views: number;
   top_video_id: number;
   top_video_title: string | null;
+  top_video_thumbnail: string | null;
   top_video_posted_at: string | null;
   /** Distinct videos this channel has in our niche_spy_videos index. */
   videos_indexed: number;
@@ -189,6 +190,7 @@ export async function discoverChannels(
         v.channel_id,
         v.id AS top_video_id,
         v.title AS top_video_title,
+        v.thumbnail AS top_video_thumbnail,
         v.posted_at AS top_video_posted_at
       FROM niche_spy_videos v
       ${scopeJoin}
@@ -212,6 +214,7 @@ export async function discoverChannels(
         pc.max_novelty,
         tv.top_video_id,
         tv.top_video_title,
+        tv.top_video_thumbnail,
         tv.top_video_posted_at
       FROM per_channel pc
       JOIN niche_spy_channels sc ON sc.channel_id = pc.channel_id
@@ -232,6 +235,7 @@ export async function discoverChannels(
       e.max_novelty,
       e.top_video_id,
       e.top_video_title,
+      e.top_video_thumbnail,
       e.top_video_posted_at,
       EXTRACT(EPOCH FROM (NOW() - e.effective_created_at)) / 86400 AS channel_age_days
     FROM enriched e
@@ -282,7 +286,25 @@ export async function discoverChannels(
     run_id: number;
     run_kind: string | null;
   }>(
-    `SELECT DISTINCT ON (a.video_id, c.level)
+    // We have multiple global runs over time + subdivide runs per L1
+    // parent. To get ONE canonical (L1, L2) per video, restrict to:
+    //   L1: clusters from THE latest done global run
+    //   L2: clusters from the latest subdivide for each L1 parent
+    // Aligns discover output with overwatch's ready_clusters list so
+    // candidates' showcase cluster_id is the same id the overwatch
+    // surfaces.
+    `WITH latest_global AS (
+       SELECT id FROM niche_tree_runs
+       WHERE kind = 'global' AND status = 'done'
+       ORDER BY started_at DESC NULLS LAST LIMIT 1
+     ),
+     latest_subdivide_per_parent AS (
+       SELECT DISTINCT ON (parent_cluster_id) id, parent_cluster_id
+       FROM niche_tree_runs
+       WHERE kind = 'subdivide' AND status = 'done'
+       ORDER BY parent_cluster_id, started_at DESC NULLS LAST
+     )
+     SELECT DISTINCT ON (a.video_id, c.level)
        a.video_id,
        c.level,
        a.cluster_id,
@@ -296,6 +318,11 @@ export async function discoverChannels(
      JOIN niche_tree_runs r ON r.id = a.run_id
      WHERE a.video_id = ANY($1::int[])
        AND a.cluster_id IS NOT NULL
+       AND (
+         (c.level = 1 AND r.id = (SELECT id FROM latest_global))
+         OR
+         (c.level = 2 AND r.id IN (SELECT id FROM latest_subdivide_per_parent))
+       )
      ORDER BY a.video_id, c.level, r.started_at DESC NULLS LAST`,
     [topVideoIds],
   );
@@ -387,6 +414,7 @@ export async function discoverChannels(
       top_video_views:      topV,
       top_video_id:         Number(r.top_video_id),
       top_video_title:      r.top_video_title,
+      top_video_thumbnail:  r.top_video_thumbnail,
       top_video_posted_at:  r.top_video_posted_at?.toISOString?.() ?? null,
       videos_indexed:       Number(r.videos_indexed),
       median_video_views:   medV,

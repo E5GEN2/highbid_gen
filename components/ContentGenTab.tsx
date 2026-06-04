@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 /**
  * Admin → Content Gen tab.
@@ -50,6 +50,8 @@ interface Candidate {
   top_video_id: number;
   top_video_title: string | null;
   top_video_posted_at: string | null;
+  /** Thumbnail URL of the top video — fetched separately for v1. */
+  top_video_thumbnail?: string | null;
   videos_indexed: number;
   median_video_views: number;
   views_to_subs_ratio: number;
@@ -161,7 +163,6 @@ export default function ContentGenTab({ active }: { active: boolean }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nicheLevel, setNicheLevel] = useState<1 | 2>(2);
-  const [selectedNiche, setSelectedNiche] = useState<ReadyClusterEntry | null>(null);
   const [selectedChannels, setSelectedChannels] = useState<Set<string>>(new Set());
 
   // Channel explorer state
@@ -193,16 +194,6 @@ export default function ContentGenTab({ active }: { active: boolean }) {
     void loadAll();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
-
-  const channelsInSelectedNiche = useMemo(() => {
-    if (!selectedNiche) return [];
-    return candidates
-      .filter(c => {
-        const sc = nicheLevel === 1 ? c.showcase_clusters.l1 : c.showcase_clusters.l2;
-        return sc?.cluster_id === selectedNiche.cluster_id;
-      })
-      .sort((a, b) => b.composite_score - a.composite_score);
-  }, [candidates, selectedNiche, nicheLevel]);
 
   const probeChannel = async () => {
     if (!probeInput.trim()) return;
@@ -321,7 +312,7 @@ export default function ContentGenTab({ active }: { active: boolean }) {
                 <button
                   key={opt.key}
                   type="button"
-                  onClick={() => { setNicheLevel(opt.key as 1 | 2); setSelectedNiche(null); }}
+                  onClick={() => { setNicheLevel(opt.key as 1 | 2); }}
                   className={`px-3 py-1.5 rounded-md text-xs border transition ${
                     nicheLevel === opt.key
                       ? 'bg-amber-400/15 text-amber-300 border-amber-400/40'
@@ -339,124 +330,66 @@ export default function ContentGenTab({ active }: { active: boolean }) {
             )}
           </div>
 
-          {/* Two-column layout: niches list | channels in selected niche */}
-          <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-4">
-            {/* Niches list */}
-            <div className="space-y-1">
-              {!overwatch && loading && <div className="text-xs text-[#888]">Loading…</div>}
-              {overwatch && (nicheLevel === 1 ? overwatch.ready_clusters.top_l1_niches : overwatch.ready_clusters.top_l2_subniches).length === 0 && (
-                <div className="text-xs text-[#888] p-3 rounded-md bg-[#0f0f0f] border border-[#1f1f1f]">
+          {/* Suggested-listicle cards — one card per ready niche */}
+          {!overwatch && loading && (
+            <div className="text-xs text-[#888]">Loading suggestions…</div>
+          )}
+          {overwatch && (() => {
+            const nicheList = nicheLevel === 1
+              ? overwatch.ready_clusters.top_l1_niches
+              : overwatch.ready_clusters.top_l2_subniches;
+            if (nicheList.length === 0) {
+              return (
+                <div className="p-6 rounded-md bg-[#0f0f0f] border border-[#1f1f1f] text-xs text-[#888] text-center">
                   No niches with ≥2 viable channels at this level yet.
                 </div>
-              )}
-              {overwatch && (nicheLevel === 1 ? overwatch.ready_clusters.top_l1_niches : overwatch.ready_clusters.top_l2_subniches).map(n => {
-                const isSelected = selectedNiche?.cluster_id === n.cluster_id;
-                return (
-                  <button
-                    key={`${n.cluster_id}-${n.started_at}`}
-                    type="button"
-                    onClick={() => setSelectedNiche(n)}
-                    className={`w-full text-left px-3 py-2 rounded-md border transition ${
-                      isSelected
-                        ? 'bg-amber-400/10 border-amber-400/40'
-                        : 'bg-[#0f0f0f] border-[#1f1f1f] hover:border-[#333]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium text-white truncate">
-                          {n.cluster_label || `cluster #${n.cluster_id}`}
-                        </div>
-                        <div className="text-[10px] text-[#666] mt-0.5 flex items-center gap-2">
-                          <span>cluster {n.cluster_id}</span>
-                          {n.parent_cluster_id && <span>parent L1: {n.parent_cluster_id}</span>}
-                          <span>{fmtNum(n.cluster_video_count)} videos</span>
-                        </div>
-                      </div>
-                      <div className="flex flex-col items-end">
-                        <span className={`text-sm font-bold tabular-nums ${n.viable_channel_count >= 8 ? 'text-emerald-300' : n.viable_channel_count >= 4 ? 'text-amber-300' : 'text-[#aaa]'}`}>
-                          {n.viable_channel_count}
-                        </span>
-                        <span className="text-[9px] text-[#666] uppercase">viable</span>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+              );
+            }
+            // Build cards: one per ready niche, paired with the
+            // channels from the cached candidate pool whose showcase
+            // matches it. Skip niches with zero matched channels (data
+            // misalignment edge cases) so the user only sees actionable
+            // suggestions.
+            const cards = nicheList
+              .map(niche => {
+                const channels = candidates
+                  .filter(c => {
+                    const sc = nicheLevel === 1 ? c.showcase_clusters.l1 : c.showcase_clusters.l2;
+                    return sc?.cluster_id === niche.cluster_id;
+                  })
+                  .sort((a, b) => b.composite_score - a.composite_score);
+                return { niche, channels };
+              })
+              .filter(card => card.channels.length > 0);
 
-            {/* Channels in selected niche */}
-            <div className="space-y-2">
-              {!selectedNiche && (
+            if (cards.length === 0) {
+              return (
                 <div className="p-6 rounded-md bg-[#0f0f0f] border border-[#1f1f1f] text-xs text-[#888] text-center">
-                  Pick a niche on the left to see its viable channels.
+                  Ready niches surfaced but their channels didn&apos;t make the cached top-300 pool. Try Refresh or widen the pool.
                 </div>
-              )}
-              {selectedNiche && (
-                <>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-semibold text-white">
-                        {selectedNiche.cluster_label || `cluster #${selectedNiche.cluster_id}`}
-                      </div>
-                      <div className="text-[10px] text-[#666] mt-0.5">
-                        Cluster {selectedNiche.cluster_id} ·{' '}
-                        {nicheLevel === 1 ? 'L1 niche' : `L2 sub-niche${selectedNiche.parent_cluster_id ? ` (parent L1 ${selectedNiche.parent_cluster_id})` : ''}`} ·{' '}
-                        {fmtNum(selectedNiche.cluster_video_count)} total videos ·{' '}
-                        {selectedNiche.viable_channel_count} viable channels
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = new Set(selectedChannels);
-                          for (const c of channelsInSelectedNiche) next.add(c.channel_id);
-                          setSelectedChannels(next);
-                        }}
-                        className="text-[10px] px-2 py-1 rounded border border-[#2a2a2a] text-[#aaa] hover:border-amber-400 hover:text-amber-300"
-                      >
-                        Select all
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = new Set(selectedChannels);
-                          for (const c of channelsInSelectedNiche) next.delete(c.channel_id);
-                          setSelectedChannels(next);
-                        }}
-                        className="text-[10px] px-2 py-1 rounded border border-[#2a2a2a] text-[#aaa] hover:border-red-400 hover:text-red-300"
-                      >
-                        Deselect
-                      </button>
-                    </div>
-                  </div>
+              );
+            }
 
-                  {channelsInSelectedNiche.length === 0 ? (
-                    <div className="p-3 rounded-md bg-[#0f0f0f] border border-[#1f1f1f] text-xs text-[#888]">
-                      No viable channels found at this niche level in the cached candidate pool. May be channels with this cluster as showcase that didn&apos;t make the top-300.
-                    </div>
-                  ) : (
-                    <div className="space-y-1">
-                      {channelsInSelectedNiche.map(c => (
-                        <ChannelRow
-                          key={c.channel_id}
-                          c={c}
-                          selected={selectedChannels.has(c.channel_id)}
-                          onToggle={() => {
-                            const next = new Set(selectedChannels);
-                            if (next.has(c.channel_id)) next.delete(c.channel_id);
-                            else next.add(c.channel_id);
-                            setSelectedChannels(next);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {cards.map(({ niche, channels }) => (
+                  <ListicleSuggestionCard
+                    key={`${niche.cluster_id}-${niche.started_at}`}
+                    niche={niche}
+                    level={nicheLevel}
+                    channels={channels}
+                    selectedChannels={selectedChannels}
+                    onToggleChannel={(channelId) => {
+                      const next = new Set(selectedChannels);
+                      if (next.has(channelId)) next.delete(channelId);
+                      else next.add(channelId);
+                      setSelectedChannels(next);
+                    }}
+                  />
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -595,53 +528,160 @@ function Stat({
   );
 }
 
-function ChannelRow({
-  c,
-  selected,
-  onToggle,
+/**
+ * One "suggested listicle" card. The card represents a video we could
+ * generate from this niche, with 3-5 of its viable channels as candidate
+ * items in the listicle. The user can toggle individual channels in/out
+ * before triggering generation.
+ *
+ * Layout:
+ *   Header: niche title + L1/L2 badge + parent L1 (for L2) + viable count
+ *   Body  : up to 5 channel rows with thumbnails of their top video
+ *   Footer: action buttons (Generate / Edit selection)
+ */
+function ListicleSuggestionCard({
+  niche,
+  level,
+  channels,
+  selectedChannels,
+  onToggleChannel,
 }: {
-  c: Candidate;
-  selected: boolean;
-  onToggle: () => void;
+  niche: ReadyClusterEntry;
+  level: 1 | 2;
+  channels: Candidate[];
+  selectedChannels: Set<string>;
+  onToggleChannel: (channelId: string) => void;
 }) {
+  // Show top-5 by composite score in the preview. The full list is
+  // queryable on click but for the card we only need a preview.
+  const previewChannels = channels.slice(0, 5);
+  const total = channels.length;
+  const selectedCount = previewChannels.filter(c => selectedChannels.has(c.channel_id)).length;
+
   return (
-    <div
-      className={`grid grid-cols-[24px_40px_1fr_60px_60px_60px_60px_60px_80px] items-center gap-2 px-2 py-1.5 rounded text-xs border transition ${
-        selected
-          ? 'bg-amber-400/10 border-amber-400/40'
-          : 'bg-[#0f0f0f] border-[#1f1f1f] hover:border-[#333]'
-      }`}
-    >
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={onToggle}
-        className="w-3.5 h-3.5 accent-amber-400"
-      />
-      {c.channel_avatar ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={c.channel_avatar} alt="" className="w-8 h-8 rounded-full object-cover" />
-      ) : (
-        <div className="w-8 h-8 rounded-full bg-[#222]" />
-      )}
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-white truncate font-medium">{c.channel_name || '(unnamed)'}</span>
-          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${ageTierColor[c.age_tier]}`}>
-            {c.age_tier.replace('_', '-')}
-          </span>
-        </div>
-        <div className="text-[10px] text-[#666] truncate" title={c.top_video_title || ''}>
-          {c.top_video_title || '—'}
+    <div className="rounded-lg bg-[#0f0f0f] border border-[#1f1f1f] hover:border-[#2a2a2a] transition overflow-hidden flex flex-col">
+      {/* Header */}
+      <div className="p-3 border-b border-[#1a1a1a]">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                level === 1
+                  ? 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
+                  : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+              }`}>
+                {level === 1 ? 'L1' : 'L2'}
+              </span>
+              <h3 className="text-sm font-semibold text-white truncate" title={niche.cluster_label || ''}>
+                {niche.cluster_label || `cluster #${niche.cluster_id}`}
+              </h3>
+            </div>
+            <div className="text-[10px] text-[#666] mt-1">
+              cluster {niche.cluster_id}
+              {niche.parent_cluster_id && <> · parent L1 {niche.parent_cluster_id}</>}
+              {' · '}{fmtNum(niche.cluster_video_count)} videos in niche
+            </div>
+          </div>
+          <div className="flex flex-col items-end shrink-0">
+            <span className={`text-base font-bold tabular-nums ${
+              total >= 8 ? 'text-emerald-300' : total >= 4 ? 'text-amber-300' : 'text-[#aaa]'
+            }`}>
+              {total}
+            </span>
+            <span className="text-[9px] text-[#666] uppercase leading-none">channels</span>
+          </div>
         </div>
       </div>
-      <div className="text-right tabular-nums text-[#ccc]">{fmtNum(c.subscriber_count)}</div>
-      <div className="text-right tabular-nums text-[#888]">{fmtAge(c.channel_age_days)}</div>
-      <div className="text-right tabular-nums text-[#ccc]">{fmtNum(c.top_video_views)}</div>
-      <div className="text-right tabular-nums text-[#aaa]">{c.views_to_subs_ratio}×</div>
-      <div className="text-right tabular-nums text-[#888]">{c.videos_indexed}</div>
-      <div className="text-right tabular-nums">
-        <span className="text-amber-300 font-medium">{c.composite_score.toFixed(3)}</span>
+
+      {/* Body — channel preview rows */}
+      <div className="divide-y divide-[#1a1a1a] flex-1">
+        {previewChannels.map(c => {
+          const isSel = selectedChannels.has(c.channel_id);
+          return (
+            <button
+              key={c.channel_id}
+              type="button"
+              onClick={() => onToggleChannel(c.channel_id)}
+              className={`w-full flex items-center gap-2 p-2 text-left transition ${
+                isSel ? 'bg-amber-400/5' : 'hover:bg-[#141414]'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={isSel}
+                onChange={() => {}}
+                className="w-3 h-3 accent-amber-400 shrink-0"
+              />
+              {/* Thumbnail of the top video — 16:9 aspect ratio */}
+              {c.top_video_thumbnail ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={c.top_video_thumbnail}
+                  alt=""
+                  className="w-16 h-9 object-cover rounded-sm bg-[#222] shrink-0"
+                />
+              ) : (
+                <div className="w-16 h-9 rounded-sm bg-[#1a1a1a] shrink-0 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-[#444]" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  {c.channel_avatar && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={c.channel_avatar} alt="" className="w-4 h-4 rounded-full object-cover shrink-0" />
+                  )}
+                  <span className="text-xs text-white truncate font-medium">{c.channel_name || '(unnamed)'}</span>
+                  <span className={`text-[8px] px-1 py-px rounded border shrink-0 ${ageTierColor[c.age_tier]}`}>
+                    {c.age_tier === 'ultra_young' ? 'ultra' : c.age_tier === 'mid_young' ? 'mid' : c.age_tier}
+                  </span>
+                </div>
+                <div className="text-[10px] text-[#888] truncate" title={c.top_video_title || ''}>
+                  {c.top_video_title || '—'}
+                </div>
+                <div className="flex items-center gap-2 mt-0.5 text-[9px] text-[#666] tabular-nums">
+                  <span>{fmtNum(c.subscriber_count)} subs</span>
+                  <span>·</span>
+                  <span className="text-[#aaa]">{fmtNum(c.top_video_views)} top views</span>
+                  <span>·</span>
+                  <span>{c.views_to_subs_ratio}×</span>
+                  <span>·</span>
+                  <span>{fmtAge(c.channel_age_days)}</span>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+        {total > 5 && (
+          <div className="px-2 py-1.5 text-[10px] text-[#666] text-center">
+            + {total - 5} more candidate{total - 5 === 1 ? '' : 's'} in this niche
+          </div>
+        )}
+      </div>
+
+      {/* Footer — actions */}
+      <div className="p-2 border-t border-[#1a1a1a] flex items-center justify-between gap-2 bg-[#0a0a0a]">
+        <span className="text-[10px] text-[#666]">
+          {selectedCount > 0 ? (
+            <>
+              <span className="text-amber-300">{selectedCount}</span> picked
+            </>
+          ) : (
+            'Pick channels to include'
+          )}
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled
+            title="Coming soon — generate a Class B listicle from this niche"
+            className="text-[10px] px-2 py-1 rounded border border-amber-500/40 text-amber-300 bg-amber-400/5 hover:bg-amber-400/15 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Generate ▸
+          </button>
+        </div>
       </div>
     </div>
   );

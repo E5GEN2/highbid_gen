@@ -295,7 +295,18 @@ export async function GET(req: NextRequest) {
         AND pc.videos_indexed >= 5
         AND pc.median_views::float / NULLIF(pc.top_video_views, 0) >= 0.05
     )
-    , raw_clusters AS (
+    , latest_global AS (
+      SELECT id FROM niche_tree_runs
+      WHERE kind = 'global' AND status = 'done'
+      ORDER BY started_at DESC NULLS LAST LIMIT 1
+    ),
+    latest_subdivide_per_parent AS (
+      SELECT DISTINCT ON (parent_cluster_id) id
+      FROM niche_tree_runs
+      WHERE kind = 'subdivide' AND status = 'done'
+      ORDER BY parent_cluster_id, started_at DESC NULLS LAST
+    ),
+    raw_clusters AS (
       SELECT
         c.id AS cluster_id,
         c.level AS level,
@@ -310,6 +321,13 @@ export async function GET(req: NextRequest) {
       JOIN niche_tree_assignments a ON a.cluster_id = c.id
       JOIN niche_spy_videos v ON v.id = a.video_id
       WHERE v.channel_id IN (SELECT channel_id FROM viable_channels)
+        -- Same scoping as lib/content-gen/discovery.ts so cluster_ids
+        -- here match the candidates' showcase_clusters cluster_ids.
+        AND (
+          (c.level = 1 AND r.id = (SELECT id FROM latest_global))
+          OR
+          (c.level = 2 AND r.id IN (SELECT id FROM latest_subdivide_per_parent))
+        )
       GROUP BY c.id, c.level, c.label, c.ai_label, c.auto_label, c.parent_cluster_id, c.video_count, r.kind, r.started_at
       HAVING COUNT(DISTINCT v.channel_id) >= 2
     ),
