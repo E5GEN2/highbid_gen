@@ -295,7 +295,7 @@ export async function GET(req: NextRequest) {
         AND pc.videos_indexed >= 5
         AND pc.median_views::float / NULLIF(pc.top_video_views, 0) >= 0.05
     )
-    , ranked AS (
+    , raw_clusters AS (
       SELECT
         c.id AS cluster_id,
         c.level AS level,
@@ -304,9 +304,7 @@ export async function GET(req: NextRequest) {
         c.video_count AS cluster_video_count,
         COUNT(DISTINCT v.channel_id) AS viable_channel_count,
         r.kind AS run_kind,
-        r.started_at::text AS started_at,
-        ROW_NUMBER() OVER (PARTITION BY c.level
-                           ORDER BY COUNT(DISTINCT v.channel_id) DESC, r.started_at DESC) AS rank_in_level
+        r.started_at AS started_at_ts
       FROM niche_tree_clusters c
       JOIN niche_tree_runs r ON r.id = c.run_id
       JOIN niche_tree_assignments a ON a.cluster_id = c.id
@@ -314,9 +312,26 @@ export async function GET(req: NextRequest) {
       WHERE v.channel_id IN (SELECT channel_id FROM viable_channels)
       GROUP BY c.id, c.level, c.label, c.ai_label, c.auto_label, c.parent_cluster_id, c.video_count, r.kind, r.started_at
       HAVING COUNT(DISTINCT v.channel_id) >= 2
+    ),
+    -- Dedup: same auto/ai/manual label across multiple runs only keeps
+    -- the MOST RECENT — older global runs that produced the same
+    -- conceptual cluster get folded out. Within a run, every cluster
+    -- has a unique id so this is a no-op there.
+    deduped AS (
+      SELECT DISTINCT ON (level, LOWER(COALESCE(cluster_label, cluster_id::text)))
+        cluster_id, level, cluster_label, parent_cluster_id, cluster_video_count,
+        viable_channel_count, run_kind, started_at_ts
+      FROM raw_clusters
+      ORDER BY level, LOWER(COALESCE(cluster_label, cluster_id::text)), started_at_ts DESC NULLS LAST
+    ),
+    ranked AS (
+      SELECT *,
+        ROW_NUMBER() OVER (PARTITION BY level
+                           ORDER BY viable_channel_count DESC, started_at_ts DESC) AS rank_in_level
+      FROM deduped
     )
     SELECT cluster_id, level, cluster_label, parent_cluster_id, cluster_video_count,
-           viable_channel_count, run_kind, started_at
+           viable_channel_count, run_kind, started_at_ts::text AS started_at
     FROM ranked
     WHERE rank_in_level <= 50
     ORDER BY level, viable_channel_count DESC

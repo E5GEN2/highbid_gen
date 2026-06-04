@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Markdown } from '@/components/Markdown';
+import ContentGenTab from '@/components/ContentGenTab';
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -30,7 +31,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1618,6 +1619,7 @@ export default function AdminPage() {
     { key: 'docs',           label: 'Docs',            dot: 'bg-slate-400/70' },
     { key: 'tools',          label: 'Tools',           dot: 'bg-yellow-500/70' },
     { key: 'vid-gen',        label: 'Vid Gen',         dot: 'bg-rose-500/70' },
+    { key: 'content-gen',    label: 'Content Gen',     dot: 'bg-amber-500/70' },
     { key: 'embed-reqs',     label: 'Embed reqs',      dot: 'bg-cyan-400/70' },
     { key: 'analyze-vids',   label: 'Analyze Vids',    dot: 'bg-teal-400/70' },
     { key: 'xg-vid-dl',      label: 'XG vid download', dot: 'bg-orange-400/70' },
@@ -5923,6 +5925,14 @@ export default function AdminPage() {
             this tab is the operator surface that fills the queue. */}
         <div style={{ display: adminSection === 'vid-gen' ? 'block' : 'none' }}>
           <VidGenTab active={adminSection === 'vid-gen'} />
+        </div>
+
+        {/* Content Gen — discovery picker for the listicle generator.
+            Wires /api/admin/content-gen/{overwatch,discover,explain-channel}
+            into a niche browser + channel explorer. See
+            docs/content-gen/*.md for the spec stack. */}
+        <div style={{ display: adminSection === 'content-gen' ? 'block' : 'none' }}>
+          <ContentGenTab active={adminSection === 'content-gen'} />
         </div>
 
         {/* Embedding requests — custom-niche owners file these when
