@@ -348,6 +348,73 @@ export async function GET(req: NextRequest) {
     };
   }
 
+  // Viable-channel distribution per cluster level — tells us where the
+  // "≥2 viable channels" cutoff is killing us. If L2 has tons of clusters
+  // with EXACTLY 1 viable channel, we can either lower the threshold or
+  // generate single-channel listicle items at the L2 level.
+  const viableDistRes = await pool.query<{
+    level: number;
+    viable_count_bucket: string;
+    n: string;
+  }>(`
+    WITH per_channel AS (
+      SELECT v.channel_id,
+             MAX(v.view_count) AS top_video_views,
+             (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.view_count))::bigint AS median_views,
+             MAX(v.posted_at) AS top_video_posted_at,
+             COUNT(*)::int AS videos_indexed,
+             MIN(v.channel_created_at) AS chan_created_v,
+             MIN(v.posted_at) AS earliest_video_posted_at
+      FROM niche_spy_videos v
+      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL
+      GROUP BY v.channel_id
+    ),
+    viable AS (
+      SELECT pc.channel_id
+      FROM per_channel pc
+      JOIN niche_spy_channels sc ON sc.channel_id = pc.channel_id
+      WHERE sc.subscriber_count BETWEEN 10000 AND 5000000
+        AND pc.top_video_views > 0
+        AND pc.top_video_views::float / NULLIF(sc.subscriber_count, 0) >= 5
+        AND pc.top_video_views >= CASE
+            WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(sc.channel_created_at, sc.first_upload_at, pc.chan_created_v, pc.earliest_video_posted_at)))/86400 > 365 THEN 1000000
+            WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(sc.channel_created_at, sc.first_upload_at, pc.chan_created_v, pc.earliest_video_posted_at)))/86400 > 180 THEN  500000
+            WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(sc.channel_created_at, sc.first_upload_at, pc.chan_created_v, pc.earliest_video_posted_at)))/86400 >  90 THEN  200000
+            ELSE                                                                                                                                                  100000
+          END
+        AND EXTRACT(EPOCH FROM (NOW() - COALESCE(sc.channel_created_at, sc.first_upload_at, pc.chan_created_v, pc.earliest_video_posted_at)))/86400 <= 730
+        AND pc.top_video_posted_at >= NOW() - INTERVAL '12 months'
+        AND pc.videos_indexed >= 5
+        AND pc.median_views::float / NULLIF(pc.top_video_views, 0) >= 0.05
+    ),
+    cluster_viable_count AS (
+      SELECT c.id, c.level, COUNT(DISTINCT v.channel_id) AS viable_n
+      FROM niche_tree_clusters c
+      JOIN niche_tree_assignments a ON a.cluster_id = c.id
+      JOIN niche_spy_videos v ON v.id = a.video_id
+      WHERE v.channel_id IN (SELECT channel_id FROM viable)
+      GROUP BY c.id, c.level
+    )
+    SELECT
+      level,
+      CASE
+        WHEN viable_n = 1     THEN '1'
+        WHEN viable_n = 2     THEN '2'
+        WHEN viable_n = 3     THEN '3'
+        WHEN viable_n BETWEEN 4 AND 5   THEN '4-5'
+        WHEN viable_n BETWEEN 6 AND 10  THEN '6-10'
+        WHEN viable_n > 10              THEN '11+'
+      END AS viable_count_bucket,
+      COUNT(*)::text AS n
+    FROM cluster_viable_count
+    GROUP BY level, viable_count_bucket
+    ORDER BY level, MIN(viable_n)
+  `);
+  const viable_channel_dist: Record<string, Record<string, number>> = { level_1: {}, level_2: {} };
+  for (const r of viableDistRes.rows) {
+    viable_channel_dist[`level_${r.level}`][r.viable_count_bucket] = parseInt(r.n);
+  }
+
   const ready_l1 = readyRes.rows.filter((r) => Number(r.level) === 1).slice(0, 20).map((r) => ({
     cluster_id:           Number(r.cluster_id),
     cluster_label:        r.cluster_label,
@@ -393,8 +460,12 @@ export async function GET(req: NextRequest) {
     },
     sample_top_candidates,
     cluster_inventory: {
-      note: 'Pre-filter cluster counts. Tells us if L2 clusters exist at all and how many channels they cover.',
+      note: 'Pre-filter cluster counts. L2 clusters do exist (~8.4K); they just have fewer channels per cluster (~4.7 avg vs L1 ~12.5).',
       ...cluster_inventory,
+    },
+    viable_channel_distribution_per_cluster: {
+      note: 'How many viable channels each cluster contains. The ≥2 cutoff used for "ready" niches kills many L2 sub-niches because they often have just 1 viable channel.',
+      ...viable_channel_dist,
     },
     ready_clusters: {
       note: 'Clusters with ≥2 viable candidates — listicle-ready niches. Split by level: L1 = broad niches, L2 = sub-niches.',
