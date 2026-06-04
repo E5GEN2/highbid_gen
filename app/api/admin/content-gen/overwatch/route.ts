@@ -295,24 +295,31 @@ export async function GET(req: NextRequest) {
         AND pc.videos_indexed >= 5
         AND pc.median_views::float / NULLIF(pc.top_video_views, 0) >= 0.05
     )
-    SELECT
-      c.id AS cluster_id,
-      c.level AS level,
-      COALESCE(c.label, c.ai_label, c.auto_label) AS cluster_label,
-      c.parent_cluster_id,
-      c.video_count AS cluster_video_count,
-      COUNT(DISTINCT v.channel_id) AS viable_channel_count,
-      r.kind AS run_kind,
-      r.started_at::text AS started_at
-    FROM niche_tree_clusters c
-    JOIN niche_tree_runs r ON r.id = c.run_id
-    JOIN niche_tree_assignments a ON a.cluster_id = c.id
-    JOIN niche_spy_videos v ON v.id = a.video_id
-    WHERE v.channel_id IN (SELECT channel_id FROM viable_channels)
-    GROUP BY c.id, c.level, c.label, c.ai_label, c.auto_label, c.parent_cluster_id, c.video_count, r.kind, r.started_at
-    HAVING COUNT(DISTINCT v.channel_id) >= 2
-    ORDER BY c.level, COUNT(DISTINCT v.channel_id) DESC, r.started_at DESC
-    LIMIT 60
+    , ranked AS (
+      SELECT
+        c.id AS cluster_id,
+        c.level AS level,
+        COALESCE(c.label, c.ai_label, c.auto_label) AS cluster_label,
+        c.parent_cluster_id,
+        c.video_count AS cluster_video_count,
+        COUNT(DISTINCT v.channel_id) AS viable_channel_count,
+        r.kind AS run_kind,
+        r.started_at::text AS started_at,
+        ROW_NUMBER() OVER (PARTITION BY c.level
+                           ORDER BY COUNT(DISTINCT v.channel_id) DESC, r.started_at DESC) AS rank_in_level
+      FROM niche_tree_clusters c
+      JOIN niche_tree_runs r ON r.id = c.run_id
+      JOIN niche_tree_assignments a ON a.cluster_id = c.id
+      JOIN niche_spy_videos v ON v.id = a.video_id
+      WHERE v.channel_id IN (SELECT channel_id FROM viable_channels)
+      GROUP BY c.id, c.level, c.label, c.ai_label, c.auto_label, c.parent_cluster_id, c.video_count, r.kind, r.started_at
+      HAVING COUNT(DISTINCT v.channel_id) >= 2
+    )
+    SELECT cluster_id, level, cluster_label, parent_cluster_id, cluster_video_count,
+           viable_channel_count, run_kind, started_at
+    FROM ranked
+    WHERE rank_in_level <= 50
+    ORDER BY level, viable_channel_count DESC
   `);
 
   // Diagnostic: cluster-level breakdown across the WHOLE DB, before any
@@ -415,7 +422,7 @@ export async function GET(req: NextRequest) {
     viable_channel_dist[`level_${r.level}`][r.viable_count_bucket] = parseInt(r.n);
   }
 
-  const ready_l1 = readyRes.rows.filter((r) => Number(r.level) === 1).slice(0, 20).map((r) => ({
+  const ready_l1 = readyRes.rows.filter((r) => Number(r.level) === 1).map((r) => ({
     cluster_id:           Number(r.cluster_id),
     cluster_label:        r.cluster_label,
     cluster_video_count:  Number(r.cluster_video_count) || 0,
@@ -423,7 +430,7 @@ export async function GET(req: NextRequest) {
     run_kind:             r.run_kind,
     started_at:           r.started_at,
   }));
-  const ready_l2 = readyRes.rows.filter((r) => Number(r.level) === 2).slice(0, 20).map((r) => ({
+  const ready_l2 = readyRes.rows.filter((r) => Number(r.level) === 2).map((r) => ({
     cluster_id:           Number(r.cluster_id),
     cluster_label:        r.cluster_label,
     parent_cluster_id:    r.parent_cluster_id != null ? Number(r.parent_cluster_id) : null,
