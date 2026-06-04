@@ -163,11 +163,9 @@ export default function ContentGenTab({ active }: { active: boolean }) {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<'mixed' | 'themed'>('mixed');
   const [channelsPerDraft, setChannelsPerDraft] = useState<number>(10);
   const [selectedChannels, setSelectedChannels] = useState<Set<string>>(new Set());
-  const [mixedDrafts, setMixedDrafts] = useState<ListicleDraft[]>([]);
-  const [themedDrafts, setThemedDrafts] = useState<ListicleDraft[]>([]);
+  const [drafts, setDrafts] = useState<ListicleDraft[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
 
   // Channel explorer state
@@ -194,15 +192,17 @@ export default function ContentGenTab({ active }: { active: boolean }) {
     }
   };
 
-  // Fetch drafts server-side whenever the mode or count changes. This is
-  // the same code the /drafts endpoint runs — no client duplication.
+  // Fetch drafts server-side whenever count changes. Same code path as
+  // /drafts endpoint — no client duplication. Each draft is a distinct-
+  // niches listicle suggestion; the niche label per item is L2 when
+  // available (more representative) else L1 fallback. Quality channels
+  // are picked regardless of which level their niche definition lives at.
   const loadDrafts = async () => {
     setDraftsLoading(true);
     try {
-      const r = await fetch(`/api/admin/content-gen/drafts?mode=both&n=${channelsPerDraft}&topK=300`).then(r => r.json());
+      const r = await fetch(`/api/admin/content-gen/drafts?mode=mixed&n=${channelsPerDraft}&topK=300`).then(r => r.json());
       if (!r.ok) throw new Error(r.error || 'drafts failed');
-      setMixedDrafts(r.mixed_drafts || []);
-      setThemedDrafts(r.themed_drafts || []);
+      setDrafts(r.mixed_drafts || []);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -336,30 +336,9 @@ export default function ContentGenTab({ active }: { active: boolean }) {
             </details>
           )}
 
-          {/* Mode + count controls */}
+          {/* Controls */}
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-[#aaa] mr-1">Mode:</span>
-              {[
-                { key: 'mixed',  label: 'Mixed',  desc: 'Distinct niches across the pool (Money Groot style)' },
-                { key: 'themed', label: 'Themed', desc: 'All channels share one broad L1 parent (specialty listicle)' },
-              ].map(opt => (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => setMode(opt.key as 'mixed' | 'themed')}
-                  title={opt.desc}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium border transition ${
-                    mode === opt.key
-                      ? 'bg-amber-400/15 text-amber-300 border-amber-400/50'
-                      : 'text-[#ccc] border-[#2a2a2a] hover:border-[#444]'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <label className="text-sm text-[#aaa]">Channels per draft:</label>
               <input
                 type="number"
@@ -372,6 +351,9 @@ export default function ContentGenTab({ active }: { active: boolean }) {
                 }}
                 className="w-16 px-2 py-1 text-sm bg-[#0a0a0a] border border-[#2a2a2a] focus:border-amber-400 focus:outline-none rounded text-white text-center font-medium"
               />
+              <span className="text-xs text-[#666]">
+                Each draft has distinct niches — quality channels picked from across the pool, labeled by L2 when available (else L1).
+              </span>
             </div>
             {selectedChannels.size > 0 && (
               <div className="text-sm text-[#ccc]">
@@ -385,36 +367,28 @@ export default function ContentGenTab({ active }: { active: boolean }) {
           {draftsLoading && (
             <div className="text-sm text-[#aaa]">Re-assembling drafts…</div>
           )}
-          {!draftsLoading && (() => {
-            const drafts = mode === 'mixed' ? mixedDrafts : themedDrafts;
-            if (drafts.length === 0) {
-              return (
-                <div className="p-6 rounded-lg bg-[#141414] border border-[#2a2a2a] text-sm text-[#bbb] text-center">
-                  No {mode} drafts assembled at N={channelsPerDraft}.
-                  {mode === 'mixed'
-                    ? ' Pool may not have enough channels across distinct niches.'
-                    : ' No L1 niche has enough L2 sub-niches at this count.'}
-                </div>
-              );
-            }
-            return (
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-                {drafts.map(d => (
-                  <ListicleDraftCard
-                    key={d.id}
-                    draft={d}
-                    selectedChannels={selectedChannels}
-                    onToggleChannel={(channelId) => {
-                      const next = new Set(selectedChannels);
-                      if (next.has(channelId)) next.delete(channelId);
-                      else next.add(channelId);
-                      setSelectedChannels(next);
-                    }}
-                  />
-                ))}
-              </div>
-            );
-          })()}
+          {!draftsLoading && drafts.length === 0 && (
+            <div className="p-6 rounded-lg bg-[#141414] border border-[#2a2a2a] text-sm text-[#bbb] text-center">
+              No drafts assembled at N={channelsPerDraft}. The pool may not have enough channels across distinct niches.
+            </div>
+          )}
+          {!draftsLoading && drafts.length > 0 && (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+              {drafts.map(d => (
+                <ListicleDraftCard
+                  key={d.id}
+                  draft={d}
+                  selectedChannels={selectedChannels}
+                  onToggleChannel={(channelId) => {
+                    const next = new Set(selectedChannels);
+                    if (next.has(channelId)) next.delete(channelId);
+                    else next.add(channelId);
+                    setSelectedChannels(next);
+                  }}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -602,20 +576,13 @@ function ListicleDraftCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-[#888] font-medium mb-1.5">
-              <span className={`px-2 py-0.5 rounded border ${
-                draft.mode === 'mixed'
-                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-                  : 'bg-purple-500/15 text-purple-300 border-purple-500/40'
-              }`}>
-                {draft.mode === 'mixed' ? 'MIXED' : 'THEMED'}
-              </span>
-              <span>{draft.items.length} channels</span>
+              <span className="text-amber-300/80">{draft.items.length} channels</span>
               <span>·</span>
               <span>
-                {l2Count > 0 && <>{l2Count} L2{l2Count !== 1 ? '' : ''}</>}
+                {l2Count > 0 && <>{l2Count} L2</>}
                 {l2Count > 0 && l1Count > 0 && ' + '}
                 {l1Count > 0 && <>{l1Count} L1</>}
-                {' niches'}
+                {' distinct niches'}
               </span>
             </div>
             <h3 className="text-xl font-bold text-white truncate" title={draft.title}>
