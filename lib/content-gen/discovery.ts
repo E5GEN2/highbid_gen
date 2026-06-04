@@ -88,6 +88,8 @@ export interface DiscoveryCandidate {
   top_video_id: number;
   top_video_title: string | null;
   top_video_thumbnail: string | null;
+  /** YouTube watch URL from niche_spy_videos.url — used by the GUI to open the video. */
+  top_video_url: string | null;
   top_video_posted_at: string | null;
   /** Distinct videos this channel has in our niche_spy_videos index. */
   videos_indexed: number;
@@ -191,6 +193,7 @@ export async function discoverChannels(
         v.id AS top_video_id,
         v.title AS top_video_title,
         v.thumbnail AS top_video_thumbnail,
+        v.url AS top_video_url,
         v.posted_at AS top_video_posted_at
       FROM niche_spy_videos v
       ${scopeJoin}
@@ -215,6 +218,7 @@ export async function discoverChannels(
         tv.top_video_id,
         tv.top_video_title,
         tv.top_video_thumbnail,
+        tv.top_video_url,
         tv.top_video_posted_at
       FROM per_channel pc
       JOIN niche_spy_channels sc ON sc.channel_id = pc.channel_id
@@ -236,6 +240,7 @@ export async function discoverChannels(
       e.top_video_id,
       e.top_video_title,
       e.top_video_thumbnail,
+      e.top_video_url,
       e.top_video_posted_at,
       EXTRACT(EPOCH FROM (NOW() - e.effective_created_at)) / 86400 AS channel_age_days
     FROM enriched e
@@ -415,6 +420,7 @@ export async function discoverChannels(
       top_video_id:         Number(r.top_video_id),
       top_video_title:      r.top_video_title,
       top_video_thumbnail:  r.top_video_thumbnail,
+      top_video_url:        r.top_video_url,
       top_video_posted_at:  r.top_video_posted_at?.toISOString?.() ?? null,
       videos_indexed:       Number(r.videos_indexed),
       median_video_views:   medV,

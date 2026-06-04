@@ -51,8 +51,10 @@ interface Candidate {
   top_video_id: number;
   top_video_title: string | null;
   top_video_posted_at: string | null;
-  /** Thumbnail URL of the top video — fetched separately for v1. */
+  /** Thumbnail URL of the top video. */
   top_video_thumbnail?: string | null;
+  /** YouTube watch URL — used to open the video in a new tab. */
+  top_video_url?: string | null;
   videos_indexed: number;
   median_video_views: number;
   views_to_subs_ratio: number;
@@ -628,14 +630,38 @@ function ListicleDraftCard({
                 onChange={() => {}}
                 className="w-4 h-4 accent-amber-400 shrink-0"
               />
-              {/* Top video thumbnail */}
+              {/* Top video thumbnail — clickable to open YT in new tab */}
               {c.top_video_thumbnail ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={c.top_video_thumbnail}
-                  alt=""
-                  className="w-32 h-[72px] object-cover rounded-md bg-[#222] shrink-0 ring-1 ring-[#2a2a2a]"
-                />
+                c.top_video_url ? (
+                  <a
+                    href={c.top_video_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Open video on YouTube"
+                    className="shrink-0 group relative"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={c.top_video_thumbnail}
+                      alt=""
+                      className="w-32 h-[72px] object-cover rounded-md bg-[#222] ring-1 ring-[#2a2a2a] group-hover:ring-amber-400 transition"
+                    />
+                    {/* Play overlay on hover */}
+                    <div className="absolute inset-0 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40 transition">
+                      <svg className="w-7 h-7 text-white drop-shadow" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M8 5v14l11-7z" />
+                      </svg>
+                    </div>
+                  </a>
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={c.top_video_thumbnail}
+                    alt=""
+                    className="w-32 h-[72px] object-cover rounded-md bg-[#222] shrink-0 ring-1 ring-[#2a2a2a]"
+                  />
+                )
               ) : (
                 <div className="w-32 h-[72px] rounded-md bg-[#1a1a1a] ring-1 ring-[#2a2a2a] shrink-0 flex items-center justify-center">
                   <svg className="w-6 h-6 text-[#444]" viewBox="0 0 24 24" fill="currentColor">
@@ -650,14 +676,40 @@ function ListicleDraftCard({
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={c.channel_avatar} alt="" className="w-5 h-5 rounded-full object-cover shrink-0" />
                   )}
-                  <span className="text-base text-white font-semibold truncate">{c.channel_name || '(unnamed)'}</span>
+                  {c.channel_handle ? (
+                    <a
+                      href={`https://www.youtube.com/${c.channel_handle.startsWith('@') ? c.channel_handle : `@${c.channel_handle}`}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Open channel on YouTube"
+                      className="text-base text-white font-semibold truncate hover:text-amber-300 underline-offset-2 hover:underline"
+                    >
+                      {c.channel_name || '(unnamed)'}
+                    </a>
+                  ) : (
+                    <span className="text-base text-white font-semibold truncate">{c.channel_name || '(unnamed)'}</span>
+                  )}
                   <span className={`text-[10px] px-1.5 py-px rounded border shrink-0 ${ageTierColor[c.age_tier]}`}>
                     {c.age_tier === 'ultra_young' ? 'ultra-young' : c.age_tier.replace('_', '-')}
                   </span>
                 </div>
-                <div className="text-sm text-[#bbb] truncate" title={c.top_video_title || ''}>
-                  {c.top_video_title || '—'}
-                </div>
+                {c.top_video_url ? (
+                  <a
+                    href={c.top_video_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Open video on YouTube"
+                    className="text-sm text-[#bbb] truncate block hover:text-amber-300 underline-offset-2 hover:underline"
+                  >
+                    {c.top_video_title || '—'}
+                  </a>
+                ) : (
+                  <div className="text-sm text-[#bbb] truncate" title={c.top_video_title || ''}>
+                    {c.top_video_title || '—'}
+                  </div>
+                )}
                 <div className="flex items-center gap-2 mt-1.5 text-xs text-[#999]">
                   <span className={`px-1.5 py-px rounded text-[9px] font-bold border ${
                     item.niche_level === 2
