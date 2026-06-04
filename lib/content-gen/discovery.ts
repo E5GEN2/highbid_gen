@@ -2,56 +2,81 @@
  * Channel discovery for content generation.
  *
  * Implements the rules from docs/content-gen/data-discovery-rules.json —
- * given a niche cluster, returns the top-K candidate channels we'd feature
- * in a generated listicle. Same hard filters + composite scoring spec.
+ * sweeps our DB for channels passing the hard filters, attaches the cluster
+ * each one sits in (their top video's cluster = their "showcase niche"),
+ * scores by composite, and returns top-K.
+ *
+ * DIRECTION: discovery is across the DB. Cluster is the OUTPUT label that
+ * tells us which niche to feature the channel under in the listicle. It's
+ * NOT an input filter (we don't ask "give me channels for cluster X" — we
+ * ask "give me channels passing the rules, what cluster does each one
+ * belong to?").
+ *
+ * Optional scoping:
+ *   scopeRunId    — limit to videos in this specific clustering run
+ *   scopeClusterId — limit to videos in a specific cluster (rare; for
+ *                    debugging a single niche)
  *
  * Hard filters (per data-discovery-rules.json):
  *   A. Scale     — subs ∈ [10K, 5M], top_video ≥ tiered_floor_by_age,
  *                  views/subs ratio ≥ 5×
  *   B. Recency   — channel age ≤ 730d, top video posted ≤ 12mo
- *   C. Topical   — channel sits in the requested cluster
- *   D. Proof     — ≥5 videos, median/top ratio ≥ 0.05 (not one-viral-wonder)
+ *   C. Topical   — channel's top video is in SOME cluster (not a specific
+ *                  one unless scopeClusterId given)
+ *   D. Proof     — ≥5 videos in our index, median/top ratio ≥ 0.05
  *
  * Composite score weights: 0.30 recency + 0.25 virality + 0.20 scale
  *                          + 0.15 proof + 0.10 novelty.
- * Phase 2 boosts (consensus_picks, cohort.growth_multiplier) are deferred
- * until we have the corpus/cluster-cohort signals plumbed.
  */
 
 import { getPool } from '../db';
 
 export interface DiscoveryOptions {
-  /** Cluster row in niche_tree_clusters whose channels we're picking from. */
-  clusterId: number;
-  /** How many top candidates to return after scoring. Default 10. */
+  /** How many top candidates to return after scoring. Default 50. */
   topK?: number;
   /** Override scale band floor (default 10_000). */
   minSubs?: number;
   /** Override scale band cap (default 5_000_000). */
   maxSubs?: number;
+  /** Optional: limit videos to a specific clustering run id. */
+  scopeRunId?: number;
+  /** Optional: limit to one cluster (rare — for debugging a single niche). */
+  scopeClusterId?: number;
+}
+
+export interface ChannelCluster {
+  cluster_id: number;
+  cluster_label: string | null;
+  /** Distinct videos in this cluster overall (across the cluster, not just this channel). */
+  cluster_video_count: number;
+  /** This channel's video count in this cluster. */
+  channel_videos_in_cluster: number;
+  /** Clustering run that produced this assignment. */
+  run_id: number;
+  run_kind: string | null;
 }
 
 export interface DiscoveryCandidate {
   channel_id: string;
   channel_name: string;
-  /** YouTube handle if known (@foo) — used for live screenshot URL construction. */
   channel_handle: string | null;
   channel_avatar: string | null;
   subscriber_count: number;
   channel_age_days: number;
   total_video_count: number | null;
-  /** MAX(view_count) over this channel's videos that fall in the cluster. */
+  /** MAX(view_count) over this channel's videos in our index. */
   top_video_views: number;
   top_video_id: number;
   top_video_title: string | null;
   top_video_posted_at: string | null;
-  /** Distinct videos this channel has in the cluster. */
-  videos_in_cluster: number;
+  /** Distinct videos this channel has in our niche_spy_videos index. */
+  videos_indexed: number;
   median_video_views: number;
   views_to_subs_ratio: number;
-  /** Max novelty_score across this channel's videos in the cluster. */
+  /** Max novelty_score across this channel's indexed videos. */
   novelty_score: number | null;
-  /** Per-component scores (0-1) used in the composite. */
+  /** The cluster of this channel's top video — the "showcase niche". */
+  showcase_cluster: ChannelCluster | null;
   components: {
     recency: number;
     virality: number;
@@ -59,18 +84,10 @@ export interface DiscoveryCandidate {
     proof: number;
     novelty: number;
   };
-  /** Final composite score (higher = better pick). */
   composite_score: number;
-  /** Which tier (mature / mid_young / young / ultra_young) the channel falls in. */
   age_tier: 'mature' | 'mid_young' | 'young' | 'ultra_young';
 }
 
-/**
- * The age-tiered top-video-views floor (A2 from the spec).
- * Younger channels haven't had time to accumulate 1M+ views even if growing
- * fast — relaxing this is our edge over manual researchers who can only find
- * channels after they cross 1M.
- */
 function topVideoFloorForAge(ageDays: number): number {
   if (ageDays > 365) return 1_000_000;
   if (ageDays > 180) return   500_000;
@@ -85,7 +102,6 @@ function ageTier(ageDays: number): DiscoveryCandidate['age_tier'] {
   return 'ultra_young';
 }
 
-/** Bell-curve weight centered on the 200K-sub sweet spot. */
 function scaleScore(subs: number): number {
   const mean = 200_000;
   const sd   = 400_000;
@@ -94,77 +110,68 @@ function scaleScore(subs: number): number {
 }
 
 /**
- * Pull candidate channels for a cluster + apply hard filters + score.
+ * Sweep the DB for candidate channels passing the discovery rules.
  *
- * The SQL does the heavy lifting (group videos by channel, compute aggregates,
- * join channel metadata, apply hard filters). The composite score is computed
- * in Node because the bell-curve weight is easier in JS than in SQL.
+ * Strategy: do the channel aggregation across ALL of niche_spy_videos (or
+ * scoped to a run / cluster if given), apply hard filters, then in a
+ * second pass find each surviving channel's top-video's cluster
+ * assignment (their "showcase niche").
  */
-export async function discoverChannelsForCluster(
-  opts: DiscoveryOptions,
+export async function discoverChannels(
+  opts: DiscoveryOptions = {},
 ): Promise<DiscoveryCandidate[]> {
   const pool = await getPool();
-  const topK = Math.max(1, Math.min(100, opts.topK ?? 10));
+  const topK = Math.max(1, Math.min(500, opts.topK ?? 50));
   const minSubs = opts.minSubs ?? 10_000;
   const maxSubs = opts.maxSubs ?? 5_000_000;
 
-  // The aggregation:
-  //   - JOIN niche_tree_assignments → niche_spy_videos to find the cluster's
-  //     videos and their channel_ids
-  //   - JOIN niche_spy_channels for sub count + channel age
-  //   - GROUP BY channel_id to compute per-channel aggregates (top view, median
-  //     view, video count in this cluster, max novelty, etc.)
+  // ── PASS 1: aggregate per channel, apply hard filters ──────────────
   //
-  // Hard filters applied inline:
-  //   A1: subscriber_count between [minSubs, maxSubs]
-  //   A2: top_video_views ≥ tier floor (CASE on age)
-  //   A3: top_video_views / subscriber_count ≥ 5
-  //   B1: channel age days ≤ 730
-  //   B2: top video posted within last 12 months
-  //   D1: videos_in_cluster ≥ 5 (we relax to "in cluster" — overall channel
-  //       video count might be much higher; here we require evidence that the
-  //       channel is actually meaningfully present in this niche)
-  //   D2: median/top ≥ 0.05 (rejects one-viral-wonders)
+  // The scope CTE picks which niche_spy_videos rows we consider:
+  //   - default: all rows with channel_id + view_count not null
+  //   - scoped to a run: rows that have an assignment in that run
+  //   - scoped to a cluster: rows assigned to that cluster
   //
-  // We use niche_spy_channels.channel_created_at if present, else
-  // first_upload_at, else MIN(niche_spy_videos.posted_at) for the channel.
+  // The hard filters all run on per-channel aggregates against
+  // niche_spy_channels enrichment data (subs, age).
+  const params: (number | undefined)[] = [minSubs, maxSubs];
+  let scopeJoin = '';
+  if (opts.scopeRunId != null) {
+    scopeJoin = `JOIN niche_tree_assignments sa ON sa.video_id = v.id AND sa.run_id = $${params.length + 1}`;
+    params.push(opts.scopeRunId);
+  } else if (opts.scopeClusterId != null) {
+    scopeJoin = `JOIN niche_tree_assignments sa ON sa.video_id = v.id AND sa.cluster_id = $${params.length + 1}`;
+    params.push(opts.scopeClusterId);
+  }
+
   const sql = `
-    WITH cluster_videos AS (
+    WITH per_channel AS (
       SELECT
-        v.id              AS video_id,
-        v.title,
-        v.view_count,
-        v.posted_at,
         v.channel_id,
-        v.channel_created_at,
-        v.novelty_score
-      FROM niche_tree_assignments a
-      JOIN niche_spy_videos v ON v.id = a.video_id
-      WHERE a.cluster_id = $1
-        AND v.channel_id IS NOT NULL
-        AND v.view_count IS NOT NULL
-    ),
-    per_channel AS (
-      SELECT
-        cv.channel_id,
-        COUNT(*)::int                                            AS videos_in_cluster,
-        MAX(cv.view_count)                                       AS top_video_views,
-        (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY cv.view_count))::bigint
+        COUNT(*)::int                                            AS videos_indexed,
+        MAX(v.view_count)                                        AS top_video_views,
+        (PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.view_count))::bigint
                                                                   AS median_video_views,
-        MAX(cv.novelty_score)                                    AS max_novelty,
-        MIN(cv.channel_created_at)                               AS channel_created_at_v,
-        MIN(cv.posted_at)                                        AS earliest_video_posted_at
-      FROM cluster_videos cv
-      GROUP BY cv.channel_id
+        MAX(v.novelty_score)                                     AS max_novelty,
+        MIN(v.channel_created_at)                                AS channel_created_at_v,
+        MIN(v.posted_at)                                         AS earliest_video_posted_at
+      FROM niche_spy_videos v
+      ${scopeJoin}
+      WHERE v.channel_id IS NOT NULL
+        AND v.view_count IS NOT NULL
+      GROUP BY v.channel_id
     ),
     top_video_per_channel AS (
-      SELECT DISTINCT ON (cv.channel_id)
-        cv.channel_id,
-        cv.video_id AS top_video_id,
-        cv.title    AS top_video_title,
-        cv.posted_at AS top_video_posted_at
-      FROM cluster_videos cv
-      ORDER BY cv.channel_id, cv.view_count DESC NULLS LAST
+      SELECT DISTINCT ON (v.channel_id)
+        v.channel_id,
+        v.id AS top_video_id,
+        v.title AS top_video_title,
+        v.posted_at AS top_video_posted_at
+      FROM niche_spy_videos v
+      ${scopeJoin}
+      WHERE v.channel_id IS NOT NULL
+        AND v.view_count IS NOT NULL
+      ORDER BY v.channel_id, v.view_count DESC NULLS LAST
     ),
     enriched AS (
       SELECT
@@ -176,7 +183,7 @@ export async function discoverChannelsForCluster(
         sc.video_count AS total_video_count,
         COALESCE(sc.channel_created_at, sc.first_upload_at, pc.channel_created_at_v, pc.earliest_video_posted_at)
                                                                  AS effective_created_at,
-        pc.videos_in_cluster,
+        pc.videos_indexed,
         pc.top_video_views,
         pc.median_video_views,
         pc.max_novelty,
@@ -196,7 +203,7 @@ export async function discoverChannelsForCluster(
       e.subscriber_count,
       e.total_video_count,
       e.effective_created_at,
-      e.videos_in_cluster,
+      e.videos_indexed,
       e.top_video_views,
       e.median_video_views,
       e.max_novelty,
@@ -205,7 +212,7 @@ export async function discoverChannelsForCluster(
       e.top_video_posted_at,
       EXTRACT(EPOCH FROM (NOW() - e.effective_created_at)) / 86400 AS channel_age_days
     FROM enriched e
-    WHERE e.subscriber_count BETWEEN $2 AND $3
+    WHERE e.subscriber_count BETWEEN $1 AND $2
       AND e.top_video_views::float / e.subscriber_count >= 5
       AND e.top_video_views >= (
         CASE
@@ -217,15 +224,95 @@ export async function discoverChannelsForCluster(
       )
       AND EXTRACT(EPOCH FROM (NOW() - e.effective_created_at))/86400 <= 730
       AND e.top_video_posted_at >= NOW() - INTERVAL '12 months'
-      AND e.videos_in_cluster >= 5
+      AND e.videos_indexed >= 5
       AND e.median_video_views::float / e.top_video_views >= 0.05
     ORDER BY e.top_video_views DESC NULLS LAST
-    LIMIT 200
+    LIMIT 500
   `;
 
-  const rows = await pool.query(sql, [opts.clusterId, minSubs, maxSubs]);
+  const rows = await pool.query(sql, params);
 
-  // Score each candidate.
+  if (rows.rows.length === 0) return [];
+
+  // ── PASS 2: attach the showcase_cluster per candidate ──────────────
+  //
+  // For each candidate's top_video_id, find what cluster (if any) it's
+  // assigned to in the LATEST clustering run that has an assignment for
+  // it. Joining niche_tree_clusters for the label + niche_tree_runs for
+  // the run kind. Channels whose top video isn't in any cluster get
+  // showcase_cluster=null (still surfaced — caller can decide to drop
+  // or rank lower).
+  const topVideoIds = rows.rows.map((r) => Number(r.top_video_id));
+  const clusterMap = new Map<number, ChannelCluster>();
+  const clusterRes = await pool.query<{
+    video_id: number;
+    cluster_id: number;
+    cluster_label: string | null;
+    cluster_video_count: number;
+    run_id: number;
+    run_kind: string | null;
+  }>(
+    `SELECT DISTINCT ON (a.video_id)
+       a.video_id,
+       a.cluster_id,
+       c.label AS cluster_label,
+       c.video_count AS cluster_video_count,
+       a.run_id,
+       r.kind AS run_kind
+     FROM niche_tree_assignments a
+     JOIN niche_tree_clusters c ON c.id = a.cluster_id
+     JOIN niche_tree_runs r ON r.id = a.run_id
+     WHERE a.video_id = ANY($1::int[])
+       AND a.cluster_id IS NOT NULL
+     ORDER BY a.video_id, r.started_at DESC NULLS LAST`,
+    [topVideoIds],
+  );
+  for (const r of clusterRes.rows) {
+    clusterMap.set(Number(r.video_id), {
+      cluster_id:                Number(r.cluster_id),
+      cluster_label:             r.cluster_label,
+      cluster_video_count:       Number(r.cluster_video_count) || 0,
+      channel_videos_in_cluster: 0,   // filled in next sub-query
+      run_id:                    Number(r.run_id),
+      run_kind:                  r.run_kind,
+    });
+  }
+
+  // Also count, per (channel, cluster), how many of THIS channel's videos
+  // are in their showcase cluster. Gives us "this channel has N videos in
+  // this niche" — useful narrative signal.
+  if (clusterMap.size > 0) {
+    const channelIds = rows.rows.map((r) => r.channel_id);
+    const clusterIds = Array.from(new Set(Array.from(clusterMap.values()).map((c) => c.cluster_id)));
+    const countRes = await pool.query<{
+      channel_id: string;
+      cluster_id: number;
+      n: number;
+    }>(
+      `SELECT v.channel_id, a.cluster_id, COUNT(*)::int AS n
+         FROM niche_spy_videos v
+         JOIN niche_tree_assignments a ON a.video_id = v.id
+        WHERE v.channel_id = ANY($1::text[])
+          AND a.cluster_id = ANY($2::int[])
+        GROUP BY v.channel_id, a.cluster_id`,
+      [channelIds, clusterIds],
+    );
+    const channelClusterCount = new Map<string, number>();
+    for (const cr of countRes.rows) {
+      channelClusterCount.set(`${cr.channel_id}:${cr.cluster_id}`, Number(cr.n));
+    }
+    // Patch in the channel_videos_in_cluster on each clusterMap entry by
+    // (top_video → channel → cluster) lookup.
+    for (const r of rows.rows) {
+      const cluster = clusterMap.get(Number(r.top_video_id));
+      if (cluster) {
+        const k = `${r.channel_id}:${cluster.cluster_id}`;
+        cluster.channel_videos_in_cluster = channelClusterCount.get(k) ?? 1;
+      }
+    }
+  }
+
+  // ── Score + return ──────────────────────────────────────────────────
   const scored: DiscoveryCandidate[] = rows.rows.map((r) => {
     const ageDays = Number(r.channel_age_days) || 0;
     const subs    = Number(r.subscriber_count) || 0;
@@ -239,8 +326,6 @@ export async function discoverChannelsForCluster(
     const virality = Math.min(ratio / 100, 1.0);
     const scale    = scaleScore(subs);
     const proof    = Math.min(topV / 10_000_000, 1.0);
-    // novelty_score in our DB is the mean cosine distance to K nearest
-    // (already in [0, 1] range; higher = more novel).
     const noveltyComp = novelty != null ? Math.max(0, Math.min(1, novelty)) : 0.5;
 
     const composite =
@@ -262,10 +347,11 @@ export async function discoverChannelsForCluster(
       top_video_id:         Number(r.top_video_id),
       top_video_title:      r.top_video_title,
       top_video_posted_at:  r.top_video_posted_at?.toISOString?.() ?? null,
-      videos_in_cluster:    Number(r.videos_in_cluster),
+      videos_indexed:       Number(r.videos_indexed),
       median_video_views:   medV,
       views_to_subs_ratio:  Math.round(ratio * 10) / 10,
       novelty_score:        novelty,
+      showcase_cluster:     clusterMap.get(Number(r.top_video_id)) ?? null,
       components: {
         recency:  Math.round(recency  * 1000) / 1000,
         virality: Math.round(virality * 1000) / 1000,
@@ -278,27 +364,43 @@ export async function discoverChannelsForCluster(
     };
   });
 
-  // Sort by composite descending, take top-K.
   scored.sort((a, b) => b.composite_score - a.composite_score);
   return scored.slice(0, topK);
 }
 
 /**
- * Apply assembly gates across the full pool from N niche calls.
- *
- * Per data-discovery-rules.json:
- *   Gate 1. Cap consensus picks (Phase 2 — not implemented yet, requires
- *           corpus of referenced channels which we don't have at scale).
- *   Gate 2. Niche-cluster saturation — each niche gets at most K channels;
- *           no two niches share cluster_id. (Caller responsibility — we
- *           don't enforce here because this function operates on a single
- *           cluster's picks.)
- *   Gate 3. Scale diversity — within one listicle, want at least 1 channel
- *           per subscriber band [10K-100K], [100K-1M], [1M-5M] for
- *           narrative rhythm.
- *
- * This helper provides Gate 3 — given a flat list of candidates from many
- * clusters, return a balanced selection that hits the scale bands.
+ * Group discovered candidates by their showcase_cluster. Each group
+ * becomes a candidate "niche" for the listicle. The listicle assembler
+ * then picks N niches (e.g. via scale-diversity Gate 3) and 1-3 channels
+ * per niche.
+ */
+export function groupByCluster(
+  candidates: DiscoveryCandidate[],
+): Array<{ cluster: ChannelCluster; channels: DiscoveryCandidate[] }> {
+  const groups = new Map<number, { cluster: ChannelCluster; channels: DiscoveryCandidate[] }>();
+  for (const c of candidates) {
+    if (!c.showcase_cluster) continue;
+    const key = c.showcase_cluster.cluster_id;
+    if (!groups.has(key)) {
+      groups.set(key, { cluster: c.showcase_cluster, channels: [] });
+    }
+    groups.get(key)!.channels.push(c);
+  }
+  // Sort groups by total composite score (sum of channels' scores) —
+  // niches with more/better candidates surface first.
+  return Array.from(groups.values()).sort((a, b) => {
+    const sumA = a.channels.reduce((s, c) => s + c.composite_score, 0);
+    const sumB = b.channels.reduce((s, c) => s + c.composite_score, 0);
+    return sumB - sumA;
+  });
+}
+
+/**
+ * Scale-diversity gate (Gate 3 from data-discovery-rules.json). Given
+ * a flat list of candidates, return a balanced selection that hits the
+ * three subscriber bands ([10K-100K], [100K-1M], [1M-5M]) for the
+ * narrative rhythm the corpus shows working ("this tiny channel ... AND
+ * this big one ...").
  */
 export function balanceByScaleBand(
   candidates: DiscoveryCandidate[],
@@ -320,12 +422,10 @@ export function balanceByScaleBand(
     return false;
   };
 
-  // First pass — guarantee at least one from each band if available.
   take(small);
   take(mid);
   take(big);
 
-  // Fill the remainder by overall composite score, skipping already-picked.
   for (const c of candidates) {
     if (out.length >= targetTotal) break;
     if (seen.has(c.channel_id)) continue;
