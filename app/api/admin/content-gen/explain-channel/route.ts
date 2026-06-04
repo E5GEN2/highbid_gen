@@ -202,29 +202,43 @@ export async function GET(req: NextRequest) {
 
   const allPass = rules.every((r) => r.pass);
 
-  // Bonus: showcase cluster if top video has one.
-  let showcase_cluster: {
-    cluster_id: number;
-    cluster_label: string | null;
-    run_kind: string | null;
-  } | null = null;
+  // Bonus: showcase clusters at both L1 + L2 if top video has them.
+  type ShowcaseCluster = {
+    cluster_id:        number;
+    level:             1 | 2;
+    cluster_label:     string | null;
+    parent_cluster_id: number | null;
+    run_kind:          string | null;
+    run_started_at:    string;
+  };
+  const showcase_clusters: { l1: ShowcaseCluster | null; l2: ShowcaseCluster | null } = { l1: null, l2: null };
   if (row.top_video_id) {
     const c = await pool.query(
-      `SELECT a.cluster_id, c.label AS cluster_label, r.kind AS run_kind
+      `SELECT DISTINCT ON (c.level)
+         a.cluster_id,
+         c.level,
+         COALESCE(c.label, c.ai_label, c.auto_label) AS cluster_label,
+         c.parent_cluster_id,
+         r.kind AS run_kind,
+         r.started_at::text AS run_started_at
        FROM niche_tree_assignments a
        JOIN niche_tree_clusters c ON c.id = a.cluster_id
        JOIN niche_tree_runs r ON r.id = a.run_id
        WHERE a.video_id = $1 AND a.cluster_id IS NOT NULL
-       ORDER BY r.started_at DESC
-       LIMIT 1`,
+       ORDER BY c.level, r.started_at DESC`,
       [parseInt(row.top_video_id)],
     );
-    if (c.rows[0]) {
-      showcase_cluster = {
-        cluster_id:    Number(c.rows[0].cluster_id),
-        cluster_label: c.rows[0].cluster_label,
-        run_kind:      c.rows[0].run_kind,
+    for (const cr of c.rows) {
+      const sc: ShowcaseCluster = {
+        cluster_id:        Number(cr.cluster_id),
+        level:             Number(cr.level) === 2 ? 2 : 1,
+        cluster_label:     cr.cluster_label,
+        parent_cluster_id: cr.parent_cluster_id != null ? Number(cr.parent_cluster_id) : null,
+        run_kind:          cr.run_kind,
+        run_started_at:    cr.run_started_at,
       };
+      if (sc.level === 1) showcase_clusters.l1 = sc;
+      else                showcase_clusters.l2 = sc;
     }
   }
 
@@ -251,6 +265,6 @@ export async function GET(req: NextRequest) {
     },
     rules,
     failed_rules: rules.filter((r) => !r.pass).map((r) => r.rule),
-    showcase_cluster,
+    showcase_clusters,
   });
 }

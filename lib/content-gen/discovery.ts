@@ -46,7 +46,11 @@ export interface DiscoveryOptions {
 
 export interface ChannelCluster {
   cluster_id: number;
+  /** 1 = top-level niche, 2 = sub-niche (subdivided from an L1). */
+  level: 1 | 2;
   cluster_label: string | null;
+  /** Only for L2: the L1 parent cluster id. Null for L1 clusters. */
+  parent_cluster_id: number | null;
   /** Distinct videos in this cluster overall (across the cluster, not just this channel). */
   cluster_video_count: number;
   /** This channel's video count in this cluster. */
@@ -54,6 +58,21 @@ export interface ChannelCluster {
   /** Clustering run that produced this assignment. */
   run_id: number;
   run_kind: string | null;
+}
+
+/**
+ * A channel can sit in BOTH an L1 niche AND an L2 sub-niche (or one or
+ * neither). The listicle assembler decides which granularity to use:
+ *   - L1 = broad-niche listicle ("Top 10 faceless YouTube niches")
+ *   - L2 = specific-sub-niche listicle ("Top 10 niches inside
+ *          Faceless YouTube") — finer-grained, more specific
+ *
+ * Both are populated by the latest assignment at each level when
+ * available.
+ */
+export interface ShowcaseClusters {
+  l1: ChannelCluster | null;
+  l2: ChannelCluster | null;
 }
 
 export interface DiscoveryCandidate {
@@ -75,8 +94,12 @@ export interface DiscoveryCandidate {
   views_to_subs_ratio: number;
   /** Max novelty_score across this channel's indexed videos. */
   novelty_score: number | null;
-  /** The cluster of this channel's top video — the "showcase niche". */
-  showcase_cluster: ChannelCluster | null;
+  /**
+   * The clusters this channel's top video sits in — split by level.
+   * Either or both may be null. The listicle assembler chooses which
+   * granularity to build at.
+   */
+  showcase_clusters: ShowcaseClusters;
   components: {
     recency: number;
     virality: number;
@@ -243,19 +266,27 @@ export async function discoverChannels(
   // showcase_cluster=null (still surfaced — caller can decide to drop
   // or rank lower).
   const topVideoIds = rows.rows.map((r) => Number(r.top_video_id));
-  const clusterMap = new Map<number, ChannelCluster>();
+  /** Map<top_video_id, { l1, l2 }>. Either entry can be null. */
+  const clusterMap = new Map<number, ShowcaseClusters>();
+  // Fetch latest L1 and latest L2 per video — `DISTINCT ON (video_id, level)`
+  // ordered by run.started_at picks the most recent assignment at each level.
+  // COALESCE picks the best available label (user-edited → ai → auto).
   const clusterRes = await pool.query<{
     video_id: number;
+    level: number;
     cluster_id: number;
     cluster_label: string | null;
+    parent_cluster_id: number | null;
     cluster_video_count: number;
     run_id: number;
     run_kind: string | null;
   }>(
-    `SELECT DISTINCT ON (a.video_id)
+    `SELECT DISTINCT ON (a.video_id, c.level)
        a.video_id,
+       c.level,
        a.cluster_id,
-       c.label AS cluster_label,
+       COALESCE(c.label, c.ai_label, c.auto_label) AS cluster_label,
+       c.parent_cluster_id,
        c.video_count AS cluster_video_count,
        a.run_id,
        r.kind AS run_kind
@@ -264,26 +295,38 @@ export async function discoverChannels(
      JOIN niche_tree_runs r ON r.id = a.run_id
      WHERE a.video_id = ANY($1::int[])
        AND a.cluster_id IS NOT NULL
-     ORDER BY a.video_id, r.started_at DESC NULLS LAST`,
+     ORDER BY a.video_id, c.level, r.started_at DESC NULLS LAST`,
     [topVideoIds],
   );
   for (const r of clusterRes.rows) {
-    clusterMap.set(Number(r.video_id), {
+    const vid = Number(r.video_id);
+    const existing = clusterMap.get(vid) ?? { l1: null, l2: null };
+    const cc: ChannelCluster = {
       cluster_id:                Number(r.cluster_id),
+      level:                     Number(r.level) === 2 ? 2 : 1,
       cluster_label:             r.cluster_label,
+      parent_cluster_id:         r.parent_cluster_id != null ? Number(r.parent_cluster_id) : null,
       cluster_video_count:       Number(r.cluster_video_count) || 0,
-      channel_videos_in_cluster: 0,   // filled in next sub-query
+      channel_videos_in_cluster: 0,
       run_id:                    Number(r.run_id),
       run_kind:                  r.run_kind,
-    });
+    };
+    if (cc.level === 1) existing.l1 = cc;
+    else                existing.l2 = cc;
+    clusterMap.set(vid, existing);
   }
 
-  // Also count, per (channel, cluster), how many of THIS channel's videos
-  // are in their showcase cluster. Gives us "this channel has N videos in
-  // this niche" — useful narrative signal.
-  if (clusterMap.size > 0) {
+  // Count, per (channel, cluster_id), how many of THIS channel's videos
+  // sit in the cluster. Computed across both L1 and L2 cluster ids we
+  // care about. Gives us "this channel has N videos in this niche" — a
+  // narrative signal.
+  const allClusterIds = new Set<number>();
+  for (const cm of clusterMap.values()) {
+    if (cm.l1) allClusterIds.add(cm.l1.cluster_id);
+    if (cm.l2) allClusterIds.add(cm.l2.cluster_id);
+  }
+  if (allClusterIds.size > 0) {
     const channelIds = rows.rows.map((r) => r.channel_id);
-    const clusterIds = Array.from(new Set(Array.from(clusterMap.values()).map((c) => c.cluster_id)));
     const countRes = await pool.query<{
       channel_id: string;
       cluster_id: number;
@@ -295,20 +338,17 @@ export async function discoverChannels(
         WHERE v.channel_id = ANY($1::text[])
           AND a.cluster_id = ANY($2::int[])
         GROUP BY v.channel_id, a.cluster_id`,
-      [channelIds, clusterIds],
+      [channelIds, Array.from(allClusterIds)],
     );
     const channelClusterCount = new Map<string, number>();
     for (const cr of countRes.rows) {
       channelClusterCount.set(`${cr.channel_id}:${cr.cluster_id}`, Number(cr.n));
     }
-    // Patch in the channel_videos_in_cluster on each clusterMap entry by
-    // (top_video → channel → cluster) lookup.
     for (const r of rows.rows) {
-      const cluster = clusterMap.get(Number(r.top_video_id));
-      if (cluster) {
-        const k = `${r.channel_id}:${cluster.cluster_id}`;
-        cluster.channel_videos_in_cluster = channelClusterCount.get(k) ?? 1;
-      }
+      const sc = clusterMap.get(Number(r.top_video_id));
+      if (!sc) continue;
+      if (sc.l1) sc.l1.channel_videos_in_cluster = channelClusterCount.get(`${r.channel_id}:${sc.l1.cluster_id}`) ?? 1;
+      if (sc.l2) sc.l2.channel_videos_in_cluster = channelClusterCount.get(`${r.channel_id}:${sc.l2.cluster_id}`) ?? 1;
     }
   }
 
@@ -351,7 +391,7 @@ export async function discoverChannels(
       median_video_views:   medV,
       views_to_subs_ratio:  Math.round(ratio * 10) / 10,
       novelty_score:        novelty,
-      showcase_cluster:     clusterMap.get(Number(r.top_video_id)) ?? null,
+      showcase_clusters:    clusterMap.get(Number(r.top_video_id)) ?? { l1: null, l2: null },
       components: {
         recency:  Math.round(recency  * 1000) / 1000,
         virality: Math.round(virality * 1000) / 1000,
@@ -369,25 +409,33 @@ export async function discoverChannels(
 }
 
 /**
- * Group discovered candidates by their showcase_cluster. Each group
- * becomes a candidate "niche" for the listicle. The listicle assembler
- * then picks N niches (e.g. via scale-diversity Gate 3) and 1-3 channels
- * per niche.
+ * Group discovered candidates by their showcase_cluster at a given level.
+ *
+ *   level=1: broad niches ("Faceless YouTube Niches")
+ *   level=2: sub-niches ("Funny Stickman Fails")
+ *
+ * Each group becomes a candidate "niche" for the listicle at the chosen
+ * granularity. The listicle assembler then picks N niches (e.g. via
+ * scale-diversity Gate 3) and 1-3 channels per niche.
+ *
+ * Candidates whose top video doesn't have a cluster at the requested
+ * level are dropped from the grouping (they have nothing to be featured
+ * under at that granularity).
  */
 export function groupByCluster(
   candidates: DiscoveryCandidate[],
+  level: 1 | 2 = 2,
 ): Array<{ cluster: ChannelCluster; channels: DiscoveryCandidate[] }> {
   const groups = new Map<number, { cluster: ChannelCluster; channels: DiscoveryCandidate[] }>();
   for (const c of candidates) {
-    if (!c.showcase_cluster) continue;
-    const key = c.showcase_cluster.cluster_id;
+    const sc = level === 1 ? c.showcase_clusters.l1 : c.showcase_clusters.l2;
+    if (!sc) continue;
+    const key = sc.cluster_id;
     if (!groups.has(key)) {
-      groups.set(key, { cluster: c.showcase_cluster, channels: [] });
+      groups.set(key, { cluster: sc, channels: [] });
     }
     groups.get(key)!.channels.push(c);
   }
-  // Sort groups by total composite score (sum of channels' scores) —
-  // niches with more/better candidates surface first.
   return Array.from(groups.values()).sort((a, b) => {
     const sumA = a.channels.reduce((s, c) => s + c.composite_score, 0);
     const sumB = b.channels.reduce((s, c) => s + c.composite_score, 0);

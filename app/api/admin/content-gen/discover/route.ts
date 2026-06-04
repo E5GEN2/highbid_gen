@@ -95,7 +95,9 @@ export async function GET(req: NextRequest) {
     big_1M_5M:        candidates.filter((c) => c.subscriber_count >= 1_000_000).length,
   };
 
-  const withCluster = candidates.filter((c) => c.showcase_cluster != null).length;
+  const withL1 = candidates.filter((c) => c.showcase_clusters.l1 != null).length;
+  const withL2 = candidates.filter((c) => c.showcase_clusters.l2 != null).length;
+  const withAny = candidates.filter((c) => c.showcase_clusters.l1 || c.showcase_clusters.l2).length;
 
   return NextResponse.json({
     ok: true,
@@ -109,8 +111,10 @@ export async function GET(req: NextRequest) {
       population_videos:            parseInt(popRes.rows[0]?.total_videos ?? '0') || 0,
       population_distinct_channels: parseInt(popRes.rows[0]?.distinct_channels ?? '0') || 0,
       population_enriched_channels: parseInt(popRes.rows[0]?.enriched_channels ?? '0') || 0,
-      candidates_after_hard_filters: candidates.length,
-      candidates_with_showcase_cluster: withCluster,
+      candidates_after_hard_filters:           candidates.length,
+      candidates_with_any_showcase_cluster:    withAny,
+      candidates_with_l1_niche:                withL1,
+      candidates_with_l2_subniche:             withL2,
     },
     filter_thresholds_applied: {
       sub_band:                      [minSubs, maxSubs],
@@ -126,19 +130,28 @@ export async function GET(req: NextRequest) {
       by_scale:    scaleCounts,
     },
     ...(group
-      ? { niches: groupByCluster(candidates).map((g) => ({
-            cluster:  g.cluster,
-            channels: g.channels.map((c) => ({
-              channel_id:         c.channel_id,
-              channel_name:       c.channel_name,
-              subscriber_count:   c.subscriber_count,
-              channel_age_days:   c.channel_age_days,
-              top_video_views:    c.top_video_views,
-              views_to_subs_ratio: c.views_to_subs_ratio,
-              composite_score:    c.composite_score,
-              age_tier:           c.age_tier,
-            })),
-          })) }
+      ? {
+          niches_l1: groupByCluster(candidates, 1).map(toNicheGroup),
+          niches_l2: groupByCluster(candidates, 2).map(toNicheGroup),
+        }
       : { candidates }),
   });
+}
+
+import type { DiscoveryCandidate, ChannelCluster } from '@/lib/content-gen/discovery';
+
+function toNicheGroup(g: { cluster: ChannelCluster; channels: DiscoveryCandidate[] }) {
+  return {
+    cluster:  g.cluster,
+    channels: g.channels.map((c) => ({
+      channel_id:         c.channel_id,
+      channel_name:       c.channel_name,
+      subscriber_count:   c.subscriber_count,
+      channel_age_days:   c.channel_age_days,
+      top_video_views:    c.top_video_views,
+      views_to_subs_ratio: c.views_to_subs_ratio,
+      composite_score:    c.composite_score,
+      age_tier:           c.age_tier,
+    })),
+  };
 }

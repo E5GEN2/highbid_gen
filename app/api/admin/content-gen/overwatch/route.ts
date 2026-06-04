@@ -253,7 +253,9 @@ export async function GET(req: NextRequest) {
   // channels are "ready niches" — we could generate a listicle from them.
   const readyRes = await pool.query<{
     cluster_id: number;
+    level: number;
     cluster_label: string | null;
+    parent_cluster_id: number | null;
     cluster_video_count: number;
     viable_channel_count: string;
     run_kind: string | null;
@@ -291,7 +293,9 @@ export async function GET(req: NextRequest) {
     )
     SELECT
       c.id AS cluster_id,
-      c.label AS cluster_label,
+      c.level AS level,
+      COALESCE(c.label, c.ai_label, c.auto_label) AS cluster_label,
+      c.parent_cluster_id,
       c.video_count AS cluster_video_count,
       COUNT(DISTINCT v.channel_id) AS viable_channel_count,
       r.kind AS run_kind,
@@ -301,19 +305,28 @@ export async function GET(req: NextRequest) {
     JOIN niche_tree_assignments a ON a.cluster_id = c.id
     JOIN niche_spy_videos v ON v.id = a.video_id
     WHERE v.channel_id IN (SELECT channel_id FROM viable_channels)
-    GROUP BY c.id, c.label, c.video_count, r.kind, r.started_at
+    GROUP BY c.id, c.level, c.label, c.ai_label, c.auto_label, c.parent_cluster_id, c.video_count, r.kind, r.started_at
     HAVING COUNT(DISTINCT v.channel_id) >= 2
-    ORDER BY COUNT(DISTINCT v.channel_id) DESC, r.started_at DESC
-    LIMIT 30
+    ORDER BY c.level, COUNT(DISTINCT v.channel_id) DESC, r.started_at DESC
+    LIMIT 60
   `);
 
-  const ready_clusters = readyRes.rows.map((r) => ({
-    cluster_id:          Number(r.cluster_id),
-    cluster_label:       r.cluster_label,
-    cluster_video_count: Number(r.cluster_video_count) || 0,
+  const ready_l1 = readyRes.rows.filter((r) => Number(r.level) === 1).slice(0, 20).map((r) => ({
+    cluster_id:           Number(r.cluster_id),
+    cluster_label:        r.cluster_label,
+    cluster_video_count:  Number(r.cluster_video_count) || 0,
     viable_channel_count: parseInt(r.viable_channel_count),
-    run_kind:            r.run_kind,
-    started_at:          r.started_at,
+    run_kind:             r.run_kind,
+    started_at:           r.started_at,
+  }));
+  const ready_l2 = readyRes.rows.filter((r) => Number(r.level) === 2).slice(0, 20).map((r) => ({
+    cluster_id:           Number(r.cluster_id),
+    cluster_label:        r.cluster_label,
+    parent_cluster_id:    r.parent_cluster_id != null ? Number(r.parent_cluster_id) : null,
+    cluster_video_count:  Number(r.cluster_video_count) || 0,
+    viable_channel_count: parseInt(r.viable_channel_count),
+    run_kind:             r.run_kind,
+    started_at:           r.started_at,
   }));
 
   // ── 5. RECENT ENRICHMENT activity ──────────────────────────────────
@@ -343,9 +356,11 @@ export async function GET(req: NextRequest) {
     },
     sample_top_candidates,
     ready_clusters: {
-      count_with_2plus_candidates: ready_clusters.length,
-      top_by_candidates:           ready_clusters,
-      note: 'Clusters with ≥2 viable candidates — listicle-ready niches.',
+      note: 'Clusters with ≥2 viable candidates — listicle-ready niches. Split by level: L1 = broad niches (e.g. "Faceless YouTube Niches"), L2 = sub-niches (e.g. "Funny Stickman Fails"). Listicle assembler picks which granularity to build at.',
+      l1_count: ready_l1.length,
+      l2_count: ready_l2.length,
+      top_l1_niches:    ready_l1,
+      top_l2_subniches: ready_l2,
     },
     recent_enrichment_stats: {
       enriched_last_24h: parseInt(enrichRes.rows[0]?.enriched_last_24h ?? '0'),
