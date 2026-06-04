@@ -126,11 +126,13 @@ export async function GET(req: NextRequest) {
                               WHEN age_days >  90 THEN  200000
                               ELSE                      100000
                             END)                                            AS pass_a2,
-        (subscriber_count > 0 AND top_video_views::float / subscriber_count >= 5)  AS pass_a3,
+        (subscriber_count > 0 AND top_video_views IS NOT NULL
+          AND top_video_views::float / NULLIF(subscriber_count, 0) >= 5)         AS pass_a3,
         (age_days <= 730)                                                   AS pass_b1,
         (top_video_posted_at >= NOW() - INTERVAL '12 months')              AS pass_b2,
         (videos_indexed >= 5)                                               AS pass_d1,
-        (top_video_views > 0 AND median_video_views::float / top_video_views >= 0.05)  AS pass_d2
+        (top_video_views > 0 AND median_video_views IS NOT NULL
+          AND median_video_views::float / NULLIF(top_video_views, 0) >= 0.05)  AS pass_d2
       FROM enriched
     )
     SELECT
@@ -219,7 +221,8 @@ export async function GET(req: NextRequest) {
               LIMIT 1) AS top_video_title
       FROM enriched e
       WHERE e.subscriber_count BETWEEN 10000 AND 5000000
-        AND e.top_video_views::float / e.subscriber_count >= 5
+        AND e.top_video_views > 0
+        AND e.top_video_views::float / NULLIF(e.subscriber_count, 0) >= 5
         AND e.top_video_views >= CASE
             WHEN e.age_days > 365 THEN 1000000
             WHEN e.age_days > 180 THEN  500000
@@ -229,7 +232,7 @@ export async function GET(req: NextRequest) {
         AND e.age_days <= 730
         AND e.top_video_posted_at >= NOW() - INTERVAL '12 months'
         AND e.videos_indexed >= 5
-        AND e.median_views::float / e.top_video_views >= 0.05
+        AND e.median_views::float / NULLIF(e.top_video_views, 0) >= 0.05
     )
     SELECT channel_id, channel_name, subscriber_count, age_days, top_video_views, top_video_title, videos_indexed
     FROM passing
@@ -279,7 +282,8 @@ export async function GET(req: NextRequest) {
       JOIN niche_spy_channels sc ON sc.channel_id = pc.channel_id
       WHERE sc.subscriber_count BETWEEN 10000 AND 5000000
         AND sc.subscriber_count IS NOT NULL
-        AND pc.top_video_views::float / sc.subscriber_count >= 5
+        AND pc.top_video_views > 0
+        AND pc.top_video_views::float / NULLIF(sc.subscriber_count, 0) >= 5
         AND pc.top_video_views >= CASE
             WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(sc.channel_created_at, sc.first_upload_at, pc.chan_created_v, pc.earliest_video_posted_at)))/86400 > 365 THEN 1000000
             WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(sc.channel_created_at, sc.first_upload_at, pc.chan_created_v, pc.earliest_video_posted_at)))/86400 > 180 THEN  500000
@@ -289,7 +293,7 @@ export async function GET(req: NextRequest) {
         AND EXTRACT(EPOCH FROM (NOW() - COALESCE(sc.channel_created_at, sc.first_upload_at, pc.chan_created_v, pc.earliest_video_posted_at)))/86400 <= 730
         AND pc.top_video_posted_at >= NOW() - INTERVAL '12 months'
         AND pc.videos_indexed >= 5
-        AND pc.median_views::float / pc.top_video_views >= 0.05
+        AND pc.median_views::float / NULLIF(pc.top_video_views, 0) >= 0.05
     )
     SELECT
       c.id AS cluster_id,

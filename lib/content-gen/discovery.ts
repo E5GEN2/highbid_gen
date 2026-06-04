@@ -236,7 +236,8 @@ export async function discoverChannels(
       EXTRACT(EPOCH FROM (NOW() - e.effective_created_at)) / 86400 AS channel_age_days
     FROM enriched e
     WHERE e.subscriber_count BETWEEN $1 AND $2
-      AND e.top_video_views::float / e.subscriber_count >= 5
+      AND e.top_video_views > 0
+      AND e.top_video_views::float / NULLIF(e.subscriber_count, 0) >= 5
       AND e.top_video_views >= (
         CASE
           WHEN EXTRACT(EPOCH FROM (NOW() - e.effective_created_at))/86400 > 365 THEN 1000000
@@ -248,7 +249,7 @@ export async function discoverChannels(
       AND EXTRACT(EPOCH FROM (NOW() - e.effective_created_at))/86400 <= 730
       AND e.top_video_posted_at >= NOW() - INTERVAL '12 months'
       AND e.videos_indexed >= 5
-      AND e.median_video_views::float / e.top_video_views >= 0.05
+      AND e.median_video_views::float / NULLIF(e.top_video_views, 0) >= 0.05
     ORDER BY e.top_video_views DESC NULLS LAST
     LIMIT 500
   `;
