@@ -278,106 +278,71 @@ export default function ContentGenTab({ active }: { active: boolean }) {
 
           {/* Funnel strip */}
           {overwatch && (
-            <div className="p-3 rounded-md bg-[#0f0f0f] border border-[#1f1f1f]">
-              <div className="text-[10px] uppercase tracking-wide text-[#666] mb-2">Filter funnel · pass-through per rule</div>
-              <div className="space-y-1.5">
+            <details className="rounded-lg bg-[#161616] border border-[#2a2a2a] group">
+              <summary className="px-4 py-3 cursor-pointer text-sm text-[#ccc] font-medium select-none flex items-center gap-2 hover:text-white">
+                <svg className="w-4 h-4 transition-transform group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <polyline points="9 6 15 12 9 18" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Filter funnel · pass-through per rule
+              </summary>
+              <div className="px-4 pb-4 pt-1 space-y-2">
                 {overwatch.binding_constraint.ranked_by_killing_pct.map(r => {
                   const pct = 100 - r.killing_pct;
                   return (
-                    <div key={r.rule} className="flex items-center gap-2 text-xs">
-                      <div className="w-44 text-[#aaa] truncate" title={r.rule}>{r.rule}</div>
-                      <div className="flex-1 h-3 bg-[#1a1a1a] rounded overflow-hidden">
+                    <div key={r.rule} className="flex items-center gap-3 text-sm">
+                      <div className="w-56 text-[#ccc] truncate" title={r.rule}>{r.rule}</div>
+                      <div className="flex-1 h-4 bg-[#1a1a1a] rounded overflow-hidden">
                         <div
-                          className={`h-full ${r.killing_pct > 70 ? 'bg-red-500/40' : r.killing_pct > 40 ? 'bg-amber-500/40' : 'bg-emerald-500/40'}`}
+                          className={`h-full ${r.killing_pct > 70 ? 'bg-red-500/50' : r.killing_pct > 40 ? 'bg-amber-500/50' : 'bg-emerald-500/50'}`}
                           style={{ width: `${pct.toFixed(1)}%` }}
                         />
                       </div>
-                      <div className="w-20 text-right tabular-nums text-[#ccc]">{fmtNum(r.passing)}</div>
-                      <div className="w-12 text-right tabular-nums text-[#888]">{pct.toFixed(1)}%</div>
+                      <div className="w-20 text-right tabular-nums text-white font-medium">{fmtNum(r.passing)}</div>
+                      <div className="w-14 text-right tabular-nums text-[#aaa]">{pct.toFixed(1)}%</div>
                     </div>
                   );
                 })}
               </div>
+            </details>
+          )}
+
+          {/* Selection counter */}
+          {selectedChannels.size > 0 && (
+            <div className="text-sm text-[#ccc] flex items-center gap-2">
+              <span className="text-amber-300 font-semibold tabular-nums">{selectedChannels.size}</span>
+              channels picked across drafts
             </div>
           )}
 
-          {/* Niche level switcher */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-[#888]">Granularity:</span>
-              {[
-                { key: 2, label: 'L2 sub-niches', count: overwatch?.ready_clusters.l2_count ?? 0 },
-                { key: 1, label: 'L1 broad niches', count: overwatch?.ready_clusters.l1_count ?? 0 },
-              ].map(opt => (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => { setNicheLevel(opt.key as 1 | 2); }}
-                  className={`px-3 py-1.5 rounded-md text-xs border transition ${
-                    nicheLevel === opt.key
-                      ? 'bg-amber-400/15 text-amber-300 border-amber-400/40'
-                      : 'text-[#aaa] border-[#2a2a2a] hover:border-[#444]'
-                  }`}
-                >
-                  {opt.label} <span className="text-[#666]">({opt.count})</span>
-                </button>
-              ))}
-            </div>
-            {selectedChannels.size > 0 && (
-              <div className="text-xs text-[#aaa]">
-                <span className="text-amber-300 font-medium">{selectedChannels.size}</span> channels selected
-              </div>
-            )}
-          </div>
-
-          {/* Suggested-listicle cards — one card per ready niche */}
+          {/* Suggested-listicle cards — one card per ASSEMBLED listicle */}
           {!overwatch && loading && (
-            <div className="text-xs text-[#888]">Loading suggestions…</div>
+            <div className="text-sm text-[#aaa]">Loading suggestions…</div>
           )}
           {overwatch && (() => {
-            const nicheList = nicheLevel === 1
-              ? overwatch.ready_clusters.top_l1_niches
-              : overwatch.ready_clusters.top_l2_subniches;
-            if (nicheList.length === 0) {
+            // Assemble draft listicles. Each draft = a "Top N" video we
+            // could generate. Logic:
+            //   - Group viable candidates by L1 (showcase_clusters.l1.cluster_id)
+            //   - Inside each L1, group by L2 sub-niche
+            //   - For each L1 with ≥5 distinct L2 sub-niches that have
+            //     a viable channel, pick the top channel per L2 by
+            //     composite_score → up to 10 channels → that's the draft
+            //   - Each row of the card represents one item in the
+            //     listicle, naming both the channel AND the sub-niche
+            const drafts = assembleListicleDrafts(candidates, overwatch);
+            if (drafts.length === 0) {
               return (
-                <div className="p-6 rounded-md bg-[#0f0f0f] border border-[#1f1f1f] text-xs text-[#888] text-center">
-                  No niches with ≥2 viable channels at this level yet.
+                <div className="p-6 rounded-lg bg-[#141414] border border-[#2a2a2a] text-sm text-[#bbb] text-center">
+                  Not enough viable channels grouped under any L1 niche yet.
+                  Lower the &ldquo;≥5 sub-niches per draft&rdquo; bar in code, or trigger more L2 subdivides.
                 </div>
               );
             }
-            // Build cards: one per ready niche, paired with the
-            // channels from the cached candidate pool whose showcase
-            // matches it. Skip niches with zero matched channels (data
-            // misalignment edge cases) so the user only sees actionable
-            // suggestions.
-            const cards = nicheList
-              .map(niche => {
-                const channels = candidates
-                  .filter(c => {
-                    const sc = nicheLevel === 1 ? c.showcase_clusters.l1 : c.showcase_clusters.l2;
-                    return sc?.cluster_id === niche.cluster_id;
-                  })
-                  .sort((a, b) => b.composite_score - a.composite_score);
-                return { niche, channels };
-              })
-              .filter(card => card.channels.length > 0);
-
-            if (cards.length === 0) {
-              return (
-                <div className="p-6 rounded-md bg-[#0f0f0f] border border-[#1f1f1f] text-xs text-[#888] text-center">
-                  Ready niches surfaced but their channels didn&apos;t make the cached top-300 pool. Try Refresh or widen the pool.
-                </div>
-              );
-            }
-
             return (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {cards.map(({ niche, channels }) => (
-                  <ListicleSuggestionCard
-                    key={`${niche.cluster_id}-${niche.started_at}`}
-                    niche={niche}
-                    level={nicheLevel}
-                    channels={channels}
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                {drafts.map(d => (
+                  <ListicleDraftCard
+                    key={d.l1_cluster_id}
+                    draft={d}
                     selectedChannels={selectedChannels}
                     onToggleChannel={(channelId) => {
                       const next = new Set(selectedChannels);
@@ -390,6 +355,11 @@ export default function ContentGenTab({ active }: { active: boolean }) {
               </div>
             );
           })()}
+
+          {/* Legacy level switcher hidden — drafts are always L1-themed
+              for v1. Kept the state in case the channel explorer uses it
+              later. */}
+          <div className="hidden">{nicheLevel}</div>
         </div>
       )}
 
@@ -516,14 +486,14 @@ function Stat({
   accent?: 'amber' | 'emerald';
 }) {
   return (
-    <div className="p-3 rounded-md bg-[#0f0f0f] border border-[#1f1f1f]">
-      <div className="text-[9px] uppercase tracking-wide text-[#666]">{label}</div>
-      <div className={`text-xl font-bold mt-0.5 tabular-nums ${
+    <div className="p-4 rounded-lg bg-[#161616] border border-[#2a2a2a]">
+      <div className="text-[11px] uppercase tracking-wide text-[#888] font-medium">{label}</div>
+      <div className={`text-3xl font-bold mt-1 tabular-nums ${
         accent === 'amber' ? 'text-amber-300' : accent === 'emerald' ? 'text-emerald-300' : 'text-white'
       }`}>
         {value}
       </div>
-      {hint && <div className="text-[10px] text-[#666] mt-0.5">{hint}</div>}
+      {hint && <div className="text-xs text-[#888] mt-1">{hint}</div>}
     </div>
   );
 }
@@ -539,7 +509,258 @@ function Stat({
  *   Body  : up to 5 channel rows with thumbnails of their top video
  *   Footer: action buttons (Generate / Edit selection)
  */
-function ListicleSuggestionCard({
+/**
+ * One pre-assembled listicle = the unit the generator produces.
+ *
+ * Each draft groups channels into a "Top N [theme]" video where:
+ *   - theme = the L1 niche they all sit under (e.g. "space universe moon")
+ *   - items = up to 10 channels, one per distinct L2 sub-niche under
+ *             that L1, picked by composite_score
+ *
+ * The card has plenty of breathing room: large thumbnails, readable
+ * text, scale-diversity badges, generate action.
+ */
+interface ListicleDraft {
+  l1_cluster_id: number;
+  l1_label: string | null;
+  /** Items: each item is one channel paired with the L2 sub-niche it represents. */
+  items: Array<{
+    candidate: Candidate;
+    l2_label: string | null;
+    l2_cluster_id: number;
+  }>;
+  /** Quick scale-diversity gauge. */
+  scale_mix: { small: number; mid: number; big: number };
+}
+
+function assembleListicleDrafts(candidates: Candidate[], overwatch: OverwatchResp): ListicleDraft[] {
+  // Group candidates by their L1 showcase cluster. Then within each L1,
+  // group by L2 — picking the highest-score channel per L2 — and take
+  // the top-10 L2 sub-niches by their representative channel's score.
+  const byL1 = new Map<number, Candidate[]>();
+  for (const c of candidates) {
+    const l1 = c.showcase_clusters.l1;
+    if (!l1) continue;
+    if (!byL1.has(l1.cluster_id)) byL1.set(l1.cluster_id, []);
+    byL1.get(l1.cluster_id)!.push(c);
+  }
+
+  // Look up L1 labels from overwatch.ready_clusters where available
+  // (already deduped + scoped to latest run).
+  const l1Labels = new Map<number, string | null>();
+  for (const r of overwatch.ready_clusters.top_l1_niches) {
+    l1Labels.set(r.cluster_id, r.cluster_label);
+  }
+
+  const drafts: ListicleDraft[] = [];
+  for (const [l1Id, pool] of byL1.entries()) {
+    // Within this L1, group by L2 sub-niche.
+    const byL2 = new Map<number, Candidate[]>();
+    const l2Labels = new Map<number, string | null>();
+    for (const c of pool) {
+      const l2 = c.showcase_clusters.l2;
+      if (!l2) continue;
+      if (!byL2.has(l2.cluster_id)) byL2.set(l2.cluster_id, []);
+      byL2.get(l2.cluster_id)!.push(c);
+      l2Labels.set(l2.cluster_id, l2.cluster_label);
+    }
+    // Need at least 5 distinct L2 sub-niches to make a coherent "Top N"
+    // draft; otherwise the listicle would be too narrow.
+    if (byL2.size < 5) continue;
+
+    // Pick top channel per L2, then sort L2s by their top channel's score.
+    const candidatesPerL2 = Array.from(byL2.entries())
+      .map(([l2Id, cs]) => ({
+        l2_cluster_id: l2Id,
+        l2_label:      l2Labels.get(l2Id) ?? null,
+        candidate:     cs.sort((a, b) => b.composite_score - a.composite_score)[0],
+      }))
+      .sort((a, b) => b.candidate.composite_score - a.candidate.composite_score)
+      .slice(0, 10);
+
+    if (candidatesPerL2.length < 5) continue;
+
+    const items = candidatesPerL2.map(({ l2_cluster_id, l2_label, candidate }) => ({
+      candidate,
+      l2_label,
+      l2_cluster_id,
+    }));
+
+    const scale_mix = {
+      small: items.filter(i => i.candidate.subscriber_count <  100_000).length,
+      mid:   items.filter(i => i.candidate.subscriber_count >= 100_000 && i.candidate.subscriber_count < 1_000_000).length,
+      big:   items.filter(i => i.candidate.subscriber_count >= 1_000_000).length,
+    };
+
+    drafts.push({
+      l1_cluster_id: l1Id,
+      l1_label:      l1Labels.get(l1Id) ?? null,
+      items,
+      scale_mix,
+    });
+  }
+
+  // Best drafts first by total score.
+  drafts.sort((a, b) => {
+    const sumA = a.items.reduce((s, x) => s + x.candidate.composite_score, 0);
+    const sumB = b.items.reduce((s, x) => s + x.candidate.composite_score, 0);
+    return sumB - sumA;
+  });
+  return drafts;
+}
+
+function ListicleDraftCard({
+  draft,
+  selectedChannels,
+  onToggleChannel,
+}: {
+  draft: ListicleDraft;
+  selectedChannels: Set<string>;
+  onToggleChannel: (channelId: string) => void;
+}) {
+  const themedTitle = draft.l1_label
+    ? `Top ${draft.items.length} ${draft.l1_label} channels`
+    : `Top ${draft.items.length} channels in L1 cluster #${draft.l1_cluster_id}`;
+  const pickedCount = draft.items.filter(i => selectedChannels.has(i.candidate.channel_id)).length;
+
+  return (
+    <div className="rounded-lg bg-[#161616] border border-[#2f2f2f] overflow-hidden">
+      {/* Header */}
+      <div className="px-5 py-4 border-b border-[#262626] bg-gradient-to-r from-amber-500/5 to-transparent">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-[#888] font-medium mb-1">
+              <span className="px-2 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/40">L1 themed</span>
+              <span>cluster {draft.l1_cluster_id}</span>
+              <span>·</span>
+              <span>{draft.items.length} channels</span>
+              <span>·</span>
+              <span>{draft.items.length} sub-niches</span>
+            </div>
+            <h3 className="text-xl font-bold text-white truncate" title={themedTitle}>
+              {themedTitle}
+            </h3>
+          </div>
+          <div className="flex flex-col items-end shrink-0">
+            <div className="flex items-center gap-1">
+              {draft.scale_mix.small > 0 && <ScaleChip label="S" count={draft.scale_mix.small} color="emerald" />}
+              {draft.scale_mix.mid > 0   && <ScaleChip label="M" count={draft.scale_mix.mid} color="amber" />}
+              {draft.scale_mix.big > 0   && <ScaleChip label="L" count={draft.scale_mix.big} color="rose" />}
+            </div>
+            <span className="text-[10px] text-[#777] mt-1 uppercase">scale mix</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Items — one row per channel, numbered, big thumbnail */}
+      <div className="divide-y divide-[#202020]">
+        {draft.items.map((item, idx) => {
+          const c = item.candidate;
+          const isSel = selectedChannels.has(c.channel_id);
+          return (
+            <button
+              key={c.channel_id}
+              type="button"
+              onClick={() => onToggleChannel(c.channel_id)}
+              className={`w-full px-4 py-3 flex items-center gap-4 text-left transition ${
+                isSel ? 'bg-amber-400/10' : 'hover:bg-[#1c1c1c]'
+              }`}
+            >
+              {/* Index number */}
+              <div className={`w-8 text-center shrink-0 text-xl font-bold tabular-nums ${
+                isSel ? 'text-amber-300' : 'text-[#666]'
+              }`}>
+                {idx + 1}
+              </div>
+              {/* Checkbox */}
+              <input
+                type="checkbox"
+                checked={isSel}
+                onChange={() => {}}
+                className="w-4 h-4 accent-amber-400 shrink-0"
+              />
+              {/* Top video thumbnail */}
+              {c.top_video_thumbnail ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={c.top_video_thumbnail}
+                  alt=""
+                  className="w-32 h-[72px] object-cover rounded-md bg-[#222] shrink-0 ring-1 ring-[#2a2a2a]"
+                />
+              ) : (
+                <div className="w-32 h-[72px] rounded-md bg-[#1a1a1a] ring-1 ring-[#2a2a2a] shrink-0 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-[#444]" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+              )}
+              {/* Channel + niche info */}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-0.5">
+                  {c.channel_avatar && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={c.channel_avatar} alt="" className="w-5 h-5 rounded-full object-cover shrink-0" />
+                  )}
+                  <span className="text-base text-white font-semibold truncate">{c.channel_name || '(unnamed)'}</span>
+                  <span className={`text-[10px] px-1.5 py-px rounded border shrink-0 ${ageTierColor[c.age_tier]}`}>
+                    {c.age_tier === 'ultra_young' ? 'ultra-young' : c.age_tier.replace('_', '-')}
+                  </span>
+                </div>
+                <div className="text-sm text-[#bbb] truncate" title={c.top_video_title || ''}>
+                  {c.top_video_title || '—'}
+                </div>
+                <div className="flex items-center gap-3 mt-1.5 text-xs text-[#999] tabular-nums">
+                  <span className="text-[#666]">niche:</span>
+                  <span className="text-amber-200/90 truncate max-w-[200px]" title={item.l2_label || `cluster ${item.l2_cluster_id}`}>
+                    {item.l2_label || `cluster ${item.l2_cluster_id}`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 mt-1 text-xs text-[#aaa] tabular-nums">
+                  <span><span className="text-[#666]">subs</span> <span className="text-white">{fmtNum(c.subscriber_count)}</span></span>
+                  <span><span className="text-[#666]">top</span> <span className="text-white">{fmtNum(c.top_video_views)}</span></span>
+                  <span><span className="text-[#666]">ratio</span> <span className="text-emerald-300">{c.views_to_subs_ratio}×</span></span>
+                  <span><span className="text-[#666]">age</span> <span className="text-white">{fmtAge(c.channel_age_days)}</span></span>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Footer */}
+      <div className="px-5 py-3 border-t border-[#262626] bg-[#0e0e0e] flex items-center justify-between">
+        <span className="text-xs text-[#aaa]">
+          {pickedCount > 0
+            ? <><span className="text-amber-300 font-semibold">{pickedCount}/{draft.items.length}</span> picked</>
+            : <span className="text-[#888]">All {draft.items.length} channels in this draft</span>}
+        </span>
+        <button
+          type="button"
+          disabled
+          title="Coming soon — feed this draft to the script generator"
+          className="text-sm px-4 py-1.5 rounded-md border border-amber-500/40 text-amber-300 bg-amber-400/5 hover:bg-amber-400/15 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+        >
+          Generate this video ▸
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ScaleChip({ label, count, color }: { label: string; count: number; color: 'emerald' | 'amber' | 'rose' }) {
+  const cls = color === 'emerald'
+    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+    : color === 'amber'
+      ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+      : 'bg-rose-500/15 text-rose-300 border-rose-500/40';
+  return (
+    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border tabular-nums ${cls}`}>
+      {label}·{count}
+    </span>
+  );
+}
+
+function ListicleSuggestionCard_DEPRECATED({
   niche,
   level,
   channels,
