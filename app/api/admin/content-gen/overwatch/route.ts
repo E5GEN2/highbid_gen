@@ -315,6 +315,39 @@ export async function GET(req: NextRequest) {
     LIMIT 60
   `);
 
+  // Diagnostic: cluster-level breakdown across the WHOLE DB, before any
+  // viable-channel filtering. Tells us: are L2 clusters absent entirely,
+  // or just not overlapping with our viable pool?
+  const clusterCountsRes = await pool.query<{
+    level: number;
+    total_clusters: string;
+    clusters_with_assignments: string;
+    distinct_channels_covered: string;
+  }>(`
+    SELECT
+      c.level,
+      COUNT(DISTINCT c.id)                                                  AS total_clusters,
+      COUNT(DISTINCT c.id) FILTER (WHERE a.cluster_id IS NOT NULL)          AS clusters_with_assignments,
+      COUNT(DISTINCT v.channel_id) FILTER (WHERE v.channel_id IS NOT NULL)  AS distinct_channels_covered
+    FROM niche_tree_clusters c
+    LEFT JOIN niche_tree_assignments a ON a.cluster_id = c.id
+    LEFT JOIN niche_spy_videos v ON v.id = a.video_id
+    GROUP BY c.level
+    ORDER BY c.level
+  `);
+  const cluster_inventory: Record<string, {
+    total_clusters: number;
+    clusters_with_assignments: number;
+    distinct_channels_covered: number;
+  }> = {};
+  for (const r of clusterCountsRes.rows) {
+    cluster_inventory[`level_${r.level}`] = {
+      total_clusters:            parseInt(r.total_clusters),
+      clusters_with_assignments: parseInt(r.clusters_with_assignments),
+      distinct_channels_covered: parseInt(r.distinct_channels_covered),
+    };
+  }
+
   const ready_l1 = readyRes.rows.filter((r) => Number(r.level) === 1).slice(0, 20).map((r) => ({
     cluster_id:           Number(r.cluster_id),
     cluster_label:        r.cluster_label,
@@ -359,8 +392,12 @@ export async function GET(req: NextRequest) {
       note: 'The rule killing the largest % of channels is the binding constraint — most leverage from relaxing it.',
     },
     sample_top_candidates,
+    cluster_inventory: {
+      note: 'Pre-filter cluster counts. Tells us if L2 clusters exist at all and how many channels they cover.',
+      ...cluster_inventory,
+    },
     ready_clusters: {
-      note: 'Clusters with ≥2 viable candidates — listicle-ready niches. Split by level: L1 = broad niches (e.g. "Faceless YouTube Niches"), L2 = sub-niches (e.g. "Funny Stickman Fails"). Listicle assembler picks which granularity to build at.',
+      note: 'Clusters with ≥2 viable candidates — listicle-ready niches. Split by level: L1 = broad niches, L2 = sub-niches.',
       l1_count: ready_l1.length,
       l2_count: ready_l2.length,
       top_l1_niches:    ready_l1,
