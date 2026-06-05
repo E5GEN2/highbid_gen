@@ -184,15 +184,15 @@ function renderVisual(base: string, text: string, slot: ChannelSlots, localIdx: 
       // connectors ("Even if we assume", "that one video alone")
       return { visual: V({ composition: 'text_card', overlay: text.trim(), token_role: 'connector' }), audio: { music: 'bed', sfx: ['subtle_whoosh'] } };
     }
-    case 'competition': { // proprietary cohort count → YouTube search-results mock
+    case 'competition': { // proprietary cohort count → clean stat card (our index, NOT a faked search page)
       const n = slot.cohort?.channel_count ?? null;
       const low = n != null && n < 25;
+      const card = n != null ? (low ? `only ${n} channels` : `${n} channels`) : slot.niche_label;
       return {
-        visual: V({ composition: 'yt_search_results', bg: 'dark_gray', primitive: 'yt_search_results_mock',
-          asset: { kind: 'yt_search_results', ref: slot.niche_label }, overlay: n != null ? `${n} channels` : slot.niche_label,
-          emphasis: n != null ? String(n) : null, annotation: n != null ? `result count ${n}` : null,
-          annotation_target: n != null ? String(n) : null, annotation_style: 'yellow_box',
-          color: low ? 'inline_green' : 'neutral', icon: low ? 'checkmark_green_circle' : null }),
+        visual: V({ composition: low ? 'icon_card' : 'text_card', bg: 'white',
+          overlay: card, emphasis: n != null ? String(n) : null,
+          color: low ? 'inline_green' : 'neutral', token_role: 'emphasis',
+          icon: low ? 'checkmark_green_circle' : null }),
         audio: { music: 'bed', sfx: low ? ['whoosh', 'subtle_ding'] : ['whoosh'] },
       };
     }
