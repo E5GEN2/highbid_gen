@@ -381,14 +381,18 @@ export default function AdminPage() {
   // Agents tab state
   const [agentsData, setAgentsData] = useState<{
     totalActive: number;
-    byKeyword: Array<{ keyword: string; active: number; taskIds: string[] }>;
+    byKeyword: Array<{
+      keyword: string; active: number; taskIds: string[];
+      kind?: 'keyword' | 'seed' | 'unknown'; label?: string; seedUrls?: string[];
+    }>;
     tasks: Array<{ id: string; keyword: string; startedAt: string | null }>;
   } | null>(null);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [agentsAutoRefresh, setAgentsAutoRefresh] = useState(true);
-  const [agentsDeploy, setAgentsDeploy] = useState({
+  const [agentsDeploy, setAgentsDeploy] = useState<DeployConfig>({
     keyword: '', threads: 2, apiKey: '', loopNumber: 30,
     maxSearchResults: 50, maxSuggestedResults: 50, rofeAPIKey: '',
+    mode: 'keyword', seedUrl: '', nicheLabel: '', nicheId: '',
   });
   const [agentsDeployMsg, setAgentsDeployMsg] = useState<string | null>(null);
 
@@ -6273,6 +6277,11 @@ function fmtAgo(iso: string | null | undefined): string {
 interface DeployConfig {
   keyword: string; threads: number; apiKey: string; loopNumber: number;
   maxSearchResults: number; maxSuggestedResults: number; rofeAPIKey: string;
+  // Seed mode (video-URL niche discovery)
+  mode: 'keyword' | 'seed';
+  seedUrl: string;
+  nicheLabel: string;   // human name for a freshly-minted niche
+  nicheId: string;      // set when adding seeds to an existing niche
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -7620,7 +7629,7 @@ function VideoSeedTab({ active }: { active: boolean }) {
 }
 
 function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDeploy, deployMsg, setDeployMsg, onRefresh, active }: {
-  data: { totalActive: number; byKeyword: Array<{ keyword: string; active: number; taskIds: string[] }>; tasks: Array<{ id: string; keyword: string; startedAt: string | null }> } | null;
+  data: { totalActive: number; byKeyword: Array<{ keyword: string; active: number; taskIds: string[]; kind?: 'keyword' | 'seed' | 'unknown'; label?: string; seedUrls?: string[] }>; tasks: Array<{ id: string; keyword: string; startedAt: string | null }> } | null;
   loading: boolean;
   autoRefresh: boolean;
   setAutoRefresh: (v: boolean) => void;
@@ -7656,10 +7665,11 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
   }, [active, autoRefresh, onRefresh]);
 
   const deployAgents = async () => {
-    if (!deploy.keyword.trim()) return;
+    const isSeed = deploy.mode === 'seed';
+    if (isSeed ? !deploy.seedUrl.trim() : !deploy.keyword.trim()) return;
     setDeployMsg(null);
     try {
-      // Save defaults to admin config
+      // Save shared defaults to admin config (api keys + loop knobs)
       fetch('/api/admin/config', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: {
@@ -7671,22 +7681,43 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
         }}),
       }).catch(() => {});
 
+      const body = isSeed
+        ? {
+            mode: 'seed' as const,
+            seedUrl: deploy.seedUrl.trim(),
+            // nicheId set → add seeds to existing niche; else mint new with label
+            ...(deploy.nicheId ? { nicheId: deploy.nicheId } : { label: deploy.nicheLabel.trim() || undefined }),
+            threads: deploy.threads,
+            apiKey: deploy.apiKey,
+            loopNumber: deploy.loopNumber,
+            maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
+            rofeAPIKey: deploy.rofeAPIKey,
+            createdFrom: 'manual',
+          }
+        : {
+            keyword: deploy.keyword.trim(),
+            threads: deploy.threads,
+            apiKey: deploy.apiKey,
+            loopNumber: deploy.loopNumber,
+            maxSearchResultsBeforeFallback: deploy.maxSearchResults,
+            maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
+            rofeAPIKey: deploy.rofeAPIKey,
+          };
+
       const res = await fetch('/api/admin/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          keyword: deploy.keyword.trim(),
-          threads: deploy.threads,
-          apiKey: deploy.apiKey,
-          loopNumber: deploy.loopNumber,
-          maxSearchResultsBeforeFallback: deploy.maxSearchResults,
-          maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
-          rofeAPIKey: deploy.rofeAPIKey,
-        }),
+        body: JSON.stringify(body),
       });
       const d = await res.json();
       if (d.ok) {
-        setDeployMsg(`Deployed ${d.deployed} agents for "${d.keyword}"`);
+        if (isSeed) {
+          setDeployMsg(`Deployed ${d.deployed} seed agents · niche ${d.nicheId}`);
+          // Pin to the niche we just created so follow-up deploys add to it
+          if (d.nicheId) setDeploy(p => ({ ...p, nicheId: d.nicheId }));
+        } else {
+          setDeployMsg(`Deployed ${d.deployed} agents for "${d.keyword}"`);
+        }
         setTimeout(onRefresh, 2000);
       } else {
         setDeployMsg(`Error: ${d.error}`);
@@ -7694,21 +7725,34 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
     } catch (err) {
       setDeployMsg(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
     }
-    setTimeout(() => setDeployMsg(null), 5000);
+    setTimeout(() => setDeployMsg(null), 6000);
   };
 
-  const addThread = async (keyword: string) => {
+  const addThread = async (kw: { keyword: string; kind?: 'keyword' | 'seed' | 'unknown'; seedUrls?: string[] }) => {
     try {
+      // Seed niches: add a thread for one of the niche's existing seed
+      // URLs (reuse the primary). Keyword niches: add a keyword thread.
+      const body = kw.kind === 'seed' && kw.seedUrls && kw.seedUrls.length > 0
+        ? {
+            mode: 'seed' as const,
+            nicheId: kw.keyword,            // the work-unit key IS the nicheId
+            seedUrl: kw.seedUrls[0],
+            threads: 1,
+            apiKey: deploy.apiKey, loopNumber: deploy.loopNumber,
+            maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
+            rofeAPIKey: deploy.rofeAPIKey,
+          }
+        : {
+            keyword: kw.keyword, threads: 1,
+            apiKey: deploy.apiKey, loopNumber: deploy.loopNumber,
+            maxSearchResultsBeforeFallback: deploy.maxSearchResults,
+            maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
+            rofeAPIKey: deploy.rofeAPIKey,
+          };
       const res = await fetch('/api/admin/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          keyword, threads: 1,
-          apiKey: deploy.apiKey, loopNumber: deploy.loopNumber,
-          maxSearchResultsBeforeFallback: deploy.maxSearchResults,
-          maxSuggestedResultsBeforeFallback: deploy.maxSuggestedResults,
-          rofeAPIKey: deploy.rofeAPIKey,
-        }),
+        body: JSON.stringify(body),
       });
       const d = await res.json();
       if (d.ok) setTimeout(onRefresh, 2000);
@@ -7743,21 +7787,32 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
         {/* Per-keyword thread cards */}
         {data && data.byKeyword.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {data.byKeyword.map(kw => (
-              <div key={kw.keyword} className="bg-gray-900/60 border border-gray-700 rounded-xl p-4 flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-white">{kw.keyword}</div>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <span className="text-2xl font-bold text-green-400">{kw.active}</span>
-                    <span className="text-xs text-gray-500">threads</span>
+            {data.byKeyword.map(kw => {
+              const isSeed = kw.kind === 'seed';
+              return (
+                <div key={kw.keyword} className={`bg-gray-900/60 border rounded-xl p-4 flex items-center justify-between ${isSeed ? 'border-amber-500/40' : 'border-gray-700'}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      {isSeed && <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">seed</span>}
+                      <div className="text-sm font-semibold text-white truncate" title={isSeed ? kw.keyword : ''}>{kw.label || kw.keyword}</div>
+                    </div>
+                    {isSeed && kw.seedUrls && kw.seedUrls.length > 0 && (
+                      <div className="text-[10px] text-gray-500 truncate mt-0.5">
+                        {kw.seedUrls.length} seed{kw.seedUrls.length === 1 ? '' : 's'} · <a href={kw.seedUrls[0]} target="_blank" rel="noopener noreferrer" className="text-amber-400/80 hover:text-amber-300">{kw.seedUrls[0].replace(/^https?:\/\/(www\.)?/, '').slice(0, 32)}</a>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className={`text-2xl font-bold ${isSeed ? 'text-amber-400' : 'text-green-400'}`}>{kw.active}</span>
+                      <span className="text-xs text-gray-500">threads</span>
+                    </div>
                   </div>
+                  <button onClick={() => addThread(kw)}
+                    className={`w-8 h-8 text-white rounded-lg flex items-center justify-center text-lg font-bold transition shrink-0 ${isSeed ? 'bg-amber-500 hover:bg-amber-400 text-black' : 'bg-green-600 hover:bg-green-700'}`}
+                    title="Add 1 thread"
+                  >+</button>
                 </div>
-                <button onClick={() => addThread(kw.keyword)}
-                  className="w-8 h-8 bg-green-600 hover:bg-green-700 text-white rounded-lg flex items-center justify-center text-lg font-bold transition"
-                  title="Add 1 thread"
-                >+</button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : !loading ? (
           <div className="text-center py-8 text-gray-500">
@@ -7773,22 +7828,73 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
 
       {/* Deploy Agents */}
       <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
-        <h3 className="text-sm font-bold text-white mb-3">Deploy Agents</h3>
-
-        {/* Row 1: Keyword + Threads */}
-        <div className="flex items-end gap-3 mb-3">
-          <div className="flex-1">
-            <label className="block text-xs text-gray-500 mb-1">Keyword</label>
-            <input type="text" value={deploy.keyword} onChange={e => setDeploy(p => ({ ...p, keyword: e.target.value }))}
-              placeholder="e.g. youtube automation"
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-green-500" />
-          </div>
-          <div className="w-24">
-            <label className="block text-xs text-gray-500 mb-1">Threads</label>
-            <input type="number" min={1} max={20} value={deploy.threads} onChange={e => setDeploy(p => ({ ...p, threads: parseInt(e.target.value) || 1 }))}
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-bold text-white">Deploy Agents</h3>
+          {/* Mode toggle: Keyword | Video seed */}
+          <div className="flex items-center gap-1 bg-gray-900 border border-gray-700 rounded-lg p-0.5">
+            <button
+              onClick={() => setDeploy(p => ({ ...p, mode: 'keyword' }))}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition ${deploy.mode === 'keyword' ? 'bg-green-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >Keyword</button>
+            <button
+              onClick={() => setDeploy(p => ({ ...p, mode: 'seed' }))}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition ${deploy.mode === 'seed' ? 'bg-amber-500 text-black' : 'text-gray-400 hover:text-white'}`}
+            >Video seed</button>
           </div>
         </div>
+
+        {deploy.mode === 'seed' ? (
+          <>
+            {/* Seed row: seed URL + threads */}
+            <div className="flex items-end gap-3 mb-3">
+              <div className="flex-1">
+                <label className="block text-xs text-gray-500 mb-1">Seed video URL</label>
+                <input type="text" value={deploy.seedUrl} onChange={e => setDeploy(p => ({ ...p, seedUrl: e.target.value }))}
+                  placeholder="https://youtu.be/… or https://youtube.com/watch?v=…"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500" />
+              </div>
+              <div className="w-24">
+                <label className="block text-xs text-gray-500 mb-1">Threads</label>
+                <input type="number" min={1} max={20} value={deploy.threads} onChange={e => setDeploy(p => ({ ...p, threads: parseInt(e.target.value) || 1 }))}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-amber-500" />
+              </div>
+            </div>
+            {/* Niche identity row: label (new) OR existing nicheId */}
+            <div className="flex items-end gap-3 mb-3">
+              <div className="flex-1">
+                <label className="block text-xs text-gray-500 mb-1">
+                  Niche label {deploy.nicheId ? <span className="text-amber-400">(adding to existing niche {deploy.nicheId})</span> : <span className="text-gray-600">(optional — auto-derived from the video if blank)</span>}
+                </label>
+                <input type="text" value={deploy.nicheLabel} disabled={!!deploy.nicheId}
+                  onChange={e => setDeploy(p => ({ ...p, nicheLabel: e.target.value }))}
+                  placeholder="e.g. Sumerian tablets explainers"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500 disabled:opacity-50" />
+              </div>
+              {deploy.nicheId && (
+                <button
+                  onClick={() => setDeploy(p => ({ ...p, nicheId: '', nicheLabel: '' }))}
+                  className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs"
+                  title="Start a fresh niche instead of adding to the existing one"
+                >New niche</button>
+              )}
+            </div>
+          </>
+        ) : (
+          /* Keyword row: keyword + threads */
+          <div className="flex items-end gap-3 mb-3">
+            <div className="flex-1">
+              <label className="block text-xs text-gray-500 mb-1">Keyword</label>
+              <input type="text" value={deploy.keyword} onChange={e => setDeploy(p => ({ ...p, keyword: e.target.value }))}
+                placeholder="e.g. youtube automation"
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-green-500" />
+            </div>
+            <div className="w-24">
+              <label className="block text-xs text-gray-500 mb-1">Threads</label>
+              <input type="number" min={1} max={20} value={deploy.threads} onChange={e => setDeploy(p => ({ ...p, threads: parseInt(e.target.value) || 1 }))}
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+            </div>
+          </div>
+        )}
 
         {/* Row 2: API Key */}
         <div className="mb-3">
@@ -7813,19 +7919,22 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
             <input type="number" min={1} max={100} value={deploy.loopNumber} onChange={e => setDeploy(p => ({ ...p, loopNumber: parseInt(e.target.value) || 30 }))}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
           </div>
-          <div className="w-36">
-            <label className="block text-xs text-gray-500 mb-1">Max Search Results</label>
-            <input type="number" min={1} max={200} value={deploy.maxSearchResults} onChange={e => setDeploy(p => ({ ...p, maxSearchResults: parseInt(e.target.value) || 50 }))}
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
-          </div>
+          {/* Max Search Results — keyword mode only (seed mode has no search step) */}
+          {deploy.mode === 'keyword' && (
+            <div className="w-36">
+              <label className="block text-xs text-gray-500 mb-1">Max Search Results</label>
+              <input type="number" min={1} max={200} value={deploy.maxSearchResults} onChange={e => setDeploy(p => ({ ...p, maxSearchResults: parseInt(e.target.value) || 50 }))}
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
+            </div>
+          )}
           <div className="w-36">
             <label className="block text-xs text-gray-500 mb-1">Max Suggested Results</label>
             <input type="number" min={1} max={200} value={deploy.maxSuggestedResults} onChange={e => setDeploy(p => ({ ...p, maxSuggestedResults: parseInt(e.target.value) || 50 }))}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-green-500" />
           </div>
           <button onClick={deployAgents}
-            className="px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition ml-auto">
-            Deploy
+            className={`px-5 py-2 text-white rounded-lg text-sm font-medium transition ml-auto ${deploy.mode === 'seed' ? 'bg-amber-500 hover:bg-amber-400 text-black' : 'bg-green-600 hover:bg-green-700'}`}>
+            {deploy.mode === 'seed' ? 'Deploy seed' : 'Deploy'}
           </button>
         </div>
         {deployMsg && (
