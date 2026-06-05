@@ -20,7 +20,7 @@
 
 import { fetchViaProxy } from './proxy-dispatcher';
 import { getPool } from './db';
-import { pickRandomActiveYtPair } from './yt-keys';
+import { pickRandomActiveYtPair, banYtKey, invalidateYtKey } from './yt-keys';
 import { ytFetchViaProxy } from './yt-proxy-fetch';
 import { getRandomProxy } from './xgodo-proxy';
 import type { EmbedInput } from './embeddings';
@@ -256,18 +256,87 @@ async function fetchThumbBase64(url: string): Promise<{ mimeType: string; data: 
   }
 }
 
-/** Hit YT Data API videos.list for ≤50 ids in one call. */
+/**
+ * Hit YT Data API videos.list for ≤50 ids in one call, with key rotation.
+ *
+ * The pool's "active" status only excludes keys we've already learned
+ * are bad. A fresh `pickRandomActiveYtPair` lands on a truly-healthy
+ * key roughly 1-in-4 times in steady state — the rest are either
+ * quota-exhausted (recoverable next midnight PT) or CONSUMER_SUSPENDED
+ * (terminal) and just hadn't been re-probed yet. A single-attempt call
+ * fails most of the time, which is why the admin Video Seed feed used
+ * to be ~75% `yt-key metadata fetch failed` rows.
+ *
+ * Strategy:
+ *   - Try up to MAX_ATTEMPTS distinct keys per call.
+ *   - On quotaExceeded → banYtKey() (5-min cooloff + DB persist) and
+ *     rotate. The next health sweep flips it to a 12h ban with the
+ *     full quota window.
+ *   - On forbidden/CONSUMER_SUSPENDED → invalidateYtKey() and rotate.
+ *     Terminal, won't recover without GCP-side action.
+ *   - On network/proxy failure (status 0) → don't punish the key, just
+ *     rotate. Failure is likely the proxy, not the key.
+ *   - On any other YT error → rotate without DB action; rare.
+ *
+ * Each retry gets a fresh (key, proxy) pair from
+ * pickRandomActiveYtPair, so a flaky proxy can't take the whole batch
+ * down either.
+ */
 async function fetchYtVideoMeta(ytIds: string[]): Promise<Map<string, YtVideoSnippet>> {
   const map = new Map<string, YtVideoSnippet>();
   if (ytIds.length === 0) return map;
-  const pair = await pickRandomActiveYtPair();
-  if (!pair) return map;
-  const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${ytIds.join(',')}&key=${pair.key}`;
-  const res = await ytFetchViaProxy(url, pair);
-  if (!res.ok) return map;
-  const data = res.data as YtVideosListResponse;
-  for (const item of data.items ?? []) {
-    if (item.id) map.set(item.id, item);
+
+  const MAX_ATTEMPTS = 6;
+  const tried = new Set<string>();      // key prefixes we've already used
+  let lastError: string | undefined;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const pair = await pickRandomActiveYtPair();
+    if (!pair) {
+      lastError = 'no active YT key available';
+      break;
+    }
+    // Skip if we've already burned this key in this batch. With
+    // ~2700 active keys, repeats in 6 picks are rare but possible.
+    if (tried.has(pair.key)) continue;
+    tried.add(pair.key);
+
+    const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${ytIds.join(',')}&key=${pair.key}`;
+    const res = await ytFetchViaProxy(url, pair);
+
+    if (res.ok && res.data) {
+      const data = res.data as YtVideosListResponse;
+      for (const item of data.items ?? []) {
+        if (item.id) map.set(item.id, item);
+      }
+      return map;
+    }
+
+    // Classify the failure so we can recycle the pool as we go.
+    const errData = (res.data as { error?: { errors?: { reason?: string }[]; message?: string } } | null)?.error;
+    const reason = errData?.errors?.[0]?.reason;
+    if (reason === 'quotaExceeded') {
+      banYtKey(pair.key);
+      lastError = 'quotaExceeded';
+    } else if (reason === 'forbidden') {
+      // CONSUMER_SUSPENDED — terminal. Fire-and-forget the DB invalidation
+      // so this attempt's latency isn't gated on the UPDATE round trip.
+      void invalidateYtKey(pair.key, 'forbidden').catch(() => { /* logged elsewhere */ });
+      lastError = 'forbidden';
+    } else if (res.status === 0) {
+      // Network/proxy failure. Don't punish the key — most likely
+      // a flaky SOCKS5 hop or a curl timeout.
+      lastError = res.error?.slice(0, 80) ?? 'network';
+    } else {
+      lastError = reason ?? `http ${res.status}`;
+    }
+  }
+
+  // All attempts exhausted — return whatever (likely empty) we have.
+  // Caller logs `metadata fetch failed`; the more granular reason
+  // already landed in xgodo_api_keys for the next pool sweep to act on.
+  if (lastError) {
+    console.warn(`[video-seed] fetchYtVideoMeta gave up after ${MAX_ATTEMPTS} attempts; last=${lastError}; tried=${tried.size}`);
   }
   return map;
 }
