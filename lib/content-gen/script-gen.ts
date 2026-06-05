@@ -222,6 +222,8 @@ You will be given the listicle title and a set of NICHES (one real analyzed chan
 7. "money_math"      — THE PAYOFF. A short sequence of 4-6 tiny cards that build to one dollar figure. ANCHOR on the TOP-VIDEO lump sum (views are exact, only the RPM is assumed → unimpeachable). Use the provided rpm_low as the conservative assumption with a minimizer ("Even if we assume just a $X RPM,") and land on the provided lump-low dollar figure as the money-shot card. Example shape (each string is one beat): ["Take their top video.", "Even if we assume", "just a $2 RPM,", "that one video alone", "made around $14,000.", "from ads."]. If rpm is above $5, you MAY (≈30%) insert a geo aside before the number ("— and because most viewers are in {geo} —"). STOP at the lump sum. Do NOT add a yearly or monthly total afterward — the single unimpeachable top-video figure lands far harder than a wide annual range. Use ONLY the dollar strings provided; never compute your own.
 8. recipe section — do NOT write any recipe / how-they-make-it beats here. The recipe walkthrough is supplied SEPARATELY (it is generated from the channel's actual video transcript, with synced clips). Just end the niche after money_math and the optional concept_tag.
 9. "concept_tag"     — OPTIONAL single 10-14 word takeaway, max once per niche ("What makes this niche work is consistency.").
+10. "competition"    — STRONGLY ENCOURAGED (most niches), one sentence 12-20 words, grounded in the cohort number. Say how many channels OUR research found in this niche: "In our research, we only found about {N} channels really doing this." If N is small (<25), frame as a low-competition opening; if larger, frame as proven, growing demand ("at least {N} channels are already doing this — the demand is proven"). HONEST framing: it is OUR index / research, never claim "only N channels exist on YouTube". Skip only if no competition figure is given.
+11. "appreciation"   — OPTIONAL (~25% of niches, max twice per video), one warm line placed mid-body: "And if you've made it this far, I appreciate it." / "Real quick — if you're still here, thank you."
 
 Between niches the transition is silent (a whoosh handles it) — do NOT write transition narration unless rarely (≈1 in 5) a 1-3 word "And finally," / "Next up,".
 
@@ -276,6 +278,7 @@ function nicheBlock(s: ChannelSlots, index: number): string {
   }
   if (s.median_views != null) lines.push(`  typical_video_views (consistency): ~${s.median_views.toLocaleString()}`);
   if (s.growth) lines.push(`  growth: "${s.growth.phrase}"`);
+  if (s.cohort) lines.push(`  competition: our research index holds ${s.cohort.channel_count} channels (${s.cohort.video_count} videos) in this exact niche cluster — ${s.cohort.channel_count < 25 ? 'LOW competition / opportunity framing' : 'proven, growing-demand framing'}`);
   if (s.views_to_subs_ratio != null) lines.push(`  top_video_is_${s.views_to_subs_ratio}x_their_subs`);
   lines.push(`  language: ${s.language ?? 'English'}`);
   if (s.production_format) lines.push(`  production_format: ${s.production_format}`);

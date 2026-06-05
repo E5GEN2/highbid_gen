@@ -177,8 +177,24 @@ function renderVisual(base: string, text: string, slot: ChannelSlots, localIdx: 
             emphasis: m ? m[0].trim() : null, color: 'money_shot_green', token_role: 'money_shot', big: true }),
           audio: { music: 'bed', sfx: ['ding_high_pitch'] } };
       }
-      // connectors ("Even if we assume", "from ads.")
+      // "from ads." closer → dollar-sign host icon (monetization punctuation)
+      if (/from ads/i.test(text)) {
+        return { visual: V({ composition: 'icon_card', icon: 'dollar_sign_green_circle', overlay: text.trim(), token_role: 'connector' }), audio: { music: 'bed', sfx: ['subtle_whoosh'] } };
+      }
+      // connectors ("Even if we assume", "that one video alone")
       return { visual: V({ composition: 'text_card', overlay: text.trim(), token_role: 'connector' }), audio: { music: 'bed', sfx: ['subtle_whoosh'] } };
+    }
+    case 'competition': { // proprietary cohort count → YouTube search-results mock
+      const n = slot.cohort?.channel_count ?? null;
+      const low = n != null && n < 25;
+      return {
+        visual: V({ composition: 'yt_search_results', bg: 'dark_gray', primitive: 'yt_search_results_mock',
+          asset: { kind: 'yt_search_results', ref: slot.niche_label }, overlay: n != null ? `${n} channels` : slot.niche_label,
+          emphasis: n != null ? String(n) : null, annotation: n != null ? `result count ${n}` : null,
+          annotation_target: n != null ? String(n) : null, annotation_style: 'yellow_box',
+          color: low ? 'inline_green' : 'neutral', icon: low ? 'checkmark_green_circle' : null }),
+        audio: { music: 'bed', sfx: low ? ['whoosh', 'subtle_ding'] : ['whoosh'] },
+      };
     }
     case 'concept_tag': {
       const word = text.replace(/[^A-Za-z ]/g, '').trim().split('.')[0];
@@ -189,9 +205,12 @@ function renderVisual(base: string, text: string, slot: ChannelSlots, localIdx: 
       return { visual: V({ composition: 'icon_card', icon: 'cat_thumbs_up', overlay: text.trim() }), audio: { music: 'duck_deeper', sfx: [] } };
 
     default: {
-      // generic narration text card, with inline-green emphasis on any salient number
+      // generic narration text card. Friction/caution → inline_red; else a
+      // salient number gets inline-green emphasis.
+      const friction = /\b(but|however|careful|copyright|avoid|downside|the catch|risk|don't|do not|only catch)\b/i.test(text);
       const emph = salientPhrase(text);
-      return { visual: V({ composition: 'text_card', overlay: text.trim(), emphasis: emph, color: emph ? 'inline_green' : 'neutral' }),
+      const color = friction ? 'inline_red' : (emph ? 'inline_green' : 'neutral');
+      return { visual: V({ composition: 'text_card', overlay: text.trim(), emphasis: friction ? null : emph, color, token_role: friction ? 'emphasis' : null }),
         audio: { music: 'bed', sfx: [] } };
     }
   }

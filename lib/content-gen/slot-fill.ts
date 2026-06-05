@@ -80,6 +80,12 @@ export interface ChannelSlots {
   // ── growth ("got X views in N months") ──
   growth: { total_indexed_views: number; months_active: number; phrase: string } | null;
 
+  // ── cohort / competition (proprietary data point) ──
+  // How many distinct channels in OUR research index sit in the same niche
+  // cluster as this channel — the grounded "we found N channels doing this"
+  // number that drives the competition beat (yt_search_results visual).
+  cohort: { channel_count: number; video_count: number; cluster_label: string | null; level: number } | null;
+
   // provenance / readiness
   has_analysis: boolean;
   has_rpm: boolean;
@@ -173,6 +179,24 @@ export async function assembleChannelSlots(channelId: string): Promise<ChannelSl
   const rpmRow = (await pool.query<{ rpm_low: number; rpm_typical: number; rpm_high: number; geo_guess: string | null; grounded_on: string | null }>(
     `SELECT rpm_low, rpm_typical, rpm_high, geo_guess, grounded_on
        FROM content_gen_channel_rpm WHERE channel_id = $1`,
+    [channelId],
+  )).rows[0] ?? null;
+
+  // Cohort: the channel's dominant niche cluster (prefer L2, latest run) +
+  // how many distinct channels in our index sit in it (the competition #).
+  const cohortRow = (await pool.query<{ cluster_id: number; level: number; label: string | null; channel_count: number; video_count: number }>(
+    `WITH dom AS (
+       SELECT a.cluster_id, c.level, c.label, c.ai_label, c.auto_label, c.run_id, COUNT(*) AS my
+         FROM niche_tree_assignments a
+         JOIN niche_tree_clusters c ON c.id = a.cluster_id
+        WHERE a.video_id IN (SELECT id FROM niche_spy_videos WHERE channel_id = $1)
+        GROUP BY a.cluster_id, c.level, c.label, c.ai_label, c.auto_label, c.run_id
+        ORDER BY c.level DESC, c.run_id DESC, my DESC
+        LIMIT 1)
+     SELECT d.cluster_id, d.level, COALESCE(NULLIF(d.label,''), d.ai_label, d.auto_label) AS label,
+       (SELECT COUNT(DISTINCT v.channel_id) FROM niche_tree_assignments a JOIN niche_spy_videos v ON v.id = a.video_id WHERE a.cluster_id = d.cluster_id)::int AS channel_count,
+       (SELECT COUNT(*) FROM niche_tree_assignments a WHERE a.cluster_id = d.cluster_id)::int AS video_count
+     FROM dom d`,
     [channelId],
   )).rows[0] ?? null;
 
@@ -305,6 +329,7 @@ export async function assembleChannelSlots(channelId: string): Promise<ChannelSl
     rpm: rpmRow ? { low: Number(rpmRow.rpm_low), typical: Number(rpmRow.rpm_typical), high: Number(rpmRow.rpm_high), geo: rpmRow.geo_guess, grounded_on: rpmRow.grounded_on } : null,
     money,
     growth,
+    cohort: cohortRow ? { channel_count: cohortRow.channel_count, video_count: cohortRow.video_count, cluster_label: cohortRow.label, level: cohortRow.level } : null,
 
     has_analysis: !!an,
     has_rpm: !!rpmRow,
