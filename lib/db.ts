@@ -1646,6 +1646,26 @@ export async function initSchema(): Promise<void> {
         PRIMARY KEY (niche_key, geo)
       )
     `).catch(() => {});
+
+    // Per-CHANNEL RPM. More accurate than per-niche: RPM varies by the
+    // channel's actual audience geo + content specifics, which the niche
+    // label alone can't capture. Gemini reads the channel via url_context
+    // grounding + our extracted context (niche, catalog titles, subs).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_channel_rpm (
+        channel_id   TEXT PRIMARY KEY,
+        channel_url  TEXT,
+        niche_label  TEXT,
+        geo_guess    TEXT,
+        rpm_low      REAL,
+        rpm_typical  REAL,
+        rpm_high     REAL,
+        reasoning    TEXT,
+        url_fetched  BOOLEAN,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at

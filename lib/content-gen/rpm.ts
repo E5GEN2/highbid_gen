@@ -144,6 +144,181 @@ Produce ONLY this JSON (no prose, no fences):
   throw new Error(`RPM estimation failed after ${maxAttempts} attempts: ${lastErr}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Per-CHANNEL RPM (the accurate path — grounds on the actual channel).
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ChannelRpm extends RpmEstimate {
+  channel_id: string;
+  channel_url: string;
+  niche_label: string;
+  geo_guess: string;
+  url_fetched: boolean;
+  cached: boolean;
+}
+
+/** Pull a number out of possibly-fenced / prose-wrapped Gemini text. */
+function looseParseRpm(text: string): Partial<RpmEstimate & { geo_guess: string }> | null {
+  // Find the first {...} JSON object in the text.
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { /* fall through */ }
+  // Last-ditch: regex the numbers.
+  const num = (k: string) => {
+    const mm = text.match(new RegExp(`"${k}"\\s*:\\s*([0-9.]+)`));
+    return mm ? parseFloat(mm[1]) : undefined;
+  };
+  const lo = num('rpm_low'), ty = num('rpm_typical'), hi = num('rpm_high');
+  if (lo == null && ty == null && hi == null) return null;
+  const geoM = text.match(/"geo_guess"\s*:\s*"([^"]*)"/);
+  const reasM = text.match(/"reasoning"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  return { rpm_low: lo, rpm_typical: ty, rpm_high: hi, geo_guess: geoM?.[1], reasoning: reasM?.[1] };
+}
+
+/**
+ * Estimate RPM for a specific channel. Builds the channel URL, gives
+ * Gemini the url_context tool to read it, and supplies our extracted
+ * context (niche, catalog titles, subs) as grounding regardless of
+ * whether the fetch succeeds.
+ */
+export async function getOrEstimateChannelRpm(channelId: string, force = false): Promise<ChannelRpm> {
+  const pool = await getPool();
+
+  if (!force) {
+    const c = await pool.query<{ channel_url: string; niche_label: string; geo_guess: string; rpm_low: number; rpm_typical: number; rpm_high: number; reasoning: string; url_fetched: boolean }>(
+      `SELECT channel_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, url_fetched
+         FROM content_gen_channel_rpm WHERE channel_id = $1`,
+      [channelId],
+    );
+    if (c.rows[0]) {
+      return { channel_id: channelId, ...c.rows[0], cached: true };
+    }
+  }
+
+  // Gather channel context.
+  const chRes = await pool.query<{ channel_handle: string | null; subscriber_count: number | null }>(
+    `SELECT channel_handle, subscriber_count FROM niche_spy_channels WHERE channel_id = $1`,
+    [channelId],
+  );
+  const handle = chRes.rows[0]?.channel_handle ?? null;
+  const subs = chRes.rows[0]?.subscriber_count ?? null;
+  const channelUrl = handle
+    ? `https://www.youtube.com/${handle.startsWith('@') ? handle : '@' + handle}`
+    : `https://www.youtube.com/channel/${channelId}`;
+
+  const anRes = await pool.query<{ niche_label: string | null; language: string | null }>(
+    `SELECT niche_label, language FROM content_gen_channel_analysis WHERE channel_id = $1`,
+    [channelId],
+  );
+  const niche = anRes.rows[0]?.niche_label ?? '(unknown niche)';
+  const language = anRes.rows[0]?.language ?? 'en';
+
+  const titlesRes = await pool.query<{ title: string }>(
+    `SELECT title FROM niche_spy_videos
+      WHERE channel_id = $1 AND title IS NOT NULL AND thumbnail_dead_at IS NULL
+      ORDER BY view_count DESC NULLS LAST LIMIT 10`,
+    [channelId],
+  );
+  const titles = titlesRes.rows.map((t, i) => `${i + 1}. ${t.title}`).join('\n');
+
+  const prompt = `You are a YouTube monetization analyst estimating a channel's AdSense RPM (net USD the creator receives per 1000 monetized views, AFTER YouTube's 45% cut).
+
+CHANNEL: ${channelUrl}
+Read that channel if you can. Here is what we already know about it:
+- Niche: ${niche}
+- Spoken language: ${language}
+- Subscribers: ${subs?.toLocaleString() ?? 'unknown'}
+- Top video titles:
+${titles}
+
+Estimate the RPM grounded in THIS channel — its actual content category (advertiser CPM tier: finance/tech/business high; education/history/science upper-mid; general entertainment/motivation mid; gaming/memes/compilations/kids low) AND its likely audience geography (infer from language + content: US/UK/CA/AU = high value; India/SEA/LatAm = much lower). Audience geo is often the single biggest RPM factor.
+
+Respond with ONLY a JSON object (it may be wrapped in prose, that's fine):
+{
+  "rpm_low": number,      // conservative NET RPM USD
+  "rpm_typical": number,  // most likely NET RPM USD
+  "rpm_high": number,     // optimistic NET RPM USD
+  "geo_guess": string,    // your inferred dominant audience geo, e.g. "US/UK", "India", "global-mixed"
+  "reasoning": string     // 1 sentence: CPM tier + geo + why
+}`;
+
+  let lastErr = 'unknown';
+  let urlFetched = false;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1500));
+    const keyRow = await pickAiStudioKey();
+    if (!keyRow) { lastErr = 'no active google_ai_studio key'; break; }
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${keyRow.key}`;
+    // NOTE: grounding tools (url_context) are incompatible with
+    // responseMimeType=application/json, so we parse JSON loosely from
+    // the text instead.
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      tools: [{ url_context: {} }],
+      generationConfig: { temperature: 0.2, topP: 0.9, maxOutputTokens: 1024, thinkingConfig: { thinkingBudget: 0 } },
+    });
+
+    const proxy = await getRandomHealthyProxy().catch(() => null);
+    let res: { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> };
+    try {
+      if (proxy?.url) {
+        res = await fetchViaProxy(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeoutMs: 90_000 }, proxy.url);
+      } else {
+        const rr = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(90_000) });
+        res = { ok: rr.ok, status: rr.status, text: () => rr.text(), json: () => rr.json() };
+      }
+    } catch (e) { lastErr = `connection: ${(e as Error).message}`; continue; }
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      if (res.status === 429) cooloffKey(keyRow.id, 90);
+      lastErr = `HTTP ${res.status}: ${errBody.slice(0, 120)}`;
+      continue;
+    }
+
+    const data = await res.json().catch(() => null) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; url_context_metadata?: { url_metadata?: Array<{ url_retrieval_status?: string }> } }>;
+      error?: { message?: string };
+    } | null;
+    if (!data || data.error) { lastErr = `gemini error: ${data?.error?.message ?? 'null'}`; continue; }
+    // Did url_context actually retrieve the channel?
+    const meta = data.candidates?.[0]?.url_context_metadata?.url_metadata ?? [];
+    urlFetched = meta.some(m => /SUCCESS/i.test(m.url_retrieval_status ?? ''));
+    const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n') ?? '';
+    if (!text) { lastErr = 'empty response'; continue; }
+
+    const p = looseParseRpm(text);
+    const low = Number(p?.rpm_low), typ = Number(p?.rpm_typical), high = Number(p?.rpm_high);
+    if (!p || ![low, typ, high].every(n => Number.isFinite(n) && n >= 0 && n < 200)) {
+      lastErr = `implausible/parse: ${text.slice(0, 140)}`;
+      continue;
+    }
+
+    const result: ChannelRpm = {
+      channel_id: channelId, channel_url: channelUrl, niche_label: niche,
+      geo_guess: String(p.geo_guess ?? '').trim() || 'unknown',
+      rpm_low: Math.round(low * 100) / 100,
+      rpm_typical: Math.round(typ * 100) / 100,
+      rpm_high: Math.round(high * 100) / 100,
+      reasoning: String(p.reasoning ?? '').trim(),
+      url_fetched: urlFetched, cached: false,
+    };
+    await pool.query(
+      `INSERT INTO content_gen_channel_rpm (channel_id, channel_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, url_fetched, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+       ON CONFLICT (channel_id) DO UPDATE SET
+         channel_url = EXCLUDED.channel_url, niche_label = EXCLUDED.niche_label,
+         geo_guess = EXCLUDED.geo_guess, rpm_low = EXCLUDED.rpm_low,
+         rpm_typical = EXCLUDED.rpm_typical, rpm_high = EXCLUDED.rpm_high,
+         reasoning = EXCLUDED.reasoning, url_fetched = EXCLUDED.url_fetched, updated_at = NOW()`,
+      [channelId, channelUrl, niche, result.geo_guess, result.rpm_low, result.rpm_typical, result.rpm_high, result.reasoning, urlFetched],
+    );
+    return result;
+  }
+  throw new Error(`channel RPM estimation failed: ${lastErr}`);
+}
+
 /**
  * Get the RPM for a niche, from cache if present (and not forced), else
  * estimate via Gemini + persist.
