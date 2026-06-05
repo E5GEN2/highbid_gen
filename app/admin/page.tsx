@@ -564,6 +564,73 @@ export default function AdminPage() {
   const [noveltyQ, setNoveltyQ] = useState('');
   const [noveltyQInput, setNoveltyQInput] = useState('');
 
+  // ── Niche-discovery seed candidates ─────────────────────────────────
+  // Live feed of videos that pass BOTH the novelty cutoff (top X%) AND
+  // the content-gen channel-quality rules (A1-D2). Each row is a video
+  // we'd seed xgodo bots from to auto-discover new niche territory.
+  interface SeedCandidate {
+    video_id: number;
+    video_url: string;
+    video_title: string | null;
+    video_thumbnail: string | null;
+    view_count: number;
+    posted_at: string | null;
+    novelty_score: number;
+    novelty_percentile: number | null;
+    channel: {
+      channel_id: string;
+      channel_name: string | null;
+      channel_handle: string | null;
+      channel_avatar: string | null;
+      subscriber_count: number;
+      channel_age_days: number;
+      age_tier: 'mature' | 'mid_young' | 'young' | 'ultra_young';
+      channel_top_views: number;
+      views_to_subs_ratio: number;
+      composite_score: number;
+    };
+    seed_score: number;
+    components: { isolation: number; channel_quality: number; traction: number };
+  }
+  const [seedCandidates, setSeedCandidates] = useState<SeedCandidate[]>([]);
+  const [seedLoading, setSeedLoading]       = useState(false);
+  const [seedError, setSeedError]           = useState<string | null>(null);
+  const [seedMinPct, setSeedMinPct]         = useState(80);
+  const [seedTopK, setSeedTopK]             = useState(30);
+  const [seedLongFormOnly, setSeedLongFormOnly] = useState(false);
+  const [seedPool, setSeedPool] = useState<{
+    total_videos_with_novelty: number;
+    novelty_cutoff_used: number | null;
+    videos_above_cutoff: number;
+    seeds_after_channel_rules: number;
+  } | null>(null);
+
+  const fetchSeedCandidates = useCallback(async () => {
+    setSeedLoading(true);
+    setSeedError(null);
+    try {
+      const qs = new URLSearchParams({
+        topK: String(seedTopK),
+        minNoveltyPct: String(seedMinPct),
+        ...(seedLongFormOnly ? { longFormOnly: 'true' } : {}),
+      });
+      const r = await fetch(`/api/admin/content-gen/seed-candidates?${qs}`).then(r => r.json());
+      if (!r.ok) throw new Error(r.error || 'seed-candidates failed');
+      setSeedCandidates(r.seeds || []);
+      setSeedPool(r.pool ?? null);
+    } catch (e) {
+      setSeedError((e as Error).message);
+    } finally {
+      setSeedLoading(false);
+    }
+  }, [seedTopK, seedMinPct, seedLongFormOnly]);
+
+  // Re-fetch when params change OR when the novelty tab activates
+  useEffect(() => {
+    if (adminSection !== 'novelty') return;
+    void fetchSeedCandidates();
+  }, [adminSection, fetchSeedCandidates]);
+
   // Debounce the text search
   useEffect(() => {
     const h = setTimeout(() => setNoveltyQ(noveltyQInput.trim()), 300);
@@ -4587,6 +4654,204 @@ export default function AdminPage() {
             signal is worth exposing to users. */}
         <div style={{ display: adminSection === 'novelty' ? 'block' : 'none' }}>
           <div className="space-y-6">
+            {/* ── Niche-discovery seed candidates ───────────────────────
+                Videos passing BOTH the novelty cutoff AND the content-gen
+                channel-quality rules. These are the ones we'd seed xgodo
+                bots from for auto-niche-discovery. Lives at the top of
+                the tab because it's the action surface — the rest of the
+                tab is for exploration. */}
+            <div className="bg-gray-800/50 rounded-2xl border border-amber-500/30 p-6">
+              <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+                <div>
+                  <h2 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold uppercase tracking-wider">Seed</span>
+                    Niche-discovery seed candidates
+                  </h2>
+                  <p className="text-xs text-gray-500 max-w-2xl">
+                    Videos passing the novelty cutoff <span className="text-amber-300">AND</span> all content-gen channel-quality rules (subs band, top-video floor, ratio ≥5×, age ≤730d, video ≤12mo, ≥5 videos, not one-viral-wonder). Each one is a candidate seed for xgodo bots — they'll crawl the related-video graph outward to map fresh niche territory.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-400">Top-K:</label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={100}
+                    value={seedTopK}
+                    onChange={e => {
+                      const n = parseInt(e.target.value);
+                      if (Number.isFinite(n)) setSeedTopK(Math.max(5, Math.min(100, n)));
+                    }}
+                    className="w-16 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white text-center"
+                  />
+                  <label className="text-xs text-gray-400 ml-2">Novelty ≥ top-X%:</label>
+                  <input
+                    type="number"
+                    min={50}
+                    max={99}
+                    value={seedMinPct}
+                    onChange={e => {
+                      const n = parseFloat(e.target.value);
+                      if (Number.isFinite(n)) setSeedMinPct(Math.max(50, Math.min(99, n)));
+                    }}
+                    className="w-16 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white text-center"
+                  />
+                  <label className="text-xs text-gray-400 flex items-center gap-1.5 ml-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={seedLongFormOnly}
+                      onChange={e => setSeedLongFormOnly(e.target.checked)}
+                      className="w-3.5 h-3.5 accent-amber-400"
+                    />
+                    long-form only
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void fetchSeedCandidates()}
+                    disabled={seedLoading}
+                    className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-400/10 hover:bg-amber-400/20 text-amber-300 font-medium disabled:opacity-50"
+                  >
+                    {seedLoading ? 'Loading…' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Pool stats */}
+              {seedPool && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                  <div className="bg-gray-900/50 rounded-lg p-2.5 text-center">
+                    <div className="text-base font-bold text-white tabular-nums">{seedPool.total_videos_with_novelty.toLocaleString()}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">Scored videos</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2.5 text-center">
+                    <div className="text-base font-bold text-amber-300 tabular-nums">{seedPool.novelty_cutoff_used?.toFixed(3) ?? '—'}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">Cutoff score</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2.5 text-center">
+                    <div className="text-base font-bold text-white tabular-nums">{seedPool.videos_above_cutoff.toLocaleString()}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">Above cutoff</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2.5 text-center">
+                    <div className="text-base font-bold text-emerald-300 tabular-nums">{seedPool.seeds_after_channel_rules}</div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">Pass all rules</div>
+                  </div>
+                </div>
+              )}
+
+              {seedError && (
+                <div className="mb-3 p-2 rounded-md bg-red-500/10 border border-red-500/30 text-xs text-red-300">{seedError}</div>
+              )}
+
+              {/* Seed cards */}
+              {seedCandidates.length === 0 && !seedLoading && (
+                <div className="p-4 rounded-md bg-gray-900/50 border border-gray-700 text-xs text-gray-400 text-center">
+                  No seeds at the current threshold. Try lowering Novelty ≥ top-X% or wait for the recompute to finish.
+                </div>
+              )}
+              {seedCandidates.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {seedCandidates.map((s, idx) => (
+                    <div
+                      key={s.video_id}
+                      className="bg-gray-900/50 border border-gray-700 rounded-xl overflow-hidden hover:border-amber-500/40 transition flex flex-col"
+                    >
+                      <a
+                        href={s.video_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block relative group"
+                        title="Open on YouTube"
+                      >
+                        {s.video_thumbnail ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={s.video_thumbnail}
+                            alt=""
+                            className="w-full aspect-video object-cover bg-gray-800"
+                          />
+                        ) : (
+                          <div className="w-full aspect-video bg-gray-800 flex items-center justify-center">
+                            <svg className="w-8 h-8 text-gray-600" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M8 5v14l11-7z" />
+                            </svg>
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center transition">
+                          <svg className="w-10 h-10 text-white drop-shadow-lg" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8 5v14l11-7z" />
+                          </svg>
+                        </div>
+                        <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                          <span className="bg-black/70 text-amber-300 text-[10px] font-bold px-1.5 py-0.5 rounded">
+                            #{idx + 1}
+                          </span>
+                          <span className="bg-black/70 text-emerald-300 text-[10px] font-bold px-1.5 py-0.5 rounded">
+                            seed {s.seed_score.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="absolute bottom-1.5 right-1.5">
+                          <span className="bg-black/70 text-white text-[10px] font-medium px-1.5 py-0.5 rounded tabular-nums">
+                            {s.view_count >= 1_000_000
+                              ? `${(s.view_count / 1_000_000).toFixed(1)}M`
+                              : s.view_count >= 1_000
+                                ? `${(s.view_count / 1_000).toFixed(0)}K`
+                                : String(s.view_count)} views
+                          </span>
+                        </div>
+                      </a>
+                      <div className="p-3 flex-1 flex flex-col gap-2">
+                        <a
+                          href={s.video_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm font-medium text-white line-clamp-2 hover:text-amber-300 transition"
+                          title={s.video_title || ''}
+                        >
+                          {s.video_title || '—'}
+                        </a>
+                        <div className="flex items-center gap-2 text-xs">
+                          {s.channel.channel_avatar && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={s.channel.channel_avatar} alt="" className="w-5 h-5 rounded-full object-cover shrink-0" />
+                          )}
+                          <a
+                            href={s.channel.channel_handle ? `https://www.youtube.com/${s.channel.channel_handle.startsWith('@') ? s.channel.channel_handle : `@${s.channel.channel_handle}`}` : '#'}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-gray-300 truncate hover:text-amber-300 transition"
+                            title={s.channel.channel_name || ''}
+                          >
+                            {s.channel.channel_name || '(unnamed)'}
+                          </a>
+                          <span className={`text-[9px] px-1.5 py-px rounded border shrink-0 ${
+                            s.channel.age_tier === 'ultra_young' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' :
+                            s.channel.age_tier === 'young'       ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30' :
+                            s.channel.age_tier === 'mid_young'   ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' :
+                                                                   'bg-slate-500/15 text-slate-300 border-slate-500/30'
+                          }`}>
+                            {s.channel.age_tier === 'ultra_young' ? 'ultra' : s.channel.age_tier === 'mid_young' ? 'mid' : s.channel.age_tier}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] text-gray-400 tabular-nums">
+                          <div><span className="text-gray-600">subs:</span> {s.channel.subscriber_count >= 1000 ? `${Math.round(s.channel.subscriber_count / 1000)}K` : s.channel.subscriber_count}</div>
+                          <div><span className="text-gray-600">age:</span> {s.channel.channel_age_days}d</div>
+                          <div><span className="text-gray-600">ratio:</span> <span className="text-emerald-400">{s.channel.views_to_subs_ratio}×</span></div>
+                          <div><span className="text-gray-600">top pct:</span> top {((1 - (s.novelty_percentile ?? 0)) * 100).toFixed(1)}%</div>
+                        </div>
+                        <div className="flex items-center gap-1 mt-1 text-[9px] text-gray-500 border-t border-gray-700 pt-1.5">
+                          <span title="Isolation (novelty)">iso {s.components.isolation.toFixed(2)}</span>
+                          <span>·</span>
+                          <span title="Channel quality (composite score)">qual {s.components.channel_quality.toFixed(2)}</span>
+                          <span>·</span>
+                          <span title="Traction (log-damped views)">trac {s.components.traction.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Header card — distribution + recompute */}
             <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
               <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
