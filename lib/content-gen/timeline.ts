@@ -155,7 +155,7 @@ function renderVisual(base: string, text: string, slot: ChannelSlots, localIdx: 
 }
 
 /** Build the recipe-showcase segments for one niche (real clip moments). */
-function showcaseSegments(showcase: RecipeShowcase, startT: number): { segs: TimelineSegment[]; t: number; niche: number | null } {
+function showcaseSegments(showcase: RecipeShowcase, startT: number, nicheIndex: number): { segs: TimelineSegment[]; t: number } {
   const segs: TimelineSegment[] = [];
   let t = startT;
   for (let i = 0; i < showcase.beats.length; i++) {
@@ -173,11 +173,11 @@ function showcaseSegments(showcase: RecipeShowcase, startT: number): { segs: Tim
       },
       audio: { music: 'duck_under_diegetic', sfx: ['whoosh_on_transition'] },
       beat_id: `recipe_showcase_${i + 1}`,
-      niche_index: null,
+      niche_index: nicheIndex,
     });
     t += dur;
   }
-  return { segs, t, niche: null };
+  return { segs, t };
 }
 
 export function compileTimeline(
@@ -229,7 +229,7 @@ export function compileTimeline(
       // After the last money_math beat, splice in the transcript-grounded
       // recipe showcase (the content highlights with real clips).
       if (i === insertAfter && showcase && showcase.beats.length > 0) {
-        const { segs, t: nt } = showcaseSegments(showcase, t);
+        const { segs, t: nt } = showcaseSegments(showcase, t, niche.niche_index);
         for (const s of segs) segments.push(s);
         recipeClips += segs.length;
         showcasedChannels.add(niche.channel_id);
