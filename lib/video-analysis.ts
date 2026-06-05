@@ -466,7 +466,14 @@ async function downloadSource(jobId: number, youtubeUrl: string, outPath: string
   // never capped.
   const sectionArgs: string[] = [];
   if (maxDurationS != null && maxDurationS > 0 && duration != null && duration > maxDurationS) {
-    sectionArgs.push('--download-sections', `*0-${Math.floor(maxDurationS)}`, '--force-keyframes-at-cuts');
+    // --download-sections without --force-keyframes-at-cuts: the latter
+    // forces a re-encode at cut points which (a) is slow and (b) fetches
+    // fragments in a way that intermittently 403s through the proxy on
+    // signed googlevideo URLs. We don't need frame-accurate cuts for
+    // transcription — clip splitting is keyframe-tolerant — so we drop it
+    // and accept yt-dlp grabbing slightly past the cap to the next
+    // keyframe.
+    sectionArgs.push('--download-sections', `*0-${Math.floor(maxDurationS)}`);
     console.log(`[video-analysis] job ${jobId} capping transcription to first ${maxDurationS}s (video is ${Math.round(duration)}s)`);
   }
 
