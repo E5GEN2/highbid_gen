@@ -445,7 +445,57 @@ export async function discoverChannels(
   });
 
   scored.sort((a, b) => b.composite_score - a.composite_score);
-  return scored.slice(0, topK);
+
+  // Live-thumbnail revalidation. Our thumbnail_dead_at column only gets
+  // populated by the periodic validator after 3 consecutive 404s; in
+  // between runs, videos can be taken down and we'd still pick them as a
+  // channel's "top video". HEAD-check the top thumbnail of every scored
+  // candidate, write thumbnail_dead_at back for any that 404 so future
+  // discovery calls skip them at SQL level, then drop the now-dead ones
+  // from THIS response.
+  //
+  // Bounded to topK*2 to keep wall-clock small. Parallel with no
+  // concurrency cap — these are tiny HEAD requests to a CDN.
+  const head = await pool.connect();
+  try {
+    const checkPool = scored.slice(0, topK * 2);
+    const results = await Promise.allSettled(checkPool.map(async (c) => {
+      if (!c.top_video_thumbnail) return { c, alive: false };
+      try {
+        const res = await fetch(c.top_video_thumbnail, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(5000),
+        });
+        return { c, alive: res.ok };
+      } catch {
+        // Network failure / timeout / DNS — treat as dead. Fail-closed.
+        return { c, alive: false };
+      }
+    }));
+    const alive: DiscoveryCandidate[] = [];
+    const deadVideoIds: number[] = [];
+    for (const r of results) {
+      if (r.status !== 'fulfilled') continue;
+      if (r.value.alive) alive.push(r.value.c);
+      else                deadVideoIds.push(r.value.c.top_video_id);
+    }
+    if (deadVideoIds.length > 0) {
+      // Fire-and-forget the DB update so we don't block the response on
+      // the write. Next discovery call's SQL will filter these out.
+      void head.query(
+        `UPDATE niche_spy_videos
+            SET thumbnail_dead_at = NOW()
+          WHERE id = ANY($1::int[])
+            AND thumbnail_dead_at IS NULL`,
+        [deadVideoIds],
+      ).catch((e) => {
+        console.warn('[discoverChannels] failed to mark thumbnails dead:', (e as Error).message);
+      });
+    }
+    return alive.slice(0, topK);
+  } finally {
+    head.release();
+  }
 }
 
 /**
