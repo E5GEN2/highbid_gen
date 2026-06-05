@@ -1594,6 +1594,31 @@ export async function initSchema(): Promise<void> {
     // unchanged video. NOT unique — a job can be retried after a hard
     // failure, and re-running a niche after the video moved is allowed.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_video_user  ON video_analysis_jobs(video_id, user_id, created_at DESC)`).catch(() => {});
+
+    // Content-gen meta-extraction results. One row per channel — the
+    // distilled, script-ready data inventory produced by running
+    // extractChannelMeta() over the channel's top-video transcription.
+    // niche_label replaces the garbage cluster auto-labels; recipe_formula
+    // fills the script's recipe slot; language/is_faceless are metadata.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_channel_analysis (
+        channel_id        TEXT PRIMARY KEY,
+        analyzed_video_id INTEGER,
+        analysis_job_id   INTEGER,
+        niche_label       TEXT,
+        recipe_formula    TEXT,
+        language          TEXT,
+        is_faceless       BOOLEAN,
+        production_format TEXT,
+        voice_type        TEXT,
+        content_summary   TEXT,
+        confidence        REAL,
+        analyzer_version  INTEGER NOT NULL DEFAULT 1,
+        analyzed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgca_video ON content_gen_channel_analysis(analyzed_video_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgca_language ON content_gen_channel_analysis(language)`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
