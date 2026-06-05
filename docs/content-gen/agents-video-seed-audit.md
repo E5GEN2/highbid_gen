@@ -115,13 +115,27 @@ Everything keyword-keyed today becomes work-unit-keyed. Keyword rows are just `{
 
 ---
 
-## Open questions — xgodo contract (BLOCKING, need answers before Phase 1)
+## Open questions — RESOLVED (xgodo planned-task composer screenshot, 2026-06-05)
 
-1. **What field name does the new bot read for the seed URL?** `seedUrl`? `seed_url`? `seedVideoUrl`? The rofe-side `/video-seed/expand` endpoint uses `seedUrl` in its body, but that's rofe's contract, not necessarily the bot's planned-task input field. **Need the bot's input schema.**
-2. **Does the bot still need `keyword` when in seed mode?** Or are `keyword` and `seedUrl` mutually exclusive in the input? (Affects whether we send both or branch.)
-3. **What does the bot write to its xgodo bucket (`lastNiche` today) when running a seed?** Warm-device pinning matches `bucket.lastNiche == keyword`. If a seed bot writes the seedUrl/seedId there, we pin on that. If it writes nothing or a stale keyword, seed-mode pinning degrades to unpinned (acceptable fallback, but worth knowing).
-4. **Does the bot accept the same `maxSuggestedResultsBeforeFallback` / `loopNumber` knobs in seed mode**, or different ones? The seed crawl is suggestion-graph-based; `maxSearchResults` may be meaningless and a `maxDepth` / `maxHops` may appear instead.
-5. **Does the bot self-terminate** when it drifts too far from the seed (similarity below a floor), or does it run `loopNumber` iterations regardless? Affects whether we expose a `minSimilarity` deploy knob.
+The xgodo niche-spy planned-task input schema is now confirmed:
+
+```
+seedUrl, apiKey, loopNumber, maxSuggestedResultsBeforeFallback, rofeAPIKey, nicheId
+```
+
+1. **Seed URL field name** → **`seedUrl`** ✓
+2. **keyword vs seedUrl** → **mutually exclusive; seed mode has NO keyword.** Video URL is the only entry point. Also note `maxSearchResultsBeforeFallback` is GONE in seed mode (no search step — only suggestion-graph crawl), leaving `maxSuggestedResultsBeforeFallback`.
+3. **Grouping identity** → **`nicheId`** (rofe-generated). Several seed URLs that belong to the same niche share one nicheId. This REPLACES `keyword` as the work-unit key — it's an opaque identity, not the work content. The human label lives in `agent_niches`. (Warm-device pinning now keys on nicheId; if the bot's bucket doesn't carry it, pinning degrades to unpinned — the existing graceful fallback.)
+4. **Knobs** → `loopNumber` + `maxSuggestedResultsBeforeFallback` only. No `maxSearchResults`, no `maxHops`/`minSimilarity`.
+5. **Termination** → runs **`loopNumber` loops**, no similarity-floor self-termination. No `minSimilarity` deploy knob needed.
+
+### Revised model (simpler than the WorkUnit sketch above)
+
+Identity migrates `keyword → nicheId`. The distinction:
+- `keyword` WAS both the identity AND the work content (the search term).
+- `nicheId` is ONLY the identity; the work content is the per-task `seedUrl` (which can differ across tasks within one niche).
+
+So a niche (nicheId) has 1+ seed URLs; each seed URL gets N threads; everything groups by nicheId. `deployBatch` needs **zero change** — it treats its `keyword` parameter as an opaque grouping/pin key, so passing the nicheId there Just Works.
 
 ---
 

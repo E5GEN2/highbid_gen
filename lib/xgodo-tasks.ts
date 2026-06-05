@@ -8,32 +8,72 @@
 
 const XGODO_API = 'https://xgodo.com/api/v2';
 
+/**
+ * A task's WORK UNIT — the thing it's researching. Two kinds:
+ *   - keyword: legacy mode, identity = the search keyword
+ *   - seed:    new video-URL mode, identity = the rofe-generated nicheId;
+ *              seedUrl is the specific video the bot started crawling from
+ *
+ * `key` is the grouping/identity string used across the monitor,
+ * thermostat targets, pins, and logs (keyword for keyword tasks, nicheId
+ * for seed tasks). `keyword` is kept as an alias of `key` for backward
+ * compatibility with callers that still read `.keyword`.
+ */
+export interface WorkUnit {
+  kind: 'keyword' | 'seed' | 'unknown';
+  key: string;
+  seedUrl: string | null;
+}
+
 export interface RunningTaskInfo {
   taskId: string;
+  /** Alias of workUnit.key — kept for back-compat. */
   keyword: string;
+  kind: WorkUnit['kind'];
+  seedUrl: string | null;
   startedAt: string | null;
   workerName: string | null;
 }
 
 export interface PlannedTaskInfo {
   plannedTaskId: string;
+  /** Alias of workUnit.key — kept for back-compat. */
   keyword: string;
+  kind: WorkUnit['kind'];
+  seedUrl: string | null;
   added: string | null;   // creation timestamp — used to pick oldest for deletion
 }
 
 /**
- * Pull the keyword out of either a planned_task input string or job_proof object.
- * Both arrive from xgodo as either a string (JSON) or an already-parsed object.
+ * Pull the work-unit out of either a planned_task input string or
+ * job_proof object. Both arrive from xgodo as either a string (JSON) or
+ * an already-parsed object.
+ *
+ * Seed-mode tasks carry `nicheId` + `seedUrl` (no keyword). Keyword-mode
+ * tasks carry `keyword` (or search_query / searchQuery). nicheId takes
+ * precedence so a task that somehow has both is grouped by niche.
  */
-function extractKeyword(raw: unknown): string {
+function extractWorkUnit(raw: unknown): WorkUnit {
   let obj: Record<string, unknown> = {};
   if (typeof raw === 'string') {
-    try { obj = JSON.parse(raw); } catch { return 'unknown'; }
+    try { obj = JSON.parse(raw); } catch { return { kind: 'unknown', key: 'unknown', seedUrl: null }; }
   } else if (raw && typeof raw === 'object') {
     obj = raw as Record<string, unknown>;
   }
+  const nicheId = obj.nicheId ?? obj.niche_id;
+  const seedUrl = (obj.seedUrl ?? obj.seed_url);
+  if (typeof nicheId === 'string' && nicheId.length > 0) {
+    return {
+      kind: 'seed',
+      key: nicheId,
+      seedUrl: typeof seedUrl === 'string' ? seedUrl : null,
+    };
+  }
   const kw = obj.keyword || obj.search_query || obj.searchQuery;
-  return typeof kw === 'string' && kw.length > 0 ? kw : 'unknown';
+  if (typeof kw === 'string' && kw.length > 0) {
+    return { kind: 'keyword', key: kw, seedUrl: null };
+  }
+  return { kind: 'unknown', key: 'unknown', seedUrl: null };
 }
 
 /**
@@ -52,14 +92,20 @@ export async function fetchRunningTasks(token: string, jobId: string): Promise<R
   const data = await res.json() as { job_tasks?: Array<Record<string, unknown>> };
   const tasks = data.job_tasks || [];
 
-  return tasks.map(t => ({
-    taskId: String(t._id || t.job_task_id || ''),
-    keyword: extractKeyword(t.planned_task) !== 'unknown'
-      ? extractKeyword(t.planned_task)
-      : extractKeyword(t.job_proof),
-    startedAt: (t.created_at || t.started_at || null) as string | null,
-    workerName: (t.worker_name || null) as string | null,
-  }));
+  return tasks.map(t => {
+    // Prefer the planned_task input; fall back to job_proof if the task
+    // hasn't surfaced its input (some running tasks only carry the proof).
+    const fromPlanned = extractWorkUnit(t.planned_task);
+    const wu = fromPlanned.kind !== 'unknown' ? fromPlanned : extractWorkUnit(t.job_proof);
+    return {
+      taskId: String(t._id || t.job_task_id || ''),
+      keyword: wu.key,
+      kind: wu.kind,
+      seedUrl: wu.seedUrl,
+      startedAt: (t.created_at || t.started_at || null) as string | null,
+      workerName: (t.worker_name || null) as string | null,
+    };
+  });
 }
 
 /**
@@ -97,9 +143,12 @@ export async function fetchPlannedTasks(
     if (rows.length === 0) break;
 
     for (const r of rows) {
+      const wu = extractWorkUnit(r.input);
       out.push({
         plannedTaskId: String(r.planned_task_id || r._id || ''),
-        keyword: extractKeyword(r.input),
+        keyword: wu.key,
+        kind: wu.kind,
+        seedUrl: wu.seedUrl,
         added: r.added || null,
       });
     }

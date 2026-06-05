@@ -1298,6 +1298,36 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_app_device  ON agent_planned_pins(device_name)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_app_created ON agent_planned_pins(created_at)`).catch(() => {});
 
+    // ── Seed-mode agents (video-URL niche discovery) ──────────────────
+    // The xgodo niche-spy bot can now start from a SEED VIDEO URL instead
+    // of a keyword. Multiple seed URLs that belong to the same niche share
+    // a rofe-generated `nicheId`. agent_niches maps that nicheId to a
+    // human label so the monitor can show "Sumerian tablets" rather than
+    // the opaque id. The deploy carries nicheId in the xgodo task input
+    // (alongside seedUrl); everything keyword-keyed elsewhere uses nicheId
+    // as the grouping key for seed tasks.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_niches (
+        niche_id     TEXT PRIMARY KEY,
+        label        TEXT NOT NULL,
+        created_from TEXT DEFAULT 'manual',   -- manual | novelty_seed | content_gen
+        seed_urls    TEXT[] DEFAULT '{}',      -- distinct seed URLs deployed under this niche
+        created_at   TIMESTAMPTZ DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
+
+    // Seed-mode additive columns on the existing agent tables. The
+    // `keyword` column on these tables holds the WORK-UNIT KEY — the
+    // keyword for keyword tasks, the nicheId for seed tasks. seed_url +
+    // kind are carried for display / traceability. All nullable so
+    // existing keyword rows are untouched.
+    await client.query(`ALTER TABLE agent_task_log     ADD COLUMN IF NOT EXISTS kind     TEXT DEFAULT 'keyword'`).catch(() => {});
+    await client.query(`ALTER TABLE agent_task_log     ADD COLUMN IF NOT EXISTS seed_url TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE agent_planned_pins ADD COLUMN IF NOT EXISTS seed_url TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE agent_thread_targets ADD COLUMN IF NOT EXISTS kind     TEXT DEFAULT 'keyword'`).catch(() => {});
+    await client.query(`ALTER TABLE agent_thread_targets ADD COLUMN IF NOT EXISTS seed_url TEXT`).catch(() => {});
+
     // Semantic search query log — every text query that hits the
     // /api/niche-spy/search-semantic endpoint gets stored here with its
     // embedding. Two purposes:
