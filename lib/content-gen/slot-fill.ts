@@ -22,6 +22,12 @@
 
 import { getPool } from '../db';
 
+export interface MoneyRange {
+  low: number;
+  high: number;
+  display: string; // e.g. "$40K–$130K"
+}
+
 export interface ChannelSlots {
   channel_id: string;
   channel_name: string | null;
@@ -54,16 +60,21 @@ export interface ChannelSlots {
   views_to_subs_ratio: number | null;
   uploads_per_month: number | null;
 
-  // ── money (RPM-derived; null when RPM missing) ──
+  // ── money (RPM-derived ranges; null when RPM missing) ──
+  // Each figure is a low–high band: low = rpm_low × conservative volume
+  // (median views), high = rpm_high × optimistic volume (avg views). The
+  // band honestly brackets the RPM uncertainty AND the view-volume
+  // skew, so we never commit to a single possibly-inflated number.
   rpm: { low: number; typical: number; high: number; geo: string | null; grounded_on: string | null } | null;
   money: {
-    top_video_lump_sum: number | null;
-    per_video: number | null;
-    monthly_estimate: number | null;
-    yearly_estimate: number | null;
-    monthly_views_estimate: number | null;
+    top_video_lump_sum: MoneyRange | null;
+    per_video: MoneyRange | null;
+    monthly: MoneyRange | null;
+    yearly: MoneyRange | null;
+    monthly_views_low: number | null;
+    monthly_views_high: number | null;
     // the framing the script should prefer + a ready display string
-    headline: { kind: 'yearly' | 'monthly' | 'per_video' | 'lump_sum'; usd: number; display: string } | null;
+    headline: { kind: 'yearly' | 'monthly' | 'per_video' | 'lump_sum'; low: number; high: number; display: string } | null;
   } | null;
 
   // ── growth ("got X views in N months") ──
@@ -187,30 +198,54 @@ export async function assembleChannelSlots(channelId: string): Promise<ChannelSl
   const topViews = topRow ? Number(topRow.view_count) : null;
   const ratio = (topViews != null && subs && subs > 0) ? Math.round((topViews / subs) * 10) / 10 : null;
 
-  // ── money ──
+  // ── money (ranges) ──
+  // low end  = rpm_low  × conservative view volume (median views)
+  // high end = rpm_high × optimistic view volume (avg views)
   let money: ChannelSlots['money'] = null;
   if (rpmRow) {
-    const rpm = Number(rpmRow.rpm_typical);
-    const lump = topViews != null ? round2sig(rpm * topViews / 1000) : null;
-    const perVideo = avgViews != null ? round2sig(rpm * avgViews / 1000) : null;
-    const monthlyViews = (avgViews != null && uploadsPerMonth != null) ? avgViews * uploadsPerMonth : null;
-    const monthly = monthlyViews != null ? round2sig(rpm * monthlyViews / 1000) : null;
-    const yearly = monthly != null ? round2sig(monthly * 12) : null;
+    const rpmLo = Number(rpmRow.rpm_low);
+    const rpmHi = Number(rpmRow.rpm_high);
+    const consViews = medianViews ?? avgViews;   // conservative per-video volume
+    const optViews  = avgViews ?? medianViews;    // optimistic per-video volume
 
-    // Headline framing: prefer yearly if impressive (≥$50k), else monthly,
-    // else per-video, else lump.
+    const mkRange = (lowUsd: number | null, highUsd: number | null, suffix: string): MoneyRange | null => {
+      if (lowUsd == null || highUsd == null) return null;
+      let lo = round2sig(lowUsd), hi = round2sig(highUsd);
+      if (lo > hi) [lo, hi] = [hi, lo];
+      const disp = lo === hi ? `${fmtUsd(lo)}${suffix}` : `${fmtUsd(lo)}–${fmtUsd(hi)}${suffix}`;
+      return { low: lo, high: hi, display: disp };
+    };
+
+    // Top video views are known exactly → only RPM varies.
+    const lump = topViews != null
+      ? mkRange(rpmLo * topViews / 1000, rpmHi * topViews / 1000, '')
+      : null;
+    const perVideo = (consViews != null && optViews != null)
+      ? mkRange(rpmLo * consViews / 1000, rpmHi * optViews / 1000, '/video')
+      : null;
+
+    const monthlyViewsLo = (medianViews != null && uploadsPerMonth != null) ? medianViews * uploadsPerMonth : null;
+    const monthlyViewsHi = (avgViews != null && uploadsPerMonth != null) ? avgViews * uploadsPerMonth : null;
+    const monthly = (monthlyViewsLo != null && monthlyViewsHi != null)
+      ? mkRange(rpmLo * monthlyViewsLo / 1000, rpmHi * monthlyViewsHi / 1000, '/month')
+      : null;
+    const yearly = monthly ? mkRange(monthly.low * 12, monthly.high * 12, '/year') : null;
+
+    // Headline framing: prefer yearly if impressive (high end ≥$50k),
+    // else monthly, else per-video, else lump.
     let headline: NonNullable<ChannelSlots['money']>['headline'] = null;
-    if (yearly != null && yearly >= 50_000) headline = { kind: 'yearly', usd: yearly, display: `${fmtUsd(yearly)}/year` };
-    else if (monthly != null && monthly >= 200) headline = { kind: 'monthly', usd: monthly, display: `${fmtUsd(monthly)}/month` };
-    else if (perVideo != null) headline = { kind: 'per_video', usd: perVideo, display: `${fmtUsd(perVideo)}/video` };
-    else if (lump != null) headline = { kind: 'lump_sum', usd: lump, display: `${fmtUsd(lump)} from their top video` };
+    if (yearly && yearly.high >= 50_000) headline = { kind: 'yearly', low: yearly.low, high: yearly.high, display: yearly.display };
+    else if (monthly && monthly.high >= 200) headline = { kind: 'monthly', low: monthly.low, high: monthly.high, display: monthly.display };
+    else if (perVideo) headline = { kind: 'per_video', low: perVideo.low, high: perVideo.high, display: perVideo.display };
+    else if (lump) headline = { kind: 'lump_sum', low: lump.low, high: lump.high, display: `${lump.display} from their top video` };
 
     money = {
       top_video_lump_sum: lump,
       per_video: perVideo,
-      monthly_estimate: monthly,
-      yearly_estimate: yearly,
-      monthly_views_estimate: monthlyViews != null ? Math.round(monthlyViews) : null,
+      monthly,
+      yearly,
+      monthly_views_low: monthlyViewsLo != null ? Math.round(monthlyViewsLo) : null,
+      monthly_views_high: monthlyViewsHi != null ? Math.round(monthlyViewsHi) : null,
       headline,
     };
   }
