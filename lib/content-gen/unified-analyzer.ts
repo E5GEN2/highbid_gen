@@ -158,13 +158,13 @@ export async function analyzeChannelComplete(
     ? transcripts.map(t => transcriptToText(t.title, t.segs, segsPerTranscript)).join('\n\n')
     : '(no transcriptions available — infer recipe/format from titles + thumbnails)';
 
-  const promptText = `You are building a script-ready profile of a faceless YouTube channel for a content-research database. You have TWO signals:
+  const promptText = `You are building a script-ready profile of a faceless YouTube channel for a content-research database. You have TWO separate signals, used for DIFFERENT fields. Do not mix them up.
 
-1. CATALOG — the channel's top ${catalog.length} videos by views (titles below; ${thumbs.length} thumbnails attached as images in title order). Use this for the NICHE: capture the recurring format/theme across the whole catalog, not just one video.
+SIGNAL 1 — CATALOG (titles of the top ${catalog.length} videos + ${thumbs.length} thumbnails attached as images, in title order). This is the ONLY signal for the NICHE. Read the breadth across ALL ${catalog.length} titles. Many channels run a repeatable format over many subjects (e.g. "[Different topic] Explained in 8 Minutes" covering conspiracies, cursed images, banned toys, tech disasters…). The niche is that recurring FORMAT+theme — NOT the subject of any one video.
 
-2. TRANSCRIPTIONS — second-by-second breakdowns (SAY = speech, SEE = on-screen, HEAR = audio) of ${transcripts.length} of its videos. Use this for the RECIPE / production / voice / language: how they actually make a video.
+SIGNAL 2 — TRANSCRIPTIONS (second-by-second SAY/SEE/HEAR of ${transcripts.length} example video${transcripts.length === 1 ? '' : 's'}). This is ONLY for the RECIPE / production_format / voice_type / language — HOW they make a video. The transcription happens to be about one specific subject; IGNORE that subject when choosing the niche. Do NOT let one transcribed video narrow the niche_label to its topic.
 
-CATALOG TITLES:
+CATALOG TITLES (use these for niche_label + breadth):
 ${titlesBlock}
 
 ${transcriptsBlock}
@@ -172,9 +172,9 @@ ${transcriptsBlock}
 Produce ONLY this JSON (no prose, no fences):
 
 {
-  "niche_label": string,        // Clean 2-6 word niche a viewer recognizes & that fits a "Top 10 niches" listicle. Capture the recurring FORMAT+theme from the CATALOG, not one video's subject. e.g. "Creepy mysteries explained", "Tornado disaster documentaries", "Extinct & cryptid animals".
-  "niche_summary": string,      // 1 sentence: what the channel consistently makes across its catalog.
-  "breadth": string,            // "single-topic" (every video same subject) or "broad-format" (a repeatable format across many subjects).
+  "niche_label": string,        // From the CATALOG ONLY. Clean 2-6 word niche that fits a "Top 10 niches" listicle. If the titles span many subjects with one format, name the FORMAT (e.g. "Creepy mysteries explained", "Things explained in 8 minutes"). Do NOT pin it to the transcribed video's topic. e.g. "Creepy mysteries explained", "Tornado disaster documentaries", "Extinct & cryptid animals".
+  "niche_summary": string,      // 1 sentence: what the channel consistently makes across its WHOLE catalog.
+  "breadth": string,            // "single-topic" (every catalog title is the same subject) or "broad-format" (one repeatable format across many different subjects — look hard at the titles).
   "recipe_formula": string,     // 1 sentence from the TRANSCRIPTIONS: the repeatable production recipe — someone could read it and replicate the format. Describe method (visuals, voice, music, editing), not just topic.
   "language": string,           // dominant spoken language: "en","en-IN","hi","ta","es","pt"...
   "is_faceless": boolean,       // true if no real human host on camera (AI/animation/stock/voiceover). A person to camera = false.
