@@ -1672,6 +1672,25 @@ export async function initSchema(): Promise<void> {
     // watched video.
     await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS video_url TEXT`).catch(() => {});
     await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS grounded_on TEXT`).catch(() => {});
+
+    // Stage D output — the generated, timestamped beat-by-beat narration
+    // script for a GROUP of channels. Keyed by a stable group_key (sorted
+    // channel_ids joined) so re-generating a group upserts. script_jsonb
+    // holds the full { intro, niches[], cta, meta } object.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_scripts (
+        group_key       TEXT PRIMARY KEY,
+        channel_ids     TEXT[] NOT NULL,
+        title           TEXT,
+        script_jsonb    JSONB NOT NULL,
+        model           TEXT,
+        version         INTEGER,
+        word_count      INTEGER,
+        est_duration_s  INTEGER,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
