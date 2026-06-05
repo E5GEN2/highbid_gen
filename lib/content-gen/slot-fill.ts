@@ -54,7 +54,7 @@ export interface ChannelSlots {
 
   // ── performance ──
   top_video: { views: number; views_display: string; title: string | null; url: string | null; thumbnail: string | null; age_phrase: string } | null;
-  top_videos: Array<{ views: number; views_display: string; title: string | null }>;
+  top_videos: Array<{ views: number; views_display: string; title: string | null; url: string | null; thumbnail: string | null }>;
   avg_views_per_video: number | null;
   median_views: number | null;
   views_to_subs_ratio: number | null;
@@ -296,7 +296,7 @@ export async function assembleChannelSlots(channelId: string): Promise<ChannelSl
       thumbnail: topRow.thumbnail,
       age_phrase: videoAgePhrase(topRow.posted_at),
     } : null,
-    top_videos: vids.slice(0, 5).map(v => ({ views: Number(v.view_count), views_display: fmtNum(Number(v.view_count)), title: v.title })),
+    top_videos: vids.slice(0, 5).map(v => ({ views: Number(v.view_count), views_display: fmtNum(Number(v.view_count)), title: v.title, url: v.url, thumbnail: v.thumbnail })),
     avg_views_per_video: avgViews,
     median_views: medianViews,
     views_to_subs_ratio: ratio,

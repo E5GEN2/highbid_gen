@@ -1691,6 +1691,29 @@ export async function initSchema(): Promise<void> {
         updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
+    // The compiled tri-track aud2vis timeline (MG transcript schema,
+    // enriched into a render spec) lives alongside the narration script.
+    await client.query(`ALTER TABLE content_gen_scripts ADD COLUMN IF NOT EXISTS timeline_jsonb JSONB`).catch(() => {});
+
+    // The transcript-grounded "recipe showcase" — per channel, the paired
+    // {narration, clip[t_start,t_end], shows} beats picked from the
+    // channel's own aud/vis transcript(s). Drives the recipe_demo section:
+    // the narrator explains HOW the channel makes content while we show the
+    // exact clip moment that demonstrates each point. clip timestamps are
+    // real (into source_video_id) so Stage E can extract them directly.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_recipe_showcase (
+        channel_id        TEXT PRIMARY KEY,
+        source_video_ids  INTEGER[] NOT NULL,
+        recipe_summary    TEXT,
+        beats_jsonb       JSONB NOT NULL,
+        n_beats           INTEGER,
+        model             TEXT,
+        version           INTEGER,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
