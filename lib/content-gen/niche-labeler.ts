@@ -200,17 +200,39 @@ Produce ONLY this JSON (no prose, no fences):
     if (!text) { lastErr = 'empty response'; continue; }
 
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-    let parsed: Partial<NicheLabel>;
-    try { parsed = JSON.parse(cleaned) as Partial<NicheLabel>; }
-    catch (e) { lastErr = `JSON parse: ${(e as Error).message}`; continue; }
-    if (!parsed.niche_label) { lastErr = `missing niche_label`; continue; }
 
-    const breadth = parsed.breadth === 'single-topic' ? 'single-topic' : 'broad-format';
+    // Tolerant parse. Responses occasionally truncate mid-niche_summary
+    // (intermittent proxy body-read / long summary). niche_label is the
+    // FIRST field and short, so it's complete even when the tail is cut.
+    // Try strict JSON first; on failure, regex-salvage the fields we can.
+    let niche_label: string | null = null;
+    let niche_summary = '';
+    let breadthRaw = '';
+    let confidence = 0.5;
+    try {
+      const parsed = JSON.parse(cleaned) as Partial<NicheLabel>;
+      niche_label = parsed.niche_label ? String(parsed.niche_label) : null;
+      niche_summary = String(parsed.niche_summary ?? '');
+      breadthRaw = String(parsed.breadth ?? '');
+      if (typeof parsed.confidence === 'number') confidence = parsed.confidence;
+    } catch {
+      const mLabel = cleaned.match(/"niche_label"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (mLabel) niche_label = mLabel[1].replace(/\\"/g, '"');
+      const mSum = cleaned.match(/"niche_summary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (mSum) niche_summary = mSum[1].replace(/\\"/g, '"');
+      const mBr = cleaned.match(/"breadth"\s*:\s*"(single-topic|broad-format)"/);
+      if (mBr) breadthRaw = mBr[1];
+      const mConf = cleaned.match(/"confidence"\s*:\s*([0-9.]+)/);
+      if (mConf) confidence = parseFloat(mConf[1]);
+    }
+
+    if (!niche_label) { lastErr = `could not extract niche_label from: ${cleaned.slice(0, 120)}`; continue; }
+
     return {
-      niche_label:        String(parsed.niche_label).trim(),
-      niche_summary:      String(parsed.niche_summary ?? '').trim(),
-      breadth,
-      confidence:         typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
+      niche_label:        niche_label.trim(),
+      niche_summary:      niche_summary.trim(),
+      breadth:            breadthRaw === 'single-topic' ? 'single-topic' : 'broad-format',
+      confidence,
       sampled_videos:     videos.length,
       sampled_thumbnails: thumbs.length,
     };
