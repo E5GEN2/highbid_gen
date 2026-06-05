@@ -458,37 +458,35 @@ async function downloadSource(jobId: number, youtubeUrl: string, outPath: string
     // gives up. We just lose the early title/duration.
   }
 
-  // Transcription cap: when a job carries a max_duration_s and the video
-  // is longer, download only the first max_duration_s via yt-dlp's
-  // --download-sections. This needs ffmpeg as the downloader (yt-dlp
-  // delegates section extraction to it). For videos at/under the cap, or
-  // when duration is unknown, download normally. Legacy jobs pass null →
-  // never capped.
-  const sectionArgs: string[] = [];
-  if (maxDurationS != null && maxDurationS > 0 && duration != null && duration > maxDurationS) {
-    // --download-sections without --force-keyframes-at-cuts: the latter
-    // forces a re-encode at cut points which (a) is slow and (b) fetches
-    // fragments in a way that intermittently 403s through the proxy on
-    // signed googlevideo URLs. We don't need frame-accurate cuts for
-    // transcription — clip splitting is keyframe-tolerant — so we drop it
-    // and accept yt-dlp grabbing slightly past the cap to the next
-    // keyframe.
-    sectionArgs.push('--download-sections', `*0-${Math.floor(maxDurationS)}`);
-    console.log(`[video-analysis] job ${jobId} capping transcription to first ${maxDurationS}s (video is ${Math.round(duration)}s)`);
-  }
+  // Transcription cap (Option A — full download then local trim):
+  //
+  // We deliberately do NOT use yt-dlp's --download-sections to cap long
+  // videos. That delegates the range fetch to ffmpeg, which re-requests
+  // the IP-signed googlevideo CDN URL and intermittently (reliably, for
+  // some videos) 403s because the egress IP no longer matches the URL's
+  // signature through our rotating proxy. Instead we download the full
+  // file via yt-dlp's native downloader (which routes through the proxy
+  // correctly and never 403s), then ffmpeg-trim it to the first
+  // max_duration_s BELOW before clip-splitting. We still only transcribe
+  // the first N minutes (the expensive part), we just pay the full
+  // download bandwidth — a fine trade for robustness.
+  const willTrim = maxDurationS != null && maxDurationS > 0 && duration != null && duration > maxDurationS;
 
   await new Promise<void>((resolve, reject) => {
     const proc = spawn('yt-dlp', [
       '--merge-output-format', 'mp4',
       '-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b',
-      ...sectionArgs,
       '-o', outPath, '--no-warnings', '--no-playlist', '--newline',
       '--proxy', proxy.url, youtubeUrl,
     ]);
+    // Multi-hour videos need a longer download window than the 10-min
+    // default. Scale the timeout with the (capped) duration we expect
+    // to fetch, with a floor of 10 min and ceiling of 30 min.
+    const dlTimeoutMs = Math.min(30 * 60_000, Math.max(600_000, (duration ?? 600) * 1000));
     const t = setTimeout(() => {
       proc.kill('SIGKILL');
-      reject(new Error('yt-dlp download timed out after 10 min'));
-    }, 600_000);
+      reject(new Error(`yt-dlp download timed out after ${Math.round(dlTimeoutMs / 60000)} min`));
+    }, dlTimeoutMs);
     let stderr = '';
     proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
     proc.on('close', code => {
@@ -498,6 +496,30 @@ async function downloadSource(jobId: number, youtubeUrl: string, outPath: string
     });
     proc.on('error', err => { clearTimeout(t); reject(err); });
   });
+
+  // Trim to the cap if needed. ffmpeg stream-copy (-c copy) is near-
+  // instant — no re-encode — and keyframe-tolerant, which is fine for
+  // clip splitting. Replaces source.mp4 atomically.
+  if (willTrim) {
+    console.log(`[video-analysis] job ${jobId} trimming source to first ${maxDurationS}s (video is ${Math.round(duration!)}s)`);
+    const trimmedPath = outPath.replace(/\.mp4$/, '.trim.mp4');
+    try {
+      await execFileAsync('ffmpeg', [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        '-i', outPath,
+        '-t', String(Math.floor(maxDurationS!)),
+        '-c', 'copy', '-movflags', '+faststart',
+        trimmedPath,
+      ], { timeout: 180_000 });
+      fs.renameSync(trimmedPath, outPath);
+    } catch (e) {
+      // If stream-copy trim fails (rare container quirk), leave the full
+      // file in place — splitting will just process the whole thing.
+      // Better to over-transcribe than to fail the job.
+      console.warn(`[video-analysis] job ${jobId} trim failed, using full source:`, (e as Error).message);
+      try { fs.unlinkSync(trimmedPath); } catch { /* not there */ }
+    }
+  }
 
   // If dump-json failed earlier, try ffprobe on the file we just got
   // so jobs always end up with a duration recorded.
