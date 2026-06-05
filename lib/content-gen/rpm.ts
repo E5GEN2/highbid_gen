@@ -151,9 +151,12 @@ Produce ONLY this JSON (no prose, no fences):
 export interface ChannelRpm extends RpmEstimate {
   channel_id: string;
   channel_url: string;
+  video_url: string | null;
   niche_label: string;
   geo_guess: string;
-  url_fetched: boolean;
+  /** What Gemini consumed: 'video' (watched the top video) | 'context' (fell back) */
+  grounded_on: string;
+  url_fetched: boolean; // legacy column; true when grounded_on='video'
   cached: boolean;
 }
 
@@ -185,13 +188,14 @@ export async function getOrEstimateChannelRpm(channelId: string, force = false):
   const pool = await getPool();
 
   if (!force) {
-    const c = await pool.query<{ channel_url: string; niche_label: string; geo_guess: string; rpm_low: number; rpm_typical: number; rpm_high: number; reasoning: string; url_fetched: boolean }>(
-      `SELECT channel_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, url_fetched
+    const c = await pool.query<{ channel_url: string; video_url: string | null; niche_label: string; geo_guess: string; rpm_low: number; rpm_typical: number; rpm_high: number; reasoning: string; grounded_on: string | null; url_fetched: boolean }>(
+      `SELECT channel_url, video_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, grounded_on, url_fetched
          FROM content_gen_channel_rpm WHERE channel_id = $1`,
       [channelId],
     );
     if (c.rows[0]) {
-      return { channel_id: channelId, ...c.rows[0], cached: true };
+      const row = c.rows[0];
+      return { channel_id: channelId, ...row, grounded_on: row.grounded_on ?? 'context', cached: true };
     }
   }
 
@@ -213,6 +217,15 @@ export async function getOrEstimateChannelRpm(channelId: string, force = false):
   const niche = anRes.rows[0]?.niche_label ?? '(unknown niche)';
   const language = anRes.rows[0]?.language ?? 'en';
 
+  // Top live video (the one Gemini will watch).
+  const vidRes = await pool.query<{ url: string | null; title: string | null }>(
+    `SELECT url, title FROM niche_spy_videos
+      WHERE channel_id = $1 AND url IS NOT NULL AND thumbnail_dead_at IS NULL
+      ORDER BY view_count DESC NULLS LAST LIMIT 1`,
+    [channelId],
+  );
+  const videoUrl = vidRes.rows[0]?.url ?? null;
+
   const titlesRes = await pool.query<{ title: string }>(
     `SELECT title FROM niche_spy_videos
       WHERE channel_id = $1 AND title IS NOT NULL AND thumbnail_dead_at IS NULL
@@ -223,98 +236,103 @@ export async function getOrEstimateChannelRpm(channelId: string, force = false):
 
   const prompt = `You are a YouTube monetization analyst estimating a channel's AdSense RPM (net USD the creator receives per 1000 monetized views, AFTER YouTube's 45% cut).
 
-CHANNEL: ${channelUrl}
-Read that channel if you can. Here is what we already know about it:
+${videoUrl ? `WATCH the attached video — it is the channel's top video. Judge its content category, advertiser-friendliness (graphic/controversial content lowers RPM), production style, and the likely audience.\n\n` : ''}What we already know about the channel:
 - Niche: ${niche}
 - Spoken language: ${language}
 - Subscribers: ${subs?.toLocaleString() ?? 'unknown'}
 - Top video titles:
 ${titles}
 
-Estimate the RPM grounded in THIS channel — its actual content category (advertiser CPM tier: finance/tech/business high; education/history/science upper-mid; general entertainment/motivation mid; gaming/memes/compilations/kids low) AND its likely audience geography (infer from language + content: US/UK/CA/AU = high value; India/SEA/LatAm = much lower). Audience geo is often the single biggest RPM factor.
+Estimate the RPM grounded in this channel — its actual content category (advertiser CPM tier: finance/tech/business high; education/history/science upper-mid; general entertainment/motivation mid; gaming/memes/compilations/kids low) AND its likely audience geography (US/UK/CA/AU = high value; India/SEA/LatAm = much lower). Audience geo is often the single biggest RPM factor.
 
-Respond with ONLY a JSON object (it may be wrapped in prose, that's fine):
+Respond with ONLY a JSON object:
 {
   "rpm_low": number,      // conservative NET RPM USD
   "rpm_typical": number,  // most likely NET RPM USD
   "rpm_high": number,     // optimistic NET RPM USD
-  "geo_guess": string,    // your inferred dominant audience geo, e.g. "US/UK", "India", "global-mixed"
-  "reasoning": string     // 1 sentence: CPM tier + geo + why
+  "geo_guess": string,    // inferred dominant audience geo, e.g. "US/UK", "India", "global-mixed"
+  "reasoning": string     // 1 sentence: CPM tier + geo + (if watched) what the video showed
 }`;
 
+  // Try video-grounded first (watch first 3 min of the top video). On a
+  // video-processing failure, fall back to a context-only estimate.
   let lastErr = 'unknown';
-  let urlFetched = false;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1500));
-    const keyRow = await pickAiStudioKey();
-    if (!keyRow) { lastErr = 'no active google_ai_studio key'; break; }
+  for (const mode of (videoUrl ? ['video', 'context'] : ['context']) as Array<'video' | 'context'>) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1500));
+      const keyRow = await pickAiStudioKey();
+      if (!keyRow) { lastErr = 'no active google_ai_studio key'; break; }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${keyRow.key}`;
-    // NOTE: grounding tools (url_context) are incompatible with
-    // responseMimeType=application/json, so we parse JSON loosely from
-    // the text instead.
-    const body = JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      tools: [{ url_context: {} }],
-      generationConfig: { temperature: 0.2, topP: 0.9, maxOutputTokens: 1024, thinkingConfig: { thinkingBudget: 0 } },
-    });
-
-    const proxy = await getRandomHealthyProxy().catch(() => null);
-    let res: { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> };
-    try {
-      if (proxy?.url) {
-        res = await fetchViaProxy(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeoutMs: 90_000 }, proxy.url);
-      } else {
-        const rr = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(90_000) });
-        res = { ok: rr.ok, status: rr.status, text: () => rr.text(), json: () => rr.json() };
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${keyRow.key}`;
+      const parts: Array<Record<string, unknown>> = [{ text: prompt }];
+      if (mode === 'video' && videoUrl) {
+        // Watch only the first 3 minutes — enough to judge category +
+        // ad-friendliness, keeps token cost bounded.
+        parts.push({ fileData: { fileUri: videoUrl }, videoMetadata: { startOffset: '0s', endOffset: '180s' } });
       }
-    } catch (e) { lastErr = `connection: ${(e as Error).message}`; continue; }
+      const body = JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          temperature: 0.2, topP: 0.9, maxOutputTokens: 1024,
+          responseMimeType: 'application/json',
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      });
 
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => '');
-      if (res.status === 429) cooloffKey(keyRow.id, 90);
-      lastErr = `HTTP ${res.status}: ${errBody.slice(0, 120)}`;
-      continue;
+      const proxy = await getRandomHealthyProxy().catch(() => null);
+      let res: { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> };
+      try {
+        if (proxy?.url) {
+          res = await fetchViaProxy(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeoutMs: 120_000 }, proxy.url);
+        } else {
+          const rr = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(120_000) });
+          res = { ok: rr.ok, status: rr.status, text: () => rr.text(), json: () => rr.json() };
+        }
+      } catch (e) { lastErr = `connection(${mode}): ${(e as Error).message}`; continue; }
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        if (res.status === 429) cooloffKey(keyRow.id, 90);
+        // A 400 on the video path usually means the video can't be
+        // processed (private/blocked/too long) — break to the context
+        // fallback rather than retrying the same bad video.
+        if (res.status === 400 && mode === 'video') { lastErr = `video 400: ${errBody.slice(0, 100)}`; break; }
+        lastErr = `HTTP ${res.status}(${mode}): ${errBody.slice(0, 100)}`;
+        continue;
+      }
+
+      const data = await res.json().catch(() => null) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } } | null;
+      if (!data || data.error) { lastErr = `gemini error(${mode}): ${data?.error?.message ?? 'null'}`; continue; }
+      const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n') ?? '';
+      if (!text) { lastErr = `empty(${mode})`; continue; }
+
+      const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+      const p = looseParseRpm(cleaned);
+      const low = Number(p?.rpm_low), typ = Number(p?.rpm_typical), high = Number(p?.rpm_high);
+      if (!p || ![low, typ, high].every(n => Number.isFinite(n) && n >= 0 && n < 200)) {
+        lastErr = `implausible/parse(${mode}): ${cleaned.slice(0, 120)}`;
+        continue;
+      }
+
+      const result: ChannelRpm = {
+        channel_id: channelId, channel_url: channelUrl, video_url: mode === 'video' ? videoUrl : null,
+        niche_label: niche, geo_guess: String(p.geo_guess ?? '').trim() || 'unknown',
+        rpm_low: Math.round(low * 100) / 100, rpm_typical: Math.round(typ * 100) / 100, rpm_high: Math.round(high * 100) / 100,
+        reasoning: String(p.reasoning ?? '').trim(),
+        grounded_on: mode, url_fetched: mode === 'video', cached: false,
+      };
+      await pool.query(
+        `INSERT INTO content_gen_channel_rpm (channel_id, channel_url, video_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, grounded_on, url_fetched, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+         ON CONFLICT (channel_id) DO UPDATE SET
+           channel_url = EXCLUDED.channel_url, video_url = EXCLUDED.video_url, niche_label = EXCLUDED.niche_label,
+           geo_guess = EXCLUDED.geo_guess, rpm_low = EXCLUDED.rpm_low, rpm_typical = EXCLUDED.rpm_typical,
+           rpm_high = EXCLUDED.rpm_high, reasoning = EXCLUDED.reasoning, grounded_on = EXCLUDED.grounded_on,
+           url_fetched = EXCLUDED.url_fetched, updated_at = NOW()`,
+        [channelId, channelUrl, result.video_url, niche, result.geo_guess, result.rpm_low, result.rpm_typical, result.rpm_high, result.reasoning, mode, result.url_fetched],
+      );
+      return result;
     }
-
-    const data = await res.json().catch(() => null) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; url_context_metadata?: { url_metadata?: Array<{ url_retrieval_status?: string }> } }>;
-      error?: { message?: string };
-    } | null;
-    if (!data || data.error) { lastErr = `gemini error: ${data?.error?.message ?? 'null'}`; continue; }
-    // Did url_context actually retrieve the channel?
-    const meta = data.candidates?.[0]?.url_context_metadata?.url_metadata ?? [];
-    urlFetched = meta.some(m => /SUCCESS/i.test(m.url_retrieval_status ?? ''));
-    const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n') ?? '';
-    if (!text) { lastErr = 'empty response'; continue; }
-
-    const p = looseParseRpm(text);
-    const low = Number(p?.rpm_low), typ = Number(p?.rpm_typical), high = Number(p?.rpm_high);
-    if (!p || ![low, typ, high].every(n => Number.isFinite(n) && n >= 0 && n < 200)) {
-      lastErr = `implausible/parse: ${text.slice(0, 140)}`;
-      continue;
-    }
-
-    const result: ChannelRpm = {
-      channel_id: channelId, channel_url: channelUrl, niche_label: niche,
-      geo_guess: String(p.geo_guess ?? '').trim() || 'unknown',
-      rpm_low: Math.round(low * 100) / 100,
-      rpm_typical: Math.round(typ * 100) / 100,
-      rpm_high: Math.round(high * 100) / 100,
-      reasoning: String(p.reasoning ?? '').trim(),
-      url_fetched: urlFetched, cached: false,
-    };
-    await pool.query(
-      `INSERT INTO content_gen_channel_rpm (channel_id, channel_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, url_fetched, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-       ON CONFLICT (channel_id) DO UPDATE SET
-         channel_url = EXCLUDED.channel_url, niche_label = EXCLUDED.niche_label,
-         geo_guess = EXCLUDED.geo_guess, rpm_low = EXCLUDED.rpm_low,
-         rpm_typical = EXCLUDED.rpm_typical, rpm_high = EXCLUDED.rpm_high,
-         reasoning = EXCLUDED.reasoning, url_fetched = EXCLUDED.url_fetched, updated_at = NOW()`,
-      [channelId, channelUrl, niche, result.geo_guess, result.rpm_low, result.rpm_typical, result.rpm_high, result.reasoning, urlFetched],
-    );
-    return result;
   }
   throw new Error(`channel RPM estimation failed: ${lastErr}`);
 }

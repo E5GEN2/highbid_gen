@@ -1666,6 +1666,12 @@ export async function initSchema(): Promise<void> {
         updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
+    // grounded_on records what Gemini actually consumed for the estimate:
+    // 'video' (watched the top video), 'context' (fell back to our
+    // titles/niche), or 'url' (legacy url_context). video_url = the
+    // watched video.
+    await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS video_url TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS grounded_on TEXT`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
