@@ -142,6 +142,9 @@ Produce ONLY this JSON (no prose, no fences):
 
   let lastErr = 'unknown';
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Backoff between attempts to ride out transient 503 (model overload)
+    // / proxy auth blips. 0s, 1.5s, 3s, 4.5s.
+    if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1500));
     const keyRow = await pickAiStudioKey();
     if (!keyRow) { lastErr = 'no active google_ai_studio key'; break; }
 
@@ -149,8 +152,13 @@ Produce ONLY this JSON (no prose, no fences):
     const body = JSON.stringify({
       contents: [{ parts }],
       generationConfig: {
-        temperature: 0.3, topP: 0.9, maxOutputTokens: 1024,
+        temperature: 0.3, topP: 0.9, maxOutputTokens: 2048,
         responseMimeType: 'application/json',
+        // gemini-2.5-flash enables "thinking" by default, which silently
+        // consumes the output-token budget before the JSON closes →
+        // unterminated-string parse errors. This is a simple labeling
+        // task; disable thinking so the full budget goes to the answer.
+        thinkingConfig: { thinkingBudget: 0 },
       },
     });
 

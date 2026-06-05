@@ -157,6 +157,9 @@ export async function extractChannelMeta(
       generationConfig: {
         temperature: 0.3, topP: 0.9, maxOutputTokens: 2048,
         responseMimeType: 'application/json',
+        // Disable gemini-2.5-flash thinking — it eats the output budget
+        // and this is a straightforward extraction task.
+        thinkingConfig: { thinkingBudget: 0 },
       },
     });
 
