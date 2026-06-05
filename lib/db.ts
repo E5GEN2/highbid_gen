@@ -1617,6 +1617,12 @@ export async function initSchema(): Promise<void> {
         analyzed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
+    // Unified-analyzer additions (catalog breadth + provenance counts).
+    await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS niche_summary TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS breadth TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS sampled_videos INTEGER`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS sampled_thumbnails INTEGER`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS sampled_transcripts INTEGER`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgca_video ON content_gen_channel_analysis(analyzed_video_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgca_language ON content_gen_channel_analysis(language)`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /

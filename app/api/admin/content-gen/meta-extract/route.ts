@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { extractChannelMeta, type ChannelMetaAnalysis } from '@/lib/content-gen/channel-analysis';
+import { analyzeChannelComplete, type ChannelAnalysis } from '@/lib/content-gen/unified-analyzer';
 
 /**
  * Content-gen meta-extraction + persist (stage A, step 2 — productized).
@@ -21,7 +21,7 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const maxDuration = 180;
 
-const ANALYZER_VERSION = 1;
+const ANALYZER_VERSION = 2; // v2 = unified analyzer (catalog + transcriptions)
 
 export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
@@ -53,57 +53,61 @@ export async function POST(req: NextRequest) {
     [videoIds],
   );
 
+  // Dedupe to one entry per channel (a channel may have several videos
+  // in the input). The unified analyzer pulls the channel's catalog +
+  // transcriptions itself; we just need the channel_id + a representative
+  // video/job id for provenance.
+  const byChannel = new Map<string, { channel_id: string; video_id: number; job_id: number }>();
+  for (const row of r.rows) {
+    if (!row.channel_id) continue;
+    if (!byChannel.has(row.channel_id)) {
+      byChannel.set(row.channel_id, { channel_id: row.channel_id, video_id: row.video_id, job_id: row.job_id });
+    }
+  }
+  const channelEntries = Array.from(byChannel.values());
+
   // Which channels already have a current-version analysis? Skip unless force.
-  const channelIds = r.rows.map(x => x.channel_id).filter(Boolean) as string[];
   const existing = new Set<string>();
-  if (!force && channelIds.length > 0) {
+  if (!force && channelEntries.length > 0) {
     const ex = await pool.query<{ channel_id: string }>(
       `SELECT channel_id FROM content_gen_channel_analysis
         WHERE channel_id = ANY($1::text[]) AND analyzer_version = $2`,
-      [channelIds, ANALYZER_VERSION],
+      [channelEntries.map(c => c.channel_id), ANALYZER_VERSION],
     );
     for (const row of ex.rows) existing.add(row.channel_id);
   }
 
   const results: Array<Record<string, unknown>> = [];
 
-  // Process sequentially-ish but allow some parallelism. Meta calls are
-  // ~7-11s each; with ~10 channels we run them in a small parallel batch.
-  await Promise.all(r.rows.map(async (row) => {
-    if (!row.channel_id) {
-      results.push({ videoId: row.video_id, skipped: 'no channel_id on video' });
-      return;
-    }
-    if (!force && existing.has(row.channel_id)) {
-      results.push({ videoId: row.video_id, channelId: row.channel_id, skipped: 'already analyzed (use force=true to redo)' });
-      return;
-    }
-    if (!row.timeline_jsonb) {
-      results.push({ videoId: row.video_id, channelId: row.channel_id, skipped: 'no timeline' });
+  // Unified analysis per channel (catalog + transcriptions). ~10-25s each;
+  // run in a small parallel batch.
+  await Promise.all(channelEntries.map(async (entry) => {
+    if (!force && existing.has(entry.channel_id)) {
+      results.push({ channelId: entry.channel_id, skipped: 'already analyzed (use force=true to redo)' });
       return;
     }
     const t0 = Date.now();
-    let meta: ChannelMetaAnalysis;
+    let meta: ChannelAnalysis;
     try {
-      meta = await extractChannelMeta(
-        row.timeline_jsonb as Parameters<typeof extractChannelMeta>[0],
-        row.source_video_title ?? '',
-      );
+      meta = await analyzeChannelComplete(entry.channel_id);
     } catch (e) {
-      results.push({ videoId: row.video_id, channelId: row.channel_id, error: (e as Error).message });
+      results.push({ channelId: entry.channel_id, error: (e as Error).message });
       return;
     }
 
     await pool.query(
       `INSERT INTO content_gen_channel_analysis
-         (channel_id, analyzed_video_id, analysis_job_id, niche_label, recipe_formula,
-          language, is_faceless, production_format, voice_type, content_summary,
-          confidence, analyzer_version, analyzed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+         (channel_id, analyzed_video_id, analysis_job_id, niche_label, niche_summary, breadth,
+          recipe_formula, language, is_faceless, production_format, voice_type, content_summary,
+          confidence, sampled_videos, sampled_thumbnails, sampled_transcripts,
+          analyzer_version, analyzed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
        ON CONFLICT (channel_id) DO UPDATE SET
          analyzed_video_id = EXCLUDED.analyzed_video_id,
          analysis_job_id   = EXCLUDED.analysis_job_id,
          niche_label       = EXCLUDED.niche_label,
+         niche_summary     = EXCLUDED.niche_summary,
+         breadth           = EXCLUDED.breadth,
          recipe_formula    = EXCLUDED.recipe_formula,
          language          = EXCLUDED.language,
          is_faceless       = EXCLUDED.is_faceless,
@@ -111,22 +115,20 @@ export async function POST(req: NextRequest) {
          voice_type        = EXCLUDED.voice_type,
          content_summary   = EXCLUDED.content_summary,
          confidence        = EXCLUDED.confidence,
+         sampled_videos    = EXCLUDED.sampled_videos,
+         sampled_thumbnails = EXCLUDED.sampled_thumbnails,
+         sampled_transcripts = EXCLUDED.sampled_transcripts,
          analyzer_version  = EXCLUDED.analyzer_version,
          analyzed_at       = NOW()`,
       [
-        row.channel_id, row.video_id, row.job_id, meta.niche_label, meta.recipe_formula,
-        meta.language, meta.is_faceless, meta.production_format, meta.voice_type, meta.content_summary,
-        meta.confidence, ANALYZER_VERSION,
+        entry.channel_id, entry.video_id, entry.job_id, meta.niche_label, meta.niche_summary, meta.breadth,
+        meta.recipe_formula, meta.language, meta.is_faceless, meta.production_format, meta.voice_type, meta.content_summary,
+        meta.confidence, meta.sampled_videos, meta.sampled_thumbnails, meta.sampled_transcripts,
+        ANALYZER_VERSION,
       ],
     );
 
-    results.push({
-      videoId: row.video_id,
-      channelId: row.channel_id,
-      title: row.source_video_title,
-      extractionMs: Date.now() - t0,
-      meta,
-    });
+    results.push({ channelId: entry.channel_id, extractionMs: Date.now() - t0, meta });
   }));
 
   const notReady = videoIds.filter(vid => !r.rows.some(row => row.video_id === vid));
