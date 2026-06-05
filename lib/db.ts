@@ -1580,6 +1580,12 @@ export async function initSchema(): Promise<void> {
         last_progress_at         TIMESTAMPTZ
       )
     `);
+    // Optional per-job transcription cap. NULL = no cap (legacy
+    // analyze-vids behaviour: transcribe the whole video). Content-gen
+    // sets this to 1800 (30 min) so we don't waste minutes transcribing
+    // multi-hour loops (e.g. healing-music videos) when the first chunk
+    // already carries all the signal meta-extraction needs.
+    await client.query(`ALTER TABLE video_analysis_jobs ADD COLUMN IF NOT EXISTS max_duration_s INTEGER`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_status      ON video_analysis_jobs(status, created_at DESC)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_niche       ON video_analysis_jobs(custom_niche_id, created_at DESC)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vaj_user        ON video_analysis_jobs(user_id, created_at DESC)`).catch(() => {});

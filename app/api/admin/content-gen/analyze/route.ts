@@ -36,6 +36,11 @@ interface AnalyzeBody {
   concurrentStarts?: number;
   /** Skip videos that already have a done/in-flight transcription. Default true. */
   skipAnalysed?: boolean;
+  /** Cap transcription to the first N minutes. Default 30. Videos longer
+   *  than this only get their first N min transcribed — plenty for
+   *  niche/recipe/language extraction, avoids wasting minutes on
+   *  multi-hour loops. */
+  maxDurationMinutes?: number;
 }
 
 const LIVE_STATUSES = ['pending', 'downloading', 'splitting', 'analyzing', 'collapsing', 'done'];
@@ -47,6 +52,7 @@ export async function POST(req: NextRequest) {
   const videoIds = Array.isArray(body.videoIds) ? body.videoIds.filter(n => Number.isFinite(n)) : [];
   const concurrentStarts = Math.max(1, Math.min(20, body.concurrentStarts ?? 5));
   const skipAnalysed = body.skipAnalysed !== false;
+  const maxDurationS = Math.max(60, Math.min(7200, (body.maxDurationMinutes ?? 30) * 60));
 
   if (videoIds.length === 0) {
     return NextResponse.json({ error: 'videoIds (number[]) required' }, { status: 400 });
@@ -89,12 +95,12 @@ export async function POST(req: NextRequest) {
     let p = 1;
     for (const v of toCreate) {
       // custom_niche_id + user_id null — these are content-gen-driven,
-      // not tied to a niche or user.
-      valuesPh.push(`($${p++}, NULL, NULL, $${p++}, 'pending')`);
-      args.push(v.id, v.url);
+      // not tied to a niche or user. max_duration_s caps transcription.
+      valuesPh.push(`($${p++}, NULL, NULL, $${p++}, 'pending', $${p++})`);
+      args.push(v.id, v.url, maxDurationS);
     }
     const insRes = await pool.query<{ id: number }>(
-      `INSERT INTO video_analysis_jobs (video_id, custom_niche_id, user_id, youtube_url, status)
+      `INSERT INTO video_analysis_jobs (video_id, custom_niche_id, user_id, youtube_url, status, max_duration_s)
        VALUES ${valuesPh.join(', ')}
        RETURNING id`,
       args,

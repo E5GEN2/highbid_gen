@@ -130,7 +130,7 @@ export async function runAnalysisJob(jobId: number): Promise<void> {
     // partial run (idempotency hook).
     if (!fs.existsSync(sourcePath) || fs.statSync(sourcePath).size === 0) {
       await markJob(jobId, 'downloading', { source_mp4_path: sourcePath, clips_dir: clipsDir });
-      await downloadSource(jobId, job.youtube_url, sourcePath);
+      await downloadSource(jobId, job.youtube_url, sourcePath, job.max_duration_s);
     } else {
       await markJob(jobId, 'downloading', { source_mp4_path: sourcePath, clips_dir: clipsDir });
     }
@@ -427,7 +427,7 @@ async function claimAndRunNextPending(): Promise<void> {
 // Stage 1 — download
 // ────────────────────────────────────────────────────────────────────
 
-async function downloadSource(jobId: number, youtubeUrl: string, outPath: string): Promise<void> {
+async function downloadSource(jobId: number, youtubeUrl: string, outPath: string, maxDurationS: number | null = null): Promise<void> {
   const proxy = await getRandomHealthyProxy();
   if (!proxy) throw new Error('no proxy available for yt-dlp');
 
@@ -458,10 +458,23 @@ async function downloadSource(jobId: number, youtubeUrl: string, outPath: string
     // gives up. We just lose the early title/duration.
   }
 
+  // Transcription cap: when a job carries a max_duration_s and the video
+  // is longer, download only the first max_duration_s via yt-dlp's
+  // --download-sections. This needs ffmpeg as the downloader (yt-dlp
+  // delegates section extraction to it). For videos at/under the cap, or
+  // when duration is unknown, download normally. Legacy jobs pass null →
+  // never capped.
+  const sectionArgs: string[] = [];
+  if (maxDurationS != null && maxDurationS > 0 && duration != null && duration > maxDurationS) {
+    sectionArgs.push('--download-sections', `*0-${Math.floor(maxDurationS)}`, '--force-keyframes-at-cuts');
+    console.log(`[video-analysis] job ${jobId} capping transcription to first ${maxDurationS}s (video is ${Math.round(duration)}s)`);
+  }
+
   await new Promise<void>((resolve, reject) => {
     const proc = spawn('yt-dlp', [
       '--merge-output-format', 'mp4',
       '-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b',
+      ...sectionArgs,
       '-o', outPath, '--no-warnings', '--no-playlist', '--newline',
       '--proxy', proxy.url, youtubeUrl,
     ]);
@@ -1020,10 +1033,10 @@ async function collapseTimeline(jobId: number): Promise<void> {
 
 function round(n: number): number { return Math.round(n * 1000) / 1000; }
 
-async function loadJob(jobId: number): Promise<{ youtube_url: string }> {
+async function loadJob(jobId: number): Promise<{ youtube_url: string; max_duration_s: number | null }> {
   const pool = await getPool();
-  const r = await pool.query<{ youtube_url: string }>(
-    `SELECT youtube_url FROM video_analysis_jobs WHERE id = $1`,
+  const r = await pool.query<{ youtube_url: string; max_duration_s: number | null }>(
+    `SELECT youtube_url, max_duration_s FROM video_analysis_jobs WHERE id = $1`,
     [jobId],
   );
   if (!r.rows[0]) throw new Error(`job ${jobId} not found`);
