@@ -1625,6 +1625,27 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS sampled_transcripts INTEGER`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgca_video ON content_gen_channel_analysis(analyzed_video_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgca_language ON content_gen_channel_analysis(language)`).catch(() => {});
+
+    // Per-niche RPM cache. Gemini estimates the YouTube AdSense RPM
+    // (revenue per 1000 views, USD) for a niche + audience geography.
+    // Money figures in generated scripts = rpm × views. Cached because
+    // RPM is stable per niche category — re-estimate is cheap but we
+    // don't want to pay it on every generation. Keyed on
+    // (normalized niche, geo).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_rpm_cache (
+        niche_key    TEXT NOT NULL,
+        geo          TEXT NOT NULL DEFAULT 'en',
+        niche_label  TEXT,
+        rpm_low      REAL,
+        rpm_typical  REAL,
+        rpm_high     REAL,
+        reasoning    TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (niche_key, geo)
+      )
+    `).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
