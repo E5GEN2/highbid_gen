@@ -25,16 +25,27 @@ import { getOrGenerateRecipeShowcase, type RecipeShowcase } from './recipe-showc
 export const TIMELINE_VERSION = 1;
 
 // ── output shape ──
+// Composition + primitive vocabulary is the full Class-B grammar
+// (visual-packaging-class-b.json), empirically validated against the
+// decoded Money-Groot timeline (docs/content-gen/mg-decoded-visual-timeline.json):
+//   text_card · money_shot_card · title_card
+//   yt_channel_page · yt_about_page · yt_search_results · yt_thumbnail_card · thumbnail_grid
+//   most_popular_callout_card · mini_player_card · chalkboard_card · icon_card
 export interface VisualSpec {
-  composition: string;            // text_card | annotated_screenshot | most_popular_callout_card | thumbnail_card_rapid_fire | thumbnail_card | money_card | icon_card | mini_player_card | chalkboard_card | title_sequence
+  composition: string;
   bg: 'white' | 'dark_gray' | 'mixed';
-  asset: { kind: string; ref?: string | null; video_url?: string | null; clip_start?: number; clip_end?: number; note?: string } | null;
-  overlay: string | null;         // on-screen text
-  annotation: string | null;      // e.g. "yellow ring on '160K subscribers'"
-  color: string;                  // neutral | money_shot_green | inline_green | yellow_ring | chalk_cream | ...
-  icon: string | null;
-  diegetic?: boolean;             // play source video's native audio (recipe clips)
-  big?: boolean;                  // oversized money-shot text
+  primitive: string | null;            // named primitive (yellow_circle_screenshot_annotation, most_popular_callout_card, chalkboard_concept_tag, ...)
+  asset: { kind: string; ref?: string | null; refs?: string[]; video_url?: string | null; clip_start?: number; clip_end?: number; note?: string } | null;
+  overlay: string | null;              // on-screen text
+  emphasis: string | null;             // phrase to color inline (green/red span)
+  annotation: string | null;           // human-readable, e.g. "yellow highlight on '160K subscribers'"
+  annotation_target: string | null;    // the specific element annotated
+  annotation_style: string | null;     // yellow_circle | yellow_box | yellow_fill_behind | yellow_highlight
+  color: string;                        // neutral | money_shot_green | inline_green | inline_red | yellow_highlight | chalk_cream
+  icon: string | null;                  // from the 15-icon host-reaction library
+  token_role: string | null;            // connector | emphasis | money_shot
+  diegetic?: boolean;                   // play source video's native audio (recipe clips)
+  big?: boolean;                        // oversized money-shot text
 }
 export interface AudioSpec { music: string; sfx: string[]; }
 export interface TimelineSegment {
@@ -78,46 +89,64 @@ function channelHandleUrl(slot: ChannelSlots): string {
   return h ? `youtube.com/${h.startsWith('@') ? h : '@' + h}` : `youtube.com/channel/${slot.channel_id}`;
 }
 
-/** Map one narration fragment → {visual, audio} per slot-rendering-class-b. */
+/** The salient number/$ phrase to emphasize inline (green) within a text card. */
+function salientPhrase(text: string): string | null {
+  const m = text.match(/\$\s?\d[\d,]*(?:\.\d+)?\s*(?:[KMB]|million|thousand)?|\b\d[\d,]*(?:\.\d+)?\s*(?:million|thousand|K|M|subscribers|views|videos|months|years|days)\b/i);
+  return m ? m[0].trim() : null;
+}
+
+/**
+ * Map one narration fragment → {visual, audio} using the FULL Class-B visual
+ * grammar (visual-packaging-class-b.json), calibrated to the decoded MG
+ * frequencies: YT-native screens for proof, the host-reaction icon library,
+ * inline green/red emphasis, specific yellow annotations, money-shot card.
+ * bg semantics: white = narration, dark_gray = YouTube-world / proof.
+ */
 function renderVisual(base: string, text: string, slot: ChannelSlots, localIdx: number): { visual: VisualSpec; audio: AudioSpec } {
   const tv = slot.top_video;
   const handle = channelHandleUrl(slot);
   const V = (v: Partial<VisualSpec>): VisualSpec => ({
-    composition: 'text_card', bg: 'white', asset: null, overlay: null, annotation: null, color: 'neutral', icon: null, ...v,
+    composition: 'text_card', bg: 'white', primitive: null, asset: null, overlay: null, emphasis: null,
+    annotation: null, annotation_target: null, annotation_style: null, color: 'neutral', icon: null, token_role: null, ...v,
   });
 
   switch (base) {
     case 'intro_card':
       return { visual: V({ composition: 'text_card', overlay: text.trim() }), audio: { music: 'niche_in', sfx: ['whoosh', 'ding'] } };
     case 'niche_name_card':
-      return { visual: V({ composition: 'text_card', overlay: slot.niche_label, color: 'inline_green_on_keyword' }), audio: { music: 'bed', sfx: ['whoosh'] } };
-    case 'channel_proof_1':  // subscribers — annotated channel-page screenshot
+      return { visual: V({ composition: 'text_card', overlay: slot.niche_label, emphasis: slot.niche_label, color: 'inline_green', token_role: 'emphasis' }), audio: { music: 'bed', sfx: ['whoosh'] } };
+
+    case 'channel_proof_1': { // subscribers — annotated YT channel page (MG's most-used proof screen)
+      const target = `${slot.subscribers_display} subscribers`;
       return {
-        visual: V({ composition: 'annotated_screenshot', bg: 'dark_gray', asset: { kind: 'yt_channel_page', ref: handle },
-          annotation: `yellow ring on '${slot.subscribers_display} subscribers'`, color: 'yellow_ring' }),
+        visual: V({ composition: 'yt_channel_page', bg: 'dark_gray', primitive: 'yellow_circle_screenshot_annotation',
+          asset: { kind: 'yt_channel_page', ref: handle }, annotation: `yellow highlight on '${target}'`,
+          annotation_target: target, annotation_style: 'yellow_highlight', color: 'yellow_highlight' }),
         audio: { music: 'bed', sfx: ['whoosh_on_load', 'ding_on_circle'] },
       };
-    case 'channel_proof_2': { // total views / growth — annotated about page
-      const gp = slot.growth?.phrase;
+    }
+    case 'channel_proof_2': { // total views / growth — annotated YT About page
+      const target = slot.growth?.phrase ?? 'total views';
       return {
-        visual: V({ composition: 'annotated_screenshot', bg: 'dark_gray', asset: { kind: 'yt_about_page', ref: `${handle}/about` },
-          annotation: `yellow ring on total-views (${gp ?? 'total views'})`, color: 'yellow_ring' }),
+        visual: V({ composition: 'yt_about_page', bg: 'dark_gray', primitive: 'yellow_circle_screenshot_annotation',
+          asset: { kind: 'yt_about_page', ref: `${handle}/about` }, annotation: `yellow box on '${target}'`,
+          annotation_target: target, annotation_style: 'yellow_box', color: 'yellow_highlight' }),
         audio: { music: 'bed', sfx: ['whoosh', 'ding'] },
       };
     }
     case 'top_video_callout':
       return {
-        visual: V({ composition: 'most_popular_callout_card', bg: 'dark_gray',
-          asset: { kind: 'thumbnail', ref: tv?.thumbnail ?? null, video_url: tv?.url ?? null },
+        visual: V({ composition: 'most_popular_callout_card', bg: 'dark_gray', primitive: 'most_popular_callout_card',
+          asset: { kind: 'yt_thumbnail_card', ref: tv?.thumbnail ?? null, video_url: tv?.url ?? null },
           overlay: tv ? `${(tv.title ?? '').slice(0, 42)} · ${tv.views_display} views` : null,
-          annotation: 'yellow ring on view count' }),
+          annotation: 'yellow circle on view count', annotation_target: tv?.views_display ?? null, annotation_style: 'yellow_circle' }),
         audio: { music: 'bed', sfx: ['ding_on_card_entry'] },
       };
-    case 'top_views_seq': {   // rapid-fire: one real thumbnail per fragment
+    case 'top_views_seq': {   // rapid-fire: one real YT thumbnail card per fragment
       const v = slot.top_videos[localIdx];
       return {
-        visual: V({ composition: 'thumbnail_card_rapid_fire', bg: 'dark_gray',
-          asset: { kind: 'thumbnail', ref: v?.thumbnail ?? null, video_url: v?.url ?? null },
+        visual: V({ composition: 'yt_thumbnail_card', bg: 'dark_gray',
+          asset: { kind: 'yt_thumbnail_card', ref: v?.thumbnail ?? null, video_url: v?.url ?? null },
           overlay: v?.views_display ?? null }),
         audio: { music: 'bed', sfx: ['whoosh'] },
       };
@@ -125,33 +154,63 @@ function renderVisual(base: string, text: string, slot: ChannelSlots, localIdx: 
     case 'money_math': {
       const hasRpm = /RPM/i.test(text);
       const moneyShot = MONEY_RE.test(text) && !hasRpm;
+      // card 1: re-show the top video we're estimating on
       if (/top video/i.test(text) && localIdx === 0) {
         return {
-          visual: V({ composition: 'thumbnail_card', bg: 'dark_gray',
-            asset: { kind: 'thumbnail', ref: tv?.thumbnail ?? null, video_url: tv?.url ?? null },
+          visual: V({ composition: 'most_popular_callout_card', bg: 'dark_gray', primitive: 'most_popular_callout_card',
+            asset: { kind: 'yt_thumbnail_card', ref: tv?.thumbnail ?? null, video_url: tv?.url ?? null },
             overlay: tv ? `${tv.views_display} views` : null }),
           audio: { music: 'bed', sfx: ['whoosh'] },
         };
       }
+      // the "$X RPM" assumption — shrug icon (host signals "we're estimating") + green RPM
       if (hasRpm) {
-        return { visual: V({ composition: 'icon_card', icon: 'shrug_with_question_marks', overlay: text.trim(), color: 'inline_green_on_rpm' }),
+        const rpm = text.match(/\$\s?\d[\d.]*\s*RPM/i);
+        return { visual: V({ composition: 'icon_card', icon: 'shrug_with_question_marks', overlay: text.trim(),
+            emphasis: rpm ? rpm[0] : null, color: 'inline_green', token_role: 'emphasis' }),
           audio: { music: 'bed', sfx: ['subtle_whoosh'] } };
       }
+      // the money shot — big green figure + ding
       if (moneyShot) {
         const m = text.match(MONEY_RE);
-        return { visual: V({ composition: 'money_card', overlay: m ? m[0].trim() : text.trim(), color: 'money_shot_green', big: true }),
+        return { visual: V({ composition: 'money_shot_card', overlay: m ? m[0].trim() : text.trim(),
+            emphasis: m ? m[0].trim() : null, color: 'money_shot_green', token_role: 'money_shot', big: true }),
           audio: { music: 'bed', sfx: ['ding_high_pitch'] } };
       }
-      return { visual: V({ composition: 'text_card', overlay: text.trim() }), audio: { music: 'bed', sfx: ['subtle_whoosh'] } };
+      // connectors ("Even if we assume", "from ads.")
+      return { visual: V({ composition: 'text_card', overlay: text.trim(), token_role: 'connector' }), audio: { music: 'bed', sfx: ['subtle_whoosh'] } };
     }
     case 'concept_tag': {
       const word = text.replace(/[^A-Za-z ]/g, '').trim().split('.')[0];
-      return { visual: V({ composition: 'chalkboard_card', bg: 'dark_gray', overlay: word, color: 'chalk_cream' }),
+      return { visual: V({ composition: 'chalkboard_card', bg: 'dark_gray', primitive: 'chalkboard_concept_tag', overlay: word, color: 'chalk_cream' }),
         audio: { music: 'bed', sfx: ['soft_chimes'] } };
     }
-    default:
-      return { visual: V({ composition: 'text_card', overlay: text.trim() }), audio: { music: 'bed', sfx: [] } };
+    case 'appreciation': // viewer-appreciation beat → cat-thumbs-up host icon
+      return { visual: V({ composition: 'icon_card', icon: 'cat_thumbs_up', overlay: text.trim() }), audio: { music: 'duck_deeper', sfx: [] } };
+
+    default: {
+      // generic narration text card, with inline-green emphasis on any salient number
+      const emph = salientPhrase(text);
+      return { visual: V({ composition: 'text_card', overlay: text.trim(), emphasis: emph, color: emph ? 'inline_green' : 'neutral' }),
+        audio: { music: 'bed', sfx: [] } };
+    }
   }
+}
+
+/** Panoramic thumbnail grid (video.views_panoramic) — a silent 3s reveal of
+ *  the channel's top videos, shown right after the rapid-fire view sequence. */
+function gridSegment(slot: ChannelSlots, startT: number, nicheIndex: number): TimelineSegment {
+  const refs = slot.top_videos.map(v => v.thumbnail).filter((x): x is string => !!x);
+  return {
+    t_start: Math.round(startT * 10) / 10, t_end: Math.round((startT + 3) * 10) / 10, speech: '',
+    visual: {
+      composition: 'thumbnail_grid', bg: 'dark_gray', primitive: null,
+      asset: { kind: 'thumbnail_grid', refs }, overlay: null, emphasis: null,
+      annotation: null, annotation_target: null, annotation_style: null, color: 'neutral', icon: null, token_role: null,
+    },
+    audio: { music: 'bed', sfx: ['whoosh_on_grid_reveal'] },
+    beat_id: 'top_views_pano', niche_index: nicheIndex,
+  };
 }
 
 /** Build the recipe-showcase segments for one niche (real clip moments). */
@@ -167,9 +226,9 @@ function showcaseSegments(showcase: RecipeShowcase, startT: number, nicheIndex: 
       t_end: Math.round((t + dur) * 10) / 10,
       speech: b.narration,
       visual: {
-        composition: 'mini_player_card', bg: 'dark_gray',
+        composition: 'mini_player_card', bg: 'dark_gray', primitive: 'content_demo_mini_player',
         asset: { kind: 'video_clip', video_url: b.source_video_url, ref: String(b.source_video_id), clip_start: b.clip_start, clip_end: b.clip_end, note: b.shows },
-        overlay: null, annotation: null, color: 'neutral', icon: null, diegetic: true,
+        overlay: null, emphasis: null, annotation: null, annotation_target: null, annotation_style: null, color: 'neutral', icon: null, token_role: null, diegetic: true,
       },
       audio: { music: 'duck_under_diegetic', sfx: ['whoosh_on_transition'] },
       beat_id: `recipe_showcase_${i + 1}`,
@@ -193,11 +252,15 @@ export function compileTimeline(
     t += hold;
   };
 
+  const blank = (v: Partial<VisualSpec>): VisualSpec => ({
+    composition: 'text_card', bg: 'white', primitive: null, asset: null, overlay: null, emphasis: null,
+    annotation: null, annotation_target: null, annotation_style: null, color: 'neutral', icon: null, token_role: null, ...v,
+  });
+
   // intro (usually null — cold open)
   if (script.intro) {
-    push(script.intro.text, {
-      composition: 'title_sequence', bg: 'white', asset: null, overlay: script.title, annotation: null, color: 'neutral', icon: null,
-    }, { music: 'intro', sfx: ['whoosh'] }, 'intro', null, script.intro.duration_s || 4);
+    push(script.intro.text, blank({ composition: 'title_card', overlay: script.title }),
+      { music: 'intro', sfx: ['whoosh'] }, 'intro', null, script.intro.duration_s || 4);
   }
 
   let recipeClips = 0;
@@ -215,6 +278,10 @@ export function compileTimeline(
     beats.forEach((b, i) => { if (baseBeat(b.beat_id) === 'money_math') lastMoneyIdx = i; });
     const insertAfter = lastMoneyIdx >= 0 ? lastMoneyIdx : beats.length - 1;
 
+    // last rapid-fire view beat → follow it with the panoramic grid reveal
+    let lastViewsSeqIdx = -1;
+    beats.forEach((b, i) => { if (baseBeat(b.beat_id) === 'top_views_seq') lastViewsSeqIdx = i; });
+
     // per-base run index (for top_views_seq / money_math thumbnail binding)
     const runCounter = new Map<string, number>();
 
@@ -225,6 +292,14 @@ export function compileTimeline(
       const { visual, audio } = renderVisual(base, b.text, slot, idx);
       const hold = b.hold_s && b.hold_s > 0 ? b.hold_s : holdFor(b.text);
       push(b.text, visual, audio, b.beat_id, niche.niche_index, hold);
+
+      // After the rapid-fire sequence, a silent panoramic grid of their top
+      // videos (video.views_panoramic) — MG's "consistent views" beat.
+      if (i === lastViewsSeqIdx && slot.top_videos.filter(v => v.thumbnail).length >= 4) {
+        const g = gridSegment(slot, t, niche.niche_index);
+        segments.push(g);
+        t = g.t_end;
+      }
 
       // After the last money_math beat, splice in the transcript-grounded
       // recipe showcase (the content highlights with real clips).
@@ -238,14 +313,15 @@ export function compileTimeline(
     });
   }
 
-  // cta
+  // cta — final card is the next-video pitch (pointing-hand icon + green
+  // "check out this video" + ascending sting); earlier cards plain text.
   const cards = script.cta?.cards ?? [];
   cards.forEach((c, i) => {
     const last = i === cards.length - 1;
-    push(c.text, {
-      composition: 'icon_card', bg: 'white', asset: null, overlay: c.text,
-      annotation: null, color: last ? "inline_green_on_'check out this video'" : 'neutral', icon: last ? 'pointing_hand' : null,
-    }, { music: 'bed', sfx: last ? ['ascending_sting'] : [] }, 'cta', null, c.hold_s && c.hold_s > 0 ? c.hold_s : holdFor(c.text, 0.8));
+    const visual = last
+      ? blank({ composition: 'icon_card', icon: 'pointing_hand', overlay: c.text, emphasis: 'check out this video', color: 'inline_green', token_role: 'emphasis' })
+      : blank({ composition: 'text_card', overlay: c.text, token_role: 'connector' });
+    push(c.text, visual, { music: 'bed', sfx: last ? ['ascending_sting'] : ['subtle_whoosh'] }, 'cta', null, c.hold_s && c.hold_s > 0 ? c.hold_s : holdFor(c.text, 0.8));
   });
 
   const wc = segments.reduce((a, s) => a + words(s.speech), 0);
