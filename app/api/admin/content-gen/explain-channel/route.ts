@@ -90,12 +90,14 @@ export async function GET(req: NextRequest) {
       FROM niche_spy_videos v
       WHERE v.channel_id = $1
         AND v.view_count IS NOT NULL
+        AND v.thumbnail_dead_at IS NULL
       GROUP BY v.channel_id
     ),
     top_v AS (
       SELECT v.id AS top_video_id, v.title AS top_video_title
       FROM niche_spy_videos v
       WHERE v.channel_id = $1
+        AND v.thumbnail_dead_at IS NULL
       ORDER BY v.view_count DESC NULLS LAST
       LIMIT 1
     )

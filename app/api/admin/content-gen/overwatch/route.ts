@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
                                                                 AS channels_in_some_cluster
     FROM niche_spy_videos v
     LEFT JOIN niche_spy_channels sc ON sc.channel_id = v.channel_id
-    WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL
+    WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL AND v.thumbnail_dead_at IS NULL
   `);
 
   const population = {
@@ -98,7 +98,7 @@ export async function GET(req: NextRequest) {
         MIN(v.channel_created_at)        AS channel_created_at_v,
         MIN(v.posted_at)                 AS earliest_video_posted_at
       FROM niche_spy_videos v
-      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL
+      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL AND v.thumbnail_dead_at IS NULL
       GROUP BY v.channel_id
     ),
     enriched AS (
@@ -195,7 +195,7 @@ export async function GET(req: NextRequest) {
              MIN(v.channel_created_at) AS chan_created_v,
              MIN(v.posted_at) AS earliest_video_posted_at
       FROM niche_spy_videos v
-      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL
+      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL AND v.thumbnail_dead_at IS NULL
       GROUP BY v.channel_id
     ),
     enriched AS (
@@ -273,7 +273,7 @@ export async function GET(req: NextRequest) {
              MIN(v.channel_created_at) AS chan_created_v,
              MIN(v.posted_at) AS earliest_video_posted_at
       FROM niche_spy_videos v
-      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL
+      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL AND v.thumbnail_dead_at IS NULL
       GROUP BY v.channel_id
     ),
     viable_channels AS (
@@ -406,7 +406,7 @@ export async function GET(req: NextRequest) {
              MIN(v.channel_created_at) AS chan_created_v,
              MIN(v.posted_at) AS earliest_video_posted_at
       FROM niche_spy_videos v
-      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL
+      WHERE v.channel_id IS NOT NULL AND v.view_count IS NOT NULL AND v.thumbnail_dead_at IS NULL
       GROUP BY v.channel_id
     ),
     viable AS (

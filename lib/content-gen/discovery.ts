@@ -185,9 +185,13 @@ export async function discoverChannels(
       ${scopeJoin}
       WHERE v.channel_id IS NOT NULL
         AND v.view_count IS NOT NULL
+        AND v.thumbnail_dead_at IS NULL
       GROUP BY v.channel_id
     ),
     top_video_per_channel AS (
+      -- thumbnail_dead_at IS NULL excludes videos taken down on YouTube.
+      -- Without this we'd pick a dead-video as a channel's "top" and
+      -- show a broken thumbnail in the GUI / a dead URL in the script.
       SELECT DISTINCT ON (v.channel_id)
         v.channel_id,
         v.id AS top_video_id,
@@ -199,6 +203,7 @@ export async function discoverChannels(
       ${scopeJoin}
       WHERE v.channel_id IS NOT NULL
         AND v.view_count IS NOT NULL
+        AND v.thumbnail_dead_at IS NULL
       ORDER BY v.channel_id, v.view_count DESC NULLS LAST
     ),
     enriched AS (
