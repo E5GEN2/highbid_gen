@@ -71,6 +71,10 @@ export interface CaptureResult {
   capture_mode: CaptureMode;      // static | scroll_record
   duration_s: number | null;      // video duration if asset_kind='video'
   bboxes: BBoxMap;                // element-name → {x,y,w,h} for annotations
+  /** Per-rule diagnostic dump (when present): regex_matches / rejected_*  /
+   *  accepted / sample_texts / sample_covered. Temporary scaffolding to debug
+   *  selector misses. */
+  bbox_debug?: Record<string, unknown>;
 }
 
 function todayBucket(): string {
@@ -634,6 +638,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       local_path: finalPath, bytes: buf.length,
       date_bucket: dateBucket, geo, proxy_country: proxy.country, cached: false,
       asset_kind: assetKind, capture_mode: captureMode, duration_s: durationS, bboxes,
+      bbox_debug: bboxDebug as Record<string, unknown>,
     };
   } finally {
     await browser.close().catch(() => {});
