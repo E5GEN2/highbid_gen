@@ -483,7 +483,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       };
       const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; strict_hint?: boolean; tag?: string;
         min_w?: number; max_w?: number; min_h?: number; max_h?: number; in_viewport?: boolean }>;
-      const debugOut: Record<string, { regex_matches: number; rejected_size: number; rejected_offview: number; rejected_covered: number; accepted: number; sample_texts: string[]; sample_covered: Array<{ text: string; top_tag: string }> }> = {};
+      const debugOut: Record<string, { regex_matches: number; rejected_size: number; rejected_offview: number; rejected_covered: number; accepted: number; sample_texts: string[]; sample_covered: Array<{ text: string; top_tag: string }>; sample_sizes: Array<{ text: string; w: number; h: number; reason: string }> }> = {};
       for (const rule of ruleList) {
         const re = new RegExp(rule.regex, 'i');
         const notRe = rule.not_regex ? new RegExp(rule.not_regex, 'i') : null;
@@ -496,9 +496,10 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         let regex_matches = 0, rejected_size = 0, rejected_offview = 0, rejected_covered = 0, accepted = 0;
         const sample_texts: string[] = [];
         const sample_covered: Array<{ text: string; top_tag: string }> = [];
+        const sample_sizes: Array<{ text: string; w: number; h: number; reason: string }> = [];
         const scopeList = scopes(rule.hint, rule.strict_hint === true);
         if (!scopeList) {
-          debugOut[rule.name] = { regex_matches: 0, rejected_size: 0, rejected_offview: 0, rejected_covered: 0, accepted: 0, sample_texts: [], sample_covered: [] };
+          debugOut[rule.name] = { regex_matches: 0, rejected_size: 0, rejected_offview: 0, rejected_covered: 0, accepted: 0, sample_texts: [], sample_covered: [], sample_sizes: [] };
           continue;
         }
         // When hint is set, filter ALL_ELEMENTS to those inside a scope.
@@ -515,7 +516,11 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           regex_matches++;
           if (sample_texts.length < 5) sample_texts.push(probe.slice(0, 60));
           const r = (el as HTMLElement).getBoundingClientRect();
-          if (r.width < minW || r.width > maxW || r.height < minH || r.height > maxH) { rejected_size++; continue; }
+          if (r.width < minW || r.width > maxW || r.height < minH || r.height > maxH) {
+            rejected_size++;
+            if (sample_sizes.length < 4) sample_sizes.push({ text: probe.slice(0, 50), w: Math.round(r.width), h: Math.round(r.height), reason: `size:${r.width < minW ? 'w<' : r.width > maxW ? 'w>' : r.height < minH ? 'h<' : 'h>'}` });
+            continue;
+          }
           if (inViewport && (r.left < -4 || r.top < -4 || r.right > VP_W + 4 || r.bottom > VP_H + 4)) { rejected_offview++; continue; }
           if (!visible(el, r)) {
             rejected_covered++;
@@ -530,7 +535,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           const area = r.width * r.height;
           if (area < bestArea) { bestArea = area; bestEl = el; }
         }
-        debugOut[rule.name] = { regex_matches, rejected_size, rejected_offview, rejected_covered, accepted, sample_texts, sample_covered };
+        debugOut[rule.name] = { regex_matches, rejected_size, rejected_offview, rejected_covered, accepted, sample_texts, sample_covered, sample_sizes };
         if (bestEl) {
           const r = (bestEl as HTMLElement).getBoundingClientRect();
           out[rule.name] = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
