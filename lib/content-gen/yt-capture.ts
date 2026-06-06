@@ -911,7 +911,7 @@ export async function readYtScreenFile(id: number): Promise<{ buf: Buffer; conte
 
 /** Capture a batch of channels' channel_page screens with bounded concurrency.
  *  Each capture costs ~5-10s on the proxy path. */
-export async function captureBatch(channelIds: string[], opts: { kind?: ScreenKind; mode?: CaptureMode; geo?: string; force?: boolean; concurrency?: number } = {}): Promise<{ ok: number; failed: number; results: Array<CaptureResult | { channel_id: string; error: string }> }> {
+export async function captureBatch(channelIds: string[], opts: { kind?: ScreenKind; mode?: CaptureMode; geo?: string; force?: boolean; concurrency?: number; watchVideoId?: string | null; annotate?: AnnotateSpec } = {}): Promise<{ ok: number; failed: number; results: Array<CaptureResult | { channel_id: string; error: string }> }> {
   const conc = Math.max(1, Math.min(4, opts.concurrency ?? 2));
   const results: Array<CaptureResult | { channel_id: string; error: string }> = new Array(channelIds.length);
   let next = 0;
@@ -919,7 +919,7 @@ export async function captureBatch(channelIds: string[], opts: { kind?: ScreenKi
     while (true) {
       const i = next++;
       if (i >= channelIds.length) return;
-      try { results[i] = await captureYtScreen(channelIds[i], { kind: opts.kind, mode: opts.mode, geo: opts.geo, force: opts.force }); }
+      try { results[i] = await captureYtScreen(channelIds[i], { kind: opts.kind, mode: opts.mode, geo: opts.geo, force: opts.force, watchVideoId: opts.watchVideoId, annotate: opts.annotate }); }
       catch (e) { results[i] = { channel_id: channelIds[i], error: (e as Error).message }; }
     }
   }

@@ -97,6 +97,10 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
   const [mode, setMode] = useState<CaptureMode | ''>('');  // '' = let server pick default per-kind
   const [watchVideoId, setWatchVideoId] = useState('');
   const [force, setForce] = useState(false);
+  // Annotation: when set, the lib injects a yellow highlight on the matched
+  // element BEFORE screenshotting. element='' = no annotation pass.
+  const [annotateEl, setAnnotateEl] = useState<'' | 'subscriber_count' | 'video_count' | 'total_views' | 'joined_date' | 'view_count'>('');
+  const [annotateStyle, setAnnotateStyle] = useState<'yellow_ring' | 'yellow_box' | 'yellow_highlight' | 'yellow_circle'>('yellow_circle');
   // Display toggles
   const [showBboxes, setShowBboxes] = useState(true);
 
@@ -133,12 +137,21 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
     try {
       const r = await fetch('/api/admin/content-gen/yt-capture', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelIds: [cid], kind, mode: mode || undefined, watchVideoId: watchVideoId || undefined, force }),
+        body: JSON.stringify({
+          channelIds: [cid], kind, mode: mode || undefined,
+          watchVideoId: watchVideoId || undefined, force,
+          annotate_element: annotateEl || undefined,
+          annotate_style: annotateEl ? annotateStyle : undefined,
+        }),
       }).then(r => r.json());
       if (r.ok) {
         const result = (r.results ?? [])[0];
         if (result && 'error' in result) setMsg(`✗ ${result.error}`);
-        else setMsg(`✓ captured ${result?.handle ?? cid} (${kind}) in ${(r.elapsed_ms/1000).toFixed(1)}s`);
+        else {
+          const annDbg = result?.annotation_debug;
+          const annNote = annotateEl ? ` · annotation ${annDbg?.applied ? '✓ applied' : '✗ not applied'}` : '';
+          setMsg(`✓ captured ${result?.handle ?? cid} (${kind}) in ${(r.elapsed_ms/1000).toFixed(1)}s${annNote}`);
+        }
         setChannelInput('');
         refresh();
       } else setMsg(r.error || 'capture failed');
@@ -253,6 +266,26 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
               <input value={watchVideoId} onChange={e => setWatchVideoId(e.target.value)} placeholder="zzH0tiIoBBA"
                 className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white placeholder-[#555] outline-none w-32 font-mono" />
             </>
+          )}
+          <span className="text-[#333]">|</span>
+          <label className="text-xs text-[#888]" title="DOM-injected highlight before screenshot. Bakes a yellow ring into the PNG.">
+            Annotate
+          </label>
+          <select value={annotateEl} onChange={e => setAnnotateEl(e.target.value as typeof annotateEl)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
+            <option value="">none</option>
+            <option value="subscriber_count">subscriber_count</option>
+            <option value="video_count">video_count</option>
+            <option value="total_views">total_views</option>
+            <option value="joined_date">joined_date</option>
+            <option value="view_count">view_count</option>
+          </select>
+          {annotateEl && (
+            <select value={annotateStyle} onChange={e => setAnnotateStyle(e.target.value as typeof annotateStyle)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
+              <option value="yellow_circle">yellow_circle</option>
+              <option value="yellow_ring">yellow_ring</option>
+              <option value="yellow_box">yellow_box</option>
+              <option value="yellow_highlight">yellow_highlight</option>
+            </select>
           )}
           <label className="text-xs text-[#888] flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} className="accent-blue-500" />

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { captureBatch, captureYtScreen, type ScreenKind, type CaptureMode } from '@/lib/content-gen/yt-capture';
+import { captureBatch, captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, type AnnotateElement, type HighlightStyle } from '@/lib/content-gen/yt-capture';
 
 /**
  * YT screen capture orchestrator.
@@ -36,14 +36,32 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({})) as {
     videoIds?: number[]; channelIds?: string[];
     kind?: ScreenKind; mode?: CaptureMode; geo?: string; force?: boolean; concurrency?: number;
+    watchVideoId?: string | null;
+    annotate_element?: AnnotateElement; annotate_style?: HighlightStyle;
   };
   const videoIds = (body.videoIds ?? []).map(Number).filter(n => Number.isFinite(n));
   const channelIds = (body.channelIds ?? []).map(String).filter(Boolean);
   const ch = await resolveChannels(videoIds, channelIds);
   if (ch.length === 0) return NextResponse.json({ error: 'videoIds or channelIds required' }, { status: 400 });
 
+  // Annotation is only meaningful for single captures — we still pass it
+  // through for batches, but consumers usually capture one + annotate at a
+  // time. The lib uses `force` automatically when annotate is set (bypass
+  // cache), so the caller doesn't need to set it explicitly to re-run.
+  const annotate: AnnotateSpec | undefined = body.annotate_element && body.annotate_style
+    ? { element: body.annotate_element, style: body.annotate_style }
+    : undefined;
+
   const t0 = Date.now();
-  const result = await captureBatch(ch, { kind: body.kind ?? 'channel_page', mode: body.mode, geo: body.geo, force: body.force, concurrency: body.concurrency });
+  const result = await captureBatch(ch, {
+    kind: body.kind ?? 'channel_page',
+    mode: body.mode,
+    geo: body.geo,
+    force: body.force,
+    concurrency: body.concurrency,
+    watchVideoId: body.watchVideoId,
+    annotate,
+  });
   return NextResponse.json({
     ok: true,
     elapsed_ms: Date.now() - t0,
