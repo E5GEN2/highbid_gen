@@ -46,6 +46,47 @@ export const ANNOTATABLE = {
   channel_avatar: 'channel_avatar',
 } as const;
 
+/** Highlight styles the renderer requests (mirrors slot-rendering-class-b). */
+export type HighlightStyle = 'yellow_ring' | 'yellow_box' | 'yellow_highlight' | 'yellow_circle';
+export type AnnotateElement =
+  'subscriber_count' | 'video_count' | 'total_views' | 'joined_date' | 'view_count';
+export interface AnnotateSpec { element: AnnotateElement; style: HighlightStyle; }
+
+/** Regex finders for each annotatable element, used by the locator engine
+ *  which pierces both open AND closed shadow DOM (closed yt-attributed-string
+ *  roots are the reason in-page DOM walks miss the modal text). The regex
+ *  is matched against the element's visible text. */
+const ANNOTATE_REGEX: Record<AnnotateElement, string> = {
+  subscriber_count: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
+  video_count:      '^\\s*[\\d.,]+\\s*[KMB]?\\s*videos?\\s*$',
+  total_views:      '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
+  joined_date:      '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$',
+  view_count:       '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
+};
+
+/** Sensible size bounds so the locator doesn't pick a giant wrapper. */
+const ANNOTATE_SIZE: Record<AnnotateElement, { minW: number; maxW: number; minH: number; maxH: number }> = {
+  subscriber_count: { minW: 50, maxW: 280, minH: 12, maxH: 34 },
+  video_count:      { minW: 30, maxW: 240, minH: 12, maxH: 34 },
+  total_views:      { minW: 30, maxW: 280, minH: 12, maxH: 34 },
+  joined_date:      { minW: 60, maxW: 320, minH: 12, maxH: 34 },
+  view_count:       { minW: 30, maxW: 280, minH: 12, maxH: 34 },
+};
+
+/** Inline CSS for each highlight style. Applied via el.style on the
+ *  located element BEFORE screenshot — the highlight is baked into the
+ *  captured PNG, no compositing needed on the renderer side. */
+const HIGHLIGHT_CSS: Record<HighlightStyle, string> = {
+  // Yellow ring around the element (the spec's primary annotation primitive).
+  yellow_ring:      `outline: 4px solid #FACC15; outline-offset: 4px; border-radius: 8px;`,
+  // Tighter box look — closer to the element edges, no rounding.
+  yellow_box:       `outline: 4px solid #FACC15; outline-offset: 2px;`,
+  // Filled highlight behind the text (the "yellow_fill_behind" mode).
+  yellow_highlight: `background-color: rgba(250, 204, 21, 0.45); padding: 2px 4px; border-radius: 4px;`,
+  // Rounded ring — used for emphasizing numbers in screenshots.
+  yellow_circle:    `outline: 5px solid #FACC15; outline-offset: 6px; border-radius: 50%;`,
+};
+
 const GEO_LANG: Record<string, { country: string; lang: string }> = {
   us: { country: 'US', lang: 'en-US,en;q=0.9' },
   uk: { country: 'GB', lang: 'en-GB,en;q=0.9' },
@@ -222,7 +263,7 @@ function urlFor(kind: ScreenKind, handle: string | null, channelId: string, watc
  * Capture one YT screen, cached. If the row already exists at status=done
  * for today's bucket, returns it without touching Playwright/proxies.
  */
-export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKind; mode?: CaptureMode; geo?: string; force?: boolean; watchVideoId?: string | null } = {}): Promise<CaptureResult> {
+export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKind; mode?: CaptureMode; geo?: string; force?: boolean; watchVideoId?: string | null; annotate?: AnnotateSpec } = {}): Promise<CaptureResult> {
   const kind = opts.kind ?? 'channel_page';
   const mode: CaptureMode = opts.mode ?? (kind === 'videos_tab' ? 'scroll_record' : 'static');
   const pool = await getPool();
@@ -237,7 +278,10 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
 
   // Cache check — must also match capture_mode + asset_kind so a stored
   // image isn't returned for a scroll_record request and vice versa.
-  if (!opts.force) {
+  // Annotated captures (highlight baked into the PNG) bypass the cache so
+  // we always render the fresh annotation. The base un-annotated PNG stays
+  // cached separately.
+  if (!opts.force && !opts.annotate) {
     const hit = (await pool.query<{ id: number; local_path: string | null; bytes: number | null; geo: string | null; proxy_country: string | null; asset_kind: AssetKind | null; capture_mode: CaptureMode | null; duration_s: number | null; bboxes_jsonb: BBoxMap | null }>(
       `SELECT id, local_path, bytes, geo, proxy_country, asset_kind, capture_mode, duration_s, bboxes_jsonb
          FROM content_gen_yt_screens
@@ -279,7 +323,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
   let lastErr: Error | null = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const result = await runCapture(rowId, channelId, handle, kind, url, opts.geo ?? null, dateBucket, mode);
+      const result = await runCapture(rowId, channelId, handle, kind, url, opts.geo ?? null, dateBucket, mode, opts.annotate);
       return result;
     } catch (err) {
       lastErr = err as Error;
@@ -299,7 +343,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
   throw lastErr ?? new Error('capture failed');
 }
 
-async function runCapture(rowId: number, channelId: string, handle: string | null, kind: ScreenKind, url: string, geo: string | null, dateBucket: string, captureMode: CaptureMode): Promise<CaptureResult> {
+async function runCapture(rowId: number, channelId: string, handle: string | null, kind: ScreenKind, url: string, geo: string | null, dateBucket: string, captureMode: CaptureMode, annotate?: AnnotateSpec): Promise<CaptureResult> {
   // Lazy-load Playwright (Next.js avoids bundling it client-side).
   const { chromium } = await import('playwright');
 
@@ -309,7 +353,10 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   const geoCfg = GEO_LANG[(geo ?? '').toLowerCase()] ?? GEO_LANG[proxy.country.toLowerCase()] ?? GEO_LANG.us;
 
   await fs.mkdir(SCREENS_DIR, { recursive: true });
-  const localPath = path.join(SCREENS_DIR, `${channelId}_${kind}_${dateBucket}.png`);
+  // Annotation variant: filename embeds the highlight spec so we don't
+  // clobber the un-annotated base capture in the cache directory.
+  const annSlug = annotate ? `_ann-${annotate.element}-${annotate.style}` : '';
+  const localPath = path.join(SCREENS_DIR, `${channelId}_${kind}_${dateBucket}${annSlug}.png`);
 
   // Our prod pool is SOCKS5+auth (the static list in lib/static-proxies.ts).
   // Chromium has two long-standing limitations:
@@ -680,6 +727,52 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       buf = await fs.readFile(videoLocalPath);
       durationS = Math.round(((SCROLL_DURATION_MS + HOLD_AT_BOTTOM_MS + 300) / 1000) * 10) / 10;
     } else {
+      // OPTIONAL: inject the highlight DOM-side BEFORE screenshot. The
+      // Playwright locator engine pierces both open AND closed shadow DOM
+      // (which the previous in-page DOM walker couldn't reach for closed-
+      // root yt-attributed-string elements). We find the candidate by
+      // regex match against innerText, pick the tightest-area visible
+      // candidate that fits the expected size bounds, apply inline CSS
+      // for the highlight style, and small settle. The highlight is then
+      // baked into the captured PNG — no compositing needed downstream.
+      if (annotate) {
+        try {
+          const reBody = ANNOTATE_REGEX[annotate.element]
+            .replace(/^\^\\s\*/, '').replace(/\\s\*\$$/, '');
+          const bounds = ANNOTATE_SIZE[annotate.element];
+          const loc = page.locator(`text=/${reBody}/i`);
+          const count = await loc.count();
+          let bestIdx = -1;
+          let bestArea = Infinity;
+          for (let i = 0; i < Math.min(count, 30); i++) {
+            const item = loc.nth(i);
+            let box: { x: number; y: number; width: number; height: number } | null = null;
+            try { box = await item.boundingBox({ timeout: 800 }); } catch { box = null; }
+            if (!box) continue;
+            const vis = await item.isVisible({ timeout: 400 }).catch(() => false);
+            if (!vis) continue;
+            if (box.width < bounds.minW || box.width > bounds.maxW) continue;
+            if (box.height < bounds.minH || box.height > bounds.maxH) continue;
+            if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) continue;
+            const area = box.width * box.height;
+            if (area < bestArea) { bestArea = area; bestIdx = i; }
+          }
+          if (bestIdx >= 0) {
+            const target = loc.nth(bestIdx);
+            const css = HIGHLIGHT_CSS[annotate.style];
+            await target.evaluate((el, css) => {
+              const e = el as HTMLElement;
+              // scrollIntoView keeps the highlighted element visible if
+              // YT layout shifted; block:'nearest' so we don't reset to top.
+              try { e.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* skip */ }
+              e.setAttribute('style', `${e.getAttribute('style') || ''}; ${css}`);
+            }, css);
+            await page.waitForTimeout(250);  // give the new style a paint
+          }
+        } catch {
+          // Annotate failure is non-fatal — capture proceeds without highlight.
+        }
+      }
       buf = await page.screenshot({ fullPage: false, type: 'png', timeout: SCREENSHOT_TIMEOUT_MS });
       await fs.writeFile(localPath, buf);
       videoLocalPath = localPath;

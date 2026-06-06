@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
 
   // Debug single-capture path: GET /yt-capture?channelId=...&kind=...&mode=...&watchVideoId=...&force=1
+  //   Optional annotation: &annotate_element=subscriber_count&annotate_style=yellow_ring
   const singleChannel = sp.get('channelId');
   if (singleChannel) {
     const kind = (sp.get('kind') as ScreenKind) ?? 'channel_page';
@@ -66,9 +67,12 @@ export async function GET(req: NextRequest) {
     const mode = modeParam === 'scroll_record' || modeParam === 'static' ? modeParam as CaptureMode : undefined;
     const watchVideoId = sp.get('watchVideoId') || undefined;
     const force = sp.get('force') === '1';
+    const annEl = sp.get('annotate_element');
+    const annStyle = sp.get('annotate_style');
+    const annotate = (annEl && annStyle) ? { element: annEl, style: annStyle } as { element: 'subscriber_count' | 'video_count' | 'total_views' | 'joined_date' | 'view_count'; style: 'yellow_ring' | 'yellow_box' | 'yellow_highlight' | 'yellow_circle' } : undefined;
     const t0 = Date.now();
     try {
-      const r = await captureYtScreen(singleChannel, { kind, mode, watchVideoId, force });
+      const r = await captureYtScreen(singleChannel, { kind, mode, watchVideoId, force, annotate });
       return NextResponse.json({ ok: true, elapsed_ms: Date.now() - t0, result: { ...r, file_url: `/api/admin/content-gen/yt-capture/file?id=${r.id}` } });
     } catch (e) { return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 }); }
   }
