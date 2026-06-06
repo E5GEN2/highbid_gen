@@ -820,38 +820,75 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             out.push({ card, thumb, views, title });
             if (out.length >= 24) break;  // sane cap; 4-col grid x 6 rows is plenty
           }
-          // FALLBACK extractor: if the structured selectors found zero cards,
-          // walk for ANY visible block containing an img + a "X views" text
-          // span. Catches channel_page Popular shelves whose renderer name
-          // changed (shelf-renderer wrapping odd inner items).
+          // FALLBACK extractor: structured selectors found zero. Instead of
+          // walking ALL elements (which picks giant wrappers), find each
+          // visible thumbnail <img> first, then walk UP to find the SMALLEST
+          // ancestor that contains both the img AND a "X views" text span.
+          // That ancestor is the card row — tight bounds, no document-sized
+          // false positives.
           let fallbackUsed = false;
           if (out.length === 0) {
             fallbackUsed = true;
             const viewRe = /^\s*[\d.,]+\s*[KMB]?\s*views?\s*$/i;
-            const all = Array.from(document.querySelectorAll<HTMLElement>('a, div, section'));
-            const seenRect = new Set<string>();
-            for (const el of all) {
-              const r = el.getBoundingClientRect();
-              if (r.width < 180 || r.height < 140) continue;
-              if (r.left < -8 || r.left > vpW + 8) continue;
-              const img = el.querySelector('img[src*="ytimg"], img[src*="googleusercontent"]') as HTMLImageElement | null;
-              if (!img || img.naturalWidth < 80) continue;
-              // Must contain a "X views" text
-              let hasViews = false;
-              const spans = Array.from(el.querySelectorAll('span, yt-formatted-string'));
-              for (const s of spans) {
-                const own = Array.from(s.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent ?? '').join('').trim();
-                if (viewRe.test(own)) { hasViews = true; break; }
-              }
-              if (!hasViews) continue;
-              const key = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
-              if (seenRect.has(key)) continue;
-              seenRect.add(key);
+            const imgs = Array.from(document.querySelectorAll<HTMLImageElement>('img[src*="ytimg"], img[src*="googleusercontent"]'))
+              .filter(i => i.naturalWidth >= 80);
+            const seenCard = new Set<Element>();
+            for (const img of imgs) {
               const ir = img.getBoundingClientRect();
-              const thumbBox = { x: Math.round(ir.left), y: Math.round(ir.top), w: Math.round(ir.width), h: Math.round(ir.height) };
+              if (ir.width < 100 || ir.height < 60) continue;
+              if (ir.left < -8 || ir.left > vpW + 8) continue;
+              // Walk up from the img until we find an ancestor that:
+              //   - contains a "X views" text descendant
+              //   - has bbox between 200x140 and 700x500 (card-shaped)
+              // Stop at first match. This is the tightest "card" wrapping
+              // this thumbnail.
+              let cur: HTMLElement | null = img.parentElement;
+              let hops = 0;
+              let cardEl: HTMLElement | null = null;
+              while (cur && hops++ < 12) {
+                const cr = cur.getBoundingClientRect();
+                if (cr.width >= 200 && cr.width <= 700 && cr.height >= 140 && cr.height <= 520) {
+                  // Check this ancestor for a views text descendant.
+                  let hasViews = false;
+                  const spans = Array.from(cur.querySelectorAll('span, yt-formatted-string'));
+                  for (const s of spans) {
+                    const own = Array.from(s.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent ?? '').join('').trim();
+                    if (viewRe.test(own)) { hasViews = true; break; }
+                  }
+                  if (hasViews) { cardEl = cur; break; }
+                }
+                cur = cur.parentElement;
+              }
+              if (!cardEl) continue;
+              if (seenCard.has(cardEl)) continue;
+              seenCard.add(cardEl);
+              const cr = cardEl.getBoundingClientRect();
+              // Also try to find a title element + views element under cardEl
+              // to fill the full card schema (cards extracted by the structured
+              // path get all four fields).
+              let viewsBox: { x: number; y: number; w: number; h: number } | undefined;
+              let titleBox: { x: number; y: number; w: number; h: number } | undefined;
+              const subs = Array.from(cardEl.querySelectorAll('span, yt-formatted-string'));
+              for (const s of subs) {
+                const own = Array.from(s.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent ?? '').join('').trim();
+                if (viewRe.test(own)) {
+                  const sr = (s as HTMLElement).getBoundingClientRect();
+                  if (sr.width >= 20 && sr.width <= 240) {
+                    viewsBox = { x: Math.round(sr.left), y: Math.round(sr.top), w: Math.round(sr.width), h: Math.round(sr.height) };
+                    break;
+                  }
+                }
+              }
+              const t = cardEl.querySelector('#video-title, a#video-title, h3 a, h3') as HTMLElement | null;
+              if (t) {
+                const tr = t.getBoundingClientRect();
+                if (tr.width > 60 && tr.height > 12) titleBox = { x: Math.round(tr.left), y: Math.round(tr.top), w: Math.round(tr.width), h: Math.round(tr.height) };
+              }
               out.push({
-                card: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
-                thumb: thumbBox,
+                card: { x: Math.round(cr.left), y: Math.round(cr.top), w: Math.round(cr.width), h: Math.round(cr.height) },
+                thumb: { x: Math.round(ir.left), y: Math.round(ir.top), w: Math.round(ir.width), h: Math.round(ir.height) },
+                views: viewsBox,
+                title: titleBox,
               });
               if (out.length >= 24) break;
             }
