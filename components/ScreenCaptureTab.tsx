@@ -98,9 +98,14 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
   const [watchVideoId, setWatchVideoId] = useState('');
   const [force, setForce] = useState(false);
   // Annotation: when set, the lib injects a yellow highlight on the matched
-  // element BEFORE screenshotting. element='' = no annotation pass.
+  // element BEFORE screenshotting (CSS path) OR draws a richer shape via
+  // post-process SVG compositor (composite path). element='' = no annotation.
   const [annotateEl, setAnnotateEl] = useState<'' | 'subscriber_count' | 'video_count' | 'total_views' | 'joined_date' | 'view_count'>('');
+  const [annotateKind, setAnnotateKind] = useState<'css' | 'composite'>('css');
   const [annotateStyle, setAnnotateStyle] = useState<'yellow_ring' | 'yellow_box' | 'yellow_highlight' | 'yellow_circle'>('yellow_circle');
+  const [annotateShape, setAnnotateShape] = useState<'sharpie_circle' | 'arrow' | 'circle_with_label' | 'glow_ring' | 'underline'>('sharpie_circle');
+  const [annotateLabel, setAnnotateLabel] = useState('');
+  const [annotateArrowFrom, setAnnotateArrowFrom] = useState<'top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right'>('top_right');
   // Display toggles
   const [showBboxes, setShowBboxes] = useState(true);
 
@@ -141,7 +146,11 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
           channelIds: [cid], kind, mode: mode || undefined,
           watchVideoId: watchVideoId || undefined, force,
           annotate_element: annotateEl || undefined,
-          annotate_style: annotateEl ? annotateStyle : undefined,
+          annotate_kind: annotateEl ? annotateKind : undefined,
+          annotate_style: annotateEl && annotateKind === 'css' ? annotateStyle : undefined,
+          annotate_shape: annotateEl && annotateKind === 'composite' ? annotateShape : undefined,
+          annotate_label: annotateEl && annotateKind === 'composite' && annotateShape === 'circle_with_label' ? annotateLabel : undefined,
+          annotate_arrow_from: annotateEl && annotateKind === 'composite' && annotateShape === 'arrow' ? annotateArrowFrom : undefined,
         }),
       }).then(r => r.json());
       if (r.ok) {
@@ -268,7 +277,7 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
             </>
           )}
           <span className="text-[#333]">|</span>
-          <label className="text-xs text-[#888]" title="DOM-injected highlight before screenshot. Bakes a yellow ring into the PNG.">
+          <label className="text-xs text-[#888]" title="DOM-injected highlight (CSS) or post-process SVG shape (composite).">
             Annotate
           </label>
           <select value={annotateEl} onChange={e => setAnnotateEl(e.target.value as typeof annotateEl)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
@@ -280,12 +289,44 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
             <option value="view_count">view_count</option>
           </select>
           {annotateEl && (
-            <select value={annotateStyle} onChange={e => setAnnotateStyle(e.target.value as typeof annotateStyle)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
-              <option value="yellow_circle">yellow_circle</option>
-              <option value="yellow_ring">yellow_ring</option>
-              <option value="yellow_box">yellow_box</option>
-              <option value="yellow_highlight">yellow_highlight</option>
-            </select>
+            <>
+              <select value={annotateKind} onChange={e => setAnnotateKind(e.target.value as typeof annotateKind)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none" title="css = inline highlight on the element. composite = post-process SVG shape (sharpie circle, arrow, label).">
+                <option value="css">css</option>
+                <option value="composite">composite</option>
+              </select>
+              {annotateKind === 'css' ? (
+                <select value={annotateStyle} onChange={e => setAnnotateStyle(e.target.value as typeof annotateStyle)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
+                  <option value="yellow_circle">yellow_circle</option>
+                  <option value="yellow_ring">yellow_ring</option>
+                  <option value="yellow_box">yellow_box</option>
+                  <option value="yellow_highlight">yellow_highlight</option>
+                </select>
+              ) : (
+                <select value={annotateShape} onChange={e => setAnnotateShape(e.target.value as typeof annotateShape)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
+                  <option value="sharpie_circle">sharpie_circle</option>
+                  <option value="arrow">arrow</option>
+                  <option value="circle_with_label">circle_with_label</option>
+                  <option value="glow_ring">glow_ring</option>
+                  <option value="underline">underline</option>
+                </select>
+              )}
+              {annotateKind === 'composite' && annotateShape === 'arrow' && (
+                <select value={annotateArrowFrom} onChange={e => setAnnotateArrowFrom(e.target.value as typeof annotateArrowFrom)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
+                  <option value="top">from top</option>
+                  <option value="bottom">from bottom</option>
+                  <option value="left">from left</option>
+                  <option value="right">from right</option>
+                  <option value="top_right">top-right</option>
+                  <option value="top_left">top-left</option>
+                  <option value="bottom_right">bottom-right</option>
+                  <option value="bottom_left">bottom-left</option>
+                </select>
+              )}
+              {annotateKind === 'composite' && annotateShape === 'circle_with_label' && (
+                <input value={annotateLabel} onChange={e => setAnnotateLabel(e.target.value)} placeholder="label text"
+                  className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white placeholder-[#555] outline-none w-28" />
+              )}
+            </>
           )}
           <label className="text-xs text-[#888] flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} className="accent-blue-500" />

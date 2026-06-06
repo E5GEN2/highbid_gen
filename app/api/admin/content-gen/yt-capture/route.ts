@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { captureBatch, captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, type AnnotateElement, type HighlightStyle } from '@/lib/content-gen/yt-capture';
+import { captureBatch, captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, type AnnotateElement, type HighlightStyle, type AnnotateKind, type CompositeShapeStyle } from '@/lib/content-gen/yt-capture';
 
 /**
  * YT screen capture orchestrator.
@@ -37,7 +37,13 @@ export async function POST(req: NextRequest) {
     videoIds?: number[]; channelIds?: string[];
     kind?: ScreenKind; mode?: CaptureMode; geo?: string; force?: boolean; concurrency?: number;
     watchVideoId?: string | null;
-    annotate_element?: AnnotateElement; annotate_style?: HighlightStyle;
+    annotate_element?: AnnotateElement;
+    annotate_kind?: AnnotateKind;
+    annotate_style?: HighlightStyle;       // when kind='css'
+    annotate_shape?: CompositeShapeStyle;  // when kind='composite'
+    annotate_label?: string;
+    annotate_arrow_from?: 'top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+    annotate_color?: string;
   };
   const videoIds = (body.videoIds ?? []).map(Number).filter(n => Number.isFinite(n));
   const channelIds = (body.channelIds ?? []).map(String).filter(Boolean);
@@ -46,10 +52,19 @@ export async function POST(req: NextRequest) {
 
   // Annotation is only meaningful for single captures — we still pass it
   // through for batches, but consumers usually capture one + annotate at a
-  // time. The lib uses `force` automatically when annotate is set (bypass
-  // cache), so the caller doesn't need to set it explicitly to re-run.
-  const annotate: AnnotateSpec | undefined = body.annotate_element && body.annotate_style
-    ? { element: body.annotate_element, style: body.annotate_style }
+  // time. Composite needs an element only (shape defaults to sharpie_circle);
+  // CSS needs element + style (legacy contract).
+  const annKind: AnnotateKind = body.annotate_kind ?? (body.annotate_style ? 'css' : 'css');
+  const annotate: AnnotateSpec | undefined = body.annotate_element
+    ? {
+        element: body.annotate_element,
+        kind: annKind,
+        style: body.annotate_style,
+        shape: body.annotate_shape,
+        label: body.annotate_label,
+        arrow_from: body.annotate_arrow_from,
+        color: body.annotate_color,
+      }
     : undefined;
 
   const t0 = Date.now();
@@ -77,7 +92,8 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
 
   // Debug single-capture path: GET /yt-capture?channelId=...&kind=...&mode=...&watchVideoId=...&force=1
-  //   Optional annotation: &annotate_element=subscriber_count&annotate_style=yellow_ring
+  //   Optional CSS annotation: &annotate_element=subscriber_count&annotate_style=yellow_ring
+  //   Optional composite annotation: &annotate_element=total_views&annotate_kind=composite&annotate_shape=sharpie_circle&annotate_label=...&annotate_arrow_from=top_right
   const singleChannel = sp.get('channelId');
   if (singleChannel) {
     const kind = (sp.get('kind') as ScreenKind) ?? 'channel_page';
@@ -85,9 +101,22 @@ export async function GET(req: NextRequest) {
     const mode = modeParam === 'scroll_record' || modeParam === 'static' ? modeParam as CaptureMode : undefined;
     const watchVideoId = sp.get('watchVideoId') || undefined;
     const force = sp.get('force') === '1';
-    const annEl = sp.get('annotate_element');
-    const annStyle = sp.get('annotate_style');
-    const annotate = (annEl && annStyle) ? { element: annEl, style: annStyle } as { element: 'subscriber_count' | 'video_count' | 'total_views' | 'joined_date' | 'view_count'; style: 'yellow_ring' | 'yellow_box' | 'yellow_highlight' | 'yellow_circle' } : undefined;
+    const annEl = sp.get('annotate_element') as AnnotateElement | null;
+    const annStyle = sp.get('annotate_style') as HighlightStyle | null;
+    const annKind = (sp.get('annotate_kind') as 'css' | 'composite' | null) || (annStyle ? 'css' : null);
+    const annShape = sp.get('annotate_shape') as ('sharpie_circle' | 'arrow' | 'circle_with_label' | 'glow_ring' | 'underline') | null;
+    const annLabel = sp.get('annotate_label') || undefined;
+    const annArrowFrom = sp.get('annotate_arrow_from') as ('top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right') | null;
+    const annColor = sp.get('annotate_color') || undefined;
+    const annotate = annEl ? ({
+      element: annEl,
+      kind: annKind || 'css',
+      style: annStyle || undefined,
+      shape: annShape || undefined,
+      label: annLabel,
+      arrow_from: annArrowFrom || undefined,
+      color: annColor,
+    } as AnnotateSpec) : undefined;
     const t0 = Date.now();
     try {
       const r = await captureYtScreen(singleChannel, { kind, mode, watchVideoId, force, annotate });

@@ -19,6 +19,7 @@ import { spawn } from 'child_process';
 import { getPool } from '../db';
 import { CLIPS_DIR } from '../clips-dir';
 import { getRandomHealthyProxy, type ProxyInfo } from '../xgodo-proxy';
+import { applyComposite } from './yt-annotate-composite';
 
 const SCREENS_DIR = path.join(CLIPS_DIR, 'yt_screens');
 const VIEWPORT = { width: 1440, height: 900 };  // generous card framing; YT looks correct
@@ -48,9 +49,30 @@ export const ANNOTATABLE = {
 
 /** Highlight styles the renderer requests (mirrors slot-rendering-class-b). */
 export type HighlightStyle = 'yellow_ring' | 'yellow_box' | 'yellow_highlight' | 'yellow_circle';
+/** Post-process composite shapes (drawn via SVG/Sharp AFTER the screenshot).
+ *  Distinct from HighlightStyle which is CSS-on-element. */
+export type CompositeShapeStyle = 'sharpie_circle' | 'arrow' | 'circle_with_label' | 'glow_ring' | 'underline';
 export type AnnotateElement =
   'subscriber_count' | 'video_count' | 'total_views' | 'joined_date' | 'view_count';
-export interface AnnotateSpec { element: AnnotateElement; style: HighlightStyle; }
+
+/** Whether the annotation is rendered via CSS-on-element (cheap, limited
+ *  shapes) or via post-process SVG overlay (richer shapes, slight extra cost).
+ *  Default = 'css'. Use 'composite' for sharpie circles, arrows, labels. */
+export type AnnotateKind = 'css' | 'composite';
+export interface AnnotateSpec {
+  element: AnnotateElement;
+  /** CSS style (used when kind='css'). */
+  style?: HighlightStyle;
+  /** Composite shape (used when kind='composite'). */
+  shape?: CompositeShapeStyle;
+  kind?: AnnotateKind;
+  /** Optional label for circle_with_label shape. */
+  label?: string;
+  /** Optional arrow origin for arrow shape. */
+  arrow_from?: 'top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+  /** Optional override color (#FACC15 is default). */
+  color?: string;
+}
 
 /** Regex finders for each annotatable element, used by the locator engine
  *  which pierces both open AND closed shadow DOM (closed yt-attributed-string
@@ -862,7 +884,11 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         try {
           const reSource = ANNOTATE_REGEX[annotate.element];
           const bounds = ANNOTATE_SIZE[annotate.element];
-          const css = HIGHLIGHT_CSS[annotate.style];
+          // For CSS path we inject the highlight inline; for COMPOSITE path we
+          // skip CSS injection (compositor will draw post-screenshot via Sharp/
+          // SVG using the bbox that the walker returns).
+          const isComposite = annotate.kind === 'composite';
+          const css = !isComposite && annotate.style ? HIGHLIGHT_CSS[annotate.style] : '';
           const scopeTags = ANNOTATE_SCOPE[annotate.element] ?? [];
           // Run the search entirely inside the page: walk light DOM AND shadow
           // roots, regex-match each element's own text, filter by size + in-
@@ -997,8 +1023,12 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             if (bestEl) {
               try { (bestEl as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* */ }
               const el = bestEl as HTMLElement;
-              const existing = el.getAttribute('style') || '';
-              el.setAttribute('style', `${existing}; ${css}`);
+              // Only inject CSS when one was provided (CSS-mode). Compositor-
+              // mode passes empty css and applies the shape post-screenshot.
+              if (css) {
+                const existing = el.getAttribute('style') || '';
+                el.setAttribute('style', `${existing}; ${css}`);
+              }
               const r = el.getBoundingClientRect();
               return { applied: true, in_scope: inScope, out_of_scope: outOfScope, picked: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), tag: el.tagName.toLowerCase(), text: ownText(el).slice(0, 80) }, candidates: candidatesDbg };
             }
@@ -1010,6 +1040,27 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         }
       }
       buf = await page.screenshot({ fullPage: false, type: 'png', timeout: SCREENSHOT_TIMEOUT_MS });
+      // Composite annotation pass — runs AFTER the screenshot, draws richer
+      // shapes (sharpie circle, arrow, label) via Sharp + SVG overlay. Uses
+      // the bbox the walker just found (annotationDebug.picked). When the
+      // walker missed, we just save the unannotated PNG.
+      if (annotate && annotate.kind === 'composite' && annotationDebug && annotationDebug.picked) {
+        try {
+          const picked = annotationDebug.picked as { x: number; y: number; w: number; h: number };
+          const shape = annotate.shape || 'sharpie_circle';
+          const composited = await applyComposite(buf, { x: picked.x, y: picked.y, w: picked.w, h: picked.h }, {
+            shape,
+            color: annotate.color,
+            label: annotate.label,
+            arrow_from: annotate.arrow_from,
+          });
+          buf = composited;
+          (annotationDebug as Record<string, unknown>).composite_applied = true;
+          (annotationDebug as Record<string, unknown>).composite_shape = shape;
+        } catch (e) {
+          (annotationDebug as Record<string, unknown>).composite_error = (e as Error).message.slice(0, 200);
+        }
+      }
       await fs.writeFile(localPath, buf);
       videoLocalPath = localPath;
     }
