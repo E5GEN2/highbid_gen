@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
 import { composeAudioBed } from '@/lib/content-gen/audio-bed';
-import { warmAllSfx } from '@/lib/content-gen/sfx';
+import { warmAllSfx, TOKENS } from '@/lib/content-gen/sfx';
 import { reflowTimelineWithVoice } from '@/lib/content-gen/voice-reflow';
 import type { Timeline } from '@/lib/content-gen/timeline';
 import type { ReflowedTimeline } from '@/lib/content-gen/voice-reflow';
@@ -98,6 +98,14 @@ export async function POST(req: NextRequest) {
   });
 }
 
+/**
+ * GET overwatch — returns the three asset panels the Audio Gen GUI shows:
+ *   tokens (the SFX/music vocabulary + which are cached)
+ *   voice  (TTS'd phrase library, recent first)
+ *   beds   (composed group beds)
+ *
+ * GET ?action=warm just runs warmAllSfx() and returns the result.
+ */
 export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   const sp = req.nextUrl.searchParams;
@@ -105,5 +113,74 @@ export async function GET(req: NextRequest) {
     const r = await warmAllSfx();
     return NextResponse.json({ ok: true, ...r });
   }
-  return NextResponse.json({ error: 'pass action=warm or POST to compose' }, { status: 400 });
+
+  const pool = await getPool();
+
+  // SFX/music token panel — every token in TOKENS, joined with its newest
+  // cached asset (if any). LATERAL gives us one row per token, joined to its
+  // most-recent generation at default duration.
+  const sfxRows = (await pool.query<{ sfx_hash: string; token: string; kind: string; duration_s: number; bytes: number; last_used_at: string }>(
+    `SELECT DISTINCT ON (token) sfx_hash, token, kind, duration_s, bytes, last_used_at
+       FROM content_gen_sfx_assets
+      ORDER BY token, last_used_at DESC`,
+  )).rows;
+  const sfxByToken = new Map(sfxRows.map(r => [r.token, r]));
+  const tokens = Object.entries(TOKENS).map(([token, spec]) => {
+    const a = sfxByToken.get(token);
+    return {
+      token, kind: spec.kind, prompt: spec.prompt,
+      default_duration_s: spec.default_duration_s,
+      cached: !!a,
+      duration_s: a?.duration_s ?? null,
+      bytes: a?.bytes ?? null,
+      last_used_at: a?.last_used_at ?? null,
+      file_url: a ? `/api/admin/content-gen/sfx/file?hash=${a.sfx_hash}` : null,
+    };
+  });
+
+  // Voice library — recent first, cap reasonable.
+  const voiceLimit = Math.max(1, Math.min(500, parseInt(sp.get('voiceLimit') ?? '50')));
+  const voices = (await pool.query<{ text_hash: string; text: string; voice_id: string; model_id: string; duration_s: number; bytes: number; char_count: number; created_at: string; last_used_at: string }>(
+    `SELECT text_hash, text, voice_id, model_id, duration_s, bytes, char_count, created_at, last_used_at
+       FROM content_gen_voice_assets ORDER BY last_used_at DESC LIMIT $1`, [voiceLimit],
+  )).rows.map(r => ({ ...r, file_url: `/api/admin/content-gen/voice/file?hash=${r.text_hash}` }));
+
+  // Group beds — every group that has a stored timeline; pair with channel
+  // names. Detect bed presence by checking the volume? The composer caches
+  // by hash(group_key + timeline_signature), which we can't recompute here
+  // without re-reflowing. So the listing returns whether a script's timeline
+  // is voice-locked (=> a bed CAN be composed) + composes only on demand.
+  // voice_locked: the reflowed timeline has a top-level "voice" key.
+  // (timeline_jsonb->'voice') IS NOT NULL is equivalent to JSONB has-key,
+  // and doesn't trip the pg driver's `?` parameter handling.
+  const groups = (await pool.query<{ group_key: string; title: string | null; channel_ids: string[]; est_duration_s: number | null; voice_locked: boolean; updated_at: string; word_count: number | null }>(
+    `SELECT group_key, title, channel_ids, est_duration_s, word_count, updated_at,
+            (timeline_jsonb->'voice') IS NOT NULL AS voice_locked
+       FROM content_gen_scripts
+      WHERE timeline_jsonb IS NOT NULL
+      ORDER BY updated_at DESC
+      LIMIT 50`,
+  )).rows;
+
+  // Resolve channel names for display.
+  const allChannelIds = Array.from(new Set(groups.flatMap(g => g.channel_ids ?? [])));
+  let nameByCid = new Map<string, string>();
+  if (allChannelIds.length > 0) {
+    const r = await pool.query<{ channel_id: string; channel_name: string | null }>(
+      `SELECT channel_id, channel_name FROM niche_spy_channels WHERE channel_id = ANY($1::text[])`, [allChannelIds],
+    );
+    nameByCid = new Map(r.rows.map(x => [x.channel_id, x.channel_name ?? x.channel_id]));
+  }
+
+  const groupsOut = groups.map(g => ({
+    group_key: g.group_key,
+    title: g.title,
+    channels: (g.channel_ids ?? []).map(cid => ({ channel_id: cid, name: nameByCid.get(cid) ?? cid })),
+    est_duration_s: g.est_duration_s,
+    word_count: g.word_count,
+    voice_locked: g.voice_locked,
+    updated_at: g.updated_at,
+  }));
+
+  return NextResponse.json({ ok: true, tokens, voices, groups: groupsOut });
 }

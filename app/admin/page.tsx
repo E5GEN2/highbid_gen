@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Markdown } from '@/components/Markdown';
 import ContentGenTab from '@/components/ContentGenTab';
 import ImageGenTab from '@/components/ImageGenTab';
+import AudioGenTab from '@/components/AudioGenTab';
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -32,7 +33,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen' | 'audiogen'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1693,6 +1694,7 @@ export default function AdminPage() {
     { key: 'vid-gen',        label: 'Vid Gen',         dot: 'bg-rose-500/70' },
     { key: 'content-gen',    label: 'Content Gen',     dot: 'bg-amber-500/70' },
     { key: 'imagegen',       label: 'Image Gen',       dot: 'bg-lime-500/70' },
+    { key: 'audiogen',       label: 'Audio Gen',       dot: 'bg-sky-500/70' },
     { key: 'embed-reqs',     label: 'Embed reqs',      dot: 'bg-cyan-400/70' },
     { key: 'analyze-vids',   label: 'Analyze Vids',    dot: 'bg-teal-400/70' },
     { key: 'xg-vid-dl',      label: 'XG vid download', dot: 'bg-orange-400/70' },
@@ -6211,6 +6213,12 @@ export default function AdminPage() {
             factory for content-gen. */}
         <div style={{ display: adminSection === 'imagegen' ? 'block' : 'none' }}>
           <ImageGenTab active={adminSection === 'imagegen'} />
+        </div>
+
+        {/* Audio Gen — the voice + SFX + audio-bed pipeline. SFX vocabulary,
+            voice library, and group-bed composer in one place. */}
+        <div style={{ display: adminSection === 'audiogen' ? 'block' : 'none' }}>
+          <AudioGenTab active={adminSection === 'audiogen'} />
         </div>
 
         {/* Embedding requests — custom-niche owners file these when
