@@ -212,16 +212,32 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
   );
   const rowId = ins.rows[0].id;
 
-  try {
-    const result = await runCapture(rowId, channelId, handle, kind, url, opts.geo ?? null, dateBucket, mode);
-    return result;
-  } catch (err) {
-    await pool.query(
-      `UPDATE content_gen_yt_screens SET status='failed', error=$1, finished_at=NOW(), updated_at=NOW() WHERE id=$2`,
-      [(err as Error).message.slice(0, 600), rowId],
-    ).catch(() => {});
-    throw err;
+  // Retry on transient proxy/network errors. Each retry calls runCapture
+  // fresh → fresh getRandomHealthyProxy() → likely different proxy from
+  // the ~57-strong online pool. ~17% individual failure rate observed →
+  // 3 attempts ≈ 99.5% effective success.
+  const MAX_ATTEMPTS = 3;
+  let lastErr: Error | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = await runCapture(rowId, channelId, handle, kind, url, opts.geo ?? null, dateBucket, mode);
+      return result;
+    } catch (err) {
+      lastErr = err as Error;
+      const msg = lastErr.message ?? '';
+      const transient =
+        /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|EAI_AGAIN/i
+          .test(msg);
+      if (!transient || attempt === MAX_ATTEMPTS) break;
+      // Backoff briefly so we don't hammer a slow proxy pool.
+      await new Promise(r => setTimeout(r, 800 * attempt));
+    }
   }
+  await pool.query(
+    `UPDATE content_gen_yt_screens SET status='failed', error=$1, finished_at=NOW(), updated_at=NOW() WHERE id=$2`,
+    [(lastErr?.message ?? 'unknown').slice(0, 600), rowId],
+  ).catch(() => {});
+  throw lastErr ?? new Error('capture failed');
 }
 
 async function runCapture(rowId: number, channelId: string, handle: string | null, kind: ScreenKind, url: string, geo: string | null, dateBucket: string, captureMode: CaptureMode): Promise<CaptureResult> {
