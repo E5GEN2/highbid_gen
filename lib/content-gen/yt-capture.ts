@@ -895,10 +895,31 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           }
           // Diagnostic — what renderer tags exist in the page right now? Helps
           // identify when YT renames a container so we can update the list.
-          const knownTags = ['ytd-rich-item-renderer', 'ytd-grid-video-renderer', 'ytd-rich-grid-media', 'ytd-video-renderer', 'ytd-compact-video-renderer', 'ytd-rich-shelf-renderer', 'ytd-rich-section-renderer', 'ytd-shelf-renderer', 'ytd-channel-video-player-renderer'];
+          const knownTags = ['ytd-rich-item-renderer', 'ytd-grid-video-renderer', 'ytd-rich-grid-media', 'ytd-video-renderer', 'ytd-compact-video-renderer', 'ytd-rich-shelf-renderer', 'ytd-rich-section-renderer', 'ytd-shelf-renderer', 'ytd-channel-video-player-renderer', 'yt-lockup-view-model', 'yt-lockup-metadata-view-model', 'ytd-channel-featured-content-renderer', 'ytd-grid-renderer'];
           const tagCounts: Record<string, number> = {};
           for (const t of knownTags) tagCounts[t] = document.querySelectorAll(t).length;
-          return { cards: out, tagCounts, fallbackUsed };
+          // Forensic dump — for the FIRST img + views ancestor pair the fallback
+          // found, list the ancestor chain so we can see WHAT element name
+          // wraps the card on this YT layout. Then we update the structured
+          // selector list without another deploy cycle.
+          let firstAncestorChain: string[] = [];
+          if (fallbackUsed && out.length > 0) {
+            const c = out[0].card;
+            // Find back the element with that bbox by walking the DOM.
+            const candidates = Array.from(document.querySelectorAll('*'));
+            for (const el of candidates) {
+              const r = (el as HTMLElement).getBoundingClientRect();
+              if (Math.abs(r.left - c.x) < 2 && Math.abs(r.top - c.y) < 2 && Math.abs(r.width - c.w) < 2) {
+                let cur: Element | null = el;
+                while (cur && firstAncestorChain.length < 10) {
+                  firstAncestorChain.push(cur.tagName.toLowerCase());
+                  cur = cur.parentElement;
+                }
+                break;
+              }
+            }
+          }
+          return { cards: out, tagCounts, fallbackUsed, firstAncestorChain };
         }, VIEWPORT.width);
         const cards = result.cards;
         cards.forEach((c, i) => {
@@ -910,6 +931,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         (bboxDebug as Record<string, unknown>).video_cards_count = cards.length;
         (bboxDebug as Record<string, unknown>).video_card_tag_counts = result.tagCounts;
         (bboxDebug as Record<string, unknown>).video_card_fallback_used = result.fallbackUsed;
+        (bboxDebug as Record<string, unknown>).video_card_first_chain = result.firstAncestorChain;
       } catch (e) {
         (bboxDebug as Record<string, unknown>).video_cards_error = (e as Error).message.slice(0, 200);
       }
