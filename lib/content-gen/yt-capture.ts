@@ -89,27 +89,50 @@ function todayBucket(): string {
  *
  * All regexes are evaluated CASE-INSENSITIVELY.
  */
-interface BBoxRule { name: string; regex: string; hint?: string; tag?: string; }
+interface BBoxRule {
+  name: string;
+  regex: string;
+  /** Optional anti-match: element text must NOT match this (catches false
+   *  positives like "1.85K subscribers" matching a permissive name pattern). */
+  not_regex?: string;
+  /** Comma-list of CSS selectors limiting WHERE we search. Defaults to the
+   *  full document. Useful for ruling out the recommended-videos sidebar etc. */
+  hint?: string;
+  /** Tag-name filter; defaults to '*'. 'img' switches the match probe from
+   *  ownText() to alt+src. */
+  tag?: string;
+}
 const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
   channel_page: [
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', tag: 'h1' },
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b', tag: 'h1' },
     { name: 'channel_avatar',   regex: '.*', tag: 'img', hint: 'yt-decorated-avatar-view-model, #avatar, ytd-c4-tabbed-header-renderer #avatar' },
     { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$' },
     { name: 'video_count',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*videos?\\s*$' },
   ],
   about_page: [
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', tag: 'h1' },
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined)\\b', tag: 'h1' },
     { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$' },
     { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*views?\\s*$' },
     { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$' },
   ],
   videos_tab: [
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', tag: 'h1' },
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b', tag: 'h1' },
   ],
+  // Watch page critical: AVOID the right-rail recommended sidebar (where
+  // every card has its own "N views" text and channel names). Scope to
+  // #primary / #below / ytd-watch-metadata so only the main-video chrome
+  // contributes bboxes.
   watch_page: [
-    { name: 'view_count',       regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$' },
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', hint: 'ytd-video-owner-renderer, #owner #channel-name' },
-    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$', hint: 'ytd-video-owner-renderer, #owner-sub-count' },
+    { name: 'view_count',
+      regex: '[\\d.,]+\\s*[KMB]?\\s*views?\\b',
+      hint: '#below, ytd-watch-metadata, ytd-video-primary-info-renderer, #info, #info-container, #info-text' },
+    { name: 'channel_name',
+      regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$',
+      not_regex: '(subscribers?|videos?|views?|Subscribe|Joined)\\b',
+      hint: 'ytd-video-owner-renderer ytd-channel-name, #owner #channel-name, #upload-info ytd-channel-name' },
+    { name: 'subscriber_count',
+      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
+      hint: 'ytd-video-owner-renderer, #owner, #owner-sub-count' },
   ],
 };
 
@@ -300,9 +323,10 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         }
         return found.length > 0 ? found : [document.documentElement];
       };
-      const ruleList = rules as Array<{ name: string; regex: string; hint?: string; tag?: string }>;
+      const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; tag?: string }>;
       for (const rule of ruleList) {
         const re = new RegExp(rule.regex, 'i');
+        const notRe = rule.not_regex ? new RegExp(rule.not_regex, 'i') : null;
         const tagSel = rule.tag ? rule.tag.toLowerCase() : '*';
         let bestEl: Element | null = null;
         let bestArea = Infinity;
@@ -314,6 +338,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             // For images the textContent is empty — match by attribute.
             const probe = tagSel === 'img' ? ((el as HTMLImageElement).alt || (el as HTMLImageElement).src || '') : ownText(el);
             if (!re.test(probe)) continue;
+            if (notRe && notRe.test(probe)) continue;
             const r = (el as HTMLElement).getBoundingClientRect();
             const area = r.width * r.height;
             if (area < bestArea) { bestArea = area; bestEl = el; }
