@@ -1714,6 +1714,39 @@ export async function initSchema(): Promise<void> {
         updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
+
+    // Image-generation tasks routed through xgodo's image-gen flow (the
+    // same worker platform behind keys/proxies/vizard). One row per
+    // requested image: {prompt, aspect, model} → a worker generates it and
+    // returns a TEMP xgodo url (expires) which we download to the Railway
+    // volume. Drives the on-demand icon/asset library for content-gen.
+    //   status: queued | running | done | failed
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS imagegen_tasks (
+        id               SERIAL PRIMARY KEY,
+        purpose          TEXT,                 -- free tag, e.g. 'icon:shrug_with_question_marks'
+        prompt           TEXT NOT NULL,
+        aspect           TEXT,                 -- '1:1' | '16:9' | '9:16'
+        model            TEXT,                 -- 'nanobananapro' | 'nanobanana' | 'imagen4'
+        status           TEXT NOT NULL DEFAULT 'queued',
+        planned_task_id  TEXT,
+        job_task_id      TEXT,
+        xgodo_temp_url   TEXT,                 -- the expiring uploadedUrl
+        expires_at       TIMESTAMPTZ,
+        local_path       TEXT,                 -- downloaded file on the volume
+        image_name       TEXT,
+        worker_name      TEXT,
+        error            TEXT,
+        submitted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at       TIMESTAMPTZ,
+        finished_at      TIMESTAMPTZ,
+        last_polled_at   TIMESTAMPTZ,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_status ON imagegen_tasks(status)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_purpose ON imagegen_tasks(purpose)`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
