@@ -677,6 +677,76 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       } catch { /* locator path failed — skip */ }
     }
 
+    // ── Per-video-card bbox extraction (videos_tab + channel_page) ─────
+    // The visual grammar's `thumbnail_card`, `thumbnail_card_rapid_fire` and
+    // `most_popular_callout_card` compositions need to crop INDIVIDUAL video
+    // cards from a videos_tab screenshot. Extract per-card bboxes here so
+    // the renderer can crop without re-running Playwright.
+    //
+    // Encoded as flat keys in BBoxMap so the storage layer stays uniform:
+    //   video_card_0, video_card_1, ...    — outer card rect (thumb + title + meta)
+    //   video_thumb_0, video_thumb_1, ...  — just the thumbnail image rect
+    //   video_views_0, video_views_1, ...  — view-count text rect (when present)
+    //   video_title_0, video_title_1, ...  — title text rect
+    //
+    // The renderer reads these to build per-card crops + per-card annotations.
+    if (kind === 'videos_tab' || kind === 'channel_page') {
+      try {
+        const cards = await page.evaluate((vpW: number) => {
+          // The video card renderers used by YT. Order matters: prefer the
+          // more specific renderer first (rich-item in modern grid layout).
+          const sel = 'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-rich-grid-media, ytd-video-renderer';
+          const els = Array.from(document.querySelectorAll(sel));
+          const out: Array<{ card: { x: number; y: number; w: number; h: number }; thumb?: { x: number; y: number; w: number; h: number }; views?: { x: number; y: number; w: number; h: number }; title?: { x: number; y: number; w: number; h: number } }> = [];
+          for (const el of els) {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            // Skip off-viewport-right and very-small (collapsed/loading) cards.
+            // Cards below the viewport are useful for scroll_record renders so
+            // we keep them — the renderer can decide per-frame what to crop.
+            if (r.width < 160 || r.height < 120) continue;
+            if (r.left + r.width < 0 || r.left > vpW + 8) continue;
+            const card = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+            // Find the thumbnail <img> inside the card.
+            let thumb: { x: number; y: number; w: number; h: number } | undefined;
+            const img = el.querySelector('img[src*="ytimg"], img[src*="googleusercontent"], #thumbnail img, ytd-thumbnail img') as HTMLImageElement | null;
+            if (img) {
+              const ir = img.getBoundingClientRect();
+              if (ir.width > 100) thumb = { x: Math.round(ir.left), y: Math.round(ir.top), w: Math.round(ir.width), h: Math.round(ir.height) };
+            }
+            // Find view count: span/yt-formatted-string whose own text matches.
+            let views: { x: number; y: number; w: number; h: number } | undefined;
+            const viewRe = /^\s*[\d.,]+\s*[KMB]?\s*views?\s*$/i;
+            const all = Array.from(el.querySelectorAll('span, yt-formatted-string'));
+            for (const sub of all) {
+              const own = Array.from(sub.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent ?? '').join('').trim();
+              if (!viewRe.test(own)) continue;
+              const sr = (sub as HTMLElement).getBoundingClientRect();
+              if (sr.width < 20 || sr.width > 240) continue;
+              views = { x: Math.round(sr.left), y: Math.round(sr.top), w: Math.round(sr.width), h: Math.round(sr.height) };
+              break;
+            }
+            // Find title: prefer #video-title, then h3 a (modern), then h3.
+            let title: { x: number; y: number; w: number; h: number } | undefined;
+            const titleEl = (el.querySelector('#video-title, a#video-title, h3 a, h3') as HTMLElement | null);
+            if (titleEl) {
+              const tr = titleEl.getBoundingClientRect();
+              if (tr.width > 60 && tr.height > 12) title = { x: Math.round(tr.left), y: Math.round(tr.top), w: Math.round(tr.width), h: Math.round(tr.height) };
+            }
+            out.push({ card, thumb, views, title });
+            if (out.length >= 24) break;  // sane cap; 4-col grid x 6 rows is plenty
+          }
+          return out;
+        }, VIEWPORT.width);
+        cards.forEach((c, i) => {
+          bboxes[`video_card_${i}`] = c.card;
+          if (c.thumb) bboxes[`video_thumb_${i}`] = c.thumb;
+          if (c.views) bboxes[`video_views_${i}`] = c.views;
+          if (c.title) bboxes[`video_title_${i}`] = c.title;
+        });
+        (bboxDebug as Record<string, unknown>).video_cards_count = cards.length;
+      } catch { /* card extraction is best-effort — main bboxes already set */ }
+    }
+
     // Branch: static screenshot OR scroll-record video.
     let buf: Buffer;
     let assetKind: AssetKind = 'image';
