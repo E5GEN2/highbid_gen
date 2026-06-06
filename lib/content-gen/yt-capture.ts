@@ -182,11 +182,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     }).catch(() => {});
 
     // Wait for the page to settle. networkidle can hang forever on YT
-    // (background polls), so we use a bounded race.
-    await Promise.race([
-      page.waitForLoadState('networkidle', { timeout: NETIDLE_MS }),
-      page.waitForTimeout(NETIDLE_MS),
-    ]);
+    // (background polls), so cap it at NETIDLE_MS and swallow the timeout
+    // rejection — a not-quite-idle page is fine for our screenshot.
+    await page.waitForLoadState('networkidle', { timeout: NETIDLE_MS }).catch(() => {});
     // A second small settle in case the consent click reflowed.
     await page.waitForTimeout(800);
 
