@@ -132,21 +132,31 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   await fs.mkdir(SCREENS_DIR, { recursive: true });
   const localPath = path.join(SCREENS_DIR, `${channelId}_${kind}_${dateBucket}.png`);
 
-  // Our xgodo proxies are dual-protocol (HTTP forward + SOCKS5 on the same
-  // host:port with the same Basic-auth creds). Chromium has a long-standing
-  // Linux bug where Proxy-Authorization isn't sent on CONNECT, so the
-  // upstream proxy RSTs every request. The documented workaround is to wrap
-  // the authenticated upstream proxy with a LOCAL anonymous proxy
-  // (proxy-chain) — Chromium connects to localhost without auth, proxy-chain
-  // forwards everything to xgodo with the Basic-auth header injected.
-  // Speak HTTP to the gateway since Chromium can't do SOCKS5+auth anyway.
-  const upstreamUrl = (() => {
-    const u = new URL(proxy.url);
-    const user = encodeURIComponent(decodeURIComponent(u.username));
-    const pass = encodeURIComponent(decodeURIComponent(u.password));
-    return `http://${user}:${pass}@${u.host}`;
-  })();
-  const localProxyUrl = await proxyChain.anonymizeProxy(upstreamUrl);
+  // Our xgodo proxies are dual-protocol. Chromium has a known Linux bug
+  // where Proxy-Authorization isn't sent on CONNECT (ERR_CONNECTION_RESET).
+  // Workaround: wrap the authenticated upstream proxy via proxy-chain
+  // Server with explicit prepareRequestFunction — gives us auth injection
+  // PLUS upstream-error logging so we can see why the gateway might refuse.
+  const upU = new URL(proxy.url);
+  const upHost = upU.hostname;
+  const upPort = parseInt(upU.port || '80', 10);
+  const upUser = decodeURIComponent(upU.username);
+  const upPass = decodeURIComponent(upU.password);
+
+  const server = new proxyChain.Server({
+    port: 0, // OS-assigned ephemeral
+    prepareRequestFunction: () => ({
+      upstreamProxyUrl: `http://${encodeURIComponent(upUser)}:${encodeURIComponent(upPass)}@${upHost}:${upPort}`,
+    }),
+  });
+  // proxy-chain emits upstream errors; surface them so the caller sees the
+  // real reason instead of a generic ERR_TUNNEL_CONNECTION_FAILED.
+  const upstreamErrors: string[] = [];
+  server.on('connectionError', (err: Error) => upstreamErrors.push(`conn: ${err.message}`));
+  server.on('requestFailed', (info: { error?: Error; request?: { url?: string } }) => upstreamErrors.push(`req: ${info.error?.message ?? '?'} ${info.request?.url ?? ''}`));
+  await server.listen();
+  const localPort = (server as unknown as { port: number }).port;
+  const localProxyUrl = `http://127.0.0.1:${localPort}`;
 
   // On Railway we use the system /usr/bin/chromium (no 130MB Playwright
   // browser bundle). Locally Playwright falls back to its own bundled
@@ -204,11 +214,18 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     );
 
     return { id: rowId, channel_id: channelId, handle, kind, url, local_path: localPath, bytes: buf.length, date_bucket: dateBucket, geo, proxy_country: proxy.country, cached: false };
+  } catch (err) {
+    // If the upstream proxy emitted any errors during the run, append the
+    // first one to the thrown error so the caller sees the real reason
+    // (proxy auth rejected, gateway unreachable from this region, etc).
+    const e = err as Error;
+    if (upstreamErrors.length > 0 && !/upstream:/.test(e.message)) {
+      e.message = `${e.message} · upstream: ${upstreamErrors[0]}`;
+    }
+    throw e;
   } finally {
     await browser.close().catch(() => {});
-    // Free the proxy-chain port — leaving them open eventually exhausts the
-    // ephemeral port range under load.
-    await proxyChain.closeAnonymizedProxy(localProxyUrl, true).catch(() => {});
+    await server.close(true).catch(() => {});
   }
 }
 
