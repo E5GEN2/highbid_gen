@@ -77,49 +77,40 @@ function todayBucket(): string {
 }
 
 /**
- * Per-ScreenKind selector vocabulary. Used inside the browser context (so
- * the names get inlined) by the extractBBoxes helper. YT's class names rotate
- * every few months; we keep the rules tolerant (multiple selectors per slot,
- * first match wins) so a single redesign doesn't break the whole capture.
+ * Per-ScreenKind bbox rules. Resilient strategy: regex over the page's
+ * VISIBLE text. We walk the rendered DOM, look at each element's textContent,
+ * find the tightest element whose own text matches the regex, return its
+ * bounding rect. This survives YT class-name churn entirely.
  *
- * The semantic names here MUST match the keys in ANNOTATABLE so the renderer
- * can address them by a stable id.
+ *   name:   semantic id (key in ANNOTATABLE — what the renderer addresses)
+ *   regex:  must match the element's own text (no children) — keeps it tight
+ *   hint:   optional CSS scope to limit search (header, banner, owner row…)
+ *   tag:    optional tag-name filter (e.g. only consider <h1>, <img>)
+ *
+ * All regexes are evaluated CASE-INSENSITIVELY.
  */
-const BBOX_SELECTORS: Record<ScreenKind, Record<string, string[]>> = {
-  channel_page: {
-    channel_name:    ['yt-dynamic-text-view-model h1', 'ytd-channel-name h1', 'h1.ytd-c4-tabbed-header-renderer'],
-    channel_avatar:  ['yt-decorated-avatar-view-model img', 'yt-img-shadow img.yt-img-shadow', '#channel-header img.yt-img-shadow'],
-    subscriber_count:[
-      'span.yt-content-metadata-view-model-wiz__metadata-text:has-text("subscribers")',
-      'yt-formatted-string#subscriber-count',
-      '#channel-header #subscriber-count',
-    ],
-    video_count: [
-      'span.yt-content-metadata-view-model-wiz__metadata-text:has-text("videos")',
-    ],
-  },
-  about_page: {
-    channel_name:    ['yt-dynamic-text-view-model h1', 'ytd-channel-name h1'],
-    subscriber_count:[
-      'table.about-stats yt-formatted-string:has-text("subscribers")',
-      'span:has-text("subscribers")',
-    ],
-    total_views: [
-      'table.about-stats yt-formatted-string:has-text("views")',
-      'span:has-text("views")',
-    ],
-    joined_date: [
-      'table.about-stats yt-formatted-string:has-text("Joined")',
-      'span:has-text("Joined")',
-    ],
-  },
-  videos_tab: {
-    channel_name:    ['yt-dynamic-text-view-model h1', 'ytd-channel-name h1'],
-  },
-  watch_page: {
-    channel_name:    ['ytd-video-owner-renderer ytd-channel-name a'],
-    subscriber_count:['#subscriber-count', 'ytd-video-owner-renderer #owner-sub-count'],
-  },
+interface BBoxRule { name: string; regex: string; hint?: string; tag?: string; }
+const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
+  channel_page: [
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', tag: 'h1' },
+    { name: 'channel_avatar',   regex: '.*', tag: 'img', hint: 'yt-decorated-avatar-view-model, #avatar, ytd-c4-tabbed-header-renderer #avatar' },
+    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$' },
+    { name: 'video_count',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*videos?\\s*$' },
+  ],
+  about_page: [
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', tag: 'h1' },
+    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$' },
+    { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*views?\\s*$' },
+    { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$' },
+  ],
+  videos_tab: [
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', tag: 'h1' },
+  ],
+  watch_page: [
+    { name: 'view_count',       regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$' },
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', hint: 'ytd-video-owner-renderer, #owner #channel-name' },
+    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$', hint: 'ytd-video-owner-renderer, #owner-sub-count' },
+  ],
 };
 
 function urlFor(kind: ScreenKind, handle: string | null, channelId: string, watchVideoId?: string | null): string {
@@ -283,34 +274,58 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
 
     // Extract element bboxes for the renderer's annotation overlays. Done
     // BEFORE the screenshot so the layout we measure matches the captured
-    // pixels exactly. Each selector is tried in order; first match wins.
-    // Per-selector failure is swallowed so partial bboxes still come back.
-    const selectorsForKind = BBOX_SELECTORS[kind] ?? {};
-    const bboxes: BBoxMap = await page.evaluate(([sels]) => {
+    // pixels exactly. Strategy: walk the rendered DOM, match each rule's
+    // regex against each element's OWN text (children stripped), keep the
+    // tightest visible match. Survives YT class-name churn entirely.
+    const rulesForKind = BBOX_RULES[kind] ?? [];
+    const bboxes: BBoxMap = await page.evaluate(([rules]) => {
       const out: Record<string, { x: number; y: number; w: number; h: number }> = {};
-      const matchByText = (root: Document, sel: string): Element | null => {
-        // ":has-text(...)" isn't a CSS pseudo; emulate it.
-        const m = sel.match(/^(.*?):has-text\("([^"]+)"\)$/);
-        if (!m) { try { return root.querySelector(sel); } catch { return null; } }
-        const [, base, needle] = m;
-        const n = needle.toLowerCase();
-        try {
-          const list = Array.from(root.querySelectorAll(base));
-          return list.find(el => (el.textContent ?? '').toLowerCase().includes(n)) ?? null;
-        } catch { return null; }
+      const ownText = (el: Element): string => {
+        let s = '';
+        for (const n of Array.from(el.childNodes)) if (n.nodeType === 3) s += n.textContent ?? '';
+        return s.trim();
       };
-      for (const [name, list] of Object.entries(sels as Record<string, string[]>)) {
-        for (const sel of list) {
-          const el = matchByText(document, sel);
-          if (!el) continue;
-          const r = (el as HTMLElement).getBoundingClientRect();
-          if (r.width < 2 || r.height < 2) continue;
-          out[name] = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
-          break;
+      const visible = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return false;
+        const cs = window.getComputedStyle(el as HTMLElement);
+        if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1) return false;
+        return true;
+      };
+      const scopes = (hint: string | undefined): Element[] => {
+        if (!hint) return [document.documentElement];
+        const found: Element[] = [];
+        for (const sel of hint.split(',').map(s => s.trim()).filter(Boolean)) {
+          try { found.push(...Array.from(document.querySelectorAll(sel))); } catch { /* invalid sel — skip */ }
+        }
+        return found.length > 0 ? found : [document.documentElement];
+      };
+      const ruleList = rules as Array<{ name: string; regex: string; hint?: string; tag?: string }>;
+      for (const rule of ruleList) {
+        const re = new RegExp(rule.regex, 'i');
+        const tagSel = rule.tag ? rule.tag.toLowerCase() : '*';
+        let bestEl: Element | null = null;
+        let bestArea = Infinity;
+        for (const scope of scopes(rule.hint)) {
+          let nodes: Element[];
+          try { nodes = Array.from(scope.querySelectorAll(tagSel)); } catch { continue; }
+          for (const el of nodes) {
+            if (!visible(el)) continue;
+            // For images the textContent is empty — match by attribute.
+            const probe = tagSel === 'img' ? ((el as HTMLImageElement).alt || (el as HTMLImageElement).src || '') : ownText(el);
+            if (!re.test(probe)) continue;
+            const r = (el as HTMLElement).getBoundingClientRect();
+            const area = r.width * r.height;
+            if (area < bestArea) { bestArea = area; bestEl = el; }
+          }
+        }
+        if (bestEl) {
+          const r = (bestEl as HTMLElement).getBoundingClientRect();
+          out[rule.name] = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
         }
       }
       return out;
-    }, [selectorsForKind]).catch(() => ({} as BBoxMap));
+    }, [rulesForKind]).catch(() => ({} as BBoxMap));
 
     // Branch: static screenshot OR scroll-record video.
     let buf: Buffer;
