@@ -735,8 +735,37 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         const cards = await page.evaluate((vpW: number) => {
           // The video card renderers used by YT. Order matters: prefer the
           // more specific renderer first (rich-item in modern grid layout).
-          const sel = 'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-rich-grid-media, ytd-video-renderer';
-          const els = Array.from(document.querySelectorAll(sel));
+          // Channel_page uses ytd-rich-shelf-renderer wrapping ytd-rich-item-
+          // renderer for "Popular videos" rows; videos_tab uses ytd-rich-grid-
+          // renderer wrapping the same. Cover all variants.
+          const sel = [
+            'ytd-rich-item-renderer',
+            'ytd-grid-video-renderer',
+            'ytd-rich-grid-media',
+            'ytd-video-renderer',
+            'ytd-compact-video-renderer',
+            'ytd-playlist-panel-video-renderer',
+          ].join(', ');
+          // Dedupe by element to avoid counting the same card twice when
+          // multiple selectors match (e.g. rich-item-renderer often contains
+          // rich-grid-media as a child).
+          const raw = Array.from(document.querySelectorAll(sel));
+          const seen = new WeakSet<Element>();
+          const els: Element[] = [];
+          // Outer-first: skip any element that has an ancestor already in the
+          // list. This way ytd-rich-item-renderer (outer) wins over its
+          // ytd-rich-grid-media (inner) child.
+          for (const el of raw) {
+            let cur: Element | null = el.parentElement;
+            let nested = false;
+            while (cur) {
+              if (seen.has(cur)) { nested = true; break; }
+              cur = cur.parentElement;
+            }
+            if (nested) continue;
+            seen.add(el);
+            els.push(el);
+          }
           const out: Array<{ card: { x: number; y: number; w: number; h: number }; thumb?: { x: number; y: number; w: number; h: number }; views?: { x: number; y: number; w: number; h: number }; title?: { x: number; y: number; w: number; h: number } }> = [];
           for (const el of els) {
             const r = (el as HTMLElement).getBoundingClientRect();
