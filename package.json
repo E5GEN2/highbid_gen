@@ -24,6 +24,7 @@
     "pg": "^8.13.0",
     "playwright": "^1.60.0",
     "pngjs": "^7.0.0",
+    "proxy-chain": "^3.0.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "remotion": "^4.0.422",

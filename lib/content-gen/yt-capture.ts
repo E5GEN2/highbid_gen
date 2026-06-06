@@ -122,6 +122,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
 async function runCapture(rowId: number, channelId: string, handle: string | null, kind: ScreenKind, url: string, geo: string | null, dateBucket: string): Promise<CaptureResult> {
   // Lazy-load Playwright (Next.js avoids bundling it client-side).
   const { chromium } = await import('playwright');
+  const proxyChain = await import('proxy-chain');
 
   const proxy = await getRandomHealthyProxy().catch(() => null);
   if (!proxy) throw new Error('no healthy xgodo proxy available');
@@ -131,17 +132,21 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   await fs.mkdir(SCREENS_DIR, { recursive: true });
   const localPath = path.join(SCREENS_DIR, `${channelId}_${kind}_${dateBucket}.png`);
 
-  // Our xgodo proxy endpoints are dual-protocol (accept HTTP and SOCKS5
-  // on the same host:port + credentials). Chromium supports auth on HTTP
-  // proxies but NOT on SOCKS5 (long-standing Chromium limitation: "Browser
-  // does not support socks5 proxy authentication"). So we always speak
-  // HTTP to the proxy in Playwright — same endpoint, different protocol.
-  // userinfo goes in separate fields because Chromium's CLI handling of
-  // proxy URL userinfo is brittle.
-  const u = new URL(proxy.url);
-  const proxyServer = `http://${u.host}`;
-  const proxyUsername = decodeURIComponent(u.username);
-  const proxyPassword = decodeURIComponent(u.password);
+  // Our xgodo proxies are dual-protocol (HTTP forward + SOCKS5 on the same
+  // host:port with the same Basic-auth creds). Chromium has a long-standing
+  // Linux bug where Proxy-Authorization isn't sent on CONNECT, so the
+  // upstream proxy RSTs every request. The documented workaround is to wrap
+  // the authenticated upstream proxy with a LOCAL anonymous proxy
+  // (proxy-chain) — Chromium connects to localhost without auth, proxy-chain
+  // forwards everything to xgodo with the Basic-auth header injected.
+  // Speak HTTP to the gateway since Chromium can't do SOCKS5+auth anyway.
+  const upstreamUrl = (() => {
+    const u = new URL(proxy.url);
+    const user = encodeURIComponent(decodeURIComponent(u.username));
+    const pass = encodeURIComponent(decodeURIComponent(u.password));
+    return `http://${user}:${pass}@${u.host}`;
+  })();
+  const localProxyUrl = await proxyChain.anonymizeProxy(upstreamUrl);
 
   // On Railway we use the system /usr/bin/chromium (no 130MB Playwright
   // browser bundle). Locally Playwright falls back to its own bundled
@@ -150,7 +155,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
-    proxy: { server: proxyServer, username: proxyUsername, password: proxyPassword },
+    proxy: { server: localProxyUrl },   // anonymous local — no creds needed in Chromium
     ...(executablePath ? { executablePath } : {}),
   });
   try {
@@ -201,6 +206,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     return { id: rowId, channel_id: channelId, handle, kind, url, local_path: localPath, bytes: buf.length, date_bucket: dateBucket, geo, proxy_country: proxy.country, cached: false };
   } finally {
     await browser.close().catch(() => {});
+    // Free the proxy-chain port — leaving them open eventually exhausts the
+    // ephemeral port range under load.
+    await proxyChain.closeAnonymizedProxy(localProxyUrl, true).catch(() => {});
   }
 }
 
