@@ -64,13 +64,16 @@ const ANNOTATE_REGEX: Record<AnnotateElement, string> = {
   view_count:       '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
 };
 
-/** Sensible size bounds so the locator doesn't pick a giant wrapper. */
+/** Size bounds for the annotation candidate. Generous enough to allow row-
+ *  wrappers (icon + text) that YT's locator engine may match, since text=
+ *  matches against innerText which collects all descendants — picking the
+ *  smallest-area within these bounds still lands on a sensible target. */
 const ANNOTATE_SIZE: Record<AnnotateElement, { minW: number; maxW: number; minH: number; maxH: number }> = {
-  subscriber_count: { minW: 50, maxW: 280, minH: 12, maxH: 34 },
-  video_count:      { minW: 30, maxW: 240, minH: 12, maxH: 34 },
-  total_views:      { minW: 30, maxW: 280, minH: 12, maxH: 34 },
-  joined_date:      { minW: 60, maxW: 320, minH: 12, maxH: 34 },
-  view_count:       { minW: 30, maxW: 280, minH: 12, maxH: 34 },
+  subscriber_count: { minW: 40, maxW: 500, minH: 12, maxH: 60 },
+  video_count:      { minW: 30, maxW: 500, minH: 12, maxH: 60 },
+  total_views:      { minW: 30, maxW: 500, minH: 12, maxH: 60 },
+  joined_date:      { minW: 60, maxW: 500, minH: 12, maxH: 60 },
+  view_count:       { minW: 30, maxW: 500, minH: 12, maxH: 60 },
 };
 
 /** Inline CSS for each highlight style. Applied via el.style on the
@@ -116,6 +119,10 @@ export interface CaptureResult {
    *  accepted / sample_texts / sample_covered. Temporary scaffolding to debug
    *  selector misses. */
   bbox_debug?: Record<string, unknown>;
+  /** Diagnostic for the annotation pass (when annotate was set): how many
+   *  text= locator matches were found, their dimensions + visibility, which
+   *  was picked, whether the CSS got applied. */
+  annotation_debug?: Record<string, unknown>;
 }
 
 function todayBucket(): string {
@@ -650,6 +657,8 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     let videoLocalPath = localPath;
     let durationS: number | null = null;
     let videoSrcPath: string | null = null;
+    // Diagnostic for the annotation pass (if any) — surfaces back in the result.
+    let annotationDebug: Record<string, unknown> | null = null;
 
     if (captureMode === 'scroll_record' && recorderVideoPathPromise) {
       assetKind = 'video';
@@ -744,33 +753,38 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           const count = await loc.count();
           let bestIdx = -1;
           let bestArea = Infinity;
+          const candidates: Array<{ idx: number; w: number; h: number; visible: boolean; reason: string }> = [];
           for (let i = 0; i < Math.min(count, 30); i++) {
             const item = loc.nth(i);
             let box: { x: number; y: number; width: number; height: number } | null = null;
             try { box = await item.boundingBox({ timeout: 800 }); } catch { box = null; }
-            if (!box) continue;
+            if (!box) { candidates.push({ idx: i, w: 0, h: 0, visible: false, reason: 'no-box' }); continue; }
             const vis = await item.isVisible({ timeout: 400 }).catch(() => false);
-            if (!vis) continue;
-            if (box.width < bounds.minW || box.width > bounds.maxW) continue;
-            if (box.height < bounds.minH || box.height > bounds.maxH) continue;
-            if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) continue;
+            const w = Math.round(box.width), h = Math.round(box.height);
+            if (!vis) { candidates.push({ idx: i, w, h, visible: false, reason: 'invisible' }); continue; }
+            if (box.width < bounds.minW || box.width > bounds.maxW) { candidates.push({ idx: i, w, h, visible: true, reason: 'w-out' }); continue; }
+            if (box.height < bounds.minH || box.height > bounds.maxH) { candidates.push({ idx: i, w, h, visible: true, reason: 'h-out' }); continue; }
+            if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) { candidates.push({ idx: i, w, h, visible: true, reason: 'off-view' }); continue; }
+            candidates.push({ idx: i, w, h, visible: true, reason: 'OK' });
             const area = box.width * box.height;
             if (area < bestArea) { bestArea = area; bestIdx = i; }
           }
+          annotationDebug = { count, bestIdx, candidates: candidates.slice(0, 12) };
           if (bestIdx >= 0) {
             const target = loc.nth(bestIdx);
             const css = HIGHLIGHT_CSS[annotate.style];
             await target.evaluate((el, css) => {
               const e = el as HTMLElement;
-              // scrollIntoView keeps the highlighted element visible if
-              // YT layout shifted; block:'nearest' so we don't reset to top.
               try { e.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* skip */ }
               e.setAttribute('style', `${e.getAttribute('style') || ''}; ${css}`);
             }, css);
-            await page.waitForTimeout(250);  // give the new style a paint
+            await page.waitForTimeout(250);
+            annotationDebug.applied = true;
+          } else {
+            annotationDebug.applied = false;
           }
-        } catch {
-          // Annotate failure is non-fatal — capture proceeds without highlight.
+        } catch (e) {
+          annotationDebug = { error: (e as Error).message.slice(0, 200) };
         }
       }
       buf = await page.screenshot({ fullPage: false, type: 'png', timeout: SCREENSHOT_TIMEOUT_MS });
@@ -796,6 +810,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       date_bucket: dateBucket, geo, proxy_country: proxy.country, cached: false,
       asset_kind: assetKind, capture_mode: captureMode, duration_s: durationS, bboxes,
       bbox_debug: bboxDebug as Record<string, unknown>,
+      annotation_debug: annotationDebug ?? undefined,
     };
   } finally {
     await browser.close().catch(() => {});
