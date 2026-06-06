@@ -159,24 +159,23 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
     // extractor picking up header elements through the dimmed backdrop, we
     // scope all about-modal rules to MODAL containers only. Verified via
     // overlay inspection 2026-06-06.
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined)\\b',
-      tag: 'h1', strict_hint: true,
-      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"]',
+    // About modal (current YT layout, late 2026): the modal opens on top of
+    // the channel page; channel header subscriber/video text remains in the
+    // DOM behind the modal and is "visible" per CSS. We use a broad hint
+    // (whole document fallback) but rely on the size constraints + the
+    // tightest-area picker to land on the actual modal text. The strict_hint
+    // path didn't work because the modal's outer container in current YT
+    // doesn't expose a stable selector — by the time we reach the actual
+    // <yt-formatted-string> containing the text, we've descended through
+    // many anonymous shadow roots that the hint can't traverse.
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined|Description)\\b',
+      tag: 'h1',
       min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
     { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
-      strict_hint: true,
-      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"], .about-stats',
       min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
-    // Total views in the About modal — typically a row with "N views" only.
-    // YT shows either raw digits ("7,914,159 views") or compressed
-    // ("7.9M views"); regex accepts both. Modal-only scope as above.
     { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
-      strict_hint: true,
-      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"], .about-stats',
       min_w: 40, max_w: 220, min_h: 14, max_h: 30 },
     { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$',
-      strict_hint: true,
-      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"], .about-stats',
       min_w: 60, max_w: 260, min_h: 14, max_h: 30 },
   ],
   videos_tab: [
@@ -414,6 +413,19 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       const visible = (el: Element): boolean => {
         const cs = window.getComputedStyle(el as HTMLElement);
         if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1) return false;
+        // Stacked check: if the element is covered by something else
+        // (e.g. modal backdrop), elementFromPoint at its center returns
+        // the covering element. Accept the candidate only when the topmost
+        // element at its center IS the candidate, OR is an ancestor of it,
+        // OR is a descendant of it. This is the clean discriminator for
+        // header-text-behind-modal-backdrop on about_page.
+        const r = (el as HTMLElement).getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return false;
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return true; // can't test offscreen
+        const top = document.elementFromPoint(cx, cy);
+        if (top && top !== el && !el.contains(top) && !top.contains(el)) return false;
         return true;
       };
       const scopes = (hint: string | undefined, strict: boolean): Element[] | null => {
