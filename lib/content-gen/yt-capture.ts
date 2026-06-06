@@ -114,38 +114,80 @@ interface BBoxRule {
   /** Tag-name filter; defaults to '*'. 'img' switches the match probe from
    *  ownText() to alt+src. */
   tag?: string;
+  /** Sanity bounds — reject matches outside these ranges. Catches the failure
+   *  modes we saw in cross-channel testing: oversized parent containers
+   *  matching as "tightest", or off-viewport elements with valid text. */
+  min_w?: number;
+  max_w?: number;
+  min_h?: number;
+  max_h?: number;
+  /** If true (default), reject bboxes that fall outside the captured viewport
+   *  bounds. The PNG only shows VIEWPORT.width × VIEWPORT.height pixels, so
+   *  any bbox below/right of that is meaningless to the renderer. */
+  in_viewport?: boolean;
 }
 const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
   channel_page: [
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b', tag: 'h1' },
-    { name: 'channel_avatar',   regex: '.*', tag: 'img', hint: 'yt-decorated-avatar-view-model, #avatar, ytd-c4-tabbed-header-renderer #avatar' },
-    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$' },
-    { name: 'video_count',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*videos?\\s*$' },
+    // Channel name in the header H1. Header sits in the top ~340px of the
+    // viewport (banner + header row).
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b',
+      tag: 'h1',
+      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #channel-header, #header',
+      min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
+    // Channel avatar — large round image (96-176px square) in the header.
+    { name: 'channel_avatar',   regex: '.*', tag: 'img',
+      hint: 'yt-decorated-avatar-view-model, #avatar, ytd-c4-tabbed-header-renderer #avatar, yt-page-header-renderer #avatar',
+      min_w: 64, max_w: 220, min_h: 64, max_h: 220 },
+    // Subscriber count: short pill like "24K subscribers" — typically
+    // 80-200px wide, 16-26px tall, in the channel header metadata row.
+    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
+      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #meta, #channel-header-container',
+      min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
+    { name: 'video_count',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*videos?\\s*$',
+      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #meta, #channel-header-container',
+      min_w: 30, max_w: 200, min_h: 14, max_h: 30 },
   ],
   about_page: [
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined)\\b', tag: 'h1' },
-    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$' },
-    { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*views?\\s*$' },
-    { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$' },
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined)\\b',
+      tag: 'h1',
+      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #channel-header',
+      min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
+    { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
+      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #meta, ytd-about-channel-renderer, [role="dialog"]',
+      min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
+    // Total views in the About modal — typically a row with "N views" only.
+    // 60-220px wide and 14-30px tall sane bounds (was matching a 257×40
+    // container before).
+    { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*views?\\s*$',
+      hint: 'ytd-about-channel-renderer, [role="dialog"], #content-container, table',
+      min_w: 40, max_w: 220, min_h: 14, max_h: 30 },
+    { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$',
+      hint: 'ytd-about-channel-renderer, [role="dialog"], #content-container, table',
+      min_w: 60, max_w: 260, min_h: 14, max_h: 30 },
   ],
   videos_tab: [
-    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b', tag: 'h1' },
+    { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b',
+      tag: 'h1',
+      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #channel-header',
+      min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
   ],
-  // Watch page critical: AVOID the right-rail recommended sidebar (where
-  // every card has its own "N views" text and channel names). Scope to
-  // #primary / #below / ytd-watch-metadata so only the main-video chrome
-  // contributes bboxes.
+  // Watch page: must AVOID the right-rail recommended sidebar (every card
+  // has its own "N views" text + channel names). Owner row sits below the
+  // player at y≈650-820.
   watch_page: [
     { name: 'view_count',
       regex: '[\\d.,]+\\s*[KMB]?\\s*views?\\b',
-      hint: '#below, ytd-watch-metadata, ytd-video-primary-info-renderer, #info, #info-container, #info-text' },
+      hint: '#below, ytd-watch-metadata, ytd-video-primary-info-renderer, #info, #info-container, #info-text',
+      min_w: 40, max_w: 220, min_h: 14, max_h: 30 },
     { name: 'channel_name',
       regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$',
       not_regex: '(subscribers?|videos?|views?|Subscribe|Joined)\\b',
-      hint: 'ytd-video-owner-renderer ytd-channel-name, #owner #channel-name, #upload-info ytd-channel-name' },
+      hint: 'ytd-video-owner-renderer ytd-channel-name, #owner #channel-name, #upload-info ytd-channel-name',
+      min_w: 30, max_w: 360, min_h: 16, max_h: 30 },
     { name: 'subscriber_count',
       regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
-      hint: 'ytd-video-owner-renderer, #owner, #owner-sub-count' },
+      hint: 'ytd-video-owner-renderer, #owner, #owner-sub-count',
+      min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
   ],
 };
 
@@ -333,7 +375,8 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // regex against each element's OWN text (children stripped), keep the
     // tightest visible match. Survives YT class-name churn entirely.
     const rulesForKind = BBOX_RULES[kind] ?? [];
-    const bboxes: BBoxMap = await page.evaluate(([rules]) => {
+    const bboxes: BBoxMap = await page.evaluate(([rules, vpW, vpH]) => {
+      const VP_W = vpW as number; const VP_H = vpH as number;
       const out: Record<string, { x: number; y: number; w: number; h: number }> = {};
       const ownText = (el: Element): string => {
         let s = '';
@@ -341,8 +384,6 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         return s.trim();
       };
       const visible = (el: Element): boolean => {
-        const r = (el as HTMLElement).getBoundingClientRect();
-        if (r.width < 2 || r.height < 2) return false;
         const cs = window.getComputedStyle(el as HTMLElement);
         if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1) return false;
         return true;
@@ -355,11 +396,17 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         }
         return found.length > 0 ? found : [document.documentElement];
       };
-      const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; tag?: string }>;
+      const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; tag?: string;
+        min_w?: number; max_w?: number; min_h?: number; max_h?: number; in_viewport?: boolean }>;
       for (const rule of ruleList) {
         const re = new RegExp(rule.regex, 'i');
         const notRe = rule.not_regex ? new RegExp(rule.not_regex, 'i') : null;
         const tagSel = rule.tag ? rule.tag.toLowerCase() : '*';
+        const inViewport = rule.in_viewport !== false;
+        const minW = rule.min_w ?? 2;
+        const maxW = rule.max_w ?? Infinity;
+        const minH = rule.min_h ?? 2;
+        const maxH = rule.max_h ?? Infinity;
         let bestEl: Element | null = null;
         let bestArea = Infinity;
         for (const scope of scopes(rule.hint)) {
@@ -367,11 +414,20 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           try { nodes = Array.from(scope.querySelectorAll(tagSel)); } catch { continue; }
           for (const el of nodes) {
             if (!visible(el)) continue;
+            const r = (el as HTMLElement).getBoundingClientRect();
+            // Size constraints — catches oversized parent containers.
+            if (r.width < minW || r.width > maxW) continue;
+            if (r.height < minH || r.height > maxH) continue;
+            // Viewport check — bbox must be inside the captured PNG bounds.
+            // Tolerate a small overhang (4px) so antialiased borders don't fail.
+            if (inViewport) {
+              if (r.left < -4 || r.top < -4) continue;
+              if (r.right > VP_W + 4 || r.bottom > VP_H + 4) continue;
+            }
             // For images the textContent is empty — match by attribute.
             const probe = tagSel === 'img' ? ((el as HTMLImageElement).alt || (el as HTMLImageElement).src || '') : ownText(el);
             if (!re.test(probe)) continue;
             if (notRe && notRe.test(probe)) continue;
-            const r = (el as HTMLElement).getBoundingClientRect();
             const area = r.width * r.height;
             if (area < bestArea) { bestArea = area; bestEl = el; }
           }
@@ -382,7 +438,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         }
       }
       return out;
-    }, [rulesForKind]).catch(() => ({} as BBoxMap));
+    }, [rulesForKind, VIEWPORT.width, VIEWPORT.height]).catch(() => ({} as BBoxMap));
 
     // Branch: static screenshot OR scroll-record video.
     let buf: Buffer;
