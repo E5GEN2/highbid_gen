@@ -406,51 +406,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // regex against each element's OWN text (children stripped), keep the
     // tightest visible match. Survives YT class-name churn entirely.
     const rulesForKind = BBOX_RULES[kind] ?? [];
-    // Diagnostic dump — reports candidate counts + rejection reasons per
-    // rule. Persisted alongside the row so we can inspect what went wrong
-    // without redeploying. Tiny on the wire.
-    const bboxDebug = await page.evaluate((rules) => {
-      const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; strict_hint?: boolean; tag?: string;
-        min_w?: number; max_w?: number; min_h?: number; max_h?: number }>;
-      const ownText = (el: Element): string => {
-        let s = ''; for (const n of Array.from(el.childNodes)) if (n.nodeType === 3) s += n.textContent ?? '';
-        return s.trim();
-      };
-      const out: Record<string, { regex_matches: number; rejected_size: number; rejected_offview: number; rejected_covered: number; accepted: number; sample_texts: string[]; sample_covered: Array<{ text: string; top_tag: string }> }> = {};
-      for (const rule of ruleList) {
-        const re = new RegExp(rule.regex, 'i');
-        const notRe = rule.not_regex ? new RegExp(rule.not_regex, 'i') : null;
-        const tagSel = rule.tag ? rule.tag.toLowerCase() : '*';
-        const minW = rule.min_w ?? 2, maxW = rule.max_w ?? Infinity;
-        const minH = rule.min_h ?? 2, maxH = rule.max_h ?? Infinity;
-        const VP_W = window.innerWidth, VP_H = window.innerHeight;
-        let regex_matches = 0, rejected_size = 0, rejected_offview = 0, rejected_covered = 0, accepted = 0;
-        const sample_texts: string[] = [];
-        const sample_covered: Array<{ text: string; top_tag: string }> = [];
-        for (const el of Array.from(document.querySelectorAll(tagSel))) {
-          const probe = tagSel === 'img' ? ((el as HTMLImageElement).alt || (el as HTMLImageElement).src || '') : ownText(el);
-          if (!re.test(probe)) continue;
-          if (notRe && notRe.test(probe)) continue;
-          regex_matches++;
-          if (sample_texts.length < 5) sample_texts.push(probe.slice(0, 60));
-          const r = (el as HTMLElement).getBoundingClientRect();
-          if (r.width < minW || r.width > maxW || r.height < minH || r.height > maxH) { rejected_size++; continue; }
-          if (r.left < -4 || r.top < -4 || r.right > VP_W + 4 || r.bottom > VP_H + 4) { rejected_offview++; continue; }
-          const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-          const top = document.elementFromPoint(cx, cy);
-          if (top && top !== el && !el.contains(top) && !top.contains(el)) {
-            rejected_covered++;
-            if (sample_covered.length < 3) sample_covered.push({ text: probe.slice(0, 50), top_tag: (top.tagName || '?').toLowerCase() + ((top as HTMLElement).className ? '.' + (top as HTMLElement).className.toString().split(/\s+/)[0] : '') });
-            continue;
-          }
-          accepted++;
-        }
-        out[rule.name] = { regex_matches, rejected_size, rejected_offview, rejected_covered, accepted, sample_texts, sample_covered };
-      }
-      return out;
-    }, rulesForKind).catch(() => ({} as Record<string, unknown>));
-    console.log('[yt-capture] bbox debug for', kind, channelId, JSON.stringify(bboxDebug));
-    const bboxes: BBoxMap = await page.evaluate(([rules, vpW, vpH]) => {
+    const extracted = await page.evaluate(([rules, vpW, vpH]) => {
       const VP_W = vpW as number; const VP_H = vpH as number;
       const out: Record<string, { x: number; y: number; w: number; h: number }> = {};
       const ownText = (el: Element): string => {
@@ -458,23 +414,63 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         for (const n of Array.from(el.childNodes)) if (n.nodeType === 3) s += n.textContent ?? '';
         return s.trim();
       };
-      const visible = (el: Element): boolean => {
+      /** Walk the full DOM tree INCLUDING shadow roots. YT's about modal
+       *  renders its text inside Polymer custom elements whose actual text
+       *  lives in shadow DOM (e.g. yt-attributed-string). Plain
+       *  querySelectorAll('*') stops at shadow boundaries → modal text is
+       *  invisible to the extractor. Collecting via this walker fixes it. */
+      const collectAll = (): Element[] => {
+        const all: Element[] = [];
+        const stack: Array<Element | DocumentFragment | ShadowRoot> = [document.documentElement];
+        while (stack.length) {
+          const node = stack.pop();
+          if (!node) continue;
+          const children = (node as Element).children;
+          if (!children) continue;
+          for (const child of Array.from(children)) {
+            all.push(child);
+            stack.push(child);
+            const sr = (child as Element).shadowRoot;
+            if (sr) stack.push(sr);
+          }
+        }
+        return all;
+      };
+      const ALL_ELEMENTS = collectAll();
+      /** Topmost element check that ALSO walks shadow boundaries via
+       *  getRootNode/host. The standard `el.contains()` returns false across
+       *  shadow boundaries; this fixes the "rejected_covered: top is
+       *  yt-attributed-string" case from the diagnostic. */
+      const sameOrAncestor = (a: Element, b: Element | null): boolean => {
+        if (!b) return false;
+        let cur: Node | null = b;
+        while (cur) {
+          if (cur === a) return true;
+          // climb out of shadow root via host
+          if (cur instanceof ShadowRoot) cur = (cur as ShadowRoot).host;
+          else cur = (cur as Node).parentNode;
+        }
+        // also check reverse: a inside b
+        cur = a;
+        while (cur) {
+          if (cur === b) return true;
+          if (cur instanceof ShadowRoot) cur = (cur as ShadowRoot).host;
+          else cur = (cur as Node).parentNode;
+        }
+        return false;
+      };
+      const visible = (el: Element, r: DOMRect): boolean => {
         const cs = window.getComputedStyle(el as HTMLElement);
         if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1) return false;
-        // Stacked check: if the element is covered by something else
-        // (e.g. modal backdrop), elementFromPoint at its center returns
-        // the covering element. Accept the candidate only when the topmost
-        // element at its center IS the candidate, OR is an ancestor of it,
-        // OR is a descendant of it. This is the clean discriminator for
-        // header-text-behind-modal-backdrop on about_page.
-        const r = (el as HTMLElement).getBoundingClientRect();
-        if (r.width < 2 || r.height < 2) return false;
         const cx = r.left + r.width / 2;
         const cy = r.top + r.height / 2;
         if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return true; // can't test offscreen
         const top = document.elementFromPoint(cx, cy);
-        if (top && top !== el && !el.contains(top) && !top.contains(el)) return false;
-        return true;
+        if (!top || top === el) return true;
+        if (sameOrAncestor(el, top)) return true;
+        // Also accept if top sits inside el via shadow boundaries (host chain).
+        // Reject only if there's a separate stacking context above.
+        return false;
       };
       const scopes = (hint: string | undefined, strict: boolean): Element[] | null => {
         if (!hint) return [document.documentElement];
@@ -483,55 +479,67 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           try { found.push(...Array.from(document.querySelectorAll(sel))); } catch { /* invalid sel — skip */ }
         }
         if (found.length > 0) return found;
-        // No hint match: strict_hint → return null (caller skips rule entirely);
-        // non-strict → fall back to whole document.
         return strict ? null : [document.documentElement];
       };
       const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; strict_hint?: boolean; tag?: string;
         min_w?: number; max_w?: number; min_h?: number; max_h?: number; in_viewport?: boolean }>;
+      const debugOut: Record<string, { regex_matches: number; rejected_size: number; rejected_offview: number; rejected_covered: number; accepted: number; sample_texts: string[]; sample_covered: Array<{ text: string; top_tag: string }> }> = {};
       for (const rule of ruleList) {
         const re = new RegExp(rule.regex, 'i');
         const notRe = rule.not_regex ? new RegExp(rule.not_regex, 'i') : null;
         const tagSel = rule.tag ? rule.tag.toLowerCase() : '*';
         const inViewport = rule.in_viewport !== false;
-        const minW = rule.min_w ?? 2;
-        const maxW = rule.max_w ?? Infinity;
-        const minH = rule.min_h ?? 2;
-        const maxH = rule.max_h ?? Infinity;
+        const minW = rule.min_w ?? 2, maxW = rule.max_w ?? Infinity;
+        const minH = rule.min_h ?? 2, maxH = rule.max_h ?? Infinity;
         let bestEl: Element | null = null;
         let bestArea = Infinity;
+        let regex_matches = 0, rejected_size = 0, rejected_offview = 0, rejected_covered = 0, accepted = 0;
+        const sample_texts: string[] = [];
+        const sample_covered: Array<{ text: string; top_tag: string }> = [];
         const scopeList = scopes(rule.hint, rule.strict_hint === true);
-        if (!scopeList) continue;   // strict_hint with no matches → skip rule
-        for (const scope of scopeList) {
-          let nodes: Element[];
-          try { nodes = Array.from(scope.querySelectorAll(tagSel)); } catch { continue; }
-          for (const el of nodes) {
-            if (!visible(el)) continue;
-            const r = (el as HTMLElement).getBoundingClientRect();
-            // Size constraints — catches oversized parent containers.
-            if (r.width < minW || r.width > maxW) continue;
-            if (r.height < minH || r.height > maxH) continue;
-            // Viewport check — bbox must be inside the captured PNG bounds.
-            // Tolerate a small overhang (4px) so antialiased borders don't fail.
-            if (inViewport) {
-              if (r.left < -4 || r.top < -4) continue;
-              if (r.right > VP_W + 4 || r.bottom > VP_H + 4) continue;
-            }
-            // For images the textContent is empty — match by attribute.
-            const probe = tagSel === 'img' ? ((el as HTMLImageElement).alt || (el as HTMLImageElement).src || '') : ownText(el);
-            if (!re.test(probe)) continue;
-            if (notRe && notRe.test(probe)) continue;
-            const area = r.width * r.height;
-            if (area < bestArea) { bestArea = area; bestEl = el; }
-          }
+        if (!scopeList) {
+          debugOut[rule.name] = { regex_matches: 0, rejected_size: 0, rejected_offview: 0, rejected_covered: 0, accepted: 0, sample_texts: [], sample_covered: [] };
+          continue;
         }
+        // When hint is set, filter ALL_ELEMENTS to those inside a scope.
+        // When no hint, use ALL_ELEMENTS directly.
+        const inScope = rule.hint
+          ? ALL_ELEMENTS.filter(el => scopeList.some(s => s === el || s.contains(el) || sameOrAncestor(s, el)))
+          : ALL_ELEMENTS;
+        // Tag filter
+        const candidates = tagSel === '*' ? inScope : inScope.filter(el => el.tagName.toLowerCase() === tagSel);
+        for (const el of candidates) {
+          const probe = tagSel === 'img' ? ((el as HTMLImageElement).alt || (el as HTMLImageElement).src || '') : ownText(el);
+          if (!re.test(probe)) continue;
+          if (notRe && notRe.test(probe)) continue;
+          regex_matches++;
+          if (sample_texts.length < 5) sample_texts.push(probe.slice(0, 60));
+          const r = (el as HTMLElement).getBoundingClientRect();
+          if (r.width < minW || r.width > maxW || r.height < minH || r.height > maxH) { rejected_size++; continue; }
+          if (inViewport && (r.left < -4 || r.top < -4 || r.right > VP_W + 4 || r.bottom > VP_H + 4)) { rejected_offview++; continue; }
+          if (!visible(el, r)) {
+            rejected_covered++;
+            if (sample_covered.length < 3) {
+              const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+              const top = document.elementFromPoint(cx, cy);
+              sample_covered.push({ text: probe.slice(0, 50), top_tag: (top?.tagName || '?').toLowerCase() + ((top as HTMLElement | null)?.className ? '.' + (top as HTMLElement).className.toString().split(/\s+/)[0] : '') });
+            }
+            continue;
+          }
+          accepted++;
+          const area = r.width * r.height;
+          if (area < bestArea) { bestArea = area; bestEl = el; }
+        }
+        debugOut[rule.name] = { regex_matches, rejected_size, rejected_offview, rejected_covered, accepted, sample_texts, sample_covered };
         if (bestEl) {
           const r = (bestEl as HTMLElement).getBoundingClientRect();
           out[rule.name] = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
         }
       }
-      return out;
-    }, [rulesForKind, VIEWPORT.width, VIEWPORT.height]).catch(() => ({} as BBoxMap));
+      return { bboxes: out, debug: debugOut };
+    }, [rulesForKind, VIEWPORT.width, VIEWPORT.height]).catch(() => ({ bboxes: {} as BBoxMap, debug: {} as Record<string, unknown> }));
+    const bboxes: BBoxMap = (extracted as { bboxes: BBoxMap }).bboxes ?? {};
+    const bboxDebug = (extracted as { debug: Record<string, unknown> }).debug ?? {};
 
     // Branch: static screenshot OR scroll-record video.
     let buf: Buffer;
