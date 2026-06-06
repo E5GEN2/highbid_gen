@@ -122,7 +122,6 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
 async function runCapture(rowId: number, channelId: string, handle: string | null, kind: ScreenKind, url: string, geo: string | null, dateBucket: string): Promise<CaptureResult> {
   // Lazy-load Playwright (Next.js avoids bundling it client-side).
   const { chromium } = await import('playwright');
-  const proxyChain = await import('proxy-chain');
 
   const proxy = await getRandomHealthyProxy().catch(() => null);
   if (!proxy) throw new Error('no healthy xgodo proxy available');
@@ -132,31 +131,20 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   await fs.mkdir(SCREENS_DIR, { recursive: true });
   const localPath = path.join(SCREENS_DIR, `${channelId}_${kind}_${dateBucket}.png`);
 
-  // Our xgodo proxies are dual-protocol. Chromium has a known Linux bug
-  // where Proxy-Authorization isn't sent on CONNECT (ERR_CONNECTION_RESET).
-  // Workaround: wrap the authenticated upstream proxy via proxy-chain
-  // Server with explicit prepareRequestFunction — gives us auth injection
-  // PLUS upstream-error logging so we can see why the gateway might refuse.
-  const upU = new URL(proxy.url);
-  const upHost = upU.hostname;
-  const upPort = parseInt(upU.port || '80', 10);
-  const upUser = decodeURIComponent(upU.username);
-  const upPass = decodeURIComponent(upU.password);
-
-  const server = new proxyChain.Server({
-    port: 0, // OS-assigned ephemeral
-    prepareRequestFunction: () => ({
-      upstreamProxyUrl: `http://${encodeURIComponent(upUser)}:${encodeURIComponent(upPass)}@${upHost}:${upPort}`,
-    }),
-  });
-  // proxy-chain emits upstream errors; surface them so the caller sees the
-  // real reason instead of a generic ERR_TUNNEL_CONNECTION_FAILED.
-  const upstreamErrors: string[] = [];
-  server.on('connectionError', (err: Error) => upstreamErrors.push(`conn: ${err.message}`));
-  server.on('requestFailed', (info: { error?: Error; request?: { url?: string } }) => upstreamErrors.push(`req: ${info.error?.message ?? '?'} ${info.request?.url ?? ''}`));
-  await server.listen();
-  const localPort = (server as unknown as { port: number }).port;
-  const localProxyUrl = `http://127.0.0.1:${localPort}`;
+  // Our prod pool is SOCKS5+auth (the static list in lib/static-proxies.ts).
+  // Chromium has two long-standing limitations:
+  //   1. Can't auth to SOCKS5 at all ("Browser does not support socks5 proxy
+  //      authentication")
+  //   2. Linux Proxy-Authorization isn't sent on CONNECT → upstream RSTs
+  // proxy-chain only handles HTTP upstreams so it doesn't help here.
+  // We use our own in-process bridge: tiny anonymous HTTP CONNECT listener on
+  // localhost; each tunnel opens a SOCKS5+auth connection via the `socks`
+  // package and pipes bytes both ways. Chromium sees a no-auth local proxy
+  // (bypasses both bugs); TLS terminates between Chromium and the origin.
+  const { createSocksHttpBridge } = await import('./socks-http-bridge');
+  const isSocks = /^socks/i.test(proxy.url);
+  const bridge = isSocks ? await createSocksHttpBridge(proxy.url) : null;
+  const localProxyUrl = bridge ? bridge.url : proxy.url;
 
   // On Railway we use the system /usr/bin/chromium (no 130MB Playwright
   // browser bundle). Locally Playwright falls back to its own bundled
@@ -214,29 +202,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     );
 
     return { id: rowId, channel_id: channelId, handle, kind, url, local_path: localPath, bytes: buf.length, date_bucket: dateBucket, geo, proxy_country: proxy.country, cached: false };
-  } catch (err) {
-    const e = err as Error;
-    const details: string[] = [];
-    // proxy-chain events emit async — wait a tick so they land before we throw.
-    await new Promise(r => setTimeout(r, 250));
-    if (upstreamErrors.length > 0) details.push(`upstream: ${upstreamErrors[0]}`);
-    // Direct undici probe of the SAME proxy URL. Tells us conclusively
-    // whether Railway's egress can reach xgodo at all.
-    try {
-      const { ProxyAgent, fetch: undiciFetch } = await import('undici');
-      const probe = await undiciFetch('https://api.ipify.org?format=json', {
-        dispatcher: new ProxyAgent({ uri: proxy.url, connectTimeout: 8_000 }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      details.push(`undici probe: HTTP ${probe.status} (${(await probe.text()).slice(0, 60)})`);
-    } catch (pe) {
-      details.push(`undici probe: ${(pe as Error & { cause?: Error }).cause?.message ?? (pe as Error).message}`);
-    }
-    if (details.length > 0) e.message = `${e.message} · ${details.join(' · ')}`;
-    throw e;
   } finally {
     await browser.close().catch(() => {});
-    await server.close(true).catch(() => {});
+    if (bridge) await bridge.close().catch(() => {});
   }
 }
 
