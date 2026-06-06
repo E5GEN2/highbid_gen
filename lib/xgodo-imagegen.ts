@@ -26,6 +26,7 @@ import fs from 'fs/promises';
 import { getPool } from './db';
 import { CLIPS_DIR } from './clips-dir';
 import { listMarketDevices, marketDeviceNameSet } from './xgodo-market-devices';
+import { deletePlannedTasks } from './xgodo-tasks';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
 /** The image-gen job (from the dashboard URL job_applicants?id=…). */
@@ -131,44 +132,58 @@ export async function getDeviceReputation(): Promise<DeviceRep[]> {
     .sort((a, b) => (b.success_rate - a.success_rate) || (b.done - a.done));
 }
 
+/** Devices currently RUNNING a task on the image-gen job — pinning to these
+ *  leaves the new task in limbo (run_immediately can't assign to a busy
+ *  device, and there's no auto-pickup once it frees). Same rule the agents
+ *  deploy enforces. */
+async function fetchBusyDevices(token: string): Promise<Set<string>> {
+  const r = await postApplicants(token, { job_id: IMAGEGEN_JOB_ID, status: 'running', limit: 100 });
+  const set = new Set<string>();
+  for (const t of r.data?.job_tasks || []) if (t.device_name) set.add(t.device_name);
+  return set;
+}
+
 /**
- * Devices to PIN to, best first: proven (≥1 success), currently online, not
- * obviously broken. Ordered by success-rate then volume of successes.
+ * Devices we may PIN to right now, best first: proven (≥1 success, ≥20%),
+ * currently online, and NOT busy on another task. Ordered by success-rate
+ * then volume of successes.
  */
-export async function getPreferredOnlineDevices(token: string): Promise<string[]> {
-  const [rep, market] = await Promise.all([
+export async function getPinnableDevices(token: string): Promise<string[]> {
+  const [rep, market, busy] = await Promise.all([
     getDeviceReputation(),
     listMarketDevices(token).catch(() => []),
+    fetchBusyDevices(token).catch(() => new Set<string>()),
   ]);
   const online = marketDeviceNameSet(market);
   return rep
-    .filter(d => d.done >= 1 && d.success_rate >= 0.2 && online.has(d.device_name))
+    .filter(d => d.done >= 1 && d.success_rate >= 0.2 && online.has(d.device_name) && !busy.has(d.device_name))
     .map(d => d.device_name);
 }
 
 /**
- * Submit a batch with device affinity. A fraction of tasks pin to proven
- * good online devices (exploit); the rest stay unpinned so xgodo keeps
- * surfacing new devices we can learn about (explore).
+ * Submit a batch with device affinity, following the agents-deploy rules:
+ * pin at most ONE task per proven device that's online AND free right now
+ * (claiming each as we go so we never double-pin a device into limbo). Any
+ * tasks beyond the available good devices go UNPINNED — which doubles as
+ * exploration, letting xgodo surface new devices we can learn about.
  */
 export async function submitImageGenBatch(
   inputs: ImageGenInput[],
-  opts: { pin?: boolean; explore?: number; retryOf?: (i: number) => number | undefined } = {},
-): Promise<{ submitted: number; failed: number; ids: number[]; pinnedTo: string[]; errors: string[] }> {
+  opts: { pin?: boolean; retryOf?: (i: number) => number | undefined } = {},
+): Promise<{ submitted: number; failed: number; ids: number[]; pinnedTo: string[]; unpinned: number; errors: string[] }> {
   const pin = opts.pin ?? true;
-  const explore = opts.explore ?? 0.25;
-  let preferred: string[] = [];
+  let pinnable: string[] = [];
   if (pin) {
-    try { preferred = await getPreferredOnlineDevices(await getXgodoToken()); } catch { preferred = []; }
+    try { pinnable = await getPinnableDevices(await getXgodoToken()); } catch { pinnable = []; }
   }
 
+  // Assign one distinct device per input until we run out of pinnable
+  // devices; the rest are unpinned.
+  const assignments = inputs.map((_, i) => (i < pinnable.length ? pinnable[i] : undefined));
+
   const ids: number[] = []; const errors: string[] = []; const pinnedTo: string[] = [];
-  let rr = 0;
   const results = await Promise.all(inputs.map(async (input, i) => {
-    // explore fraction (or no preferred devices) → leave unpinned so xgodo
-    // keeps surfacing new devices we can learn about.
-    const usePin = pin && preferred.length > 0 && Math.random() >= explore;
-    const dev = usePin ? preferred[rr++ % preferred.length] : undefined;
+    const dev = assignments[i];
     const r = await submitImageGenTask(input, { pinDevice: dev, retryOf: opts.retryOf?.(i) });
     if ('error' in r) return { ok: false as const, error: r.error };
     return { ok: true as const, id: r.id, dev };
@@ -177,7 +192,7 @@ export async function submitImageGenBatch(
     if (res.ok) { ids.push(res.id); if (res.dev) pinnedTo.push(res.dev); }
     else errors.push(res.error);
   }
-  return { submitted: ids.length, failed: errors.length, ids, pinnedTo, errors };
+  return { submitted: ids.length, failed: errors.length, ids, pinnedTo, unpinned: ids.length - pinnedTo.length, errors };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -266,8 +281,29 @@ async function downloadToVolume(id: number, url: string, token: string, imageNam
 // Tick — poll in-flight tasks, download finished ones
 // ─────────────────────────────────────────────────────────────────────
 
-export async function tickImageGen(): Promise<{ polled: number; done: number; failed: number; errors: number }> {
+export async function tickImageGen(): Promise<{ polled: number; done: number; failed: number; errors: number; swept: number }> {
   const pool = await getPool();
+  const token = await getXgodoToken();
+
+  // Zombie sweep (agents-deploy rule): a PINNED task still 'queued' after a
+  // few minutes means its device was busy/offline and run_immediately never
+  // landed — xgodo will hold it forever. Delete the planned task to free the
+  // slot and fail the row so retryMissing re-pins it to a free device.
+  let swept = 0;
+  const stuck = await pool.query<{ id: number; planned_task_id: string }>(
+    `SELECT id, planned_task_id FROM imagegen_tasks
+      WHERE status='queued' AND pinned_device IS NOT NULL AND planned_task_id IS NOT NULL
+        AND submitted_at < NOW() - INTERVAL '4 minutes'`,
+  );
+  if (stuck.rows.length > 0) {
+    await deletePlannedTasks(token, stuck.rows.map(r => r.planned_task_id)).catch(() => {});
+    await pool.query(
+      `UPDATE imagegen_tasks SET status='failed', error='pinned device never picked it up (stuck in queue)', finished_at=NOW(), updated_at=NOW() WHERE id = ANY($1::int[])`,
+      [stuck.rows.map(r => r.id)],
+    );
+    swept = stuck.rows.length;
+  }
+
   const due = await pool.query<{ id: number; planned_task_id: string; job_task_id: string | null; status: string }>(
     `SELECT id, planned_task_id, job_task_id, status
        FROM imagegen_tasks
@@ -276,9 +312,8 @@ export async function tickImageGen(): Promise<{ polled: number; done: number; fa
       ORDER BY submitted_at ASC
       LIMIT 50`,
   );
-  if (due.rows.length === 0) return { polled: 0, done: 0, failed: 0, errors: 0 };
+  if (due.rows.length === 0) return { polled: 0, done: 0, failed: 0, errors: 0, swept };
 
-  const token = await getXgodoToken();
   let polled = 0, done = 0, failed = 0, errors = 0;
 
   for (const row of due.rows) {
@@ -358,7 +393,7 @@ export async function tickImageGen(): Promise<{ polled: number; done: number; fa
       }
     }
   }
-  return { polled, done, failed, errors };
+  return { polled, done, failed, errors, swept };
 }
 
 /**
