@@ -5,6 +5,7 @@ import { Markdown } from '@/components/Markdown';
 import ContentGenTab from '@/components/ContentGenTab';
 import ImageGenTab from '@/components/ImageGenTab';
 import AudioGenTab from '@/components/AudioGenTab';
+import ScreenCaptureTab from '@/components/ScreenCaptureTab';
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -33,7 +34,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen' | 'audiogen'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen' | 'audiogen' | 'screencap'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1695,6 +1696,7 @@ export default function AdminPage() {
     { key: 'content-gen',    label: 'Content Gen',     dot: 'bg-amber-500/70' },
     { key: 'imagegen',       label: 'Image Gen',       dot: 'bg-lime-500/70' },
     { key: 'audiogen',       label: 'Audio Gen',       dot: 'bg-sky-500/70' },
+    { key: 'screencap',      label: 'Screen Capture',  dot: 'bg-blue-500/70' },
     { key: 'embed-reqs',     label: 'Embed reqs',      dot: 'bg-cyan-400/70' },
     { key: 'analyze-vids',   label: 'Analyze Vids',    dot: 'bg-teal-400/70' },
     { key: 'xg-vid-dl',      label: 'XG vid download', dot: 'bg-orange-400/70' },
@@ -6219,6 +6221,13 @@ export default function AdminPage() {
             voice library, and group-bed composer in one place. */}
         <div style={{ display: adminSection === 'audiogen' ? 'block' : 'none' }}>
           <AudioGenTab active={adminSection === 'audiogen'} />
+        </div>
+
+        {/* Screen Capture — Playwright + xgodo proxies. Capture real YT
+            channel pages / about / videos / watch for the proof-side visuals,
+            cached per (channel, kind, day). Live overwatch + gallery. */}
+        <div style={{ display: adminSection === 'screencap' ? 'block' : 'none' }}>
+          <ScreenCaptureTab active={adminSection === 'screencap'} />
         </div>
 
         {/* Embedding requests — custom-niche owners file these when

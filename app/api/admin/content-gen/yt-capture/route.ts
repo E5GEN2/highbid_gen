@@ -70,24 +70,57 @@ export async function GET(req: NextRequest) {
     } catch (e) { return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 }); }
   }
 
-  // List mode: returns current rows for the requested channels (or recent).
+  // List mode: returns recent captures + status counts. The GUI uses both.
   const channelIds = (sp.get('channelIds') ?? '').split(',').map(s => s.trim()).filter(Boolean);
   const videoIds = (sp.get('videoIds') ?? '').split(',').map(s => parseInt(s.trim())).filter(n => Number.isFinite(n));
+  const kindFilter = sp.get('kind');
+  const statusFilter = sp.get('status');
+  const limit = Math.max(1, Math.min(500, parseInt(sp.get('limit') ?? '120')));
   const ch = await resolveChannels(videoIds, channelIds);
   const pool = await getPool();
+
   const where: string[] = []; const args: unknown[] = [];
   if (ch.length > 0) { args.push(ch); where.push(`channel_id = ANY($${args.length}::text[])`); }
+  if (kindFilter) { args.push(kindFilter); where.push(`kind = $${args.length}`); }
+  if (statusFilter) { args.push(statusFilter); where.push(`status = $${args.length}`); }
+  args.push(limit);
+
+  // Status + kind counts (across all rows, not filtered — gives the GUI a
+  // health view of the whole library).
+  const counts = (await pool.query<{ status: string; n: number }>(
+    `SELECT status, COUNT(*)::int AS n FROM content_gen_yt_screens GROUP BY status`,
+  )).rows.reduce((a, r) => { a[r.status] = r.n; return a; }, {} as Record<string, number>);
+  const kindCounts = (await pool.query<{ kind: string; n: number }>(
+    `SELECT kind, COUNT(*)::int AS n FROM content_gen_yt_screens GROUP BY kind`,
+  )).rows.reduce((a, r) => { a[r.kind] = r.n; return a; }, {} as Record<string, number>);
+
   const rows = (await pool.query(
     `SELECT id, channel_id, handle, kind, url, geo, date_bucket, status,
             (local_path IS NOT NULL) AS has_file, bytes, page_width, page_height,
             proxy_country, proxy_device, error, started_at, finished_at, updated_at
        FROM content_gen_yt_screens
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY id DESC LIMIT 100`,
+      ORDER BY id DESC LIMIT $${args.length}`,
     args,
   )).rows;
+
+  // Resolve channel names for display.
+  const cids = Array.from(new Set(rows.map(r => r.channel_id).filter(Boolean)));
+  let nameByCid = new Map<string, string>();
+  if (cids.length > 0) {
+    const r = await pool.query<{ channel_id: string; channel_name: string | null; subscriber_count: number | null }>(
+      `SELECT channel_id, channel_name, subscriber_count FROM niche_spy_channels WHERE channel_id = ANY($1::text[])`, [cids],
+    );
+    nameByCid = new Map(r.rows.map(x => [x.channel_id, x.channel_name ?? x.channel_id]));
+  }
+
   return NextResponse.json({
     ok: true,
-    rows: rows.map(r => ({ ...r, file_url: r.has_file ? `/api/admin/content-gen/yt-capture/file?id=${r.id}` : null })),
+    counts, kindCounts,
+    rows: rows.map(r => ({
+      ...r,
+      channel_name: nameByCid.get(r.channel_id) ?? null,
+      file_url: r.has_file ? `/api/admin/content-gen/yt-capture/file?id=${r.id}` : null,
+    })),
   });
 }
