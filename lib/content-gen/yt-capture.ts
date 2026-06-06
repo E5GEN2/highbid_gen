@@ -750,12 +750,17 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       try {
         const result = await page.evaluate((vpW: number) => {
           // The video card renderers used by YT. Order matters: prefer the
-          // more specific renderer first (rich-item in modern grid layout).
-          // Channel_page uses ytd-rich-shelf-renderer wrapping ytd-rich-item-
-          // renderer for "Popular videos" rows; videos_tab uses ytd-rich-grid-
-          // renderer wrapping the same. Cover all variants.
+          // more specific renderer first.
+          //   videos_tab     → ytd-rich-item-renderer (still current)
+          //   channel_page   → yt-lockup-view-model (Polymer 3+ rewrite)
+          //   shorts shelf   → ytm-shorts-lockup-view-model{,-v2}
+          //   older layouts  → ytd-grid-video-renderer, ytd-video-renderer
+          // Verified via tag_counts diagnostic on multiple channels.
           const sel = [
             'ytd-rich-item-renderer',
+            'yt-lockup-view-model',
+            'ytm-shorts-lockup-view-model-v2',
+            'ytm-shorts-lockup-view-model',
             'ytd-grid-video-renderer',
             'ytd-rich-grid-media',
             'ytd-video-renderer',
