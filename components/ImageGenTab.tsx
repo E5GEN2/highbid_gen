@@ -30,6 +30,8 @@ interface ImageRow {
   expires_at: string | null;
   image_name: string | null;
   worker_name: string | null;
+  device_name: string | null;
+  pinned_device: string | null;
   error: string | null;
   downloaded: boolean;
   file_url: string | null;
@@ -44,11 +46,15 @@ const STATUS_STYLE: Record<string, string> = {
   failed: 'bg-red-500/15 text-red-300 border-red-500/30',
 };
 
+interface DeviceRep { device_name: string; done: number; failed: number; total: number; success_rate: number; }
+
 export default function ImageGenTab({ active }: { active: boolean }) {
   const [images, setImages] = useState<ImageRow[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [devices, setDevices] = useState<DeviceRep[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   const [prompt, setPrompt] = useState('');
@@ -63,7 +69,7 @@ export default function ImageGenTab({ active }: { active: boolean }) {
     setLoading(true);
     try {
       const r = await fetch('/api/admin/imagegen?limit=120').then(r => r.json());
-      if (r.ok) { setImages(r.images || []); setCounts(r.counts || {}); }
+      if (r.ok) { setImages(r.images || []); setCounts(r.counts || {}); setDevices(r.devices || []); }
     } catch { /* ignore */ } finally { setLoading(false); }
   }, []);
 
@@ -93,6 +99,18 @@ export default function ImageGenTab({ active }: { active: boolean }) {
       if (r.ok) { setMsg(`Submitted ${r.submitted} task${r.submitted === 1 ? '' : 's'}${r.failed ? `, ${r.failed} failed` : ''}`); setPrompt(''); refresh(); }
       else setMsg(r.error || 'submit failed');
     } catch (e) { setMsg((e as Error).message); } finally { setSubmitting(false); }
+  };
+
+  const retryMissing = async () => {
+    setRetrying(true); setMsg(null);
+    try {
+      const r = await fetch('/api/admin/imagegen', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'retryMissing' }),
+      }).then(r => r.json());
+      if (r.ok) { setMsg(r.retried ? `Retrying ${r.retried} missing (${r.purposes?.join(', ')})${r.pinnedTo?.length ? ` · pinned to ${[...new Set(r.pinnedTo)].join(', ')}` : ''}` : 'Nothing missing to retry'); refresh(); }
+      else setMsg(r.error || 'retry failed');
+    } catch (e) { setMsg((e as Error).message); } finally { setRetrying(false); }
   };
 
   const expiryLabel = (iso: string | null) => {
@@ -148,14 +166,35 @@ export default function ImageGenTab({ active }: { active: boolean }) {
       </div>
 
       {/* ── status bar ── */}
-      <div className="flex items-center gap-2 mb-4 text-xs">
+      <div className="flex items-center gap-2 mb-3 text-xs">
         {(['queued', 'running', 'done', 'failed'] as const).map(s => (
           <span key={s} className={`px-2 py-1 rounded border ${STATUS_STYLE[s]}`}>{s}: {counts[s] ?? 0}</span>
         ))}
-        <button onClick={refresh} disabled={loading} className="ml-auto px-3 py-1 rounded border border-[#2a2a2a] hover:border-[#444] text-[#aaa] disabled:opacity-50">
+        <button onClick={retryMissing} disabled={retrying} className="ml-auto px-3 py-1 rounded border border-lime-600/40 text-lime-300 hover:border-lime-500 disabled:opacity-50" title="Resubmit every icon with no success yet, pinned to proven good devices">
+          {retrying ? 'Retrying…' : 'Retry missing (pinned)'}
+        </button>
+        <button onClick={refresh} disabled={loading} className="px-3 py-1 rounded border border-[#2a2a2a] hover:border-[#444] text-[#aaa] disabled:opacity-50">
           {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
+
+      {/* ── device reputation (affinity routing) ── */}
+      {devices.length > 0 && (
+        <div className="mb-5 rounded-lg border border-[#1f1f1f] bg-[#0d0d0d] p-3">
+          <div className="text-[11px] text-[#888] mb-2">Device reputation <span className="text-[#555]">— pinned routing prefers proven devices that are online now</span></div>
+          <div className="flex flex-wrap gap-1.5">
+            {devices.map(d => {
+              const good = d.done >= 1 && d.success_rate >= 0.2;
+              return (
+                <span key={d.device_name} className={`text-[10px] px-1.5 py-1 rounded border ${good ? 'bg-green-500/10 text-green-300 border-green-500/25' : 'bg-red-500/10 text-red-300/80 border-red-500/20'}`}
+                  title={`${d.done} done / ${d.failed} failed`}>
+                  {d.device_name}: {Math.round(d.success_rate * 100)}% ({d.done}/{d.total})
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── grid ── */}
       {images.length === 0 ? (
@@ -178,7 +217,8 @@ export default function ImageGenTab({ active }: { active: boolean }) {
                 <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-[#777]">
                   {img.purpose && <span className="px-1 py-0.5 rounded bg-lime-500/10 text-lime-300/90 border border-lime-500/20">{img.purpose}</span>}
                   <span>{img.model}</span><span>·</span><span>{img.aspect}</span>
-                  {img.worker_name && <><span>·</span><span>{img.worker_name}</span></>}
+                  {img.pinned_device && <span className="text-lime-400/80" title={`pinned to ${img.pinned_device}`}>📌</span>}
+                  {img.device_name && <><span>·</span><span title="device that ran it">{img.device_name}</span></>}
                 </div>
                 {img.error && <p className="text-[10px] text-red-400/90 line-clamp-2" title={img.error}>{img.error}</p>}
                 {img.status === 'done' && img.expires_at && <p className="text-[10px] text-[#555]">{expiryLabel(img.expires_at)}</p>}

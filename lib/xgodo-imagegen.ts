@@ -25,6 +25,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { getPool } from './db';
 import { CLIPS_DIR } from './clips-dir';
+import { listMarketDevices, marketDeviceNameSet } from './xgodo-market-devices';
 
 const XGODO_API = 'https://xgodo.com/api/v2';
 /** The image-gen job (from the dashboard URL job_applicants?id=…). */
@@ -56,7 +57,14 @@ async function getXgodoToken(): Promise<string> {
 // Submit
 // ─────────────────────────────────────────────────────────────────────
 
-export async function submitImageGenTask(input: ImageGenInput): Promise<{ ok: true; id: number; plannedTaskId: string } | { ok: false; error: string }> {
+export interface SubmitOpts {
+  /** Pin the task to this device (device_name) + run it immediately. */
+  pinDevice?: string;
+  /** Mark this row as a retry of an earlier task id. */
+  retryOf?: number;
+}
+
+export async function submitImageGenTask(input: ImageGenInput, opts: SubmitOpts = {}): Promise<{ ok: true; id: number; plannedTaskId: string } | { ok: false; error: string }> {
   const prompt = (input.prompt || '').trim();
   if (!prompt) return { ok: false, error: 'prompt required' };
   const aspect = input.aspect || '16:9';
@@ -68,11 +76,13 @@ export async function submitImageGenTask(input: ImageGenInput): Promise<{ ok: tr
 
   // xgodo's image-gen automation reads {prompt, aspect, model}.
   const taskInput = { prompt, aspect, model };
+  const body: Record<string, unknown> = { job_id: IMAGEGEN_JOB_ID, inputs: [JSON.stringify(taskInput)] };
+  if (opts.pinDevice) { body.device_name = opts.pinDevice; body.run_immediately = true; }
 
   const res = await fetch(`${XGODO_API}/planned_tasks/submit`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: IMAGEGEN_JOB_ID, inputs: [JSON.stringify(taskInput)] }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -83,11 +93,91 @@ export async function submitImageGenTask(input: ImageGenInput): Promise<{ ok: tr
   if (!plannedTaskId) return { ok: false, error: `xgodo response missing planned_task_id: ${JSON.stringify(data).slice(0, 200)}` };
 
   const ins = await pool.query<{ id: number }>(
-    `INSERT INTO imagegen_tasks (purpose, prompt, aspect, model, status, planned_task_id, submitted_at)
-     VALUES ($1,$2,$3,$4,'queued',$5,NOW()) RETURNING id`,
-    [purpose, prompt, aspect, model, plannedTaskId],
+    `INSERT INTO imagegen_tasks (purpose, prompt, aspect, model, status, planned_task_id, pinned_device, retry_of, submitted_at)
+     VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,NOW()) RETURNING id`,
+    [purpose, prompt, aspect, model, plannedTaskId, opts.pinDevice ?? null, opts.retryOf ?? null],
   );
   return { ok: true, id: ins.rows[0].id, plannedTaskId };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Device affinity — learn which devices succeed, route future work to them
+// ─────────────────────────────────────────────────────────────────────
+
+export interface DeviceRep {
+  device_name: string;
+  done: number;
+  failed: number;
+  total: number;
+  success_rate: number;   // done / total
+  last_seen: string | null;
+}
+
+/** Per-device image-gen success stats, best first. */
+export async function getDeviceReputation(): Promise<DeviceRep[]> {
+  const pool = await getPool();
+  const r = await pool.query<{ device_name: string; done: number; failed: number; total: number; last_seen: string | null }>(
+    `SELECT device_name,
+            COUNT(*) FILTER (WHERE status='done')::int   AS done,
+            COUNT(*) FILTER (WHERE status='failed')::int AS failed,
+            COUNT(*) FILTER (WHERE status IN ('done','failed'))::int AS total,
+            MAX(updated_at)::text AS last_seen
+       FROM imagegen_tasks
+      WHERE device_name IS NOT NULL
+      GROUP BY device_name`,
+  );
+  return r.rows
+    .map(d => ({ ...d, success_rate: d.total > 0 ? d.done / d.total : 0 }))
+    .sort((a, b) => (b.success_rate - a.success_rate) || (b.done - a.done));
+}
+
+/**
+ * Devices to PIN to, best first: proven (≥1 success), currently online, not
+ * obviously broken. Ordered by success-rate then volume of successes.
+ */
+export async function getPreferredOnlineDevices(token: string): Promise<string[]> {
+  const [rep, market] = await Promise.all([
+    getDeviceReputation(),
+    listMarketDevices(token).catch(() => []),
+  ]);
+  const online = marketDeviceNameSet(market);
+  return rep
+    .filter(d => d.done >= 1 && d.success_rate >= 0.2 && online.has(d.device_name))
+    .map(d => d.device_name);
+}
+
+/**
+ * Submit a batch with device affinity. A fraction of tasks pin to proven
+ * good online devices (exploit); the rest stay unpinned so xgodo keeps
+ * surfacing new devices we can learn about (explore).
+ */
+export async function submitImageGenBatch(
+  inputs: ImageGenInput[],
+  opts: { pin?: boolean; explore?: number; retryOf?: (i: number) => number | undefined } = {},
+): Promise<{ submitted: number; failed: number; ids: number[]; pinnedTo: string[]; errors: string[] }> {
+  const pin = opts.pin ?? true;
+  const explore = opts.explore ?? 0.25;
+  let preferred: string[] = [];
+  if (pin) {
+    try { preferred = await getPreferredOnlineDevices(await getXgodoToken()); } catch { preferred = []; }
+  }
+
+  const ids: number[] = []; const errors: string[] = []; const pinnedTo: string[] = [];
+  let rr = 0;
+  const results = await Promise.all(inputs.map(async (input, i) => {
+    // explore fraction (or no preferred devices) → leave unpinned so xgodo
+    // keeps surfacing new devices we can learn about.
+    const usePin = pin && preferred.length > 0 && Math.random() >= explore;
+    const dev = usePin ? preferred[rr++ % preferred.length] : undefined;
+    const r = await submitImageGenTask(input, { pinDevice: dev, retryOf: opts.retryOf?.(i) });
+    if ('error' in r) return { ok: false as const, error: r.error };
+    return { ok: true as const, id: r.id, dev };
+  }));
+  for (const res of results) {
+    if (res.ok) { ids.push(res.id); if (res.dev) pinnedTo.push(res.dev); }
+    else errors.push(res.error);
+  }
+  return { submitted: ids.length, failed: errors.length, ids, pinnedTo, errors };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -101,6 +191,8 @@ interface XgodoJobTask {
   failureReason: string | null;
   comment: string | null;
   worker_name: string | null;
+  device_id: string | null;
+  device_name: string | null;
   added: string | null;
   finished: string | null;
   planned_task_id: string;
@@ -211,9 +303,13 @@ export async function tickImageGen(): Promise<{ polled: number; done: number; fa
       const imageName = typeof proof.imageName === 'string' ? proof.imageName : null;
 
       if (['failed', 'declined'].includes(task.status)) {
+        // Capture the device that FAILED too — the affinity ranker needs the
+        // losers as much as the winners.
         await pool.query(
-          `UPDATE imagegen_tasks SET status='failed', job_task_id=$1, worker_name=COALESCE($2,worker_name), error=$3, finished_at=COALESCE(finished_at,$4), last_polled_at=NOW(), updated_at=NOW() WHERE id=$5`,
-          [task._id, task.worker_name, task.comment || task.failureReason || 'worker failed', task.finished, row.id],
+          `UPDATE imagegen_tasks SET status='failed', job_task_id=$1, worker_name=COALESCE($2,worker_name),
+             device_id=COALESCE($3,device_id), device_name=COALESCE($4,device_name),
+             error=$5, finished_at=COALESCE(finished_at,$6), last_polled_at=NOW(), updated_at=NOW() WHERE id=$7`,
+          [task._id, task.worker_name, task.device_id, task.device_name, task.comment || task.failureReason || 'worker failed', task.finished, row.id],
         );
         failed++;
         continue;
@@ -225,10 +321,11 @@ export async function tickImageGen(): Promise<{ polled: number; done: number; fa
           const { localPath } = await downloadToVolume(row.id, tempUrl, token, imageName);
           await pool.query(
             `UPDATE imagegen_tasks SET status='done', job_task_id=$1, worker_name=COALESCE($2,worker_name),
-               xgodo_temp_url=$3, expires_at=$4, image_name=$5, local_path=$6,
-               started_at=COALESCE(started_at,$7), finished_at=COALESCE(finished_at,$8),
-               error=NULL, last_polled_at=NOW(), updated_at=NOW() WHERE id=$9`,
-            [task._id, task.worker_name, tempUrl, expiresAt, imageName, localPath, task.added, task.finished, row.id],
+               device_id=COALESCE($3,device_id), device_name=COALESCE($4,device_name),
+               xgodo_temp_url=$5, expires_at=$6, image_name=$7, local_path=$8,
+               started_at=COALESCE(started_at,$9), finished_at=COALESCE(finished_at,$10),
+               error=NULL, last_polled_at=NOW(), updated_at=NOW() WHERE id=$11`,
+            [task._id, task.worker_name, task.device_id, task.device_name, tempUrl, expiresAt, imageName, localPath, task.added, task.finished, row.id],
           );
           done++;
         } catch (dlErr) {
@@ -242,10 +339,13 @@ export async function tickImageGen(): Promise<{ polled: number; done: number; fa
         continue;
       }
 
-      // still running (worker assigned, no url yet)
+      // still running (worker assigned, no url yet) — capture the device now
+      // so we know who's working it even before it finishes.
       await pool.query(
-        `UPDATE imagegen_tasks SET status='running', job_task_id=$1, worker_name=COALESCE($2,worker_name), started_at=COALESCE(started_at,$3), last_polled_at=NOW(), updated_at=NOW() WHERE id=$4`,
-        [task._id, task.worker_name, task.added, row.id],
+        `UPDATE imagegen_tasks SET status='running', job_task_id=$1, worker_name=COALESCE($2,worker_name),
+           device_id=COALESCE($3,device_id), device_name=COALESCE($4,device_name),
+           started_at=COALESCE(started_at,$5), last_polled_at=NOW(), updated_at=NOW() WHERE id=$6`,
+        [task._id, task.worker_name, task.device_id, task.device_name, task.added, row.id],
       );
     } catch (err) {
       errors++;
@@ -259,6 +359,61 @@ export async function tickImageGen(): Promise<{ polled: number; done: number; fa
     }
   }
   return { polled, done, failed, errors };
+}
+
+/**
+ * Backfill device_id/device_name for terminal tasks that finished before we
+ * started capturing it — re-poll each by job_task_id and pull the device.
+ * One-time-ish; safe to call repeatedly (only touches rows missing a device).
+ */
+export async function backfillDeviceInfo(limit = 60): Promise<{ scanned: number; filled: number }> {
+  const pool = await getPool();
+  const rows = (await pool.query<{ id: number; job_task_id: string | null; planned_task_id: string }>(
+    `SELECT id, job_task_id, planned_task_id FROM imagegen_tasks
+      WHERE device_name IS NULL AND status IN ('done','failed') AND (job_task_id IS NOT NULL OR planned_task_id IS NOT NULL)
+      ORDER BY id DESC LIMIT $1`,
+    [limit],
+  )).rows;
+  if (rows.length === 0) return { scanned: 0, filled: 0 };
+  const token = await getXgodoToken();
+  let filled = 0;
+  for (const row of rows) {
+    try {
+      const r = await postApplicants(token, { job_id: IMAGEGEN_JOB_ID, task_id: row.job_task_id || row.planned_task_id });
+      const task = (r.data?.job_tasks || [])[0];
+      if (task && (task.device_name || task.device_id)) {
+        await pool.query(`UPDATE imagegen_tasks SET device_id=COALESCE($1,device_id), device_name=COALESCE($2,device_name), worker_name=COALESCE($3,worker_name) WHERE id=$4`,
+          [task.device_id, task.device_name, task.worker_name, row.id]);
+        filled++;
+      }
+    } catch { /* skip */ }
+  }
+  return { scanned: rows.length, filled };
+}
+
+/**
+ * Resubmit every `purpose` that has NO successful image yet but has failed
+ * attempts — pinned to proven good online devices. The core of the
+ * "schedule X, keep the winners' devices, retry the rest on them" loop.
+ */
+export async function retryMissingImageGen(opts: { maxAttemptsPerPurpose?: number } = {}): Promise<{ retried: number; purposes: string[]; ids: number[]; pinnedTo: string[] }> {
+  const pool = await getPool();
+  const cap = opts.maxAttemptsPerPurpose ?? 6;
+  // latest failed task per purpose that has no done sibling, under the attempt cap
+  const rows = (await pool.query<{ purpose: string; prompt: string; aspect: string | null; model: string | null; id: number; attempts: number }>(
+    `SELECT DISTINCT ON (t.purpose) t.purpose, t.prompt, t.aspect, t.model, t.id,
+            (SELECT COUNT(*) FROM imagegen_tasks x WHERE x.purpose = t.purpose)::int AS attempts
+       FROM imagegen_tasks t
+      WHERE t.purpose IS NOT NULL
+        AND t.status = 'failed'
+        AND t.purpose NOT IN (SELECT purpose FROM imagegen_tasks WHERE status='done' AND purpose IS NOT NULL)
+      ORDER BY t.purpose, t.id DESC`,
+  )).rows.filter(r => r.attempts < cap);
+  if (rows.length === 0) return { retried: 0, purposes: [], ids: [], pinnedTo: [] };
+
+  const inputs: ImageGenInput[] = rows.map(r => ({ prompt: r.prompt, aspect: r.aspect ?? '16:9', model: r.model ?? 'nanobananapro', purpose: r.purpose }));
+  const res = await submitImageGenBatch(inputs, { pin: true, retryOf: (i) => rows[i].id });
+  return { retried: res.submitted, purposes: rows.map(r => r.purpose), ids: res.ids, pinnedTo: res.pinnedTo };
 }
 
 /** Read a downloaded image off the volume (for the serve endpoint). */

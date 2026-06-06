@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { submitImageGenTask, tickImageGen, type ImageGenInput } from '@/lib/xgodo-imagegen';
+import { submitImageGenBatch, tickImageGen, backfillDeviceInfo, getDeviceReputation, retryMissingImageGen, type ImageGenInput } from '@/lib/xgodo-imagegen';
 
 /**
  * Image-generation tool — submit + overwatch.
@@ -21,8 +21,14 @@ export const maxDuration = 120;
 export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   const body = await req.json().catch(() => ({})) as {
-    tasks?: ImageGenInput[]; prompt?: string; aspect?: string; model?: string; purpose?: string; count?: number;
+    action?: string; tasks?: ImageGenInput[]; prompt?: string; aspect?: string; model?: string; purpose?: string; count?: number; pin?: boolean;
   };
+
+  // Action: resubmit every purpose missing a success, pinned to good devices.
+  if (body.action === 'retryMissing') {
+    const r = await retryMissingImageGen();
+    return NextResponse.json({ ok: true, ...r });
+  }
 
   let inputs: ImageGenInput[] = [];
   if (Array.isArray(body.tasks) && body.tasks.length > 0) {
@@ -34,16 +40,9 @@ export async function POST(req: NextRequest) {
   if (inputs.length === 0) return NextResponse.json({ error: 'prompt or tasks[] required' }, { status: 400 });
   if (inputs.length > 50) return NextResponse.json({ error: 'max 50 tasks per call' }, { status: 400 });
 
-  const results = await Promise.all(inputs.map(submitImageGenTask));
-  const submitted = results.filter(r => r.ok) as Array<{ ok: true; id: number; plannedTaskId: string }>;
-  const errors = results.filter(r => !r.ok) as Array<{ ok: false; error: string }>;
-  return NextResponse.json({
-    ok: true,
-    submitted: submitted.length,
-    failed: errors.length,
-    ids: submitted.map(s => s.id),
-    errors: errors.map(e => e.error),
-  });
+  // Device-affinity submit: pin a share to proven good online devices.
+  const r = await submitImageGenBatch(inputs, { pin: body.pin ?? true });
+  return NextResponse.json({ ok: true, submitted: r.submitted, failed: r.failed, ids: r.ids, pinnedTo: r.pinnedTo, errors: r.errors });
 }
 
 export async function GET(req: NextRequest) {
@@ -53,7 +52,10 @@ export async function GET(req: NextRequest) {
   let tick: { polled: number; done: number; failed: number; errors: number } | null = null;
   if (sp.get('noTick') !== '1') {
     try { tick = await tickImageGen(); } catch { /* overwatch still returns the list */ }
+    // Opportunistically backfill device info on any terminal rows missing it.
+    try { await backfillDeviceInfo(40); } catch { /* best-effort */ }
   }
+  const devices = await getDeviceReputation().catch(() => []);
 
   const status = sp.get('status');
   const purpose = sp.get('purpose');
@@ -67,7 +69,7 @@ export async function GET(req: NextRequest) {
   const pool = await getPool();
   const rows = (await pool.query(
     `SELECT id, purpose, prompt, aspect, model, status, planned_task_id, job_task_id,
-            xgodo_temp_url, expires_at, image_name, worker_name, error,
+            xgodo_temp_url, expires_at, image_name, worker_name, device_name, pinned_device, error,
             (local_path IS NOT NULL) AS downloaded,
             submitted_at, finished_at, last_polled_at
        FROM imagegen_tasks
@@ -85,6 +87,7 @@ export async function GET(req: NextRequest) {
     ok: true,
     tick,
     counts,
+    devices,
     images: rows.map(r => ({ ...r, file_url: r.downloaded ? `/api/admin/imagegen/file?id=${r.id}` : null })),
   });
 }

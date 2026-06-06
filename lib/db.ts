@@ -1736,6 +1736,10 @@ export async function initSchema(): Promise<void> {
         local_path       TEXT,                 -- downloaded file on the volume
         image_name       TEXT,
         worker_name      TEXT,
+        device_id        TEXT,                 -- xgodo device that ran it (affinity routing)
+        device_name      TEXT,
+        pinned_device    TEXT,                 -- device we pinned this task to on submit (if any)
+        retry_of         INTEGER,              -- imagegen_tasks.id this is a retry of
         error            TEXT,
         submitted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         started_at       TIMESTAMPTZ,
@@ -1745,8 +1749,15 @@ export async function initSchema(): Promise<void> {
         updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
+    // Device-affinity columns (added after the table shipped) — we learn
+    // which xgodo devices succeed at image-gen and pin future tasks to them.
+    await client.query(`ALTER TABLE imagegen_tasks ADD COLUMN IF NOT EXISTS device_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE imagegen_tasks ADD COLUMN IF NOT EXISTS device_name TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE imagegen_tasks ADD COLUMN IF NOT EXISTS pinned_device TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE imagegen_tasks ADD COLUMN IF NOT EXISTS retry_of INTEGER`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_status ON imagegen_tasks(status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_purpose ON imagegen_tasks(purpose)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_device ON imagegen_tasks(device_name)`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
