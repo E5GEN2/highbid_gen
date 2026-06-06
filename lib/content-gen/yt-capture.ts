@@ -78,16 +78,14 @@ const ANNOTATE_SIZE: Record<AnnotateElement, { minW: number; maxW: number; minH:
 
 /** Inline CSS for each highlight style. Applied via el.style on the
  *  located element BEFORE screenshot — the highlight is baked into the
- *  captured PNG, no compositing needed on the renderer side. */
+ *  captured PNG, no compositing needed on the renderer side.
+ *  !important overrides YT's stylesheet (which has high specificity from
+ *  classes layered with web component styles). */
 const HIGHLIGHT_CSS: Record<HighlightStyle, string> = {
-  // Yellow ring around the element (the spec's primary annotation primitive).
-  yellow_ring:      `outline: 4px solid #FACC15; outline-offset: 4px; border-radius: 8px;`,
-  // Tighter box look — closer to the element edges, no rounding.
-  yellow_box:       `outline: 4px solid #FACC15; outline-offset: 2px;`,
-  // Filled highlight behind the text (the "yellow_fill_behind" mode).
-  yellow_highlight: `background-color: rgba(250, 204, 21, 0.45); padding: 2px 4px; border-radius: 4px;`,
-  // Rounded ring — used for emphasizing numbers in screenshots.
-  yellow_circle:    `outline: 5px solid #FACC15; outline-offset: 6px; border-radius: 50%;`,
+  yellow_ring:      `outline: 4px solid #FACC15 !important; outline-offset: 4px !important; border-radius: 8px !important; box-shadow: 0 0 0 8px rgba(250,204,21,0.25) !important;`,
+  yellow_box:       `outline: 4px solid #FACC15 !important; outline-offset: 2px !important; box-shadow: 0 0 0 6px rgba(250,204,21,0.25) !important;`,
+  yellow_highlight: `background-color: rgba(250, 204, 21, 0.55) !important; padding: 2px 4px !important; border-radius: 4px !important;`,
+  yellow_circle:    `outline: 5px solid #FACC15 !important; outline-offset: 6px !important; border-radius: 50% !important; box-shadow: 0 0 0 10px rgba(250,204,21,0.25) !important;`,
 };
 
 const GEO_LANG: Record<string, { country: string; lang: string }> = {
@@ -753,19 +751,28 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           const count = await loc.count();
           let bestIdx = -1;
           let bestArea = Infinity;
-          const candidates: Array<{ idx: number; w: number; h: number; visible: boolean; reason: string }> = [];
+          const candidates: Array<{ idx: number; x: number; y: number; w: number; h: number; visible: boolean; reason: string; tag?: string; text?: string }> = [];
           for (let i = 0; i < Math.min(count, 30); i++) {
             const item = loc.nth(i);
             let box: { x: number; y: number; width: number; height: number } | null = null;
             try { box = await item.boundingBox({ timeout: 800 }); } catch { box = null; }
-            if (!box) { candidates.push({ idx: i, w: 0, h: 0, visible: false, reason: 'no-box' }); continue; }
+            if (!box) { candidates.push({ idx: i, x: 0, y: 0, w: 0, h: 0, visible: false, reason: 'no-box' }); continue; }
             const vis = await item.isVisible({ timeout: 400 }).catch(() => false);
+            const x = Math.round(box.x), y = Math.round(box.y);
             const w = Math.round(box.width), h = Math.round(box.height);
-            if (!vis) { candidates.push({ idx: i, w, h, visible: false, reason: 'invisible' }); continue; }
-            if (box.width < bounds.minW || box.width > bounds.maxW) { candidates.push({ idx: i, w, h, visible: true, reason: 'w-out' }); continue; }
-            if (box.height < bounds.minH || box.height > bounds.maxH) { candidates.push({ idx: i, w, h, visible: true, reason: 'h-out' }); continue; }
-            if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) { candidates.push({ idx: i, w, h, visible: true, reason: 'off-view' }); continue; }
-            candidates.push({ idx: i, w, h, visible: true, reason: 'OK' });
+            // Pull the element tag + own-text from inside the (possibly
+            // shadow-rooted) element via locator.evaluate.
+            let tag = '?', innerText = '';
+            try {
+              const info = await item.evaluate((el) => ({ tag: el.tagName.toLowerCase(), text: ((el as HTMLElement).innerText || el.textContent || '').slice(0, 60) }), undefined, { timeout: 400 });
+              tag = info.tag; innerText = info.text;
+            } catch { /* skip */ }
+            const baseRow = { idx: i, x, y, w, h, tag, text: innerText };
+            if (!vis) { candidates.push({ ...baseRow, visible: false, reason: 'invisible' }); continue; }
+            if (box.width < bounds.minW || box.width > bounds.maxW) { candidates.push({ ...baseRow, visible: true, reason: 'w-out' }); continue; }
+            if (box.height < bounds.minH || box.height > bounds.maxH) { candidates.push({ ...baseRow, visible: true, reason: 'h-out' }); continue; }
+            if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) { candidates.push({ ...baseRow, visible: true, reason: 'off-view' }); continue; }
+            candidates.push({ ...baseRow, visible: true, reason: 'OK' });
             const area = box.width * box.height;
             if (area < bestArea) { bestArea = area; bestIdx = i; }
           }
