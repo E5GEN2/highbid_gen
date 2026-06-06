@@ -1145,10 +1145,25 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             // vs. out of scope.
             let inScope = 0, outOfScope = 0;
             // First pass: ownText matches (the precise leaf-level signal).
+            // If matched element has 0x0 dimensions (CSS display:contents),
+            // walk parents until we find one with non-zero bbox — that's the
+            // visually-rendered wrapper holding this text.
+            const effectiveRect = (start: Element): DOMRect => {
+              let r = (start as HTMLElement).getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) return r;
+              let cur: Element | null = start.parentElement;
+              let hops = 0;
+              while (cur && hops++ < 6) {
+                r = (cur as HTMLElement).getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) return r;
+                cur = cur.parentElement;
+              }
+              return r;
+            };
             for (const el of all) {
               const txt = ownText(el);
               if (!re.test(txt)) continue;
-              const r = (el as HTMLElement).getBoundingClientRect();
+              const r = effectiveRect(el);
               const w = Math.round(r.width), h = Math.round(r.height);
               const cs = window.getComputedStyle(el as HTMLElement);
               const hidden = cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1;
@@ -1205,14 +1220,26 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             if (bestEl) {
               try { (bestEl as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* */ }
               const el = bestEl as HTMLElement;
-              // Only inject CSS when one was provided (CSS-mode). Compositor-
-              // mode passes empty css and applies the shape post-screenshot.
-              if (css) {
-                const existing = el.getAttribute('style') || '';
-                el.setAttribute('style', `${existing}; ${css}`);
+              // If bestEl itself has 0x0 (display:contents wrapper), find the
+              // first rendered ancestor — that's the element we either inject
+              // CSS on (so the highlight is visible) and whose bbox the
+              // compositor uses.
+              let renderTarget: HTMLElement = el;
+              let r = el.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) {
+                let cur: HTMLElement | null = el.parentElement;
+                let hops = 0;
+                while (cur && hops++ < 6) {
+                  const cr = cur.getBoundingClientRect();
+                  if (cr.width > 0 && cr.height > 0) { renderTarget = cur; r = cr; break; }
+                  cur = cur.parentElement;
+                }
               }
-              const r = el.getBoundingClientRect();
-              return { applied: true, in_scope: inScope, out_of_scope: outOfScope, picked: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), tag: el.tagName.toLowerCase(), text: ownText(el).slice(0, 80) }, candidates: candidatesDbg };
+              if (css) {
+                const existing = renderTarget.getAttribute('style') || '';
+                renderTarget.setAttribute('style', `${existing}; ${css}`);
+              }
+              return { applied: true, in_scope: inScope, out_of_scope: outOfScope, picked: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), tag: renderTarget.tagName.toLowerCase(), text: ownText(el).slice(0, 80) }, candidates: candidatesDbg };
             }
             return { applied: false, in_scope: inScope, out_of_scope: outOfScope, picked: null, candidates: candidatesDbg };
           }, { reSource, bounds, css, vpW: VIEWPORT.width, vpH: VIEWPORT.height, scopeTags }) as Record<string, unknown>;
