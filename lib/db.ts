@@ -1764,6 +1764,28 @@ export async function initSchema(): Promise<void> {
     // "from ads.") is a free disk lookup. The MP3 lives on the Railway
     // volume; duration_s is measured via ffprobe so timeline reflow knows
     // the EXACT spoken length, not an estimate.
+    // SFX + music asset cache — every requested sound effect or music bed
+    // keyed by (token + prompt + duration) hash, generated via ElevenLabs'
+    // /v1/sound-generation. token is the symbolic name our timeline uses
+    // ("whoosh", "ding_high_pitch", "intro", …) so we can later swap the
+    // prompt for a token without changing callers.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_sfx_assets (
+        sfx_hash      TEXT PRIMARY KEY,
+        token         TEXT NOT NULL,
+        kind          TEXT NOT NULL,      -- 'sfx' | 'music'
+        prompt        TEXT NOT NULL,
+        duration_req  REAL NOT NULL,
+        local_path    TEXT NOT NULL,
+        duration_s    REAL,
+        bytes         INTEGER,
+        prompt_influence REAL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sfx_token ON content_gen_sfx_assets(token)`).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS content_gen_voice_assets (
         text_hash    TEXT PRIMARY KEY,
