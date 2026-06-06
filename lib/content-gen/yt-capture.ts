@@ -76,6 +76,28 @@ const ANNOTATE_SIZE: Record<AnnotateElement, { minW: number; maxW: number; minH:
   view_count:       { minW: 30, maxW: 500, minH: 12, maxH: 60 },
 };
 
+/** Ancestor scope tag selectors (lowercase). When set, the candidate element
+ *  must have an ancestor (or itself) whose tagName matches one of these. This
+ *  prevents picking sidebar/recommended-row "X views" entries when we want
+ *  the about modal's view count, etc.
+ *  Walk the ancestor chain across shadow DOM boundaries (parentElement OR
+ *  shadow-root host) to handle Polymer custom elements. */
+const ANNOTATE_SCOPE: Partial<Record<AnnotateElement, string[]>> = {
+  // about modal / engagement panel containers — strict scope for the modal-
+  // shown stats. We include several variants because YT's panel naming has
+  // changed historically (channel-about-metadata, engagement-panel,
+  // tp-yt-paper-dialog for older modal style).
+  total_views:  ['ytd-channel-about-metadata-renderer', 'ytd-engagement-panel-section-list-renderer', 'tp-yt-paper-dialog', 'ytd-about-channel-renderer'],
+  joined_date:  ['ytd-channel-about-metadata-renderer', 'ytd-engagement-panel-section-list-renderer', 'tp-yt-paper-dialog', 'ytd-about-channel-renderer'],
+  // channel header area — for the subscriber + video counts shown in the
+  // page-level header (NOT the modal duplicate).
+  subscriber_count: ['ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer'],
+  video_count:      ['ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer'],
+  // view counts on grid cards — each card is a renderer; pick one whose card
+  // ancestor matches.
+  view_count: ['ytd-rich-item-renderer', 'ytd-grid-video-renderer', 'ytd-video-renderer', 'ytd-rich-grid-media'],
+};
+
 /** Inline CSS for each highlight style. Applied via el.style on the
  *  located element BEFORE screenshot — the highlight is baked into the
  *  captured PNG, no compositing needed on the renderer side.
@@ -744,52 +766,92 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       // baked into the captured PNG — no compositing needed downstream.
       if (annotate) {
         try {
-          const reBody = ANNOTATE_REGEX[annotate.element]
-            .replace(/^\^\\s\*/, '').replace(/\\s\*\$$/, '');
+          const reSource = ANNOTATE_REGEX[annotate.element];
           const bounds = ANNOTATE_SIZE[annotate.element];
-          const loc = page.locator(`text=/${reBody}/i`);
-          const count = await loc.count();
-          let bestIdx = -1;
-          let bestArea = Infinity;
-          const candidates: Array<{ idx: number; x: number; y: number; w: number; h: number; visible: boolean; reason: string; tag?: string; text?: string }> = [];
-          for (let i = 0; i < Math.min(count, 30); i++) {
-            const item = loc.nth(i);
-            let box: { x: number; y: number; width: number; height: number } | null = null;
-            try { box = await item.boundingBox({ timeout: 800 }); } catch { box = null; }
-            if (!box) { candidates.push({ idx: i, x: 0, y: 0, w: 0, h: 0, visible: false, reason: 'no-box' }); continue; }
-            const vis = await item.isVisible({ timeout: 400 }).catch(() => false);
-            const x = Math.round(box.x), y = Math.round(box.y);
-            const w = Math.round(box.width), h = Math.round(box.height);
-            // Pull the element tag + own-text from inside the (possibly
-            // shadow-rooted) element via locator.evaluate.
-            let tag = '?', innerText = '';
-            try {
-              const info = await item.evaluate((el) => ({ tag: el.tagName.toLowerCase(), text: ((el as HTMLElement).innerText || el.textContent || '').slice(0, 60) }), undefined, { timeout: 400 });
-              tag = info.tag; innerText = info.text;
-            } catch { /* skip */ }
-            const baseRow = { idx: i, x, y, w, h, tag, text: innerText };
-            if (!vis) { candidates.push({ ...baseRow, visible: false, reason: 'invisible' }); continue; }
-            if (box.width < bounds.minW || box.width > bounds.maxW) { candidates.push({ ...baseRow, visible: true, reason: 'w-out' }); continue; }
-            if (box.height < bounds.minH || box.height > bounds.maxH) { candidates.push({ ...baseRow, visible: true, reason: 'h-out' }); continue; }
-            if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) { candidates.push({ ...baseRow, visible: true, reason: 'off-view' }); continue; }
-            candidates.push({ ...baseRow, visible: true, reason: 'OK' });
-            const area = box.width * box.height;
-            if (area < bestArea) { bestArea = area; bestIdx = i; }
-          }
-          annotationDebug = { count, bestIdx, candidates: candidates.slice(0, 12) };
-          if (bestIdx >= 0) {
-            const target = loc.nth(bestIdx);
-            const css = HIGHLIGHT_CSS[annotate.style];
-            await target.evaluate((el, css) => {
-              const e = el as HTMLElement;
-              try { e.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* skip */ }
-              e.setAttribute('style', `${e.getAttribute('style') || ''}; ${css}`);
-            }, css);
-            await page.waitForTimeout(250);
-            annotationDebug.applied = true;
-          } else {
-            annotationDebug.applied = false;
-          }
+          const css = HIGHLIGHT_CSS[annotate.style];
+          const scopeTags = ANNOTATE_SCOPE[annotate.element] ?? [];
+          // Run the search entirely inside the page: walk light DOM AND shadow
+          // roots, regex-match each element's own text, filter by size + in-
+          // viewport + ancestor-scope, then inject the highlight CSS on the
+          // chosen element. Closed-shadow Polymer roots (yt-attributed-string)
+          // are reachable by walking via shadowRoot — Playwright's text=
+          // locator does NOT reach them and was picking sidebar text instead.
+          annotationDebug = await page.evaluate((args) => {
+            const { reSource, bounds, css, vpW, vpH, scopeTags } = args;
+            const re = new RegExp(reSource, 'i');
+            // Walker — collect every element in document AND any open/closed
+            // shadow roots reachable from there.
+            const all: Element[] = [];
+            const stack: Array<Element | ShadowRoot | Document> = [document];
+            while (stack.length) {
+              const node = stack.pop()!;
+              const kids = (node as Element).children || (node as Document).children;
+              if (!kids) continue;
+              for (const child of Array.from(kids)) {
+                all.push(child);
+                stack.push(child);
+                const sr = (child as Element).shadowRoot;
+                if (sr) stack.push(sr);
+              }
+            }
+            const ownText = (el: Element): string => {
+              let s = ''; for (const n of Array.from(el.childNodes)) if (n.nodeType === 3) s += n.textContent ?? '';
+              return s.trim();
+            };
+            // Walk parentElement AND shadow-root host chain — so descendants
+            // of a Polymer custom element correctly see the custom element as
+            // an ancestor.
+            const hasAncestor = (el: Element, tags: string[]): boolean => {
+              if (tags.length === 0) return true;  // no scope = pass
+              const lower = tags.map(t => t.toLowerCase());
+              let cur: Element | null = el;
+              let hops = 0;
+              while (cur && hops++ < 80) {
+                if (lower.includes(cur.tagName.toLowerCase())) return true;
+                const parent: Element | null = cur.parentElement;
+                if (parent) { cur = parent; continue; }
+                // crossed a shadow boundary?
+                const root = cur.getRootNode();
+                if (root instanceof ShadowRoot) { cur = root.host as Element; continue; }
+                break;
+              }
+              return false;
+            };
+            const candidatesDbg: Array<Record<string, unknown>> = [];
+            let bestEl: Element | null = null;
+            let bestArea = Infinity;
+            // Track all elements with matching text — even if scope rejects
+            // them — so the diagnostic can show what the regex found in scope
+            // vs. out of scope.
+            let inScope = 0, outOfScope = 0;
+            for (const el of all) {
+              const txt = ownText(el);
+              if (!re.test(txt)) continue;
+              const r = (el as HTMLElement).getBoundingClientRect();
+              const w = Math.round(r.width), h = Math.round(r.height);
+              const cs = window.getComputedStyle(el as HTMLElement);
+              const hidden = cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1;
+              const inScopeNow = hasAncestor(el, scopeTags);
+              const sizeOK = w >= bounds.minW && w <= bounds.maxW && h >= bounds.minH && h <= bounds.maxH;
+              const viewOK = r.left >= -4 && r.top >= -4 && r.right <= vpW + 4 && r.bottom <= vpH + 4;
+              const reason = hidden ? 'hidden' : !inScopeNow ? 'out-of-scope' : !sizeOK ? 'size' : !viewOK ? 'off-view' : 'OK';
+              if (inScopeNow) inScope++; else outOfScope++;
+              if (candidatesDbg.length < 16) candidatesDbg.push({ x: Math.round(r.left), y: Math.round(r.top), w, h, tag: el.tagName.toLowerCase(), text: txt.slice(0, 60), reason });
+              if (reason !== 'OK') continue;
+              const area = r.width * r.height;
+              if (area < bestArea) { bestArea = area; bestEl = el; }
+            }
+            if (bestEl) {
+              try { (bestEl as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* */ }
+              const el = bestEl as HTMLElement;
+              const existing = el.getAttribute('style') || '';
+              el.setAttribute('style', `${existing}; ${css}`);
+              const r = el.getBoundingClientRect();
+              return { applied: true, in_scope: inScope, out_of_scope: outOfScope, picked: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), tag: el.tagName.toLowerCase(), text: ownText(el).slice(0, 80) }, candidates: candidatesDbg };
+            }
+            return { applied: false, in_scope: inScope, out_of_scope: outOfScope, picked: null, candidates: candidatesDbg };
+          }, { reSource, bounds, css, vpW: VIEWPORT.width, vpH: VIEWPORT.height, scopeTags }) as Record<string, unknown>;
+          await page.waitForTimeout(300);
         } catch (e) {
           annotationDebug = { error: (e as Error).message.slice(0, 200) };
         }
