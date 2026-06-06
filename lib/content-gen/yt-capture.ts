@@ -131,15 +131,15 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   await fs.mkdir(SCREENS_DIR, { recursive: true });
   const localPath = path.join(SCREENS_DIR, `${channelId}_${kind}_${dateBucket}.png`);
 
-  // Playwright/Chromium accepts http://, https://, socks4://, socks5://.
-  // Our xgodo static proxies are minted as socks5h:// (proxy-side DNS) for
-  // the undici/SocksProxyAgent path; Chromium's SOCKS5 already does proxy-
-  // side DNS, so we strip the trailing 'h' (otherwise ERR_NO_SUPPORTED_PROXIES).
-  // We pass username/password separately because Chromium's CLI handling of
-  // userinfo in the URL is brittle.
+  // Our xgodo proxy endpoints are dual-protocol (accept HTTP and SOCKS5
+  // on the same host:port + credentials). Chromium supports auth on HTTP
+  // proxies but NOT on SOCKS5 (long-standing Chromium limitation: "Browser
+  // does not support socks5 proxy authentication"). So we always speak
+  // HTTP to the proxy in Playwright — same endpoint, different protocol.
+  // userinfo goes in separate fields because Chromium's CLI handling of
+  // proxy URL userinfo is brittle.
   const u = new URL(proxy.url);
-  const scheme = u.protocol === 'socks5h:' ? 'socks5:' : u.protocol;
-  const proxyServer = `${scheme}//${u.host}`;
+  const proxyServer = `http://${u.host}`;
   const proxyUsername = decodeURIComponent(u.username);
   const proxyPassword = decodeURIComponent(u.password);
 
