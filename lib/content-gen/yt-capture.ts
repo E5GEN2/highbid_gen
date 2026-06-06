@@ -15,6 +15,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
+import { spawn } from 'child_process';
 import { getPool } from '../db';
 import { CLIPS_DIR } from '../clips-dir';
 import { getRandomHealthyProxy, type ProxyInfo } from '../xgodo-proxy';
@@ -74,6 +75,18 @@ export interface CaptureResult {
 
 function todayBucket(): string {
   return new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
+}
+
+/** Spawn ffmpeg with the given args and resolve when it exits 0. */
+function runFfmpeg(args: string[], timeoutMs = 90_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args]);
+    let err = '';
+    p.stderr.on('data', d => { err += d.toString(); });
+    const t = setTimeout(() => { p.kill('SIGKILL'); reject(new Error(`ffmpeg timeout`)); }, timeoutMs);
+    p.on('close', c => { clearTimeout(t); c === 0 ? resolve() : reject(new Error(`ffmpeg ${c}: ${err.slice(0, 300)}`)); });
+    p.on('error', e => { clearTimeout(t); reject(e); });
+  });
 }
 
 /**
@@ -258,6 +271,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     await fs.mkdir(videosDir, { recursive: true });
   }
   try {
+    // Recording starts the moment the context is created. We track this so
+    // we can trim the loading-phase prefix from the final WebM later.
+    const contextCreatedAt = Date.now();
     const context = await browser.newContext({
       viewport: VIEWPORT,
       locale: geoCfg.lang.split(',')[0],
@@ -360,36 +376,80 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     let videoSrcPath: string | null = null;
 
     if (captureMode === 'scroll_record' && recorderVideoPathPromise) {
-      // Pan through the page by scrolling at a steady rate. Hold at top
-      // and bottom briefly so the cut points land on still frames.
-      const scrollPxPerStep = 80;
-      const stepIntervalMs = 60;
-      const maxSteps = 90;     // ~5.4s of scroll at default settings
       assetKind = 'video';
-      await page.waitForTimeout(600);
-      for (let i = 0; i < maxSteps; i++) {
-        const stop = await page.evaluate((d) => {
-          const before = window.scrollY;
-          window.scrollBy({ top: d, behavior: 'auto' });
-          return Math.abs(window.scrollY - before) < d / 4;
-        }, scrollPxPerStep);
-        if (stop) break;
-        await page.waitForTimeout(stepIntervalMs);
-      }
-      await page.waitForTimeout(500);
-      // Single still as a fallback preview (also helps the GUI thumbnail).
+
+      // 1) WAIT FOR CONTENT — networkidle isn't enough; YT lazy-loads
+      //    thumbnail <img> tags after the grid scaffolding renders. Wait for
+      //    actual non-empty <img> sources to confirm the video grid is real.
+      await page.waitForFunction(() => {
+        const imgs = Array.from(document.querySelectorAll(
+          'ytd-rich-item-renderer img, ytd-grid-video-renderer img, ytd-rich-grid-renderer img'
+        )) as HTMLImageElement[];
+        const loaded = imgs.filter(i => i.src && i.naturalWidth > 50);
+        return loaded.length >= 4;
+      }, undefined, { timeout: 15_000 }).catch(() => { /* fall through — at least some grid is there */ });
+      await page.waitForTimeout(1_500);  // extra settle for layout + lazy-loads
+
+      // Mark scroll start RELATIVE to the recording start (which was when
+      // the context was created, i.e. ~contextCreatedAt). We trim the WebM
+      // to start at this offset so the final video skips the loading phase.
+      const scrollStartRelMs = Math.max(0, Date.now() - contextCreatedAt - 300); // 300ms lead-in
+
+      // 2) SMOOTH SCROLL via rAF + ease-in-out. 1800px over 6.5s ≈ 277px/s —
+      //    MG-pace, gentle reveal. Hold briefly at the bottom.
+      const SCROLL_DURATION_MS = 6_500;
+      const HOLD_AT_BOTTOM_MS = 700;
+      const SCROLL_DISTANCE_PX = 1_800;
+      await page.evaluate((opts) => {
+        return new Promise<void>(resolve => {
+          const startY = window.scrollY;
+          const maxScrollable = Math.max(
+            document.documentElement.scrollHeight,
+            document.body.scrollHeight,
+          ) - window.innerHeight - startY;
+          const distance = Math.max(0, Math.min(opts.distancePx, maxScrollable));
+          if (distance < 100) { setTimeout(resolve, opts.holdMs); return; }
+          const start = performance.now();
+          function step(now: number) {
+            const t = Math.min(1, (now - start) / opts.durationMs);
+            // ease-in-out cubic
+            const eased = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+            window.scrollTo(0, startY + distance * eased);
+            if (t < 1) requestAnimationFrame(step);
+            else setTimeout(resolve, opts.holdMs);
+          }
+          requestAnimationFrame(step);
+        });
+      }, { distancePx: SCROLL_DISTANCE_PX, durationMs: SCROLL_DURATION_MS, holdMs: HOLD_AT_BOTTOM_MS });
+
+      // Poster PNG: final frame for GUI thumbnails / fallback rendering.
       const stillBuf = await page.screenshot({ fullPage: false, type: 'png', timeout: SCREENSHOT_TIMEOUT_MS });
       await fs.writeFile(localPath.replace(/\.png$/, '_poster.png'), stillBuf);
 
-      // Close context to flush the recording, then move the .webm into place.
+      // Close context to flush the recording.
       await context.close();
       videoSrcPath = await recorderVideoPathPromise;
       videoLocalPath = localPath.replace(/\.png$/, '.webm');
-      try { await fs.rename(videoSrcPath, videoLocalPath); } catch { await fs.copyFile(videoSrcPath, videoLocalPath); }
+
+      // 3) TRIM the loading-phase prefix. VP8 has sparse keyframes so
+      //    -c copy seek is unreliable; re-encode the few seconds we want.
+      //    libvpx 1.5Mbps + cpu-used 5 = fast preset, looks fine for screen
+      //    content. Falls back to the untrimmed file if ffmpeg fails.
+      const trimStartSec = Math.max(0, scrollStartRelMs / 1000);
+      try {
+        await runFfmpeg([
+          '-y', '-ss', trimStartSec.toFixed(2), '-i', videoSrcPath,
+          '-c:v', 'libvpx', '-b:v', '1500k', '-cpu-used', '5',
+          '-an', videoLocalPath,
+        ]);
+        await fs.unlink(videoSrcPath).catch(() => {});
+      } catch {
+        // Trim failed → keep the raw recording.
+        try { await fs.rename(videoSrcPath, videoLocalPath); } catch { await fs.copyFile(videoSrcPath, videoLocalPath); }
+      }
+
       buf = await fs.readFile(videoLocalPath);
-      // We don't bundle ffprobe in the lib; estimate duration from the
-      // scroll loop budget. Real probe happens client-side via media element.
-      durationS = Math.min(maxSteps * stepIntervalMs / 1000, 6);
+      durationS = Math.round(((SCROLL_DURATION_MS + HOLD_AT_BOTTOM_MS + 300) / 1000) * 10) / 10;
     } else {
       buf = await page.screenshot({ fullPage: false, type: 'png', timeout: SCREENSHOT_TIMEOUT_MS });
       await fs.writeFile(localPath, buf);
