@@ -1786,6 +1786,39 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_sfx_token ON content_gen_sfx_assets(token)`).catch(() => {});
 
+    // YouTube-screen captures from Playwright. We screenshot real YT pages
+    // through xgodo proxies (so subscriber counts / thumbnails are real and
+    // geo-correct, per-channel rpm.geo when available). One row per
+    // (channel_id, kind, date_bucket) — date_bucket lets us refresh stale
+    // captures without losing the old PNG until the new one lands.
+    //   kind: 'channel_page' | 'about_page' | 'videos_tab' | 'watch_page'
+    //   status: 'pending' | 'capturing' | 'done' | 'failed'
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_yt_screens (
+        id            SERIAL PRIMARY KEY,
+        channel_id    TEXT NOT NULL,
+        handle        TEXT,
+        kind          TEXT NOT NULL,
+        url           TEXT NOT NULL,
+        geo           TEXT,
+        date_bucket   TEXT NOT NULL,         -- YYYY-MM-DD; cache invalidates when bucket rolls
+        status        TEXT NOT NULL DEFAULT 'pending',
+        local_path    TEXT,                  -- PNG on the volume
+        page_width    INTEGER,
+        page_height   INTEGER,
+        bytes         INTEGER,
+        proxy_country TEXT,
+        proxy_device  TEXT,
+        error         TEXT,
+        started_at    TIMESTAMPTZ,
+        finished_at   TIMESTAMPTZ,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_yt_screens_lookup ON content_gen_yt_screens(channel_id, kind, date_bucket)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_yt_screens_status ON content_gen_yt_screens(status)`).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS content_gen_voice_assets (
         text_hash    TEXT PRIMARY KEY,
