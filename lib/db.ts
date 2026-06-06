@@ -1758,6 +1758,27 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_status ON imagegen_tasks(status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_purpose ON imagegen_tasks(purpose)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_device ON imagegen_tasks(device_name)`).catch(() => {});
+
+    // Voice asset cache — every TTS'd phrase keyed by (text + voice + model +
+    // settings) hash, so re-generating a script that reuses a sentence (e.g.
+    // "from ads.") is a free disk lookup. The MP3 lives on the Railway
+    // volume; duration_s is measured via ffprobe so timeline reflow knows
+    // the EXACT spoken length, not an estimate.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_voice_assets (
+        text_hash    TEXT PRIMARY KEY,
+        text         TEXT NOT NULL,
+        voice_id     TEXT NOT NULL,
+        model_id     TEXT NOT NULL,
+        settings     JSONB,
+        local_path   TEXT NOT NULL,
+        duration_s   REAL,
+        bytes        INTEGER,
+        char_count   INTEGER,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
