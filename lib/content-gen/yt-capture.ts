@@ -520,6 +520,22 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       await page.waitForTimeout(500);
     }
 
+    // For channel_page: the "Popular videos" / featured shelf lazy-loads
+    // AFTER the initial scaffold. Without this wait the bbox extraction
+    // runs before the cards exist (returns 0), even though by screenshot
+    // time they're visible. Wait for at least 2 loaded card thumbs (a
+    // channel_page typically shows a hero + 5-6 popular cards).
+    if (kind === 'channel_page' && captureMode === 'static') {
+      await page.waitForFunction(() => {
+        const imgs = Array.from(document.querySelectorAll(
+          'ytd-rich-item-renderer img, ytd-grid-video-renderer img, ytd-rich-shelf-renderer img, ytd-rich-section-renderer img'
+        )) as HTMLImageElement[];
+        const loaded = imgs.filter(i => i.src && i.naturalWidth > 50);
+        return loaded.length >= 2;
+      }, undefined, { timeout: 9_000 }).catch(() => { /* proceed anyway */ });
+      await page.waitForTimeout(400);
+    }
+
     // Extract element bboxes for the renderer's annotation overlays. Done
     // BEFORE the screenshot so the layout we measure matches the captured
     // pixels exactly. Strategy: walk the rendered DOM, match each rule's
