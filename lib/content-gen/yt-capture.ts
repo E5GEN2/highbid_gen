@@ -544,7 +544,58 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       return { bboxes: out, debug: debugOut };
     }, [rulesForKind, VIEWPORT.width, VIEWPORT.height]).catch(() => ({ bboxes: {} as BBoxMap, debug: {} as Record<string, unknown> }));
     const bboxes: BBoxMap = (extracted as { bboxes: BBoxMap }).bboxes ?? {};
-    const bboxDebug = (extracted as { debug: Record<string, unknown> }).debug ?? {};
+    const bboxDebug = (extracted as { debug: Record<string, Record<string, unknown>> }).debug ?? {};
+
+    // ── Playwright locator-based fallback ─────────────────────────────
+    // For rules where the in-page evaluator returned NO bbox, retry with
+    // page.locator('text=/regex/'). The Playwright locator engine pierces
+    // BOTH open AND closed shadow DOM (which closed-root yt-attributed-
+    // string elements live behind) — page.evaluate can't. About modal text
+    // is frequently in closed shadow roots in current YT, so the JS walker
+    // misses it and the locator path catches it.
+    for (const rule of rulesForKind) {
+      if (bboxes[rule.name]) continue;        // already found by JS walker
+      if (rule.tag === 'img') continue;       // locator text= doesn't fit
+      try {
+        // Strip ^ and $ anchors and trim whitespace — Playwright's text=
+        // matches against innerText with surrounding whitespace, so anchors
+        // confuse it. The regex still filters out non-matching elements.
+        const reBody = rule.regex.replace(/^\^\\s\*/, '').replace(/\\s\*\$$/, '');
+        const loc = page.locator(`text=/${reBody}/i`);
+        const count = await loc.count();
+        const minW = rule.min_w ?? 2, maxW = rule.max_w ?? Infinity;
+        const minH = rule.min_h ?? 2, maxH = rule.max_h ?? Infinity;
+        let bestBox: { x: number; y: number; w: number; h: number } | null = null;
+        let bestArea = Infinity;
+        const dbgList: Array<{ w: number; h: number; visible: boolean }> = [];
+        for (let i = 0; i < Math.min(count, 30); i++) {
+          const item = loc.nth(i);
+          let box: { x: number; y: number; width: number; height: number } | null = null;
+          try { box = await item.boundingBox({ timeout: 1000 }); } catch { box = null; }
+          if (!box) continue;
+          const vis = await item.isVisible({ timeout: 500 }).catch(() => false);
+          dbgList.push({ w: Math.round(box.width), h: Math.round(box.height), visible: vis });
+          if (!vis) continue;
+          if (box.width < minW || box.width > maxW || box.height < minH || box.height > maxH) continue;
+          if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) continue;
+          const area = box.width * box.height;
+          if (area < bestArea) {
+            bestArea = area;
+            bestBox = { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+          }
+        }
+        if (bestBox) {
+          bboxes[rule.name] = bestBox;
+          if (bboxDebug[rule.name]) {
+            (bboxDebug[rule.name] as Record<string, unknown>).via_locator = true;
+            (bboxDebug[rule.name] as Record<string, unknown>).locator_candidates = count;
+          }
+        } else if (bboxDebug[rule.name]) {
+          (bboxDebug[rule.name] as Record<string, unknown>).locator_candidates = count;
+          (bboxDebug[rule.name] as Record<string, unknown>).locator_sizes = dbgList.slice(0, 5);
+        }
+      } catch { /* locator path failed — skip */ }
+    }
 
     // Branch: static screenshot OR scroll-record video.
     let buf: Buffer;
