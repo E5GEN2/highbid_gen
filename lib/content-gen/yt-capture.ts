@@ -153,16 +153,18 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
       hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #channel-header',
       min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
     { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
-      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #meta, ytd-about-channel-renderer, [role="dialog"]',
+      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #meta, ytd-about-channel-renderer, [role="dialog"] #content, [role="dialog"], .about-stats',
       min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
     // Total views in the About modal — typically a row with "N views" only.
-    // 60-220px wide and 14-30px tall sane bounds (was matching a 257×40
-    // container before).
-    { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*views?\\s*$',
-      hint: 'ytd-about-channel-renderer, [role="dialog"], #content-container, table',
+    // YT sometimes shows raw digits ("7,914,159 views"), sometimes
+    // compressed ("7.9M views"), so the regex must accept K/M/B suffix.
+    // 40-220px wide / 14-30px tall sane bounds (was matching a 257×40
+    // container before — see #117 UNSTOPPABLE).
+    { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
+      hint: 'ytd-about-channel-renderer, [role="dialog"] #content, [role="dialog"], #content-container, table, .about-stats',
       min_w: 40, max_w: 220, min_h: 14, max_h: 30 },
     { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$',
-      hint: 'ytd-about-channel-renderer, [role="dialog"], #content-container, table',
+      hint: 'ytd-about-channel-renderer, [role="dialog"] #content, [role="dialog"], #content-container, table, .about-stats',
       min_w: 60, max_w: 260, min_h: 14, max_h: 30 },
   ],
   videos_tab: [
