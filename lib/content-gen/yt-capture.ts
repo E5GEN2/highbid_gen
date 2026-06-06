@@ -402,6 +402,50 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // regex against each element's OWN text (children stripped), keep the
     // tightest visible match. Survives YT class-name churn entirely.
     const rulesForKind = BBOX_RULES[kind] ?? [];
+    // Diagnostic dump — reports candidate counts + rejection reasons per
+    // rule. Persisted alongside the row so we can inspect what went wrong
+    // without redeploying. Tiny on the wire.
+    const bboxDebug = await page.evaluate((rules) => {
+      const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; strict_hint?: boolean; tag?: string;
+        min_w?: number; max_w?: number; min_h?: number; max_h?: number }>;
+      const ownText = (el: Element): string => {
+        let s = ''; for (const n of Array.from(el.childNodes)) if (n.nodeType === 3) s += n.textContent ?? '';
+        return s.trim();
+      };
+      const out: Record<string, { regex_matches: number; rejected_size: number; rejected_offview: number; rejected_covered: number; accepted: number; sample_texts: string[]; sample_covered: Array<{ text: string; top_tag: string }> }> = {};
+      for (const rule of ruleList) {
+        const re = new RegExp(rule.regex, 'i');
+        const notRe = rule.not_regex ? new RegExp(rule.not_regex, 'i') : null;
+        const tagSel = rule.tag ? rule.tag.toLowerCase() : '*';
+        const minW = rule.min_w ?? 2, maxW = rule.max_w ?? Infinity;
+        const minH = rule.min_h ?? 2, maxH = rule.max_h ?? Infinity;
+        const VP_W = window.innerWidth, VP_H = window.innerHeight;
+        let regex_matches = 0, rejected_size = 0, rejected_offview = 0, rejected_covered = 0, accepted = 0;
+        const sample_texts: string[] = [];
+        const sample_covered: Array<{ text: string; top_tag: string }> = [];
+        for (const el of Array.from(document.querySelectorAll(tagSel))) {
+          const probe = tagSel === 'img' ? ((el as HTMLImageElement).alt || (el as HTMLImageElement).src || '') : ownText(el);
+          if (!re.test(probe)) continue;
+          if (notRe && notRe.test(probe)) continue;
+          regex_matches++;
+          if (sample_texts.length < 5) sample_texts.push(probe.slice(0, 60));
+          const r = (el as HTMLElement).getBoundingClientRect();
+          if (r.width < minW || r.width > maxW || r.height < minH || r.height > maxH) { rejected_size++; continue; }
+          if (r.left < -4 || r.top < -4 || r.right > VP_W + 4 || r.bottom > VP_H + 4) { rejected_offview++; continue; }
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          const top = document.elementFromPoint(cx, cy);
+          if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+            rejected_covered++;
+            if (sample_covered.length < 3) sample_covered.push({ text: probe.slice(0, 50), top_tag: (top.tagName || '?').toLowerCase() + ((top as HTMLElement).className ? '.' + (top as HTMLElement).className.toString().split(/\s+/)[0] : '') });
+            continue;
+          }
+          accepted++;
+        }
+        out[rule.name] = { regex_matches, rejected_size, rejected_offview, rejected_covered, accepted, sample_texts, sample_covered };
+      }
+      return out;
+    }, rulesForKind).catch(() => ({} as Record<string, unknown>));
+    console.log('[yt-capture] bbox debug for', kind, channelId, JSON.stringify(bboxDebug));
     const bboxes: BBoxMap = await page.evaluate(([rules, vpW, vpH]) => {
       const VP_W = vpW as number; const VP_H = vpH as number;
       const out: Record<string, { x: number; y: number; w: number; h: number }> = {};
