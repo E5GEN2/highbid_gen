@@ -1818,6 +1818,17 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_yt_screens_lookup ON content_gen_yt_screens(channel_id, kind, date_bucket)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_yt_screens_status ON content_gen_yt_screens(status)`).catch(() => {});
+    // asset_kind: 'image' (PNG screenshot) | 'video' (WebM/MP4 recording)
+    // bboxes_jsonb: { element_name: {x,y,w,h} } — locations of subscriber
+    //   count / total views / etc. so the renderer can place yellow circles
+    //   in the exact right spot from a clean (unannotated) screenshot
+    // capture_mode: 'static' (single screenshot) | 'scroll_record' (mp4 of
+    //   panning the page — e.g. video grid for upload_rate)
+    // duration_s: video length when asset_kind='video'
+    await client.query(`ALTER TABLE content_gen_yt_screens ADD COLUMN IF NOT EXISTS asset_kind TEXT NOT NULL DEFAULT 'image'`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_yt_screens ADD COLUMN IF NOT EXISTS capture_mode TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_yt_screens ADD COLUMN IF NOT EXISTS duration_s REAL`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_yt_screens ADD COLUMN IF NOT EXISTS bboxes_jsonb JSONB`).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS content_gen_voice_assets (
