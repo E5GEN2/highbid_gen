@@ -98,12 +98,32 @@ const ANNOTATE_SIZE: Record<AnnotateElement, { minW: number; maxW: number; minH:
   view_count:       { minW: 30, maxW: 500, minH: 12, maxH: 60 },
 };
 
-/** Ancestor scope tag selectors (lowercase). When set, the candidate element
- *  must have an ancestor (or itself) whose tagName matches one of these. This
- *  prevents picking sidebar/recommended-row "X views" entries when we want
- *  the about modal's view count, etc.
- *  Walk the ancestor chain across shadow DOM boundaries (parentElement OR
- *  shadow-root host) to handle Polymer custom elements. */
+/** Per-kind scope overrides. Some elements need different ancestor scopes
+ *  depending on which screen they're being annotated on — e.g. view_count on
+ *  videos_tab lives in yt-lockup-view-model cards, but on watch_page the
+ *  sidebar ALSO uses yt-lockup-view-model so we have to scope tighter to
+ *  the watch-page header containers only. Lookup is (element, kind) →
+ *  scopeTags; falls back to ANNOTATE_SCOPE if no override. */
+const ANNOTATE_SCOPE_BY_KIND: Partial<Record<ScreenKind, Partial<Record<AnnotateElement, string[]>>>> = {
+  watch_page: {
+    // Main watch view count: ytd-video-view-count-renderer wraps it under
+    // ytd-video-primary-info-renderer / ytd-watch-metadata. Excluding
+    // yt-lockup-view-model (sidebar) is the whole point of this override.
+    view_count: [
+      'ytd-video-view-count-renderer',
+      'ytd-video-primary-info-renderer',
+      'ytd-watch-info-text',
+      'ytd-watch-metadata',
+    ],
+  },
+};
+
+/** Default ancestor scope tag selectors (lowercase). When set, the candidate
+ *  element must have an ancestor (or itself) whose tagName matches one of
+ *  these. Prevents picking sidebar/recommended "X views" entries when we
+ *  want the about modal's view count, etc. Walk the ancestor chain across
+ *  shadow DOM boundaries (parentElement OR shadow-root host) to handle
+ *  Polymer custom elements. */
 const ANNOTATE_SCOPE: Partial<Record<AnnotateElement, string[]>> = {
   // about modal / engagement panel containers — strict scope for the modal-
   // shown stats. We include several variants because YT's panel naming has
@@ -1066,7 +1086,13 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           // SVG using the bbox that the walker returns).
           const isComposite = annotate.kind === 'composite';
           const css = !isComposite && annotate.style ? HIGHLIGHT_CSS[annotate.style] : '';
-          const scopeTags = ANNOTATE_SCOPE[annotate.element] ?? [];
+          // Prefer per-kind scope override when present; fall back to the
+          // default per-element scope. This is how watch_page view_count
+          // avoids the yt-lockup-view-model sidebar trap.
+          const scopeTags =
+            ANNOTATE_SCOPE_BY_KIND[kind]?.[annotate.element]
+            ?? ANNOTATE_SCOPE[annotate.element]
+            ?? [];
           // Run the search entirely inside the page: walk light DOM AND shadow
           // roots, regex-match each element's own text, filter by size + in-
           // viewport + ancestor-scope, then inject the highlight CSS on the
