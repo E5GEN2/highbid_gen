@@ -298,7 +298,11 @@ function urlFor(kind: ScreenKind, handle: string | null, channelId: string, watc
  */
 export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKind; mode?: CaptureMode; geo?: string; force?: boolean; watchVideoId?: string | null; annotate?: AnnotateSpec } = {}): Promise<CaptureResult> {
   const kind = opts.kind ?? 'channel_page';
-  const mode: CaptureMode = opts.mode ?? (kind === 'videos_tab' ? 'scroll_record' : 'static');
+  // Annotation injects CSS BEFORE the screenshot — only meaningful for a
+  // single still frame. If the caller asked for an annotation but also a
+  // scroll_record video, downgrade to static so the highlight actually shows
+  // up in the captured asset.
+  const mode: CaptureMode = opts.annotate ? 'static' : (opts.mode ?? (kind === 'videos_tab' ? 'scroll_record' : 'static'));
   const pool = await getPool();
 
   // Look up handle (saves a YT redirect roundtrip and gives clean URL).
