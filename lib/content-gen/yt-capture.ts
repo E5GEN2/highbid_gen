@@ -111,6 +111,12 @@ interface BBoxRule {
   /** Comma-list of CSS selectors limiting WHERE we search. Defaults to the
    *  full document. Useful for ruling out the recommended-videos sidebar etc. */
   hint?: string;
+  /** If true, return no bbox when the hint matches nothing — instead of
+   *  falling back to the whole document. Use for cases where falling back
+   *  would pick the wrong element (e.g. about_page modal: the channel header
+   *  underneath has the same text, and the visibility check can't tell them
+   *  apart through the modal backdrop). */
+  strict_hint?: boolean;
   /** Tag-name filter; defaults to '*'. 'img' switches the match probe from
    *  ownText() to alt+src. */
   tag?: string;
@@ -148,23 +154,29 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
       min_w: 30, max_w: 200, min_h: 14, max_h: 30 },
   ],
   about_page: [
+    // about_page: the channel header is visible BEHIND the about modal/dialog,
+    // and its "N subscribers" text is in the DOM and "visible". To avoid the
+    // extractor picking up header elements through the dimmed backdrop, we
+    // scope all about-modal rules to MODAL containers only. Verified via
+    // overlay inspection 2026-06-06.
     { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined)\\b',
-      tag: 'h1',
-      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #channel-header',
+      tag: 'h1', strict_hint: true,
+      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"]',
       min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
     { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
-      hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #meta, ytd-about-channel-renderer, [role="dialog"] #content, [role="dialog"], .about-stats',
+      strict_hint: true,
+      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"], .about-stats',
       min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
     // Total views in the About modal — typically a row with "N views" only.
-    // YT sometimes shows raw digits ("7,914,159 views"), sometimes
-    // compressed ("7.9M views"), so the regex must accept K/M/B suffix.
-    // 40-220px wide / 14-30px tall sane bounds (was matching a 257×40
-    // container before — see #117 UNSTOPPABLE).
+    // YT shows either raw digits ("7,914,159 views") or compressed
+    // ("7.9M views"); regex accepts both. Modal-only scope as above.
     { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
-      hint: 'ytd-about-channel-renderer, [role="dialog"] #content, [role="dialog"], #content-container, table, .about-stats',
+      strict_hint: true,
+      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"], .about-stats',
       min_w: 40, max_w: 220, min_h: 14, max_h: 30 },
     { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$',
-      hint: 'ytd-about-channel-renderer, [role="dialog"] #content, [role="dialog"], #content-container, table, .about-stats',
+      strict_hint: true,
+      hint: 'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"], .about-stats',
       min_w: 60, max_w: 260, min_h: 14, max_h: 30 },
   ],
   videos_tab: [
@@ -371,6 +383,20 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     await page.waitForLoadState('networkidle', { timeout: NETIDLE_MS }).catch(() => {});
     await page.waitForTimeout(800);
 
+    // For about_page, /about redirects to the channel page and pops a modal.
+    // Wait for the modal to actually appear (contains a "Joined" text line)
+    // before bbox extraction — without this race-prone wait, the modal may
+    // still be fading in when we grab coordinates.
+    if (kind === 'about_page') {
+      await page.waitForFunction(() => {
+        const dialogs = Array.from(document.querySelectorAll(
+          'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"]'
+        ));
+        return dialogs.some(d => /Joined\s+\w+\s+\d/.test((d as HTMLElement).innerText || ''));
+      }, undefined, { timeout: 10_000 }).catch(() => { /* try extraction anyway */ });
+      await page.waitForTimeout(700);  // small post-open settle for layout
+    }
+
     // Extract element bboxes for the renderer's annotation overlays. Done
     // BEFORE the screenshot so the layout we measure matches the captured
     // pixels exactly. Strategy: walk the rendered DOM, match each rule's
@@ -390,15 +416,18 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1) return false;
         return true;
       };
-      const scopes = (hint: string | undefined): Element[] => {
+      const scopes = (hint: string | undefined, strict: boolean): Element[] | null => {
         if (!hint) return [document.documentElement];
         const found: Element[] = [];
         for (const sel of hint.split(',').map(s => s.trim()).filter(Boolean)) {
           try { found.push(...Array.from(document.querySelectorAll(sel))); } catch { /* invalid sel — skip */ }
         }
-        return found.length > 0 ? found : [document.documentElement];
+        if (found.length > 0) return found;
+        // No hint match: strict_hint → return null (caller skips rule entirely);
+        // non-strict → fall back to whole document.
+        return strict ? null : [document.documentElement];
       };
-      const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; tag?: string;
+      const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; strict_hint?: boolean; tag?: string;
         min_w?: number; max_w?: number; min_h?: number; max_h?: number; in_viewport?: boolean }>;
       for (const rule of ruleList) {
         const re = new RegExp(rule.regex, 'i');
@@ -411,7 +440,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         const maxH = rule.max_h ?? Infinity;
         let bestEl: Element | null = null;
         let bestArea = Infinity;
-        for (const scope of scopes(rule.hint)) {
+        const scopeList = scopes(rule.hint, rule.strict_hint === true);
+        if (!scopeList) continue;   // strict_hint with no matches → skip rule
+        for (const scope of scopeList) {
           let nodes: Element[];
           try { nodes = Array.from(scope.querySelectorAll(tagSel)); } catch { continue; }
           for (const el of nodes) {
