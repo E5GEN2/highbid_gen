@@ -844,10 +844,16 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             const candidatesDbg: Array<Record<string, unknown>> = [];
             let bestEl: Element | null = null;
             let bestArea = Infinity;
+            // Fallback: track innerText matches in case ownText fails (text
+            // split across multiple children: <span>527,506</span> <span>views</span>).
+            // We only use the innerText fallback if NO ownText match landed.
+            let fallbackEl: Element | null = null;
+            let fallbackArea = Infinity;
             // Track all elements with matching text — even if scope rejects
             // them — so the diagnostic can show what the regex found in scope
             // vs. out of scope.
             let inScope = 0, outOfScope = 0;
+            // First pass: ownText matches (the precise leaf-level signal).
             for (const el of all) {
               const txt = ownText(el);
               if (!re.test(txt)) continue;
@@ -861,16 +867,44 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               const reason = hidden ? 'hidden' : !inScopeNow ? 'out-of-scope' : !sizeOK ? 'size' : !viewOK ? 'off-view' : 'OK';
               if (inScopeNow) inScope++; else outOfScope++;
               if (candidatesDbg.length < 20) {
-                const row: Record<string, unknown> = { x: Math.round(r.left), y: Math.round(r.top), w, h, tag: el.tagName.toLowerCase(), text: txt.slice(0, 60), reason };
-                // For out-of-scope matches, dump the ancestor tag chain so we
-                // can see what containers WERE present and possibly add them
-                // to ANNOTATE_SCOPE.
+                const row: Record<string, unknown> = { x: Math.round(r.left), y: Math.round(r.top), w, h, tag: el.tagName.toLowerCase(), text: txt.slice(0, 60), reason, via: 'ownText' };
                 if (reason === 'out-of-scope') row.ancestors = ancestorTags(el, 12);
                 candidatesDbg.push(row);
               }
               if (reason !== 'OK') continue;
               const area = r.width * r.height;
               if (area < bestArea) { bestArea = area; bestEl = el; }
+            }
+            // Second pass — innerText fallback. Only collect; we don't apply
+            // unless first pass produced no candidate. We still want the
+            // diagnostic to surface these so we know which wrapper was the
+            // closest miss. Skip very deep textContent ('the page' wrappers)
+            // by enforcing a smaller bounds.
+            if (!bestEl) {
+              for (const el of all) {
+                // skip if ownText already matched (would have been picked
+                // above)
+                if (re.test(ownText(el))) continue;
+                const itext = ((el as HTMLElement).innerText || '').trim();
+                if (!re.test(itext)) continue;
+                const r = (el as HTMLElement).getBoundingClientRect();
+                const w = Math.round(r.width), h = Math.round(r.height);
+                const cs = window.getComputedStyle(el as HTMLElement);
+                const hidden = cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity || '1') < 0.1;
+                const inScopeNow = hasAncestor(el, scopeTags);
+                const sizeOK = w >= bounds.minW && w <= bounds.maxW && h >= bounds.minH && h <= bounds.maxH;
+                const viewOK = r.left >= -4 && r.top >= -4 && r.right <= vpW + 4 && r.bottom <= vpH + 4;
+                const reason = hidden ? 'hidden' : !inScopeNow ? 'out-of-scope' : !sizeOK ? 'size' : !viewOK ? 'off-view' : 'OK';
+                if (candidatesDbg.length < 24) {
+                  const row: Record<string, unknown> = { x: Math.round(r.left), y: Math.round(r.top), w, h, tag: el.tagName.toLowerCase(), text: itext.slice(0, 60), reason, via: 'innerText' };
+                  if (reason === 'out-of-scope') row.ancestors = ancestorTags(el, 12);
+                  candidatesDbg.push(row);
+                }
+                if (reason !== 'OK') continue;
+                const area = r.width * r.height;
+                if (area < fallbackArea) { fallbackArea = area; fallbackEl = el; }
+              }
+              if (fallbackEl) { bestEl = fallbackEl; bestArea = fallbackArea; }
             }
             if (bestEl) {
               try { (bestEl as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* */ }
