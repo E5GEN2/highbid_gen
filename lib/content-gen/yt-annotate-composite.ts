@@ -226,17 +226,20 @@ function drawGlowRing(b: BBox, color: string, stroke: number): string {
 }
 
 /** Underline stroke — fat marker stroke under the text. Useful for joined_date
- *  / channel names where a circle would be too busy. */
+ *  / channel names where a circle would be too busy. Drawn as a thick
+ *  highlighter-style band UNDER the text, plus a thinner stroke above for the
+ *  "two-pass marker" feel. Punchy enough to read at 1080p mobile-Shorts. */
 function drawUnderline(b: BBox, color: string, stroke: number): string {
-  const y = b.y + b.h + 4;
-  const x1 = b.x - 4, x2 = b.x + b.w + 4;
-  // wobbly underline — two bezier segments to feel hand-drawn
+  const y = b.y + b.h + 6;
+  const x1 = b.x - 6, x2 = b.x + b.w + 6;
   const mx = (x1 + x2) / 2;
+  const bandH = Math.max(8, stroke * 1.6);
   return `
-    <path d="M ${x1} ${y} Q ${mx} ${y + 4} ${x2} ${y}"
-          fill="none" stroke="${color}" stroke-width="${stroke}" stroke-linecap="round" opacity="0.95"/>
-    <path d="M ${x1 + 2} ${y + 2} Q ${mx + 2} ${y + 5} ${x2 - 2} ${y + 1}"
-          fill="none" stroke="${color}" stroke-width="${Math.max(2, stroke - 2)}" stroke-linecap="round" opacity="0.55"/>
+    <rect x="${x1}" y="${y - bandH / 2}" width="${x2 - x1}" height="${bandH}" rx="${bandH / 2}" ry="${bandH / 2}" fill="${color}" opacity="0.6"/>
+    <path d="M ${x1} ${y} Q ${mx} ${y + 3} ${x2} ${y - 1}"
+          fill="none" stroke="${color}" stroke-width="${stroke + 2}" stroke-linecap="round" opacity="0.95"/>
+    <path d="M ${x1 + 2} ${y + 3} Q ${mx + 2} ${y + 6} ${x2 - 2} ${y + 1}"
+          fill="none" stroke="${color}" stroke-width="${Math.max(2, stroke - 1)}" stroke-linecap="round" opacity="0.55"/>
   `;
 }
 
