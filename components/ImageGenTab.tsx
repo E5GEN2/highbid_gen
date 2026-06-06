@@ -16,7 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  */
 
 const MODELS = ['nanobananapro', 'nanobanana', 'imagen4'];
-const ASPECTS = ['16:9', '1:1', '9:16', '4:3', '3:4'];
+const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 
 interface ImageRow {
   id: number;
@@ -58,7 +58,7 @@ export default function ImageGenTab({ active }: { active: boolean }) {
   const [msg, setMsg] = useState<string | null>(null);
 
   const [prompt, setPrompt] = useState('');
-  const [aspect, setAspect] = useState('16:9');
+  const [aspect, setAspect] = useState('1:1');
   const [model, setModel] = useState('nanobananapro');
   const [purpose, setPurpose] = useState('');
   const [count, setCount] = useState(1);

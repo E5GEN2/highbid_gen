@@ -35,7 +35,7 @@ export const IMAGEGEN_JOB_ID = '69833b86b82b73895452552f';
 const IMAGES_DIR = path.join(CLIPS_DIR, 'imagegen');
 
 export const MODELS = ['nanobananapro', 'nanobanana', 'imagen4'] as const;
-export const ASPECTS = ['16:9', '1:1', '9:16', '4:3', '3:4'] as const;
+export const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'] as const;
 
 export interface ImageGenInput {
   prompt: string;
@@ -68,7 +68,7 @@ export interface SubmitOpts {
 export async function submitImageGenTask(input: ImageGenInput, opts: SubmitOpts = {}): Promise<{ ok: true; id: number; plannedTaskId: string } | { ok: false; error: string }> {
   const prompt = (input.prompt || '').trim();
   if (!prompt) return { ok: false, error: 'prompt required' };
-  const aspect = input.aspect || '16:9';
+  const aspect = input.aspect || '1:1';
   const model = input.model || 'nanobananapro';
   const purpose = input.purpose ?? null;
 
