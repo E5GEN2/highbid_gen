@@ -748,7 +748,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // The renderer reads these to build per-card crops + per-card annotations.
     if (kind === 'videos_tab' || kind === 'channel_page') {
       try {
-        const cards = await page.evaluate((vpW: number) => {
+        const result = await page.evaluate((vpW: number) => {
           // The video card renderers used by YT. Order matters: prefer the
           // more specific renderer first (rich-item in modern grid layout).
           // Channel_page uses ytd-rich-shelf-renderer wrapping ytd-rich-item-
@@ -820,8 +820,50 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             out.push({ card, thumb, views, title });
             if (out.length >= 24) break;  // sane cap; 4-col grid x 6 rows is plenty
           }
-          return out;
+          // FALLBACK extractor: if the structured selectors found zero cards,
+          // walk for ANY visible block containing an img + a "X views" text
+          // span. Catches channel_page Popular shelves whose renderer name
+          // changed (shelf-renderer wrapping odd inner items).
+          let fallbackUsed = false;
+          if (out.length === 0) {
+            fallbackUsed = true;
+            const viewRe = /^\s*[\d.,]+\s*[KMB]?\s*views?\s*$/i;
+            const all = Array.from(document.querySelectorAll<HTMLElement>('a, div, section'));
+            const seenRect = new Set<string>();
+            for (const el of all) {
+              const r = el.getBoundingClientRect();
+              if (r.width < 180 || r.height < 140) continue;
+              if (r.left < -8 || r.left > vpW + 8) continue;
+              const img = el.querySelector('img[src*="ytimg"], img[src*="googleusercontent"]') as HTMLImageElement | null;
+              if (!img || img.naturalWidth < 80) continue;
+              // Must contain a "X views" text
+              let hasViews = false;
+              const spans = Array.from(el.querySelectorAll('span, yt-formatted-string'));
+              for (const s of spans) {
+                const own = Array.from(s.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent ?? '').join('').trim();
+                if (viewRe.test(own)) { hasViews = true; break; }
+              }
+              if (!hasViews) continue;
+              const key = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+              if (seenRect.has(key)) continue;
+              seenRect.add(key);
+              const ir = img.getBoundingClientRect();
+              const thumbBox = { x: Math.round(ir.left), y: Math.round(ir.top), w: Math.round(ir.width), h: Math.round(ir.height) };
+              out.push({
+                card: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
+                thumb: thumbBox,
+              });
+              if (out.length >= 24) break;
+            }
+          }
+          // Diagnostic — what renderer tags exist in the page right now? Helps
+          // identify when YT renames a container so we can update the list.
+          const knownTags = ['ytd-rich-item-renderer', 'ytd-grid-video-renderer', 'ytd-rich-grid-media', 'ytd-video-renderer', 'ytd-compact-video-renderer', 'ytd-rich-shelf-renderer', 'ytd-rich-section-renderer', 'ytd-shelf-renderer', 'ytd-channel-video-player-renderer'];
+          const tagCounts: Record<string, number> = {};
+          for (const t of knownTags) tagCounts[t] = document.querySelectorAll(t).length;
+          return { cards: out, tagCounts, fallbackUsed };
         }, VIEWPORT.width);
+        const cards = result.cards;
         cards.forEach((c, i) => {
           bboxes[`video_card_${i}`] = c.card;
           if (c.thumb) bboxes[`video_thumb_${i}`] = c.thumb;
@@ -829,7 +871,11 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           if (c.title) bboxes[`video_title_${i}`] = c.title;
         });
         (bboxDebug as Record<string, unknown>).video_cards_count = cards.length;
-      } catch { /* card extraction is best-effort — main bboxes already set */ }
+        (bboxDebug as Record<string, unknown>).video_card_tag_counts = result.tagCounts;
+        (bboxDebug as Record<string, unknown>).video_card_fallback_used = result.fallbackUsed;
+      } catch (e) {
+        (bboxDebug as Record<string, unknown>).video_cards_error = (e as Error).message.slice(0, 200);
+      }
     }
 
     // Branch: static screenshot OR scroll-record video.
