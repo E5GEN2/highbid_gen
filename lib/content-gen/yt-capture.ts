@@ -215,13 +215,24 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
 
     return { id: rowId, channel_id: channelId, handle, kind, url, local_path: localPath, bytes: buf.length, date_bucket: dateBucket, geo, proxy_country: proxy.country, cached: false };
   } catch (err) {
-    // If the upstream proxy emitted any errors during the run, append the
-    // first one to the thrown error so the caller sees the real reason
-    // (proxy auth rejected, gateway unreachable from this region, etc).
     const e = err as Error;
-    if (upstreamErrors.length > 0 && !/upstream:/.test(e.message)) {
-      e.message = `${e.message} · upstream: ${upstreamErrors[0]}`;
+    const details: string[] = [];
+    // proxy-chain events emit async — wait a tick so they land before we throw.
+    await new Promise(r => setTimeout(r, 250));
+    if (upstreamErrors.length > 0) details.push(`upstream: ${upstreamErrors[0]}`);
+    // Direct undici probe of the SAME proxy URL. Tells us conclusively
+    // whether Railway's egress can reach xgodo at all.
+    try {
+      const { ProxyAgent, fetch: undiciFetch } = await import('undici');
+      const probe = await undiciFetch('https://api.ipify.org?format=json', {
+        dispatcher: new ProxyAgent({ uri: proxy.url, connectTimeout: 8_000 }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      details.push(`undici probe: HTTP ${probe.status} (${(await probe.text()).slice(0, 60)})`);
+    } catch (pe) {
+      details.push(`undici probe: ${(pe as Error & { cause?: Error }).cause?.message ?? (pe as Error).message}`);
     }
+    if (details.length > 0) e.message = `${e.message} · ${details.join(' · ')}`;
     throw e;
   } finally {
     await browser.close().catch(() => {});
