@@ -112,17 +112,28 @@ const ANNOTATE_SCOPE: Partial<Record<AnnotateElement, string[]>> = {
   total_views:  ['ytd-channel-about-metadata-renderer', 'ytd-engagement-panel-section-list-renderer', 'tp-yt-paper-dialog', 'ytd-about-channel-renderer'],
   joined_date:  ['ytd-channel-about-metadata-renderer', 'ytd-engagement-panel-section-list-renderer', 'tp-yt-paper-dialog', 'ytd-about-channel-renderer'],
   // channel header area — for the subscriber + video counts shown in the
-  // page-level header (NOT the modal duplicate).
-  subscriber_count: ['ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer'],
-  video_count:      ['ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer'],
-  // view counts on grid cards (videos_tab) OR on watch_page header info row.
-  // The scope walker checks ancestors via parentElement + shadow-root host,
-  // so any of these tags being an ancestor of the matched text element is OK.
+  // page-level header (channel_page) AND the owner row (watch_page).
+  // watch_page wraps subscribers in ytd-video-owner-renderer under
+  // ytd-watch-metadata — the channel-only scope missed it.
+  subscriber_count: [
+    'ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer',
+    'ytd-video-owner-renderer', 'ytd-watch-metadata',
+  ],
+  video_count: [
+    'ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer',
+  ],
+  // view counts on grid cards (videos_tab + channel_page) OR on watch_page
+  // header info row (just below the video player). New YT layouts use
+  // yt-lockup-view-model for cards and yt-content-metadata-view-model on
+  // watch_page — both added to the scope. The walker checks ancestors via
+  // parentElement + shadow-root host.
   view_count: [
-    // videos_tab grid card renderers
+    // grid card renderers (legacy + Polymer 3 lockup)
     'ytd-rich-item-renderer', 'ytd-grid-video-renderer', 'ytd-video-renderer', 'ytd-rich-grid-media',
-    // watch_page info containers
+    'yt-lockup-view-model',
+    // watch_page info containers (legacy + Polymer 3)
     'ytd-watch-metadata', 'ytd-video-primary-info-renderer',
+    'yt-content-metadata-view-model', 'ytd-watch-info-text',
   ],
 };
 
@@ -1146,9 +1157,14 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               const viewOK = r.left >= -4 && r.top >= -4 && r.right <= vpW + 4 && r.bottom <= vpH + 4;
               const reason = hidden ? 'hidden' : !inScopeNow ? 'out-of-scope' : !sizeOK ? 'size' : !viewOK ? 'off-view' : 'OK';
               if (inScopeNow) inScope++; else outOfScope++;
-              if (candidatesDbg.length < 20) {
+              // Show all in-scope candidates AND up to ~12 OOS ones. Previously
+              // candidatesDbg filled with OOS sidebar entries before any in-
+              // scope ones got a slot, masking the actual issue when in_scope > 0.
+              const oosCount = candidatesDbg.filter(c => c.reason === 'out-of-scope').length;
+              if ((reason !== 'out-of-scope' && candidatesDbg.length < 30) || (reason === 'out-of-scope' && oosCount < 8)) {
                 const row: Record<string, unknown> = { x: Math.round(r.left), y: Math.round(r.top), w, h, tag: el.tagName.toLowerCase(), text: txt.slice(0, 60), reason, via: 'ownText' };
                 if (reason === 'out-of-scope') row.ancestors = ancestorTags(el, 12);
+                if (reason === 'OK' || reason === 'size' || reason === 'off-view') row.ancestors = ancestorTags(el, 8);
                 candidatesDbg.push(row);
               }
               if (reason !== 'OK') continue;
