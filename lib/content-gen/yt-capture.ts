@@ -787,6 +787,16 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             seen.add(el);
             els.push(el);
           }
+          // Diagnostic — why structured rejected this card. Capture the first
+          // 4 candidates' bboxes + reject reason BEFORE the main loop runs.
+          const rejectDbg: Array<{ tag: string; x: number; y: number; w: number; h: number; reason: string }> = [];
+          for (const el of els.slice(0, 4)) {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            let reason = 'OK';
+            if (r.width < 160 || r.height < 120) reason = 'too-small';
+            else if (r.left + r.width < 0 || r.left > vpW + 8) reason = 'off-x';
+            rejectDbg.push({ tag: el.tagName.toLowerCase(), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), reason });
+          }
           const out: Array<{ card: { x: number; y: number; w: number; h: number }; thumb?: { x: number; y: number; w: number; h: number }; views?: { x: number; y: number; w: number; h: number }; title?: { x: number; y: number; w: number; h: number } }> = [];
           for (const el of els) {
             const r = (el as HTMLElement).getBoundingClientRect();
@@ -924,7 +934,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               }
             }
           }
-          return { cards: out, tagCounts, fallbackUsed, firstAncestorChain };
+          return { cards: out, tagCounts, fallbackUsed, firstAncestorChain, rejectDbg };
         }, VIEWPORT.width);
         const cards = result.cards;
         cards.forEach((c, i) => {
@@ -937,6 +947,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         (bboxDebug as Record<string, unknown>).video_card_tag_counts = result.tagCounts;
         (bboxDebug as Record<string, unknown>).video_card_fallback_used = result.fallbackUsed;
         (bboxDebug as Record<string, unknown>).video_card_first_chain = result.firstAncestorChain;
+        (bboxDebug as Record<string, unknown>).video_card_reject_dbg = result.rejectDbg;
       } catch (e) {
         (bboxDebug as Record<string, unknown>).video_cards_error = (e as Error).message.slice(0, 200);
       }
