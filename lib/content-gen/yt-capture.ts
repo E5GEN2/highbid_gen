@@ -93,9 +93,15 @@ const ANNOTATE_SCOPE: Partial<Record<AnnotateElement, string[]>> = {
   // page-level header (NOT the modal duplicate).
   subscriber_count: ['ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer'],
   video_count:      ['ytd-c4-tabbed-header-renderer', 'yt-page-header-renderer', 'ytd-channel-header-renderer'],
-  // view counts on grid cards — each card is a renderer; pick one whose card
-  // ancestor matches.
-  view_count: ['ytd-rich-item-renderer', 'ytd-grid-video-renderer', 'ytd-video-renderer', 'ytd-rich-grid-media'],
+  // view counts on grid cards (videos_tab) OR on watch_page header info row.
+  // The scope walker checks ancestors via parentElement + shadow-root host,
+  // so any of these tags being an ancestor of the matched text element is OK.
+  view_count: [
+    // videos_tab grid card renderers
+    'ytd-rich-item-renderer', 'ytd-grid-video-renderer', 'ytd-video-renderer', 'ytd-rich-grid-media',
+    // watch_page info containers
+    'ytd-watch-metadata', 'ytd-video-primary-info-renderer',
+  ],
 };
 
 /** Inline CSS for each highlight style. Applied via el.style on the
@@ -817,6 +823,24 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               }
               return false;
             };
+            // Walk the ancestor chain (parent + shadow host) collecting tag
+            // names. Used both for scope check AND for diagnostic output so we
+            // know what tags the matched element sits under — invaluable when
+            // YT renames a container and the scope list needs updating.
+            const ancestorTags = (el: Element, maxHops = 30): string[] => {
+              const out: string[] = [];
+              let cur: Element | null = el;
+              let hops = 0;
+              while (cur && hops++ < maxHops) {
+                out.push(cur.tagName.toLowerCase());
+                const p: Element | null = cur.parentElement;
+                if (p) { cur = p; continue; }
+                const root = cur.getRootNode();
+                if (root instanceof ShadowRoot) { cur = root.host as Element; continue; }
+                break;
+              }
+              return out;
+            };
             const candidatesDbg: Array<Record<string, unknown>> = [];
             let bestEl: Element | null = null;
             let bestArea = Infinity;
@@ -836,7 +860,14 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               const viewOK = r.left >= -4 && r.top >= -4 && r.right <= vpW + 4 && r.bottom <= vpH + 4;
               const reason = hidden ? 'hidden' : !inScopeNow ? 'out-of-scope' : !sizeOK ? 'size' : !viewOK ? 'off-view' : 'OK';
               if (inScopeNow) inScope++; else outOfScope++;
-              if (candidatesDbg.length < 16) candidatesDbg.push({ x: Math.round(r.left), y: Math.round(r.top), w, h, tag: el.tagName.toLowerCase(), text: txt.slice(0, 60), reason });
+              if (candidatesDbg.length < 20) {
+                const row: Record<string, unknown> = { x: Math.round(r.left), y: Math.round(r.top), w, h, tag: el.tagName.toLowerCase(), text: txt.slice(0, 60), reason };
+                // For out-of-scope matches, dump the ancestor tag chain so we
+                // can see what containers WERE present and possibly add them
+                // to ANNOTATE_SCOPE.
+                if (reason === 'out-of-scope') row.ancestors = ancestorTags(el, 12);
+                candidatesDbg.push(row);
+              }
               if (reason !== 'OK') continue;
               const area = r.width * r.height;
               if (area < bestArea) { bestArea = area; bestEl = el; }
