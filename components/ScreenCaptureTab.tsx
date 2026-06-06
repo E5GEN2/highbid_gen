@@ -22,6 +22,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 const KINDS = ['channel_page', 'about_page', 'videos_tab', 'watch_page'] as const;
 type Kind = typeof KINDS[number];
+type CaptureMode = 'static' | 'scroll_record';
+type AssetKind = 'image' | 'video';
+
+interface BBox { x: number; y: number; w: number; h: number; }
+type BBoxMap = Record<string, BBox>;
 
 interface ScreenRow {
   id: number;
@@ -44,6 +49,10 @@ interface ScreenRow {
   started_at: string | null;
   finished_at: string | null;
   updated_at: string;
+  asset_kind: AssetKind;
+  capture_mode: CaptureMode;
+  duration_s: number | null;
+  bboxes_jsonb: BBoxMap | null;
 }
 
 const STATUS_STYLE: Record<string, string> = {
@@ -85,7 +94,11 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
   const [channelInput, setChannelInput] = useState('');
   const [batchInput, setBatchInput] = useState('');
   const [kind, setKind] = useState<Kind>('channel_page');
+  const [mode, setMode] = useState<CaptureMode | ''>('');  // '' = let server pick default per-kind
+  const [watchVideoId, setWatchVideoId] = useState('');
   const [force, setForce] = useState(false);
+  // Display toggles
+  const [showBboxes, setShowBboxes] = useState(true);
 
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -120,7 +133,7 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
     try {
       const r = await fetch('/api/admin/content-gen/yt-capture', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelIds: [cid], kind, force }),
+        body: JSON.stringify({ channelIds: [cid], kind, mode: mode || undefined, watchVideoId: watchVideoId || undefined, force }),
       }).then(r => r.json());
       if (r.ok) {
         const result = (r.results ?? [])[0];
@@ -140,7 +153,7 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
     try {
       const r = await fetch('/api/admin/content-gen/yt-capture', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelIds: ids, kind, force, concurrency: 2 }),
+        body: JSON.stringify({ channelIds: ids, kind, mode: mode || undefined, force, concurrency: 2 }),
       }).then(r => r.json());
       if (r.ok) {
         setMsg(`✓ ${r.ok_count}/${r.requested} captured · ${r.failed} failed · ${(r.elapsed_ms/1000).toFixed(1)}s`);
@@ -223,14 +236,31 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
             </button>
           </div>
         </div>
-        <div className="flex items-center gap-3 lg:col-span-2">
+        <div className="flex items-center gap-3 flex-wrap lg:col-span-2">
           <label className="text-xs text-[#888]">Kind</label>
           <select value={kind} onChange={e => setKind(e.target.value as Kind)} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none">
             {KINDS.map(k => <option key={k} value={k}>{k}</option>)}
           </select>
+          <label className="text-xs text-[#888]">Mode</label>
+          <select value={mode} onChange={e => setMode(e.target.value as CaptureMode | '')} className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white outline-none" title="Empty = auto (scroll_record for videos_tab, static for the rest)">
+            <option value="">auto</option>
+            <option value="static">static (PNG)</option>
+            <option value="scroll_record">scroll_record (WebM)</option>
+          </select>
+          {kind === 'watch_page' && (
+            <>
+              <label className="text-xs text-[#888]">watchVideoId</label>
+              <input value={watchVideoId} onChange={e => setWatchVideoId(e.target.value)} placeholder="zzH0tiIoBBA"
+                className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white placeholder-[#555] outline-none w-32 font-mono" />
+            </>
+          )}
           <label className="text-xs text-[#888] flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} className="accent-blue-500" />
             Force re-capture (ignore today&apos;s cache)
+          </label>
+          <label className="text-xs text-[#888] flex items-center gap-1.5 cursor-pointer ml-auto">
+            <input type="checkbox" checked={showBboxes} onChange={e => setShowBboxes(e.target.checked)} className="accent-yellow-500" />
+            Show bbox overlays
           </label>
         </div>
       </div>
@@ -244,15 +274,50 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {rows.map(r => (
             <div key={r.id} className="rounded-lg border border-[#1f1f1f] bg-[#101010] overflow-hidden flex flex-col">
-              <div className="aspect-video bg-[#0a0a0a] flex items-center justify-center relative">
+              <div className="aspect-video bg-[#0a0a0a] flex items-center justify-center relative overflow-hidden">
                 {r.file_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={r.file_url} alt={r.channel_name ?? r.channel_id} className="w-full h-full object-cover" />
+                  r.asset_kind === 'video' ? (
+                    <video
+                      src={r.file_url} controls preload="metadata" muted playsInline
+                      className="w-full h-full object-contain"
+                      aria-label={r.channel_name ?? r.channel_id}
+                    />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={r.file_url} alt={r.channel_name ?? r.channel_id} className="w-full h-full object-contain" />
+                  )
                 ) : (
                   <span className={`text-[11px] px-2 py-1 rounded border ${STATUS_STYLE[r.status]}`}>{r.status}</span>
                 )}
+                {/* Bbox overlays — scaled from page_width to displayed width.
+                    Each rect is positioned absolutely + labeled.
+                    Only shown for image captures (video coords drift per frame). */}
+                {showBboxes && r.asset_kind === 'image' && r.page_width && r.page_height && r.bboxes_jsonb && Object.keys(r.bboxes_jsonb).length > 0 && (
+                  <div className="absolute inset-0 pointer-events-none">
+                    {Object.entries(r.bboxes_jsonb).map(([name, b]) => (
+                      <div key={name}
+                        className="absolute border border-yellow-400/80 bg-yellow-400/10"
+                        style={{
+                          left: `${(b.x / r.page_width!) * 100}%`,
+                          top: `${(b.y / r.page_height!) * 100}%`,
+                          width: `${(b.w / r.page_width!) * 100}%`,
+                          height: `${(b.h / r.page_height!) * 100}%`,
+                        }}
+                      >
+                        <span className="absolute -top-3 left-0 text-[8px] px-1 bg-yellow-400/90 text-black font-medium whitespace-nowrap rounded">
+                          {name}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <span className={`absolute top-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded border ${STATUS_STYLE[r.status]}`}>{r.status}</span>
                 <span className="absolute top-1.5 right-1.5 text-[10px] px-1.5 py-0.5 rounded border border-[#2a2a2a] bg-black/60 text-[#bbb]">{r.kind}</span>
+                {r.asset_kind === 'video' && (
+                  <span className="absolute bottom-1.5 left-1.5 text-[10px] px-1.5 py-0.5 rounded border border-purple-500/40 bg-purple-500/15 text-purple-300">
+                    🎬 {r.capture_mode}{r.duration_s ? ` · ${r.duration_s.toFixed(1)}s` : ''}
+                  </span>
+                )}
               </div>
               <div className="p-2.5 flex-1 flex flex-col gap-1">
                 <div className="flex items-baseline gap-1.5">
@@ -267,6 +332,11 @@ export default function ScreenCaptureTab({ active }: { active: boolean }) {
                   <span>{fmtBytes(r.bytes)}</span>
                   {r.page_width && <><span>·</span><span>{r.page_width}×{r.page_height}</span></>}
                   {r.proxy_country && <><span>·</span><span title={r.proxy_device ?? ''}>proxy {r.proxy_country.toUpperCase()}</span></>}
+                  {r.bboxes_jsonb && Object.keys(r.bboxes_jsonb).length > 0 && (
+                    <><span>·</span><span className="text-yellow-400/80" title={Object.keys(r.bboxes_jsonb).join(', ')}>
+                      🟡 {Object.keys(r.bboxes_jsonb).length} bbox{Object.keys(r.bboxes_jsonb).length === 1 ? '' : 'es'}
+                    </span></>
+                  )}
                 </div>
                 <div className="flex items-center gap-1.5 text-[10px] text-[#666]">
                   <span>{r.status === 'done' ? `done ${fmtTime(r.finished_at)}` : r.status === 'capturing' ? `started ${fmtTime(r.started_at)}` : fmtTime(r.updated_at)}</span>
