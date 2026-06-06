@@ -110,10 +110,10 @@ const ANNOTATE_SCOPE: Partial<Record<AnnotateElement, string[]>> = {
  *  !important overrides YT's stylesheet (which has high specificity from
  *  classes layered with web component styles). */
 const HIGHLIGHT_CSS: Record<HighlightStyle, string> = {
-  yellow_ring:      `outline: 4px solid #FACC15 !important; outline-offset: 4px !important; border-radius: 8px !important; box-shadow: 0 0 0 8px rgba(250,204,21,0.25) !important;`,
-  yellow_box:       `outline: 4px solid #FACC15 !important; outline-offset: 2px !important; box-shadow: 0 0 0 6px rgba(250,204,21,0.25) !important;`,
-  yellow_highlight: `background-color: rgba(250, 204, 21, 0.55) !important; padding: 2px 4px !important; border-radius: 4px !important;`,
-  yellow_circle:    `outline: 5px solid #FACC15 !important; outline-offset: 6px !important; border-radius: 50% !important; box-shadow: 0 0 0 10px rgba(250,204,21,0.25) !important;`,
+  yellow_ring:      `outline: 6px solid #FACC15 !important; outline-offset: 8px !important; border-radius: 12px !important; box-shadow: 0 0 0 14px rgba(250,204,21,0.35), 0 0 24px rgba(250,204,21,0.5) !important;`,
+  yellow_box:       `outline: 6px solid #FACC15 !important; outline-offset: 4px !important; box-shadow: 0 0 0 10px rgba(250,204,21,0.35), 0 0 18px rgba(250,204,21,0.45) !important;`,
+  yellow_highlight: `background-color: rgba(250, 204, 21, 0.65) !important; padding: 2px 6px !important; border-radius: 4px !important; box-shadow: 0 0 12px rgba(250,204,21,0.6) !important;`,
+  yellow_circle:    `outline: 7px solid #FACC15 !important; outline-offset: 14px !important; border-radius: 50% !important; box-shadow: 0 0 0 20px rgba(250,204,21,0.3), 0 0 32px rgba(250,204,21,0.55) !important;`,
 };
 
 const GEO_LANG: Record<string, { country: string; lang: string }> = {
