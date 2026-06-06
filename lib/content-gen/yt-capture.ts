@@ -484,6 +484,20 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       await page.waitForTimeout(700);  // small post-open settle for layout
     }
 
+    // For videos_tab in STATIC mode: wait for grid thumbnails to actually
+    // render. scroll_record has its own wait downstream; static needs this
+    // here so the per-card bbox extraction sees real cards with thumbs.
+    if (kind === 'videos_tab' && captureMode === 'static') {
+      await page.waitForFunction(() => {
+        const imgs = Array.from(document.querySelectorAll(
+          'ytd-rich-item-renderer img, ytd-grid-video-renderer img, ytd-rich-grid-renderer img'
+        )) as HTMLImageElement[];
+        const loaded = imgs.filter(i => i.src && i.naturalWidth > 50);
+        return loaded.length >= 4;
+      }, undefined, { timeout: 12_000 }).catch(() => { /* proceed anyway */ });
+      await page.waitForTimeout(500);
+    }
+
     // Extract element bboxes for the renderer's annotation overlays. Done
     // BEFORE the screenshot so the layout we measure matches the captured
     // pixels exactly. Strategy: walk the rendered DOM, match each rule's
