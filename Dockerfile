@@ -40,6 +40,11 @@ RUN npm ci
 
 COPY . .
 RUN mkdir -p tmp/clip-cache tmp/renders
+# Playwright needs its own bundled ffmpeg for recordVideo (WebM encoding).
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 above skips browsers AND ffmpeg, so
+# we install just the ffmpeg helper explicitly. ~5MB; uses the system
+# chromium for the actual page rendering.
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0 npx playwright install ffmpeg
 RUN npx next build
 
 EXPOSE 8080

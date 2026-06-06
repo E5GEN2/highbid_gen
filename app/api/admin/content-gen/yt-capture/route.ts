@@ -58,16 +58,17 @@ export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   const sp = req.nextUrl.searchParams;
 
-  // Debug single-capture path: GET /yt-capture?channelId=...&kind=...&mode=...&force=1
+  // Debug single-capture path: GET /yt-capture?channelId=...&kind=...&mode=...&watchVideoId=...&force=1
   const singleChannel = sp.get('channelId');
   if (singleChannel) {
     const kind = (sp.get('kind') as ScreenKind) ?? 'channel_page';
     const modeParam = sp.get('mode');
     const mode = modeParam === 'scroll_record' || modeParam === 'static' ? modeParam as CaptureMode : undefined;
+    const watchVideoId = sp.get('watchVideoId') || undefined;
     const force = sp.get('force') === '1';
     const t0 = Date.now();
     try {
-      const r = await captureYtScreen(singleChannel, { kind, mode, force });
+      const r = await captureYtScreen(singleChannel, { kind, mode, watchVideoId, force });
       return NextResponse.json({ ok: true, elapsed_ms: Date.now() - t0, result: { ...r, file_url: `/api/admin/content-gen/yt-capture/file?id=${r.id}` } });
     } catch (e) { return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 }); }
   }
