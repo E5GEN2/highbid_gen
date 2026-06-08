@@ -181,8 +181,27 @@ export async function renderTopVideosPano(
     }
   } catch { /* miss */ }
 
-  const cols = args.cols ?? 4;
-  const rows = args.rows ?? 2;
+  // Adapt grid dimensions to the number of videos available so the layout
+  // doesn't leave empty placeholder cells. Caller overrides (args.cols /
+  // args.rows) win when explicitly set.
+  //   N = 8     → 4×2 (MG default)
+  //   N = 6–7   → 4×2 still — some empty cells OK (matches "more to come")
+  //   N = 5     → 5×1
+  //   N = 4     → 4×1
+  //   N = 3     → 3×1
+  //   N = 2     → 2×1
+  const N = args.videos.length;
+  let cols = args.cols ?? 4;
+  let rows = args.rows ?? 2;
+  if (!args.cols && !args.rows) {
+    if (N >= 8)       { cols = 4; rows = 2; }
+    else if (N >= 6)  { cols = 4; rows = 2; }   // still 4×2; a couple of gaps is fine
+    else if (N === 5) { cols = 5; rows = 1; }
+    else if (N === 4) { cols = 4; rows = 1; }
+    else if (N === 3) { cols = 3; rows = 1; }
+    else if (N === 2) { cols = 2; rows = 1; }
+    else              { cols = 1; rows = 1; }   // degenerate; caller usually skips
+  }
   const cells = cols * rows;
   // Pad or truncate the video list so layout is always full.
   const videos = args.videos.slice(0, cells);
@@ -214,12 +233,14 @@ export async function renderTopVideosPano(
   const titleBlock = lineHeight * 2;     // 2 lines max
   const metaBlock = 22 + 12;              // meta font + gap
   const cellH = thumbHFor(cellW) + 34 + titleBlock + metaBlock;
-  // If 2 rows make us overflow, shrink cellW.
-  // (left as-is — cellH should fit; if not we trim title to 1 line via wrapTitle.)
+  // Effective row stride accounts for the gap between rows.
+  const rowStride = cellH + (gapY - 24);
+  const gridContentH = cellH + (rows - 1) * rowStride;
 
-  // Origin of the grid inside the card.
+  // Center the grid VERTICALLY inside the card so single-row panels don't
+  // sit at the top with dead space below.
   const gridX = cardX + innerPadX;
-  const gridY = cardY + innerPadY;
+  const gridY = cardY + Math.max(innerPadY, Math.round((cardH - gridContentH) / 2));
 
   // 1. Render outer canvas + dark card via SVG.
   const baseSvg = `<?xml version="1.0" encoding="UTF-8"?>
