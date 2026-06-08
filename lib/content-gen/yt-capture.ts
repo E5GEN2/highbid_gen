@@ -116,6 +116,25 @@ const ANNOTATE_SCOPE_BY_KIND: Partial<Record<ScreenKind, Partial<Record<Annotate
       'ytd-watch-metadata',
     ],
   },
+  about_page: {
+    // On about_page the modal is overlaid on top of the channel page. The
+    // channel page's "N subscribers" remains in the DOM behind the modal.
+    // Force the annotation walker to scope to the modal/engagement-panel
+    // containers so the highlight lands on the modal row, not the dimmed
+    // header behind it.
+    subscriber_count: [
+      'ytd-channel-about-metadata-renderer',
+      'ytd-engagement-panel-section-list-renderer',
+      'tp-yt-paper-dialog',
+      'ytd-about-channel-renderer',
+    ],
+    video_count: [
+      'ytd-channel-about-metadata-renderer',
+      'ytd-engagement-panel-section-list-renderer',
+      'tp-yt-paper-dialog',
+      'ytd-about-channel-renderer',
+    ],
+  },
 };
 
 /** Default ancestor scope tag selectors (lowercase). When set, the candidate
@@ -258,6 +277,12 @@ interface BBoxRule {
   max_w?: number;
   min_h?: number;
   max_h?: number;
+  /** Y-position bounds in viewport pixels. Use for about_page rules where
+   *  the channel page header (visible behind the dimmed modal) has the same
+   *  text as the modal row at a different y — reject the page-header match
+   *  by setting min_y to a value below the page-header line. */
+  min_y?: number;
+  max_y?: number;
   /** If true (default), reject bboxes that fall outside the captured viewport
    *  bounds. The PNG only shows VIEWPORT.width × VIEWPORT.height pixels, so
    *  any bbox below/right of that is meaningless to the renderer. */
@@ -302,12 +327,15 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
     { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined|Description)\\b',
       tag: 'h1',
       min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
+    // min_y=380 — the modal's "More info" stats column starts no higher
+    // than this. Channel page header subscriber text behind the modal sits
+    // at y~290 and matches the same regex; this filter rejects it.
     { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
-      min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
+      min_w: 60, max_w: 220, min_h: 14, max_h: 30, min_y: 380 },
     { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
-      min_w: 40, max_w: 220, min_h: 14, max_h: 30 },
+      min_w: 40, max_w: 220, min_h: 14, max_h: 30, min_y: 380 },
     { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$',
-      min_w: 60, max_w: 260, min_h: 14, max_h: 30 },
+      min_w: 60, max_w: 260, min_h: 14, max_h: 30, min_y: 380 },
   ],
   videos_tab: [
     { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b',
@@ -660,7 +688,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         return strict ? null : [document.documentElement];
       };
       const ruleList = rules as Array<{ name: string; regex: string; not_regex?: string; hint?: string; strict_hint?: boolean; tag?: string;
-        min_w?: number; max_w?: number; min_h?: number; max_h?: number; in_viewport?: boolean }>;
+        min_w?: number; max_w?: number; min_h?: number; max_h?: number; min_y?: number; max_y?: number; in_viewport?: boolean }>;
       const debugOut: Record<string, { regex_matches: number; rejected_size: number; rejected_offview: number; rejected_covered: number; accepted: number; sample_texts: string[]; sample_covered: Array<{ text: string; top_tag: string }>; sample_sizes: Array<{ text: string; w: number; h: number; reason: string }> }> = {};
       for (const rule of ruleList) {
         const re = new RegExp(rule.regex, 'i');
@@ -669,6 +697,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         const inViewport = rule.in_viewport !== false;
         const minW = rule.min_w ?? 2, maxW = rule.max_w ?? Infinity;
         const minH = rule.min_h ?? 2, maxH = rule.max_h ?? Infinity;
+        const minY = rule.min_y ?? -Infinity, maxY = rule.max_y ?? Infinity;
         let bestEl: Element | null = null;
         let bestArea = Infinity;
         let regex_matches = 0, rejected_size = 0, rejected_offview = 0, rejected_covered = 0, accepted = 0;
@@ -697,6 +726,14 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           if (r.width < minW || r.width > maxW || r.height < minH || r.height > maxH) {
             rejected_size++;
             if (sample_sizes.length < 4) sample_sizes.push({ text: probe.slice(0, 50), w: Math.round(r.width), h: Math.round(r.height), reason: `size:${r.width < minW ? 'w<' : r.width > maxW ? 'w>' : r.height < minH ? 'h<' : 'h>'}` });
+            continue;
+          }
+          // Y-position filter — used by about_page rules to reject matches
+          // outside the modal (the dimmed channel header behind has identical
+          // text but is at a much smaller y).
+          if (r.top < minY || r.top > maxY) {
+            rejected_size++;
+            if (sample_sizes.length < 4) sample_sizes.push({ text: probe.slice(0, 50), w: Math.round(r.width), h: Math.round(r.height), reason: `y:${r.top}` });
             continue;
           }
           if (inViewport && (r.left < -4 || r.top < -4 || r.right > VP_W + 4 || r.bottom > VP_H + 4)) { rejected_offview++; continue; }
