@@ -15,7 +15,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { getPool } from '@/lib/db';
-import { getPapaiApiKey } from '@/lib/config';
 import { writeScript, type ScriptWriterInput, type NarrationBeat, type ChannelData } from '@/lib/content-gen/script-writer';
 
 export const dynamic = 'force-dynamic';
@@ -134,9 +133,6 @@ export async function GET(req: NextRequest) {
   const beats = stubNarrationForBeat(beat_id, ch);
   if (beats.length === 0) return NextResponse.json({ error: `no stub narration for beat_id=${beat_id}` }, { status: 400 });
 
-  const apiKey = await getPapaiApiKey();
-  if (!apiKey) return NextResponse.json({ error: 'papai_api_key not configured' }, { status: 500 });
-
   const input: ScriptWriterInput = {
     channel: ch,
     niche_index: 1,
@@ -148,7 +144,7 @@ export async function GET(req: NextRequest) {
   };
 
   const t0 = Date.now();
-  const result = await writeScript(input, apiKey);
+  const result = await writeScript(input);
   return NextResponse.json({
     ok: result.ok,
     elapsed_ms: Date.now() - t0,
@@ -163,9 +159,6 @@ export async function POST(req: NextRequest) {
   if (!body.channel || !Array.isArray(body.beats) || body.beats.length === 0) {
     return NextResponse.json({ error: 'channel + beats required' }, { status: 400 });
   }
-  const apiKey = await getPapaiApiKey();
-  if (!apiKey) return NextResponse.json({ error: 'papai_api_key not configured' }, { status: 500 });
-
   const input: ScriptWriterInput = {
     channel: body.channel,
     niche_index: body.niche_index ?? 1,
@@ -177,6 +170,6 @@ export async function POST(req: NextRequest) {
   };
 
   const t0 = Date.now();
-  const result = await writeScript(input, apiKey);
+  const result = await writeScript(input);
   return NextResponse.json({ ok: result.ok, elapsed_ms: Date.now() - t0, ...result });
 }

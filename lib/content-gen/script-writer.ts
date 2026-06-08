@@ -23,6 +23,9 @@
 import { TOOL_REGISTRY, SFX_TOKENS, MUSIC_TOKENS, ICON_IDS, COLOR_TREATMENTS, DATA_POINT_IDS_FILLABLE, DATA_POINT_IDS_BANNED, DOLLAR_TRIO } from './tools';
 import { EXAMPLE_SLOT_CHANNEL_PROOF_1 } from './concrete-script.example';
 import { validateScript, type ConcreteScript, type ValidationError } from './concrete-script';
+import { getPool } from '../db';
+import { getRandomHealthyProxy } from '../xgodo-proxy';
+import { fetchViaProxy } from '../proxy-dispatcher';
 
 /** A narration beat as emitted by the upstream skeleton's Gemini call. */
 export interface NarrationBeat {
@@ -265,74 +268,121 @@ function extractJson(text: string): string {
   return s;
 }
 
-/** Call Gemini Flash via PapaiAPI to author a ConcreteScript. Validates the
- *  output before returning. Avoids responseMimeType=json which slows Flash;
- *  uses instruction-based JSON output + extractJson() instead. PapaiAPI is
- *  flaky (504 deadline on busy upstream), so retry transient failures up to
- *  3 times with exponential backoff. */
-export async function writeScript(input: ScriptWriterInput, apiKey: string): Promise<ScriptWriterResult> {
+/** Direct Google AI endpoint — gemini-2.5-flash is the current Flash gen.
+ *  We call it through an xgodo HTTP proxy + a healthy key from the pool
+ *  (same stack video-analysis.ts uses). NO PapaiAPI middle hop — that's
+ *  what was causing 504 timeouts. */
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const PER_ATTEMPT_TIMEOUT_MS = 90_000;
+const MAX_ATTEMPTS = 3;
+
+/** Pull a random active Google AI key from the xgodo_api_keys pool. */
+async function pickHealthyAiKey(): Promise<{ id: number; key: string } | null> {
+  const pool = await getPool();
+  const r = await pool.query<{ id: number; key: string }>(
+    `SELECT id, key
+       FROM xgodo_api_keys
+      WHERE service = 'google_ai_studio'
+        AND status = 'active'
+        AND (banned_until IS NULL OR banned_until < NOW())
+      ORDER BY RANDOM()
+      LIMIT 1`,
+  );
+  return r.rows[0] ?? null;
+}
+
+/** Author a ConcreteScript via direct Gemini call through xgodo proxy.
+ *  Retries up to MAX_ATTEMPTS on transient failures, rotating both the
+ *  key and the proxy each attempt. */
+export async function writeScript(input: ScriptWriterInput): Promise<ScriptWriterResult> {
   const system = buildSystemPrompt();
   const user = buildUserPrompt(input);
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ parts: [{ text: user }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+  });
 
-  const MAX_ATTEMPTS = 3;
   let lastError: Error | null = null;
-  let response: Response | null = null;
+  let lastStatus: number | null = null;
+  let lastRawBody: string | null = null;
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const t0 = Date.now();
+    const keyRow = await pickHealthyAiKey();
+    if (!keyRow) {
+      lastError = new Error('no active google_ai_studio key available in pool');
+      break;
+    }
+    const proxy = await getRandomHealthyProxy();
+    if (!proxy) {
+      lastError = new Error('no healthy xgodo proxy available');
+      break;
+    }
     try {
-      response = await fetch(
-        'https://papaiapi.com/v1beta/models/gemini-flash-latest:generateContent',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: system }] },
-            contents: [{ parts: [{ text: user }] }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
-          }),
-        },
-      );
-      if (response.ok) break;
-      const errorText = await response.text();
+      const res = await fetchViaProxy(GEMINI_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyRow.key },
+        body,
+        timeoutMs: PER_ATTEMPT_TIMEOUT_MS,
+      }, proxy.url);
+
+      lastStatus = res.status;
+      const txt = await res.text();
       const elapsed = Date.now() - t0;
-      lastError = new Error(`Gemini error ${response.status} (${elapsed}ms, attempt ${attempt}/${MAX_ATTEMPTS}): ${errorText.slice(0, 200)}`);
-      // 504/503/502/429 are transient — retry. 4xx schemas/auth — don't.
-      if (response.status >= 500 || response.status === 429) {
-        if (attempt < MAX_ATTEMPTS) {
-          await new Promise(r => setTimeout(r, 800 * attempt));
-          continue;
-        }
+
+      if (!res.ok) {
+        lastRawBody = txt.slice(0, 800);
+        lastError = new Error(`Gemini ${res.status} via proxy=${proxy.country ?? '?'} key=${keyRow.id} (${elapsed}ms, attempt ${attempt}/${MAX_ATTEMPTS}): ${lastRawBody}`);
+        // 4xx (except 429) → don't retry (likely prompt / auth issue)
+        if (res.status >= 400 && res.status < 500 && res.status !== 429) break;
+        // 5xx / 429 → backoff + rotate
+        if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 600 * attempt));
+        continue;
       }
-      throw lastError;
+
+      // 200 OK — parse Gemini envelope + inner text
+      let envelope: { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+      try {
+        envelope = JSON.parse(txt) as typeof envelope;
+      } catch {
+        lastError = new Error(`parse_error: envelope is not JSON (${elapsed}ms): ${txt.slice(0, 200)}`);
+        if (attempt < MAX_ATTEMPTS) continue;
+        break;
+      }
+      const modelText = envelope.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+      if (!modelText) {
+        lastRawBody = txt.slice(0, 800);
+        lastError = new Error(`no candidates[0].content.parts[0].text (${elapsed}ms)`);
+        if (attempt < MAX_ATTEMPTS) continue;
+        break;
+      }
+
+      const jsonStr = extractJson(modelText);
+      let parsed: ConcreteScript;
+      try {
+        parsed = JSON.parse(jsonStr) as ConcreteScript;
+      } catch {
+        return { ok: false, errors: [{ path: '(parse)', message: 'failed to parse JSON from model output' }], raw_response: jsonStr.slice(0, 2000) };
+      }
+
+      const errors = validateScript(parsed);
+      if (errors.length > 0) {
+        return { ok: false, errors, raw_response: jsonStr.slice(0, 2000) };
+      }
+      return { ok: true, script: parsed };
     } catch (e) {
       lastError = e as Error;
-      if (attempt === MAX_ATTEMPTS) throw lastError;
-      await new Promise(r => setTimeout(r, 800 * attempt));
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, 600 * attempt));
+        continue;
+      }
     }
   }
-  if (!response || !response.ok) throw lastError ?? new Error('writeScript failed with no response');
 
-  const data = await response.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    return { ok: false, errors: [{ path: '(response)', message: 'no text in Gemini response' }], raw_response: JSON.stringify(data).slice(0, 1000) };
-  }
-
-  const jsonStr = extractJson(text);
-  let parsed: ConcreteScript;
-  try {
-    parsed = JSON.parse(jsonStr) as ConcreteScript;
-  } catch {
-    return { ok: false, errors: [{ path: '(parse)', message: 'failed to parse JSON' }], raw_response: jsonStr.slice(0, 1500) };
-  }
-
-  const errors = validateScript(parsed);
-  if (errors.length > 0) {
-    return { ok: false, errors, raw_response: jsonStr.slice(0, 2000) };
-  }
-
-  return { ok: true, script: parsed };
+  return {
+    ok: false,
+    errors: [{ path: '(call)', message: lastError?.message ?? `failed after ${MAX_ATTEMPTS} attempts (status=${lastStatus})` }],
+    raw_response: lastRawBody ?? undefined,
+  };
 }
