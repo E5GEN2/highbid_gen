@@ -171,14 +171,20 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
   // Crop only applies to images — webm/mp4 inputs are pass-through.
   if (layer.crop_target && captureId != null && kindHint === 'image') {
     try {
-      const { loadBBoxes, bboxKeyFor, cropToBBox } = await import('./yt-crop');
+      const { loadBBoxes, bboxKeyFor, cropToBBox, compositeBBox } = await import('./yt-crop');
       const bboxes = await loadBBoxes(captureId);
+      // Try composite target first (about_panel, etc.), then single-bbox key.
+      const compositeBox = compositeBBox(layer.crop_target, bboxes);
+      if (compositeBox) {
+        // Composite crops use less padding — they're already padded internally.
+        const cropped = await cropToBBox(basePath, compositeBox, { pad: 16 });
+        return { kind: 'image', path: cropped };
+      }
       const key = bboxKeyFor(layer.crop_target);
       if (key && bboxes[key]) {
         const cropped = await cropToBBox(basePath, bboxes[key], { pad: 32 });
         return { kind: 'image', path: cropped };
       }
-      // bbox missing — log + fall through to full image.
       console.warn(`[video-compose] crop_target="${layer.crop_target}" not in bboxes for capture=${captureId} (keys: ${Object.keys(bboxes).slice(0, 5).join(',')}…)`);
     } catch (e) {
       console.warn(`[video-compose] crop failed: ${(e as Error).message}`);

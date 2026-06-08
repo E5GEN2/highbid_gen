@@ -159,8 +159,8 @@ export interface SfxOutput {
 /** image_gen — generate a non-YT visual (text_card / icon_card / chalkboard /
  *  title-sequence card). Compositions follow slot-rendering-class-b. */
 export interface ImageGenArgs {
-  composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence';
-  /** Primary copy on the card */
+  composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout';
+  /** Primary copy on the card. For most_popular_callout this is the video title. */
   text: string;
   /** Color treatment from the visual grammar */
   color_treatment?: ColorTreatment;
@@ -168,6 +168,17 @@ export interface ImageGenArgs {
   /** Icon id from the canonical line-drawing library
    *  (required when composition=icon_card). */
   icon?: IconId;
+  // ── Fields specific to most_popular_callout composition ──
+  /** YT video id (11-char) — used to fetch the thumbnail from YT's CDN. */
+  video_id?: string;
+  /** Raw view count — humanized to "12M views" by the renderer. */
+  views?: number;
+  /** Pre-formatted relative age, e.g. "7 months ago" / "2 years ago". */
+  age_phrase?: string;
+  /** Optional duration badge (e.g. "34:32") rendered bottom-right of the thumbnail. */
+  duration_badge?: string;
+  /** Optional channel watermark (e.g. "NoFL") inside the thumbnail bottom-left. */
+  channel_watermark?: string;
 }
 export interface ImageGenOutput {
   file_url: string;

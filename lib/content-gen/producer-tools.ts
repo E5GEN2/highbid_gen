@@ -189,7 +189,7 @@ async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> 
 // ───────────────────────────────────────────────────────────────────
 
 async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
-  const composition = String(args.composition ?? 'text_card') as 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence';
+  const composition = String(args.composition ?? 'text_card') as 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout';
   const text = String(args.text ?? '');
   const bg_mode = (args.bg_mode === 'dark_gray' ? 'dark_gray' : 'white') as 'white' | 'dark_gray';
   const color_treatment = args.color_treatment as 'neutral' | 'money_shot_green' | 'inline_green' | 'inline_red' | 'chalk_cream' | 'yellow_ring' | undefined;
@@ -200,6 +200,12 @@ async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
     bg_mode,
     color_treatment,
     icon,
+    // Forward the fields specific to most_popular_callout
+    video_id: args.video_id as string | undefined,
+    views: typeof args.views === 'number' ? args.views : undefined,
+    age_phrase: args.age_phrase as string | undefined,
+    duration_badge: args.duration_badge as string | undefined,
+    channel_watermark: args.channel_watermark as string | undefined,
   });
   return {
     file_url: result.file_url,

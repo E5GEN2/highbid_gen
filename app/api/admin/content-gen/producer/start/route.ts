@@ -237,17 +237,96 @@ function nicheLabelFor(ch: ChannelData, fallbackIdx: number): string {
 
 /** Post-process writer-emitted slots: inject crop_target on the visual layer
  *  for known beat_ids that should show MG-style cropped close-ups rather
- *  than full screenshots. Per mg-decoded-visual-timeline.json + spec audit:
- *    channel_proof_1   → crop to subscriber_count bbox (about-modal close-up)
- *    channel_proof_2   → crop to total_views bbox
- *    top_video_callout → crop to top_video_card bbox (single card close-up)
- *  Writer doesn't emit crop_target (it doesn't know about it) — we annotate
- *  here on the way through so the changes don't require a prompt iteration. */
+ *  than full screenshots. Verified by frame-by-frame inspection of the
+ *  source MG video:
+ *    channel_proof_1   → about_panel (whole stats column on dark gray)
+ *    channel_proof_2   → about_panel (same crop — the channel.total_views
+ *                                      row in the same panel is what's
+ *                                      yellow-highlighted)
+ *    top_video_callout → handled separately by swapMostPopularCallout(): MG
+ *                        composes a single-thumbnail card on WHITE bg, NOT
+ *                        a screenshot crop. */
+/** Compute a human-readable "N months ago" / "N years ago" phrase from a
+ *  posted_at ISO date. Used by the most_popular_callout card so the
+ *  composed YT-style card shows the same metadata format as YT's own UI. */
+function relativeAge(postedAt: string | undefined | null): string {
+  if (!postedAt) return '';
+  const then = new Date(postedAt).getTime();
+  if (!Number.isFinite(then)) return '';
+  // Date.now() is in TZ context — fine for relative spans.
+  const diffMs = Date.now() - then;
+  if (diffMs <= 0) return 'today';
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (days < 7)   return days <= 1 ? '1 day ago'   : `${days} days ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5)  return weeks === 1 ? '1 week ago' : `${weeks} weeks ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return months === 1 ? '1 month ago' : `${months} months ago`;
+  const years = Math.floor(days / 365);
+  return years === 1 ? '1 year ago' : `${years} years ago`;
+}
+
+/** Swap the writer's top_video_callout slot to use the composed
+ *  most_popular_callout card instead of a screenshot crop. Per the visual
+ *  grammar (visual-packaging-class-b.json:83-95) and confirmed by frame
+ *  inspection of the source MG video: this beat is a composed YT-style
+ *  card on WHITE bg, not a screenshot. */
+async function swapMostPopularCallout(slots: Slot[], ch: ChannelData): Promise<Slot[]> {
+  if (!ch.top_video_id) return slots;
+  // Look up posted_at to compute the age phrase.
+  let posted_at: string | null = null;
+  try {
+    const pool = await getPool();
+    const r = await pool.query<{ posted_at: string | null }>(
+      `SELECT posted_at FROM niche_spy_videos
+        WHERE url LIKE $1 OR url LIKE $2 LIMIT 1`,
+      [`%/watch?v=${ch.top_video_id}%`, `%/shorts/${ch.top_video_id}%`],
+    );
+    posted_at = r.rows[0]?.posted_at ?? null;
+  } catch { /* best-effort */ }
+  const age_phrase = relativeAge(posted_at);
+  return slots.map(slot => {
+    if (slot.beat_id !== 'top_video_callout') return slot;
+    return {
+      ...slot,
+      gems: slot.gems.map(g => {
+        if (g.id !== 'main') return g;
+        return {
+          id: 'main',
+          tool: 'image_gen',
+          args: {
+            composition: 'most_popular_callout',
+            text: ch.top_video_title ?? 'Top video',
+            video_id: ch.top_video_id,
+            views: ch.top_video_view_count ?? 0,
+            age_phrase,
+            channel_watermark: ch.channel_name,
+            bg_mode: 'white',
+          },
+        };
+      }),
+      compose: {
+        ...slot.compose,
+        // MG renders this composition on white, not dark gray.
+        bg: 'white',
+        // Strip any crop_target — the composed card is already correctly
+        // sized; cropping would defeat the layout.
+        layers: slot.compose.layers.map(l => {
+          if (l.channel === 'video') {
+            const { crop_target: _ct, ...rest } = l;
+            return rest;
+          }
+          return l;
+        }),
+      },
+    };
+  });
+}
+
 function injectCropTargets(slots: Slot[]): Slot[] {
   const beatToCrop: Record<string, string> = {
-    channel_proof_1:   'subscriber_count',
-    channel_proof_2:   'total_views',
-    top_video_callout: 'top_video_card',
+    channel_proof_1: 'about_panel',
+    channel_proof_2: 'about_panel',
   };
   return slots.map(slot => {
     const target = beatToCrop[slot.beat_id];
@@ -319,10 +398,15 @@ export async function POST(req: NextRequest) {
       // 3. Money_math sequence — 5 cards calculating $X,XXX from top-video
       //    views. Skips if channel has no top-video data.
       const moneyMath = buildMoneyMathSlots(niche_index, ch);
-      // 4. Inject crop_target on the writer's proof slots so the visuals
-      //    are MG-style cropped close-ups instead of full page screenshots.
-      const writerSlotsCropped = injectCropTargets(result.script.slots);
-      allSlots.push(...framing, ...writerSlotsCropped, ...moneyMath);
+      // 4. Two post-processors on the writer's proof slots:
+      //    (a) crop the channel_proof_1/2 screenshots to the about_panel
+      //        (MG renders these as cropped close-ups of the stats column).
+      //    (b) swap top_video_callout from yt_capture to the composed
+      //        most_popular_callout card (MG renders this as a single
+      //        YT-card-shaped composition on white, not a screenshot).
+      const cropped = injectCropTargets(result.script.slots);
+      const writerSlotsTransformed = await swapMostPopularCallout(cropped, ch);
+      allSlots.push(...framing, ...writerSlotsTransformed, ...moneyMath);
       acceptedCount++;
     }
     if (acceptedCount === 0) {

@@ -76,21 +76,65 @@ export async function cropStatsBox(srcPath: string, bbox: BBox, opts: { padX?: n
 }
 
 /** Resolve the bbox map key for a logical crop_target — handles aliases
- *  and per-card targets. */
+ *  and per-card targets. Returns null for COMPOSITE targets that need to be
+ *  computed from multiple bboxes (e.g. about_panel) — caller handles those
+ *  via computeCompositeBBox. */
 export function bboxKeyFor(target: string): string | null {
-  // Identity match for known keys.
   const known = new Set([
     'subscriber_count', 'video_count', 'total_views', 'joined_date',
     'channel_name', 'channel_avatar',
   ]);
   if (known.has(target)) return target;
-  // Per-card targets: card_0 → video_card_0
   if (/^card_\d+$/.test(target)) return `video_${target}`;
   if (/^video_(card|thumb|views|title)_\d+$/.test(target)) return target;
-  // First card by default
   if (target === 'top_video_card') return 'video_card_0';
   if (target === 'top_video_views') return 'video_views_0';
   if (target === 'top_video_title') return 'video_title_0';
   if (target === 'top_video_thumb') return 'video_thumb_0';
+  return null;
+}
+
+/** Compute a bounding rect that covers a union of bboxes. Used for composite
+ *  targets like 'about_panel' where MG-decoded shows the WHOLE about stats
+ *  column, not just one row. */
+export function unionBBox(bboxes: BBox[]): BBox | null {
+  if (bboxes.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const b of bboxes) {
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.w > maxX) maxX = b.x + b.w;
+    if (b.y + b.h > maxY) maxY = b.y + b.h;
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/** Composite crop targets — names that resolve to a UNION of bboxes rather
+ *  than a single one. Used when MG shows the whole stats block cropped (the
+ *  about-modal close-up), not just one row.
+ *
+ *    about_panel — union of subscriber_count + video_count + total_views +
+ *                  joined_date (the 4 main stats lines). Pads generously
+ *                  to include website/country rows above + share button
+ *                  below if they happen to fit.
+ */
+export function compositeBBox(target: string, bboxes: BBoxMap): BBox | null {
+  if (target === 'about_panel') {
+    const keys = ['subscriber_count', 'video_count', 'total_views', 'joined_date'];
+    const found = keys.map(k => bboxes[k]).filter((b): b is BBox => b != null);
+    if (found.length === 0) return null;
+    const u = unionBBox(found);
+    if (!u) return null;
+    // Pad generously around the union to capture website/country rows
+    // (which sit above subscriber_count) and the share button (below total
+    // views). Empirically: about-panel rows are ~28px tall, 6 rows total,
+    // so pad ~150px above and ~80px below.
+    return {
+      x: u.x - 60,
+      y: u.y - 150,
+      w: u.w + 120,
+      h: u.h + 230,
+    };
+  }
   return null;
 }

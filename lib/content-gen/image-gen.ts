@@ -227,6 +227,31 @@ export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1
     }
   } catch { /* cache miss → render */ }
 
+  // Special composition: most_popular_callout has its own renderer
+  // (composes a YT-card-shaped layout from thumbnail + title + view count
+  // metadata; not SVG-only — pulls the thumbnail image).
+  if (args.composition === 'most_popular_callout') {
+    if (!args.video_id) throw new Error('most_popular_callout: video_id required');
+    const { renderMostPopularCallout } = await import('./cards/most-popular-callout');
+    const r = await renderMostPopularCallout({
+      video_id: args.video_id,
+      title: args.text,
+      views: args.views ?? 0,
+      age_phrase: args.age_phrase,
+      duration_badge: args.duration_badge,
+      channel_watermark: args.channel_watermark,
+      bg: args.bg_mode,
+    }, width, height);
+    // Mirror the cached file into our own cache slot so the rest of the
+    // pipeline doesn't see a different file_url scheme.
+    await fs.copyFile(r.local_path, outPath);
+    return {
+      file_url: `/api/admin/content-gen/producer/file?path=${encodeURIComponent('images/' + hash + '.png')}`,
+      width, height,
+      local_path: outPath,
+    };
+  }
+
   let svg: string;
   switch (args.composition) {
     case 'text_card':                    svg = renderTextCard(args, width, height); break;
