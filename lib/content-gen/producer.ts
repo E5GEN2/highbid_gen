@@ -215,11 +215,17 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
   }
   let final_video_url: string | undefined;
   try {
+    // Long-form 16:9 (MG long-form per worked-example, NOT Shorts). The
+    // script writer's training data leans toward 1080×1920 — coerce here
+    // so the final mp4 is always horizontal regardless of what the writer
+    // emitted. To opt into portrait, set finalArgs.aspect='portrait' (TBD).
+    const writerW = script.final.args.width as number | undefined;
+    const writerH = script.final.args.height as number | undefined;
+    const wantsPortrait = writerW && writerH && writerH > writerW; // ignore the writer's portrait inertia
     const composeOut = await runTool('video_compose', {
       slot_order: script.slots.map(s => s.slot_id),
-      // Long-form 16:9 defaults (MG videos are ~14-min YT long-form).
-      width: (script.final.args.width as number) ?? 1920,
-      height: (script.final.args.height as number) ?? 1080,
+      width:  wantsPortrait ? 1920 : (writerW ?? 1920),
+      height: wantsPortrait ? 1080 : (writerH ?? 1080),
       fps: (script.final.args.fps as number) ?? 30,
       default_bg: (script.final.args.default_bg as string) ?? 'dark_gray',
       // Pass the resolved bag — producer-tools.video_compose consumes it
