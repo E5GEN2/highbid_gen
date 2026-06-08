@@ -215,19 +215,27 @@ function buildMoneyMathSlots(niche_index: number, ch: ChannelData): Slot[] {
 /** 4-card CTA at the end of a listicle. The action card MUST contain
  *  "check out [this/next] video" (winner-coded 17×). */
 function buildCtaSlots(niche_count: number): Slot[] {
+  // CTA arc per visual-packaging-class-b.json:
+  //   1. Wrap-up text on white       (neutral text_card)
+  //   2. Affirmation (checkmark)      (icon_card on white, green ✓)
+  //   3. "Discover more…"             (pointing_hand + text on white)
+  //   4. Outro: "if you're watching this far, I appreciate it"
+  //                                   (cat_thumbs_up icon on dark_gray)
+  //   ↑ ascending_electronic_sting SFX on the final card per audio-sfx spec.
   return [
     makeFramingSlot('cta_card_1', 'video_cta', `So these are the ${niche_count} faceless niches.`,
       { composition: 'text_card', text: `So these are the ${niche_count} faceless niches.`, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
     makeFramingSlot('cta_card_2', 'video_cta', `And each one has huge potential.`,
-      { composition: 'text_card', text: `And each one has huge potential.`, bg_mode: 'white', color_treatment: 'neutral' },
-      ['whoosh']),
+      { composition: 'icon_card', text: `Huge potential.`, bg_mode: 'white', icon: 'checkmark_green_circle', color_treatment: 'money_shot_green' },
+      ['whoosh', 'ding']),
     makeFramingSlot('cta_card_3', 'video_cta', `If you want to discover more faceless niches like these,`,
-      { composition: 'text_card', text: `If you want to discover more faceless niches,`, bg_mode: 'white', color_treatment: 'neutral' },
+      { composition: 'icon_card', text: `Discover more.`, bg_mode: 'white', icon: 'pointing_hand', color_treatment: 'neutral' },
       ['whoosh']),
     makeFramingSlot('cta_card_4', 'video_cta', `check out this video right here.`,
-      { composition: 'text_card', text: `check out this video right here.`, bg_mode: 'white', color_treatment: 'money_shot_green' },
-      ['ascending_electronic_sting']),
+      { composition: 'icon_card', text: `Check out this video.`, bg_mode: 'dark_gray', icon: 'cat_thumbs_up', color_treatment: 'neutral' },
+      ['ascending_electronic_sting'],
+      'dark_gray'),
   ];
 }
 
