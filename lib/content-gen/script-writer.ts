@@ -291,6 +291,23 @@ async function pickHealthyAiKey(): Promise<{ id: number; key: string } | null> {
   return r.rows[0] ?? null;
 }
 
+/** Mark a key invalid so the pool stops serving it. Fire-and-forget — we
+ *  don't want a logging failure to mask the original Gemini error. */
+function invalidateKey(keyId: number, reason: string): Promise<void> {
+  return (async () => {
+    try {
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE xgodo_api_keys
+            SET status='invalid', invalidated_at=NOW()
+          WHERE id=$1 AND status='active'`,
+        [keyId],
+      );
+      console.log(`[script-writer] invalidated google_ai_studio key id=${keyId} (${reason})`);
+    } catch { /* ignore */ }
+  })();
+}
+
 /** Author a ConcreteScript via direct Gemini call through xgodo proxy.
  *  Retries up to MAX_ATTEMPTS on transient failures, rotating both the
  *  key and the proxy each attempt. */
@@ -334,8 +351,16 @@ export async function writeScript(input: ScriptWriterInput): Promise<ScriptWrite
       if (!res.ok) {
         lastRawBody = txt.slice(0, 800);
         lastError = new Error(`Gemini ${res.status} via proxy=${proxy.country ?? '?'} key=${keyRow.id} (${elapsed}ms, attempt ${attempt}/${MAX_ATTEMPTS}): ${lastRawBody}`);
-        // 4xx (except 429) → don't retry (likely prompt / auth issue)
-        if (res.status >= 400 && res.status < 500 && res.status !== 429) break;
+        // 401/403 = dead key (service-account deleted, banned). Mark invalid
+        // so the pool stops handing it out, then rotate immediately (no
+        // backoff — the next pickHealthyAiKey returns a different key).
+        if (res.status === 401 || res.status === 403) {
+          await invalidateKey(keyRow.id, `${res.status} on Gemini`);
+          if (attempt < MAX_ATTEMPTS) continue;
+          break;
+        }
+        // 400 = prompt / schema issue. Don't retry — that's our bug.
+        if (res.status === 400) break;
         // 5xx / 429 → backoff + rotate
         if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 600 * attempt));
         continue;
