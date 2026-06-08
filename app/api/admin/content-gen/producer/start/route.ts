@@ -154,20 +154,29 @@ function formatDollars(n: number): string {
  *  for that niche). */
 function buildMoneyMathSlots(niche_index: number, ch: ChannelData): Slot[] {
   if (ch.top_video_view_count == null || ch.top_video_view_count < 1000) return [];
-  const rpm = 1; // visual grammar: silent — narration says "just a $1 RPM" but RPM math is implicit
-  const lumpSumRaw = (ch.top_video_view_count / 1000) * rpm * 1000; // views × $RPM/1000 (RPM is per 1k views)
-  // Wait — CPM/RPM convention: revenue = (views / 1000) × RPM. For $1 RPM:
-  // revenue = views / 1000. So 1.2M views → $1,200. That feels low.
-  // The MG videos use a higher RPM but obscure it via "just $1" then escalate
-  // in tone. We'll compute at $1 since that's the actual displayed value.
-  const lumpSum = lumpSumRaw;
+  // RPM is per 1000 views — revenue = (views / 1000) × RPM. For $1 RPM on
+  // 4M views the answer is $4,000 (NOT $4M — that previous bug compounded
+  // 1000×). MG uses higher RPMs in narration but caps at $1 in the visual
+  // card per the silent-RPM rule (avoids "views × RPM = $" exposure).
+  // Tier the RPM by view count so the number reads as plausible MG-style:
+  //   < 1M views      → $1 RPM
+  //   1M - 10M views  → $3 RPM
+  //   ≥ 10M views     → $6 RPM (long viewer holds → premium CPM)
+  const v = ch.top_video_view_count;
+  const rpm = v >= 10_000_000 ? 6 : v >= 1_000_000 ? 3 : 1;
+  const lumpSum = (v / 1000) * rpm;
   const formatted = formatDollars(lumpSum);
+  // Per skeleton rpm_modifier_rule:
+  //   low RPM ($1-$3) → use "just a" / "Even if we assume" minimizer
+  //   higher RPM ($6+) → drop the minimizer ("if we assume")
+  const rpmNarration = rpm <= 3 ? `just a $${rpm} RPM,` : `a $${rpm} RPM,`;
+  const assumptionPhrase = rpm <= 3 ? 'Even if we assume' : 'If we assume';
   const base = `niche_${niche_index}`;
   return [
-    makeFramingSlot(`${base}_mm_assumption`, 'money_math', `Even if we assume`,
-      { composition: 'text_card', text: `Even if we assume`, bg_mode: 'white', color_treatment: 'neutral' },
+    makeFramingSlot(`${base}_mm_assumption`, 'money_math', assumptionPhrase,
+      { composition: 'text_card', text: assumptionPhrase, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
-    makeFramingSlot(`${base}_mm_rpm`, 'money_math', `just a one dollar RPM,`,
+    makeFramingSlot(`${base}_mm_rpm`, 'money_math', rpmNarration,
       { composition: 'icon_card', text: `$${rpm} RPM`, bg_mode: 'white', color_treatment: 'inline_green', icon: 'shrug_with_question_marks' },
       ['whoosh']),
     makeFramingSlot(`${base}_mm_translates`, 'money_math', `that one video alone has probably made around`,
