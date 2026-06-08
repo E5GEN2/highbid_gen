@@ -24,17 +24,17 @@ export async function GET(req: NextRequest) {
 
   // Demonstrate ref interpolation with a synthetic gem-output bag.
   const bag = {
-    'niche_1.channel_proof_1': {
+    niche_1_channel_proof_1: {
       narr: { file_url: 'https://example/tts.mp3', duration_s: 2.34, voice: 'money_groot' },
       main: { file_url: 'https://example/capture.png' },
       sfx:  { file_url: 'https://example/sfx.mp3', duration_s: 1.8 },
     },
   };
   const resolved = {
-    'hold_s template':           resolveRef('{{narr.duration_s}}', bag, 'niche_1.channel_proof_1'),
-    'cross-slot ref':            resolveRef('{{niche_1.channel_proof_1.main.file_url}}', bag),
+    'hold_s template':           resolveRef('{{narr.duration_s}}', bag, 'niche_1_channel_proof_1'),
+    'cross-slot ref':            resolveRef('{{niche_1_channel_proof_1.main.file_url}}', bag),
     'malformed (returns input)': resolveRef('not a template', bag),
-    'missing field (undefined)': resolveRef('{{narr.duration_minutes}}', bag, 'niche_1.channel_proof_1'),
+    'missing field (undefined)': resolveRef('{{narr.duration_minutes}}', bag, 'niche_1_channel_proof_1'),
   };
 
   return NextResponse.json({

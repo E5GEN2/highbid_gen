@@ -75,7 +75,7 @@ ConcreteScript schema (output you must produce):
   "context": { "channelId": string, "channel_name": string?, "niche_index": int?, "video_id": string? },
   "slots": [
     {
-      "slot_id": string,             // unique, lowercase, snake-case (e.g. "niche_1.channel_proof_1")
+      "slot_id": string,             // unique, snake_case, NO DOTS. e.g. "niche_1_channel_proof_1"
       "beat_id": string,             // matches the input narration beat
       "narration": string,           // beat's text, "" if silent
       "gems": [

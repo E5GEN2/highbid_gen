@@ -116,6 +116,7 @@ export function validateScript(s: ConcreteScript): ValidationError[] {
   s.slots.forEach((slot, i) => {
     const base = `slots[${i}]`;
     if (!slot.slot_id) errs.push({ path: `${base}.slot_id`, message: 'required' });
+    else if (slot.slot_id.includes('.')) errs.push({ path: `${base}.slot_id`, message: `must NOT contain "." (use _ instead) — got "${slot.slot_id}"` });
     if (slotIds.has(slot.slot_id)) errs.push({ path: `${base}.slot_id`, message: `duplicate slot_id "${slot.slot_id}"` });
     slotIds.add(slot.slot_id);
     if (!slot.beat_id) errs.push({ path: `${base}.beat_id`, message: 'required' });

@@ -24,7 +24,7 @@ export const EXAMPLE_SLOT_CHANNEL_PROOF_1: ConcreteScript = {
   },
   slots: [
     {
-      slot_id: 'niche_1.channel_proof_1',
+      slot_id: 'niche_1_channel_proof_1',
       beat_id: 'channel_proof_1',
       narration: 'This channel already has more than 14 thousand subscribers.',
       gems: [
@@ -78,7 +78,7 @@ export const EXAMPLE_SLOT_CHANNEL_PROOF_1: ConcreteScript = {
   final: {
     tool: 'video_compose',
     args: {
-      slot_order: ['niche_1.channel_proof_1'],
+      slot_order: ['niche_1_channel_proof_1'],
       default_bg: 'dark_gray',
       width: 1080,
       height: 1920,
