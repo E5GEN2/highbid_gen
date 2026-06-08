@@ -358,9 +358,12 @@ export default function ContentGenTab({ active }: { active: boolean }) {
               </span>
             </div>
             {selectedChannels.size > 0 && (
-              <div className="text-sm text-[#ccc]">
-                <span className="text-amber-300 font-semibold tabular-nums">{selectedChannels.size}</span>
-                {' '}channels picked across drafts
+              <div className="text-sm text-[#ccc] flex items-center gap-3">
+                <span>
+                  <span className="text-amber-300 font-semibold tabular-nums">{selectedChannels.size}</span>
+                  {' '}channels picked across drafts
+                </span>
+                <SendToProducerButton selectedChannels={selectedChannels} />
               </div>
             )}
           </div>
@@ -751,6 +754,50 @@ function ListicleDraftCard({
         </button>
       </div>
     </div>
+  );
+}
+
+/** Ship the picked channels to the Producer. Each channel becomes one
+ *  async render job (niche_segment_3 = subs + total_views + top video).
+ *  Producer GUI shows progress per-job; this just fires them. */
+function SendToProducerButton({ selectedChannels }: { selectedChannels: Set<string> }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const send = async () => {
+    if (selectedChannels.size === 0) return;
+    setBusy(true); setMsg(null);
+    const ids = Array.from(selectedChannels);
+    let ok = 0; const failed: string[] = [];
+    try {
+      // Fire off one job per channel — async so the GUI returns fast.
+      const results = await Promise.all(ids.map(channelId =>
+        fetch('/api/admin/content-gen/producer/start', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channelId, beat_id: 'niche_segment_3', sync: false }),
+        }).then(r => r.json()).catch(e => ({ ok: false, error: (e as Error).message }))
+      ));
+      for (let i = 0; i < results.length; i++) {
+        if (results[i]?.ok) ok++; else failed.push(ids[i]);
+      }
+      setMsg(failed.length === 0
+        ? `✓ Queued ${ok} render${ok === 1 ? '' : 's'} → see Producer tab`
+        : `Queued ${ok}/${ids.length} · ${failed.length} failed: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <span className="inline-flex items-center gap-2">
+      <button
+        onClick={send}
+        disabled={busy}
+        className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-medium border border-emerald-500/60"
+        title="Queue an async per-channel render in Producer (niche_segment_3 = subs + total_views + top video). Track progress in the Producer tab."
+      >
+        {busy ? 'Queuing…' : `Send ${selectedChannels.size} to Producer →`}
+      </button>
+      {msg && <span className="text-[11px] text-[#888]">{msg}</span>}
+    </span>
   );
 }
 
