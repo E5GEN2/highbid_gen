@@ -159,9 +159,9 @@ export interface SfxOutput {
 /** image_gen — generate a non-YT visual (text_card / icon_card / chalkboard /
  *  title-sequence card). Compositions follow slot-rendering-class-b. */
 export interface ImageGenArgs {
-  composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel';
+  composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel' | 'top_videos_pano';
   /** Primary copy on the card. For most_popular_callout this is the video title.
-   *  Optional when composition=channel_about_panel (panel is fully data-driven). */
+   *  Optional when composition=channel_about_panel or top_videos_pano (fully data-driven). */
   text: string;
   /** Color treatment from the visual grammar */
   color_treatment?: ColorTreatment;
@@ -195,6 +195,15 @@ export interface ImageGenArgs {
   total_views_text?: string;
   /** Which row to mark with the yellow vertical highlight bar. */
   highlight_row?: 'handle' | 'country' | 'joined' | 'subscribers' | 'videos' | 'views' | null;
+  // ── Fields specific to top_videos_pano composition ──
+  /** Array of video items rendered into the 4×2 grid. */
+  videos?: Array<{
+    video_id: string;
+    title: string;
+    views: number;
+    age_phrase?: string;
+    duration_badge?: string;
+  }>;
 }
 export interface ImageGenOutput {
   file_url: string;
@@ -314,7 +323,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       required: ['composition', 'text', 'bg_mode'],
       additionalProperties: false,
       properties: {
-        composition:     { type: 'string', enum: ['text_card', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence', 'most_popular_callout', 'channel_about_panel'] },
+        composition:     { type: 'string', enum: ['text_card', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence', 'most_popular_callout', 'channel_about_panel', 'top_videos_pano'] },
         text:            { type: 'string' },
         color_treatment: { type: 'string', enum: [...COLOR_TREATMENTS] },
         bg_mode:         { type: 'string', enum: ['white', 'dark_gray'] },
@@ -333,6 +342,9 @@ export const TOOL_REGISTRY: ToolSpec[] = [
         video_count_text:  { type: 'string', description: 'channel_about_panel: videos row text.' },
         total_views_text:  { type: 'string', description: 'channel_about_panel: views row text.' },
         highlight_row:     { type: ['string', 'null'], enum: ['handle', 'country', 'joined', 'subscribers', 'videos', 'views', null], description: 'channel_about_panel: which row to mark with the yellow vertical bar.' },
+        // top_videos_pano fields
+        videos:            { type: 'array', description: 'top_videos_pano: up to 8 entries with {video_id, title, views, age_phrase?, duration_badge?}.',
+                             items: { type: 'object', additionalProperties: true } },
       },
     },
     output_fields: ['file_url', 'width', 'height'],

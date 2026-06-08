@@ -252,6 +252,27 @@ export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1
     };
   }
 
+  // Special composition: top_videos_pano — composes MG-style 4×2 grid of
+  // the channel's videos on a dark gray rounded card / white outer canvas.
+  // Each cell is a YT-style thumbnail card (thumbnail + title + meta).
+  if (args.composition === 'top_videos_pano') {
+    if (!args.videos || args.videos.length === 0) {
+      throw new Error('top_videos_pano: videos[] required');
+    }
+    const { renderTopVideosPano } = await import('./cards/top-videos-pano');
+    const r = await renderTopVideosPano({
+      videos: args.videos,
+      channel_watermark: args.channel_watermark,
+      bg: args.bg_mode,
+    }, width, height);
+    await fs.copyFile(r.local_path, outPath);
+    return {
+      file_url: `/api/admin/content-gen/producer/file?path=${encodeURIComponent('images/' + hash + '.png')}`,
+      width, height,
+      local_path: outPath,
+    };
+  }
+
   // Special composition: channel_about_panel — composes the MG-style
   // "More info" stats card on white from channel data (handle, country,
   // joined, subscribers, videos, views). Highlight is a thin yellow

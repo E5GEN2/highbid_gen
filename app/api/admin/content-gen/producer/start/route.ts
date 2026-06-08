@@ -293,6 +293,71 @@ function ytJoinedFormat(iso: string | undefined): string {
   return `Joined ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
+/** Insert a `top_videos_pano` slot immediately after channel_proof_2 for a
+ *  given niche. The pano composition shows a 4×2 grid of the channel's top
+ *  videos on a dark gray rounded card / white outer canvas. This is the
+ *  MG "look at all these hits" moment per the user's reference frame.
+ *
+ *  Pulls up to 8 top-by-view-count videos from niche_spy_videos for the
+ *  channel. Skips entirely if the channel has < 2 videos in DB (the panel
+ *  would look broken with only one or two cells filled). */
+async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData): Promise<Slot | null> {
+  const pool = await getPool();
+  const r = await pool.query<{ url: string | null; title: string | null; view_count: string | null; posted_at: string | null }>(
+    `SELECT url, title, view_count, posted_at
+       FROM niche_spy_videos
+      WHERE channel_id = $1 AND view_count IS NOT NULL AND title IS NOT NULL
+      ORDER BY view_count DESC NULLS LAST
+      LIMIT 8`,
+    [ch.channelId],
+  );
+  const videos = r.rows
+    .map(row => {
+      const m = row.url?.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/);
+      const id = m?.[1];
+      if (!id) return null;
+      return {
+        video_id: id,
+        title: row.title ?? '',
+        views: Number(row.view_count ?? 0),
+        age_phrase: relativeAge(row.posted_at),
+      };
+    })
+    .filter((v): v is { video_id: string; title: string; views: number; age_phrase: string } => v != null);
+  if (videos.length < 2) return null;
+
+  // Narration is generic — describes the channel's overall popularity.
+  // Keeps the writer out of the loop for this slot (no IP risk).
+  const watermark = (ch.channel_name ?? 'CHANNEL').toUpperCase().slice(0, 14);
+  const narration = `And look at their hottest videos.`;
+  const base = `niche_${niche_index}`;
+  return {
+    slot_id: `${base}_top_videos_pano`,
+    beat_id: 'top_videos_pano',
+    narration,
+    gems: [
+      { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
+      { id: 'main', tool: 'image_gen', args: {
+        composition: 'top_videos_pano',
+        text: '',
+        bg_mode: 'white',
+        channel_watermark: watermark,
+        videos,
+      }},
+      { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+    ],
+    compose: {
+      bg: 'white',
+      hold_s: '{{narr.duration_s}}',
+      layers: [
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct' },
+        { from: 'narr', channel: 'voice' },
+        { from: 'sfx',  channel: 'fx' },
+      ],
+    },
+  };
+}
+
 /** Swap channel_proof_1/2 slots: replace yt_capture(about_page) with the
  *  composed channel_about_panel card. MG-style: dark gray card on white
  *  canvas with the "More info" stats column and a thin yellow vertical
@@ -526,7 +591,24 @@ export async function POST(req: NextRequest) {
       const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
       const kindForced = forceProofKind(callouttSwapped);
       const writerSlotsTransformed = injectCropTargets(kindForced);
-      allSlots.push(...framing, ...writerSlotsTransformed, ...moneyMath);
+      // 5. Insert a top_videos_pano slot immediately after channel_proof_2
+      //    (MG's "look at all these popular videos" moment). Skips if
+      //    we lack 2+ videos in DB. Slot uses real top-by-view data from
+      //    niche_spy_videos — composed, not screenshot.
+      const panoSlot = await buildTopVideosPanoSlot(niche_index, ch);
+      const withPano: Slot[] = [];
+      for (const slot of writerSlotsTransformed) {
+        withPano.push(slot);
+        if (panoSlot && slot.beat_id === 'channel_proof_2') {
+          withPano.push(panoSlot);
+        }
+      }
+      // Fallback: if the writer didn't emit channel_proof_2 (shouldn't
+      // happen with niche_segment_3 beats), still append the pano slot
+      // before money_math.
+      const hasPano = withPano.some(s => s.beat_id === 'top_videos_pano');
+      if (panoSlot && !hasPano) withPano.push(panoSlot);
+      allSlots.push(...framing, ...withPano, ...moneyMath);
       acceptedCount++;
     }
     if (acceptedCount === 0) {
