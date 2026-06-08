@@ -327,15 +327,16 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
     { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?|Joined|Description)\\b',
       tag: 'h1',
       min_w: 80, max_w: 600, min_h: 18, max_h: 60 },
-    // min_y=380 — the modal's "More info" stats column starts no higher
-    // than this. Channel page header subscriber text behind the modal sits
-    // at y~290 and matches the same regex; this filter rejects it.
+    // min_y=380 — applies ONLY to subscriber_count because the channel-
+    // page header behind the dimmed modal has the same "X subscribers" text
+    // at y~290. views/joined don't have a behind-the-modal duplicate so
+    // no filter — keeps them robust across YT layout changes.
     { name: 'subscriber_count', regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*subscribers?\\s*$',
       min_w: 60, max_w: 220, min_h: 14, max_h: 30, min_y: 380 },
     { name: 'total_views',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*views?\\s*$',
-      min_w: 40, max_w: 220, min_h: 14, max_h: 30, min_y: 380 },
+      min_w: 40, max_w: 220, min_h: 14, max_h: 30 },
     { name: 'joined_date',      regex: '^\\s*Joined\\s+\\w+\\s+\\d{1,2},?\\s+\\d{4}\\s*$',
-      min_w: 60, max_w: 260, min_h: 14, max_h: 30, min_y: 380 },
+      min_w: 60, max_w: 260, min_h: 14, max_h: 30 },
   ],
   videos_tab: [
     { name: 'channel_name',     regex: '^[\\w\\s\\d\\-\\.&\'!?]{2,60}$', not_regex: '(subscribers?|videos?|views?)\\b',
