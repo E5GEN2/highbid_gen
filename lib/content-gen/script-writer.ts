@@ -183,10 +183,20 @@ const HARD_RULES = `
    The RPM card (money_math card_2) MUST have data_point_id OMITTED — the RPM line is silent.
 2. Dollar trio is EXCLUSIVE per channel: pick exactly one of ${DOLLAR_TRIO.join(' | ')}
    (whichever rounds cleanly). money.lump_sum is separate and additive ("one video paid $X").
-3. data_point_id REQUIRED on every non-structural slot when the visual-grammar table assigns one.
-   Valid ids: ${DATA_POINT_IDS_FILLABLE.join(', ')}.
-   OMIT only for purely structural beats (intro_card, niche_name_card, mascot_mosaic, transition,
-   video_intro, money_math card_0/card_2/card_4/card_6 connector/RPM/closer cards).
+3. data_point_id REQUIRED on every slot whose beat_id appears below — copy verbatim:
+     beat_id=channel_proof_1     → data_point_id="channel.subscribers"
+     beat_id=channel_proof_2     → data_point_id="channel.total_views"
+     beat_id=top_video_callout   → data_point_id="video.top_video"
+     beat_id=top_views_seq       → data_point_id="video.views"     (on EVERY expanded card)
+     beat_id=top_views_pano      → data_point_id="video.views"
+     beat_id=recipe_demo         → data_point_id="recipe.formula"
+     beat_id=appreciation_optional → data_point_id="cta.viewer_appreciation"
+     beat_id=money_math card_5   → data_point_id="money.lump_sum"  (money-shot)
+     beat_id=money_math card_3 thumb → data_point_id="video.top_video"
+     beat_id=growth.in_period card_1 → data_point_id="growth.in_period"
+   OMIT data_point_id for ALL other slots (intro_card, niche_name_card, mascot_mosaic,
+   transition, video_intro, money_math card_0/card_1/card_2/card_4/card_6, video_cta cards).
+   Valid ids must be in: ${DATA_POINT_IDS_FILLABLE.join(', ')}.
 4. SFX tokens MUST be drawn from: ${SFX_TOKENS.join(', ')}.
    - The input beat's audio_cue.sfx may use descriptive variants like "subtle_whoosh",
      "ding_high_pitch", "whoosh_on_load", "ding_on_circle_reveal", "whoosh_on_grid_reveal",
@@ -225,13 +235,18 @@ const HARD_RULES = `
     - moralistic outros, forced reactions ("Oh! What!"), tool-channel plugs
     - subscribe-asks framed as gratitude ("These videos take a lot of time...")
 14. CTA action card (last of 4) MUST contain the phrase "check out [this/next] video" (winner-coded 17x).
-15. Slot expansion:
-    - money_math → 4-6 slots indexed by card role (see VISUAL_GRAMMAR_PER_BEAT)
-    - top_views_seq → 3-5 slots, one per "Nm views," phrase
-    - money.yearly|daily|monthly → 3 slots ("that's around" / "$X/year" / "from ads")
-    - money.lump_sum → 6 slots per visual grammar sequence
-    - growth.in_period → 3 slots per visual grammar sequence
-    - all others → 1 slot
+15. Slot expansion — and card_index:
+    Multi-slot beats (set card_index 0..N-1, slot_id suffix _0 / _1 / ...):
+      - money_math → 4-6 slots indexed by card role (see VISUAL_GRAMMAR_PER_BEAT)
+      - top_views_seq → 3-5 slots, one per "Nm views," phrase
+      - money.yearly | money.daily | money.monthly → 3 slots
+      - money.lump_sum → 6 slots per visual grammar sequence
+      - growth.in_period → 3 slots
+    SINGLE-slot beats (DO NOT set card_index, slot_id has NO numeric suffix):
+      - intro_card, niche_name_card, mascot_mosaic, channel_proof_1, channel_proof_2,
+        top_video_callout, top_views_pano, recipe_demo, concept_tag,
+        appreciation_optional, transition, video_intro
+      - video_cta is technically 4 cards but we keep them as one slot for now.
 16. GLOBAL VOICE CONSTRAINTS (from script-skeleton.global_voice_constraints):
     - active voice, present tense default
     - concrete numbers always (never "a lot" / "many" / "a ton")
