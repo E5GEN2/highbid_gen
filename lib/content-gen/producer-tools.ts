@@ -24,6 +24,7 @@ import { captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, 
 import { videoCompose } from './video-compose';
 import { ttsBeat, DEFAULT_VOICE_ID } from './voice';
 import { getSfx } from './sfx';
+import { imageGenerate } from './image-gen';
 
 export interface ToolOutput {
   file_url?: string;
@@ -188,13 +189,23 @@ async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> 
 // ───────────────────────────────────────────────────────────────────
 
 async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
-  const composition = String(args.composition ?? 'text_card');
-  const text = String(args.text ?? '').slice(0, 60);
-  const bg_mode = String(args.bg_mode ?? 'white');
+  const composition = String(args.composition ?? 'text_card') as 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence';
+  const text = String(args.text ?? '');
+  const bg_mode = (args.bg_mode === 'dark_gray' ? 'dark_gray' : 'white') as 'white' | 'dark_gray';
+  const color_treatment = args.color_treatment as 'neutral' | 'money_shot_green' | 'inline_green' | 'inline_red' | 'chalk_cream' | 'yellow_ring' | undefined;
+  const icon = args.icon as 'shrug_with_question_marks' | 'pointing_hand' | 'checkmark_green_circle' | 'dollar_sign_green_circle' | 'cat_thumbs_up' | 'speaker_muted' | 'speaker_with_sound_waves' | 'shrug_emoji' | 'cash_pile' | undefined;
+  const result = await imageGenerate({
+    composition,
+    text,
+    bg_mode,
+    color_treatment,
+    icon,
+  });
   return {
-    file_url: `stub://image_gen/${composition}/${encodeURIComponent(text)}?bg=${bg_mode}`,
-    width: 1080,
-    height: 1920,
+    file_url: result.file_url,
+    width: result.width,
+    height: result.height,
+    local_path: result.local_path,
   };
 }
 

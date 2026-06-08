@@ -119,12 +119,17 @@ async function renderStubImage(url: string, width: number, height: number, bg: '
 /** Resolve any layer.url to a local file path. Returns null when the layer
  *  is a stub we don't know how to render (audio stubs for now). */
 async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_gray', width: number, height: number): Promise<{ kind: 'image' | 'video' | 'skip'; path: string | null }> {
+  // First-class: if the gem returned a local_path (real image_gen, yt_capture,
+  // etc.), use it directly — fastest + most reliable.
+  if (layer.local_path) {
+    const p = layer.local_path;
+    return { kind: p.endsWith('.webm') || p.endsWith('.mp4') ? 'video' : 'image', path: p };
+  }
   const url = layer.url ?? '';
   if (!url) return { kind: 'skip', path: null };
   if (url.startsWith('/api/admin/content-gen/yt-capture/file')) {
     const p = await resolveYtCaptureUrl(url);
     if (!p) return { kind: 'skip', path: null };
-    // Heuristic: webm = video, anything else = image.
     return { kind: p.endsWith('.webm') ? 'video' : 'image', path: p };
   }
   if (url.startsWith('stub://image_gen/')) {

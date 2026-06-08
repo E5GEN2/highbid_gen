@@ -172,9 +172,11 @@ export default function ProducerTab({ active }: { active: boolean }) {
           onChange={e => setStartForm(f => ({ ...f, beat_id: e.target.value }))}
           className="bg-[#0a0a0a] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs text-white outline-none"
         >
-          <option value="channel_proof_1">channel_proof_1</option>
-          <option value="channel_proof_2">channel_proof_2</option>
-          <option value="top_video_callout">top_video_callout</option>
+          <option value="channel_proof_1">channel_proof_1 (1 slot)</option>
+          <option value="channel_proof_2">channel_proof_2 (1 slot)</option>
+          <option value="top_video_callout">top_video_callout (1 slot)</option>
+          <option value="niche_segment_3">niche_segment_3 (3 screenshots)</option>
+          <option value="niche_segment_full">niche_segment_full (6 mixed: cards+screens+chalkboard)</option>
         </select>
         <label className="text-xs text-[#888] flex items-center gap-1.5 cursor-pointer">
           <input type="checkbox" checked={startForm.sync}
