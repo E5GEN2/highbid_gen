@@ -1884,6 +1884,66 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vac_job         ON video_analysis_clips(job_id, clip_index)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vac_status      ON video_analysis_clips(status)`).catch(() => {});
 
+    // ──────────────────────────────────────────────────────────────
+    // Producer — orchestrator that takes a ConcreteScript (from
+    // script-writer) and drives every gem tool-call to produce a final
+    // rendered mp4. Two tables:
+    //   content_gen_producer_jobs — one row per render job
+    //   content_gen_producer_gems — one row per (slot, gem) tool call
+    // The gem table doubles as the live progress feed for the GUI.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_producer_jobs (
+        id              SERIAL PRIMARY KEY,
+        channel_id      TEXT,
+        channel_name    TEXT,
+        niche_index     INTEGER,
+        video_id        TEXT,
+        -- 'pending' → 'running' → 'done' | 'failed' | 'cancelled'
+        status          TEXT NOT NULL DEFAULT 'pending',
+        -- Concrete script as authored by script-writer (kept verbatim
+        -- for audit + retry).
+        script_jsonb    JSONB NOT NULL,
+        -- Final mp4 url after video_compose succeeds.
+        final_video_url TEXT,
+        -- Aggregate counts updated by the executor as gems progress.
+        gems_total      INTEGER NOT NULL DEFAULT 0,
+        gems_done       INTEGER NOT NULL DEFAULT 0,
+        gems_failed     INTEGER NOT NULL DEFAULT 0,
+        error           TEXT,
+        started_at      TIMESTAMPTZ,
+        finished_at     TIMESTAMPTZ,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpj_status ON content_gen_producer_jobs(status, updated_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpj_channel ON content_gen_producer_jobs(channel_id, created_at DESC)`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_producer_gems (
+        id          SERIAL PRIMARY KEY,
+        job_id      INTEGER NOT NULL REFERENCES content_gen_producer_jobs(id) ON DELETE CASCADE,
+        slot_id     TEXT NOT NULL,
+        slot_index  INTEGER NOT NULL,   -- 0..N-1 ordering inside the script
+        gem_id      TEXT NOT NULL,      -- "narr" | "main" | "sfx" | ...
+        tool        TEXT NOT NULL,      -- "tts" | "yt_capture" | ...
+        args_jsonb  JSONB NOT NULL,
+        -- Output of the tool — file_url + duration_s + bboxes etc. Schema
+        -- matches the tool's OUTPUT_FIELDS in tools.ts.
+        output_jsonb JSONB,
+        -- 'pending' → 'running' → 'done' | 'failed' | 'skipped'
+        status      TEXT NOT NULL DEFAULT 'pending',
+        error       TEXT,
+        elapsed_ms  INTEGER,
+        started_at  TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (job_id, slot_id, gem_id)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpg_job ON content_gen_producer_gems(job_id, slot_index, gem_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpg_status ON content_gen_producer_gems(status)`).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
