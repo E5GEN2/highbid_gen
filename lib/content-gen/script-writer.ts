@@ -273,8 +273,13 @@ function extractJson(text: string): string {
  *  (same stack video-analysis.ts uses). NO PapaiAPI middle hop — that's
  *  what was causing 504 timeouts. */
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-const PER_ATTEMPT_TIMEOUT_MS = 90_000;
-const MAX_ATTEMPTS = 3;
+const PER_ATTEMPT_TIMEOUT_MS = 60_000;
+// Bumped from 3 → 6 because the google_ai_studio key pool has several
+// dead-service-account keys that return 401 ACCOUNT_STATE_INVALID. Each
+// 401 marks that key invalid (fire-and-forget) and rotates — 6 retries
+// means we can chew through up to 6 bad keys before failing the call.
+// Once those are pruned, attempts in practice settle to 1.
+const MAX_ATTEMPTS = 6;
 
 /** Pull a random active Google AI key from the xgodo_api_keys pool. */
 async function pickHealthyAiKey(): Promise<{ id: number; key: string } | null> {
