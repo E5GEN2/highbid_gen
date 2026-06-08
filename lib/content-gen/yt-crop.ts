@@ -120,17 +120,21 @@ export function unionBBox(bboxes: BBox[]): BBox | null {
  */
 export function compositeBBox(target: string, bboxes: BBoxMap): BBox | null {
   if (target === 'about_panel') {
-    // Use joined_date + total_views as the y-axis anchors — both are reliable
-    // in current YT layout. URL row sits ~150px above joined, Share button
-    // ~130px below views. Use a deterministic offset so the crop EXCLUDES
-    // channel name + description heading + description text (which appear
-    // above the URL row), matching MG's framing exactly. Subscriber_count
-    // bbox is sometimes flaky (channel header behind modal vs modal row),
-    // so we don't depend on it for the crop bounds.
+    // Use joined_date as the SOLE deterministic anchor. The "More info"
+    // stats column has a stable row layout in current YT modal:
+    //   URL row    ~75px above joined
+    //   Country    ~30px above joined
+    //   Joined     (anchor)
+    //   Subs       ~75px below joined
+    //   Videos     ~150px below joined
+    //   Views      ~225px below joined
+    //   Share btn  ~300px below joined
+    // The bbox extractor sometimes misses total_views/subs due to YT's
+    // visibility check returning false through the modal overlay, so we
+    // don't depend on them — joined_date is always reliable.
     const joined = bboxes.joined_date;
-    const views = bboxes.total_views;
-    if (!joined || !views) {
-      // Fallback to the old union approach if anchors are missing.
+    if (!joined) {
+      // Last-resort: union of whatever's there.
       const keys = ['subscriber_count', 'video_count', 'total_views', 'joined_date'];
       const found = keys.map(k => bboxes[k]).filter((b): b is BBox => b != null);
       if (found.length === 0) return null;
@@ -138,16 +142,16 @@ export function compositeBBox(target: string, bboxes: BBoxMap): BBox | null {
       if (!u) return null;
       return { x: u.x - 60, y: u.y - 150, w: u.w + 120, h: u.h + 230 };
     }
-    // Tight MG-style framing.
-    const topPad = 170;     // include URL+Country rows above joined,
-                            // exclude "More info" heading (sits ~30px higher)
-    const bottomPad = 130;  // include Share channel button below views
-    const leftPad = 100;    // include row icons (icons ~80px left of text)
-    const rightPad = 350;   // include the long URL row's right edge
-    const xLeft = Math.min(joined.x, views.x) - leftPad;
-    const xRight = Math.max(joined.x + joined.w, views.x + views.w) + rightPad;
-    const yTop = joined.y - topPad;
-    const yBot = views.y + views.h + bottomPad;
+    // Deterministic crop centered on joined_date.
+    //   yTop  = joined.y - 170 → includes URL+Country rows, excludes
+    //                            "More info" heading (sits ~30px above URL).
+    //   yBot  = joined.y + 360 → includes subs/videos/views + Share button.
+    //   xLeft = joined.x - 100 → includes the row icons (icons ~80px left).
+    //   xRight = joined.x + joined.w + 600 → includes long URL row right edge.
+    const yTop = joined.y - 170;
+    const yBot = joined.y + 360;
+    const xLeft = joined.x - 100;
+    const xRight = joined.x + joined.w + 600;
     return {
       x: Math.max(0, xLeft),
       y: Math.max(0, yTop),
