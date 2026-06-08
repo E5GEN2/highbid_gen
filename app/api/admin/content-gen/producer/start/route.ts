@@ -64,6 +64,15 @@ function stubNarration(beat_id: string, ch: ChannelData): NarrationBeat[] {
     case 'channel_proof_1': return [{ beat_id, text: `This channel already has more than ${sub} subscribers.`, hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'channel_proof_2': return [{ beat_id, text: `The channel has already gained over ${tv} total views.`, hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'top_video_callout': return [{ beat_id, text: `Their most popular video has more than ${vv} views.`, hold_s: 2.0, audio_cue: { sfx: ['whoosh', 'ding'] } }];
+    case 'niche_segment_3':
+      // Compound: a full 3-beat per-niche segment. The script-writer
+      // expands this into 3 slots: subs reveal → total views reveal →
+      // top video callout. Producer composes all 3 into one mp4.
+      return [
+        { beat_id: 'channel_proof_1',   text: `This channel already has more than ${sub} subscribers.`, hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } },
+        { beat_id: 'channel_proof_2',   text: `The channel has already gained over ${tv} total views.`,  hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } },
+        { beat_id: 'top_video_callout', text: `Their most popular video has more than ${vv} views.`,     hold_s: 2.0, audio_cue: { sfx: ['whoosh', 'ding'] } },
+      ];
     default: return [];
   }
 }

@@ -149,23 +149,38 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     resolved.path = tmp;
   }
 
-  // Common video filter — scale to fit, pad to canvas with bg color.
-  // Background hex needs to be ffmpeg color name format (#RRGGBB → 0xRRGGBB).
+  // Background hex → ffmpeg "0xRRGGBB" color literal.
   const padColor = BG_HEX[bg].replace('#', '0x');
-  const vf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
-             `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
+
+  // For STILL images we want: scale to fill canvas WIDTH (not height) so the
+  // YT screenshot occupies the full 1080px wide and the dark gray padding
+  // only fills above/below (which we then make smaller by hand-tuned scale).
+  // Plus a slow zoom-in (Ken Burns) for cinematic feel.
+  //   - Pre-upscale 2× via scale (zoompan needs an oversized input for
+  //     smooth sub-pixel zoom without aliasing).
+  //   - zoompan: starts at 1.0× zoom, ramps to 1.08× over the hold duration.
+  //   - Then re-scale + pad to canvas with bg color.
+  const totalFrames = Math.max(2, Math.round(hold_s * fps));
+  const stillVf = `scale=${width * 2}:-2:flags=lanczos,` +
+                  `zoompan=z='1+0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${Math.round(width * height / width)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
+                  `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
+                  `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
+  // For VIDEO inputs (scroll_record webm), just pad to canvas without zoom.
+  const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
+                  `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
   if (resolved.kind === 'image') {
     await ff([
       '-y', '-loop', '1', '-i', resolved.path,
       '-t', hold_s.toFixed(3),
-      '-vf', vf,
+      '-vf', stillVf,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-r', String(fps),
       '-preset', 'medium', '-crf', '20',
       outPath,
     ]);
   } else {
+    const vf = videoVf;
     // Video input — trim to hold_s (or loop if shorter, simplest).
     await ff([
       '-y',
