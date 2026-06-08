@@ -20,7 +20,10 @@ import { writeScript, type ScriptWriterInput, type NarrationBeat, type ChannelDa
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-export const maxDuration = 60;
+// Generous timeout — Gemini Flash with a heavy system prompt can take 20-40s
+// per call. PapaiAPI proxy has its own ~60s deadline upstream; we leave
+// headroom so our own route doesn't cut the response off before retries.
+export const maxDuration = 120;
 
 async function loadChannel(channelId: string): Promise<ChannelData | null> {
   const pool = await getPool();

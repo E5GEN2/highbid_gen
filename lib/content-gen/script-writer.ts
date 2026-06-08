@@ -265,13 +265,18 @@ function extractJson(text: string): string {
   return s;
 }
 
-/** Call Gemini Flash to author a ConcreteScript. Validates the output before
- *  returning. */
+/** Call Gemini Flash via PapaiAPI to author a ConcreteScript. Validates the
+ *  output before returning. We deliberately AVOID responseMimeType=json — it
+ *  slows Flash to the proxy's 60s upstream deadline. Plain text + JSON
+ *  instruction is reliable and faster; extractJson() strips fences. */
 export async function writeScript(input: ScriptWriterInput, apiKey: string): Promise<ScriptWriterResult> {
   const system = buildSystemPrompt();
   const user = buildUserPrompt(input);
+  const t0 = Date.now();
   const response = await fetch(
-    'https://papaiapi.com/v1beta/models/gemini-flash:generateContent',
+    // gemini-flash-latest = current Flash with full output. Was hitting
+    // upstream 504 on plain gemini-flash with structured-output mode.
+    'https://papaiapi.com/v1beta/models/gemini-flash-latest:generateContent',
     {
       method: 'POST',
       headers: {
@@ -283,9 +288,7 @@ export async function writeScript(input: ScriptWriterInput, apiKey: string): Pro
         contents: [{ parts: [{ text: user }] }],
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: 8192,
-          // Force JSON response — the proxy supports the same response_mime_type
-          responseMimeType: 'application/json',
+          maxOutputTokens: 4096,
         },
       }),
     },
@@ -293,7 +296,7 @@ export async function writeScript(input: ScriptWriterInput, apiKey: string): Pro
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Gemini error ${response.status}: ${errorText.slice(0, 400)}`);
+    throw new Error(`Gemini error ${response.status} (${Date.now() - t0}ms): ${errorText.slice(0, 400)}`);
   }
 
   const data = await response.json();
