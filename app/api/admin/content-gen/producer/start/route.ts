@@ -57,7 +57,7 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
     [channelId],
   );
   const topRow = top.rows[0];
-  const topVideoId = topRow?.url?.match(/(?:shorts\/|watch\?v=)([A-Za-z0-9_-]{6,})/)?.[1];
+  const topVideoId = topRow?.url?.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/)?.[1];
   const totalApprox = ch.recent_videos_avg_views != null && ch.video_count != null
     ? Number(ch.recent_videos_avg_views) * Number(ch.video_count) : undefined;
   return {
