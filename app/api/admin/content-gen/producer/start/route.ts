@@ -100,9 +100,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({})) as {
     script?: ConcreteScript;
     channelId?: string;
+    /** When set, treats this as a multi-niche listicle. Producer runs the
+     *  writer once per channel, merges the per-niche scripts into one
+     *  ConcreteScript with niche_index 1..N, and renders as a single mp4. */
+    channels?: string[];
     beat_id?: string;
-    /** When true, runs the job synchronously (waits for video_compose to
-     *  return) and returns the full result. Default false — fire-and-forget. */
     sync?: boolean;
   };
 
@@ -110,6 +112,57 @@ export async function POST(req: NextRequest) {
 
   if (body.script) {
     script = body.script;
+  } else if (body.channels && body.channels.length > 0 && body.beat_id) {
+    // Multi-channel listicle path: per-channel writer call, merged script.
+    const beat_id = body.beat_id;
+    const channels = body.channels.slice(0, 16);   // safety cap
+    const perNicheScripts: ConcreteScript[] = [];
+    const failures: Array<{ channelId: string; reason: string }> = [];
+    for (let i = 0; i < channels.length; i++) {
+      const cid = channels[i];
+      const ch = await loadChannel(cid);
+      if (!ch) { failures.push({ channelId: cid, reason: 'not in DB' }); continue; }
+      const beats = stubNarration(beat_id, ch);
+      if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
+      const input: ScriptWriterInput = {
+        channel: ch,
+        niche_index: i + 1,
+        video_id: `listicle-${beat_id}-${cid.slice(-6)}`,
+        beats,
+        voice: 'money_groot',
+        width: 1920, height: 1080,
+      };
+      const result = await writeScript(input);
+      if (!result.ok || !result.script) {
+        failures.push({ channelId: cid, reason: result.errors?.[0]?.message?.slice(0, 200) ?? 'writer failed' });
+        continue;
+      }
+      perNicheScripts.push(result.script);
+    }
+    if (perNicheScripts.length === 0) {
+      return NextResponse.json({ error: 'every channel failed to author', failures }, { status: 500 });
+    }
+    // Merge: take first script's context/final shape, concat all slots.
+    const first = perNicheScripts[0];
+    script = {
+      schema_version: '1',
+      context: {
+        ...first.context,
+        channelId: channels.join(','),   // marker — real channels are in slot_ids
+        channel_name: `listicle-${channels.length}-niches`,
+        video_id: `listicle-${Date.now()}`,
+      },
+      slots: perNicheScripts.flatMap(s => s.slots),
+      final: {
+        tool: 'video_compose',
+        args: {
+          slot_order: perNicheScripts.flatMap(s => s.slots.map(slot => slot.slot_id)),
+          width: 1920, height: 1080, fps: 30,
+          default_bg: 'dark_gray',
+          music_token: 'bed',
+        },
+      },
+    };
   } else if (body.channelId && body.beat_id) {
     // Vertical-slice path: auto-author a single-beat script via script-writer.
     const ch = await loadChannel(body.channelId);
@@ -132,7 +185,7 @@ export async function POST(req: NextRequest) {
     }
     script = result.script;
   } else {
-    return NextResponse.json({ error: 'either body.script OR (channelId + beat_id) required' }, { status: 400 });
+    return NextResponse.json({ error: 'one of: body.script | (channelId + beat_id) | (channels[] + beat_id) required' }, { status: 400 });
   }
 
   // Validate before we burn a job row.
