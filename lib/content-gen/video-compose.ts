@@ -151,10 +151,13 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     resolved.path = tmp;
   }
 
-  // Voice layer — the narr gem's output. We prefer local_path (real on-disk
-  // mp3) over file_url to avoid HTTP self-loops in the same process.
+  // Voice + FX layers. We prefer local_path (real on-disk mp3) over file_url
+  // so ffmpeg reads directly without an HTTP self-loop. SFX is mixed underneath
+  // voice (no ducking yet — SFX are short transients so collision is rare).
   const voiceLayer = compose.layers.find(l => l.channel === 'voice');
   const voicePath = voiceLayer?.local_path ?? null;
+  const fxLayer = compose.layers.find(l => l.channel === 'fx');
+  const fxPath = fxLayer?.local_path ?? null;
 
   const padColor = BG_HEX[bg].replace('#', '0x');
   const totalFrames = Math.max(2, Math.round(hold_s * fps));
@@ -192,15 +195,37 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     ]);
   }
 
-  // Mux audio. If voice exists, lay it down on a stereo AAC track that's
-  // EXACTLY hold_s long (apad + atrim ensures no audio drift). If not, the
-  // slot stays silent but the output still has an empty audio track so
-  // concat doesn't break later.
-  if (voicePath) {
+  // Mux audio. Three cases:
+  //   1. voice + fx → amix both, pad to hold_s, trim, encode AAC
+  //   2. voice only → format voice to stereo, pad/trim to hold_s
+  //   3. neither   → silent AAC stream so all slots have consistent audio
+  if (voicePath && fxPath) {
+    await ff([
+      '-y', '-i', silentPath, '-i', voicePath, '-i', fxPath,
+      '-filter_complex',
+        `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=1.0[v1];` +
+        `[2:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.7[v2];` +
+        `[v1][v2]amix=inputs=2:duration=longest:dropout_transition=0,` +
+        `apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`,
+      '-map', '0:v', '-map', '[aout]',
+      '-c:v', 'copy',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-shortest',
+      outPath,
+    ]);
+  } else if (voicePath) {
     await ff([
       '-y', '-i', silentPath, '-i', voicePath,
-      // Audio filter: convert to stereo 44.1k, normalize loudness slightly,
-      // pad to hold_s with silence, then trim to exact duration.
+      '-filter_complex', `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`,
+      '-map', '0:v', '-map', '[aout]',
+      '-c:v', 'copy',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-shortest',
+      outPath,
+    ]);
+  } else if (fxPath) {
+    await ff([
+      '-y', '-i', silentPath, '-i', fxPath,
       '-filter_complex', `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`,
       '-map', '0:v', '-map', '[aout]',
       '-c:v', 'copy',
@@ -209,7 +234,6 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       outPath,
     ]);
   } else {
-    // Silent audio track — empty AAC stream sized to hold_s.
     await ff([
       '-y', '-i', silentPath,
       '-f', 'lavfi', '-t', hold_s.toFixed(3), '-i', 'anullsrc=cl=stereo:r=44100',

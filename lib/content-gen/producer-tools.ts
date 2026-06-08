@@ -16,9 +16,14 @@
  * status='failed' on the gem row.
  */
 
+import path from 'path';
+import os from 'os';
+import { promises as fs } from 'fs';
+import { spawn } from 'child_process';
 import { captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, type AnnotateElement, type HighlightStyle, type CompositeShapeStyle } from './yt-capture';
 import { videoCompose } from './video-compose';
 import { ttsBeat, DEFAULT_VOICE_ID } from './voice';
+import { getSfx } from './sfx';
 
 export interface ToolOutput {
   file_url?: string;
@@ -124,19 +129,55 @@ async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> 
   const tokens = (args.tokens as string[]) ?? [];
   if (tokens.length === 0) throw new Error('sfx_render: tokens required');
   const fit = args.fit_duration_s as number | undefined;
-  const natural = tokens.reduce((a, t) => a + sfxNaturalDur(t), 0);
-  const duration_s = fit ?? natural;
+
+  // Fetch each canonical token via the existing sfx lib (cached by content
+  // hash, generated via ElevenLabs sound-gen). Returns local mp3 paths.
+  const assets = await Promise.all(tokens.map(t => getSfx(t).catch(e => {
+    console.error(`[producer:sfx] token=${t} failed: ${(e as Error).message}`);
+    return null;
+  })));
+  const valid = assets.filter((a): a is NonNullable<typeof a> => a !== null);
+  if (valid.length === 0) throw new Error('sfx_render: all tokens failed to resolve');
+
+  // Concat the SFX assets into a single track. ffmpeg concat filter handles
+  // gapless joining; if a `fit_duration_s` was requested, we pad with
+  // silence at the end OR trim to that length.
+  await fs.mkdir('/tmp/producer_sfx', { recursive: true });
+  const outPath = path.join('/tmp/producer_sfx', `sfx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp3`);
+
+  if (valid.length === 1 && !fit) {
+    // Single token, natural duration — just copy the existing cached file.
+    await fs.copyFile(valid[0].local_path, outPath);
+    return { file_url: `file://${outPath}`, duration_s: valid[0].duration_s, local_path: outPath };
+  }
+
+  // Multi-token OR fit-required: build a concat list + run ffmpeg.
+  const concatList = path.join(os.tmpdir(), `sfx-concat-${Date.now()}.txt`);
+  await fs.writeFile(concatList, valid.map(a => `file '${a.local_path.replace(/'/g, "'\\''")}'`).join('\n'));
+
+  const baseDur = valid.reduce((a, b) => a + b.duration_s, 0);
+  const target = fit ?? baseDur;
+
+  await new Promise<void>((resolve, reject) => {
+    const args2 = ['-y', '-hide_banner', '-loglevel', 'error',
+      '-f', 'concat', '-safe', '0', '-i', concatList,
+      // Pad with silence to target OR trim if natural is longer.
+      '-af', `apad=pad_dur=${target.toFixed(3)},atrim=0:${target.toFixed(3)}`,
+      '-c:a', 'libmp3lame', '-b:a', '192k',
+      outPath];
+    const p = spawn('ffmpeg', args2);
+    let err = '';
+    p.stderr.on('data', d => { err += d.toString(); });
+    p.on('close', c => c === 0 ? resolve() : reject(new Error(`ffmpeg sfx concat ${c}: ${err.slice(0, 300)}`)));
+    p.on('error', reject);
+  });
+  await fs.unlink(concatList).catch(() => {});
+
   return {
-    file_url: `stub://sfx/${tokens.join('+')}`,
-    duration_s,
+    file_url: `file://${outPath}`,
+    duration_s: target,
+    local_path: outPath,
   };
-}
-function sfxNaturalDur(token: string): number {
-  if (token === 'ascending_electronic_sting') return 1.2;
-  if (token.startsWith('ding')) return 0.5;
-  if (token.startsWith('whoosh')) return 0.4;
-  if (token === 'cash_counting') return 0.8;
-  return 0.5;
 }
 
 // ───────────────────────────────────────────────────────────────────
