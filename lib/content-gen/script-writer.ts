@@ -134,13 +134,29 @@ white = narration cards. dark_gray = YouTube-world / proof captures. Never mix o
                          tts narrates a short fragment (2-4 words). SFX: ["whoosh"]
   top_views_pano       → data_point_id="video.views"  bg=dark_gray
                          yt_capture kind=videos_tab mode=scroll_record  (no annotation; pan reveals)
-  money_math           → EXPAND into 4-6 slots, one per card. Use the skeleton's card_sequence_template.
-                         Each card is its own slot with card_index. bg=white EXCEPT the cited
-                         top-video card (composition=thumbnail_card → yt_capture videos_tab mode=static,
-                         bg=dark_gray). Money-shot card: composition=text_card color_treatment=money_shot_green
-                         SFX={ding_high_pitch}. Card 3 (RPM line) optionally uses icon=shrug_with_question_marks.
-                         data_point_id rotates: assumption → money.rpm_qualifier (NOT exposed) →
-                         shrug_icon → money.lump_sum (the money-shot).
+  money_math           → EXPAND into 4-6 slots, one per card. Each slot has card_index 0..N-1.
+                         Roles by index (per script-skeleton card_sequence_template):
+                           card_0 (optional): opener — text_card "Let's take that video" / "Take their top video"  bg=white
+                           card_1 (assumption modifier):  text_card "If we assume" / "Even if we assume"  bg=white
+                           card_2 (RPM line):  icon_card icon=shrug_with_question_marks  text="$X RPM"
+                                               color_treatment=inline_green  bg=white  (data_point_id OMITTED — RPM is silent)
+                           card_3 (optional thumbnail OR geo):
+                             - default: thumbnail_card → yt_capture kind=videos_tab mode=static  bg=dark_gray
+                               (data_point_id="video.top_video")
+                             - OR (30% prob if rpm > $5): text_card "because viewers are from {high_cpm_countries}"
+                               bg=white, no data_point_id  (geo_context_insertion)
+                           card_4 (connector): text_card "this would translate to" / "that's roughly"  bg=white
+                           card_5 (money-shot): text_card "$X,XXX" color_treatment=money_shot_green  bg=white
+                                                data_point_id="money.lump_sum"  SFX: ["ding"]   (ding-high-pitch implicit by figure)
+                           card_6 (closer): text_card "from ads"  bg=white  (data_point_id OMITTED)
+                         Use 4-6 of these — card_0 and card_3 are optional. card_5 (money-shot) is mandatory.
+  growth.in_period     → EXPAND into 3 cards (per slot-rendering 3-card sequence).
+                           card_0: text_card "in just N months"  bg=white  color_treatment=inline_green
+                           card_1: yt_capture kind=channel_page bg=dark_gray  (showing the channel header)
+                                   data_point_id="growth.in_period"
+                           card_2: text_card connector "...they got X subscribers"  bg=white
+                         Use when growth.in_period data point is present (e.g. "29 channels grew from 0
+                         to 80K subs in 3 months").
   recipe_demo          → external clip slot. For NOW emit a text_card placeholder describing the recipe.
                          data_point_id="recipe.formula" bg=white
   concept_tag          → data_point_id stays unset OR "competition.saturated".
@@ -159,16 +175,30 @@ Narration → tts rules:
 `.trim();
 
 const HARD_RULES = `
-# Hard rules from canonical specs (data-points / slot-rendering / visual-packaging / audio-sfx)
+# Hard rules from canonical specs (data-points / slot-rendering / visual-packaging / audio-sfx / script-skeleton)
 
 1. NEVER reference these data points in narration or as data_point_id (hard-banned):
      ${DATA_POINT_IDS_BANNED.join(', ')}
    "money.rpm_exposed" means do not say "views × RPM = $". Output the conclusion only ($X figure).
+   The RPM card (money_math card_2) MUST have data_point_id OMITTED — the RPM line is silent.
 2. Dollar trio is EXCLUSIVE per channel: pick exactly one of ${DOLLAR_TRIO.join(' | ')}
    (whichever rounds cleanly). money.lump_sum is separate and additive ("one video paid $X").
-3. data_point_id for each non-structural slot MUST be one of: ${DATA_POINT_IDS_FILLABLE.join(', ')}
-   (or omitted for structural beats like intro_card, transition, video_intro).
+3. data_point_id REQUIRED on every non-structural slot when the visual-grammar table assigns one.
+   Valid ids: ${DATA_POINT_IDS_FILLABLE.join(', ')}.
+   OMIT only for purely structural beats (intro_card, niche_name_card, mascot_mosaic, transition,
+   video_intro, money_math card_0/card_2/card_4/card_6 connector/RPM/closer cards).
 4. SFX tokens MUST be drawn from: ${SFX_TOKENS.join(', ')}.
+   - The input beat's audio_cue.sfx may use descriptive variants like "subtle_whoosh",
+     "ding_high_pitch", "whoosh_on_load", "ding_on_circle_reveal", "whoosh_on_grid_reveal",
+     "ding_×2", "optional_click", "subtle_ding". STRIP these descriptors to the bare token:
+       subtle_whoosh → whoosh
+       whoosh_on_*   → whoosh
+       ding_*_pitch  → ding
+       ding_on_*     → ding
+       ding_×N       → ding
+       subtle_ding   → ding
+       optional_click→ click
+       cash_*        → cash_counting
    - "ding" is MANDATORY on every $ reveal (money-shot card). Pitch implicit by figure size.
    - "whoosh" is the default cut transition between text-cards.
    - "ascending_electronic_sting" is RESERVED for the final CTA action card.
@@ -177,7 +207,8 @@ const HARD_RULES = `
 6. Color treatments MUST be drawn from: ${COLOR_TREATMENTS.join(', ')}.
 7. Music tokens MUST be drawn from: ${MUSIC_TOKENS.join(', ')}.
 8. bg_mode rule (no exceptions):
-     channel.subscribers / channel.total_views / channel.video_count / channel.upload_rate / video.top_video / video.views
+     channel.subscribers / channel.total_views / channel.video_count / channel.upload_rate
+     / channel.age / video.top_video / video.views / growth.in_period
        → bg_mode="dark_gray" (yt_screenshot world)
      money.* / niche.category / competition.* / format.* / recipe.formula / cta.*
        → bg_mode="white" (narration world)
@@ -185,8 +216,9 @@ const HARD_RULES = `
 10. cta.viewer_appreciation appears AT MOST TWICE PER VIDEO, placed ~50-60% through the body.
 11. First segment of niche 1 should be ≤2.0s (faster than MG's 1.42s cold-open).
 12. Per-niche total target: 35-60s. Drop slots whose underlying data is unavailable rather than padding.
-13. NEVER write any of this fluff:
+13. NEVER write any of this fluff (visible blacklist from worked-example + skeleton vocabulary_taboos):
     - "Today, I'm going to share" / "What if I told you" / "Imagine if you could" / "Let's talk about"
+    - "Every single day"
     - personal anecdotes ("I tried it myself", "A while back I thought about starting a channel...")
     - "I hope to see each other in another one of our videos"
     - "click the link in the description" (alone)
@@ -194,12 +226,41 @@ const HARD_RULES = `
     - subscribe-asks framed as gratitude ("These videos take a lot of time...")
 14. CTA action card (last of 4) MUST contain the phrase "check out [this/next] video" (winner-coded 17x).
 15. Slot expansion:
-    - money_math → 4-6 slots, one per card (assumption → optional shrug-icon → RPM qualifier
-      → optional top_video thumb → "this would translate to" → money-shot → "from ads")
+    - money_math → 4-6 slots indexed by card role (see VISUAL_GRAMMAR_PER_BEAT)
     - top_views_seq → 3-5 slots, one per "Nm views," phrase
-    - money.yearly|daily|monthly → 3 slots ("that's around", "$X/year", "from ads")
+    - money.yearly|daily|monthly → 3 slots ("that's around" / "$X/year" / "from ads")
     - money.lump_sum → 6 slots per visual grammar sequence
+    - growth.in_period → 3 slots per visual grammar sequence
     - all others → 1 slot
+16. GLOBAL VOICE CONSTRAINTS (from script-skeleton.global_voice_constraints):
+    - active voice, present tense default
+    - concrete numbers always (never "a lot" / "many" / "a ton")
+    - viewer directly addressed at most 3-4× per video total
+    - register: calm, educational, matter-of-fact male documentary narrator
+17. ENTHUSIASM MODIFIER CAPS (per video, total — strict ceilings):
+    - "absolutely unbelievable" : max 2
+    - "mind-blowing"            : max 1
+    - "literally"               : max 3
+    Restraint is the point — not every claim is incredible.
+18. PACING:
+    - median beat length: 1.5-2.5s
+    - max hold_seconds_default: 2.5s (money-shot card may exceed)
+    - text must be readable in allotted hold_seconds × 1.05 (TTS pacing slack)
+19. PHRASE BANKS (from worked-example). When the input narration came from a banked beat,
+    rotate through these banks across niches — never reuse the same phrase 3× in a row,
+    never use the same channel-intro opener twice in any 3-niche stretch:
+    - bank.intro_card             : "Number {N}:" / "Number {N}." / "Number {N},"
+    - bank.emphasis_intro         : "This channel..." / "There's another channel that..."
+    - bank.second_channel_opener  : "And there's another channel..." / "Another channel..."
+    - bank.consistency_intro      : "and almost every single upload..." / "And their videos consistently..."
+    - bank.money_opener_optional  : "Let's take that video" / "Take their top video"
+    - bank.assumption_modifier    : "If we assume" / "Even if we assume" / "Let's say we assume"
+    - bank.math_connector         : "this would translate to" / "that's roughly" / "the estimated earnings are"
+    - bank.appreciation_phrase    : "if you're watching this far, I really appreciate it" / "if you've made it this far, that means a lot"
+    - bank.transition_optional    : "Moving on," / "Next up," / "And finally..." (vocal cue 20% prob; default silent + whoosh)
+20. Treat the writer-input narration text as authoritative — do NOT rewrite it, only annotate it
+    with tool calls. Variation enforcement happens at the orchestrator layer (rolling 50-phrase
+    history is passed in upstream).
 `.trim();
 
 export function buildSystemPrompt(): string {

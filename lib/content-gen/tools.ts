@@ -114,8 +114,12 @@ export const ICON_IDS = [
 ] as const;
 export type IconId = typeof ICON_IDS[number];
 
-/** Canonical color-treatment enum (visual-packaging-class-b). */
-export const COLOR_TREATMENTS = ['neutral', 'money_shot_green', 'inline_green', 'inline_red', 'chalk_cream'] as const;
+/** Canonical color-treatment enum (visual-packaging-class-b + slot-rendering
+ *  contract). yellow_ring is named in slot-rendering for the annotation
+ *  primitive applied to channel.subscribers / channel.video_count /
+ *  channel.total_views — keep it here so image_gen.color_treatment matches
+ *  the slot-rendering contract. */
+export const COLOR_TREATMENTS = ['neutral', 'money_shot_green', 'inline_green', 'inline_red', 'chalk_cream', 'yellow_ring'] as const;
 export type ColorTreatment = typeof COLOR_TREATMENTS[number];
 
 /** Canonical data-point IDs — from docs/content-gen/data-points.json.
