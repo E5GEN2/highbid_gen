@@ -196,13 +196,18 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
     composeResolved.layers = slot.compose.layers.map(l => {
       // l.from is a local gem id like "main" — look up in bag
       const localOutput = bag[slot.slot_id]?.[l.from];
+      // Pull capture_id from yt_capture file_url so video-compose can fetch
+      // bboxes_jsonb without re-parsing the URL.
+      const file_url = (localOutput && (localOutput.file_url as string)) ?? null;
+      const capture_id = file_url
+        ? (file_url.match(/[?&]id=(\d+)/)?.[1] ? parseInt(file_url.match(/[?&]id=(\d+)/)![1], 10) : null)
+        : null;
       return {
         ...l,
-        url: (localOutput && (localOutput.file_url as string)) ?? null,
+        url: file_url,
         duration_s: (localOutput && (localOutput.duration_s as number)) ?? null,
-        // Surface the on-disk path when the tool produced one. video-compose
-        // prefers this over file_url to avoid HTTP self-loops.
         local_path: (localOutput && (localOutput.local_path as string)) ?? null,
+        capture_id,
       };
     });
     bag[slot.slot_id].__compose__ = composeResolved;

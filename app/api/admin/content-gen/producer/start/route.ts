@@ -33,6 +33,22 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
   );
   if (r.rows.length === 0) return null;
   const ch = r.rows[0];
+
+  // Niche analysis lives in TWO separate tables. Producer-side label is
+  // populated by lib/content-gen/unified-analyzer.ts — it gives a listicle-
+  // grade phrase like "Sumerian history & ancient tablets". Shorts-admin
+  // gives a hierarchy (category > niche > sub_niche).
+  // Preference order: content_gen niche_label → channel_analysis sub_niche
+  // → channel_analysis niche → undefined (caller falls back to a generic).
+  const cgAna = await pool.query<{ niche_label: string | null }>(
+    `SELECT niche_label FROM content_gen_channel_analysis WHERE channel_id = $1 LIMIT 1`,
+    [channelId],
+  ).catch(() => ({ rows: [] as Array<{ niche_label: string | null }> }));
+  const ana = await pool.query<{ niche: string | null; sub_niche: string | null }>(
+    `SELECT niche, sub_niche FROM channel_analysis WHERE channel_id = $1 LIMIT 1`,
+    [channelId],
+  ).catch(() => ({ rows: [] as Array<{ niche: string | null; sub_niche: string | null }> }));
+
   const top = await pool.query<{ url: string; title: string; view_count: number }>(
     `SELECT url, title, view_count FROM niche_spy_videos
       WHERE channel_id=$1 AND view_count IS NOT NULL
@@ -50,6 +66,9 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
     total_views: totalApprox,
     video_count: ch.video_count ?? undefined,
     joined_date: ch.channel_created_at ?? ch.first_upload_at ?? undefined,
+    // niche: producer-side listicle label preferred, sub_niche second, niche third.
+    niche: cgAna.rows[0]?.niche_label ?? ana.rows[0]?.sub_niche ?? ana.rows[0]?.niche ?? undefined,
+    sub_niche: ana.rows[0]?.sub_niche ?? undefined,
     top_video_id: topVideoId,
     top_video_title: topRow?.title,
     top_video_view_count: topRow?.view_count != null ? Number(topRow.view_count) : undefined,
@@ -211,7 +230,39 @@ function buildCtaSlots(niche_count: number): Slot[] {
 }
 
 function nicheLabelFor(ch: ChannelData, fallbackIdx: number): string {
-  return ch.sub_niche || ch.niche || `Faceless niche ${fallbackIdx}`;
+  // ch.niche is already preferring content_gen_channel_analysis.niche_label
+  // (set in loadChannel above). Fall through to sub_niche, then a generic.
+  return ch.niche || ch.sub_niche || `Faceless niche ${fallbackIdx}`;
+}
+
+/** Post-process writer-emitted slots: inject crop_target on the visual layer
+ *  for known beat_ids that should show MG-style cropped close-ups rather
+ *  than full screenshots. Per mg-decoded-visual-timeline.json + spec audit:
+ *    channel_proof_1   → crop to subscriber_count bbox (about-modal close-up)
+ *    channel_proof_2   → crop to total_views bbox
+ *    top_video_callout → crop to top_video_card bbox (single card close-up)
+ *  Writer doesn't emit crop_target (it doesn't know about it) — we annotate
+ *  here on the way through so the changes don't require a prompt iteration. */
+function injectCropTargets(slots: Slot[]): Slot[] {
+  const beatToCrop: Record<string, string> = {
+    channel_proof_1:   'subscriber_count',
+    channel_proof_2:   'total_views',
+    top_video_callout: 'top_video_card',
+  };
+  return slots.map(slot => {
+    const target = beatToCrop[slot.beat_id];
+    if (!target) return slot;
+    return {
+      ...slot,
+      compose: {
+        ...slot.compose,
+        layers: slot.compose.layers.map(l => {
+          if (l.channel === 'video') return { ...l, crop_target: target };
+          return l;
+        }),
+      },
+    };
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -268,7 +319,10 @@ export async function POST(req: NextRequest) {
       // 3. Money_math sequence — 5 cards calculating $X,XXX from top-video
       //    views. Skips if channel has no top-video data.
       const moneyMath = buildMoneyMathSlots(niche_index, ch);
-      allSlots.push(...framing, ...result.script.slots, ...moneyMath);
+      // 4. Inject crop_target on the writer's proof slots so the visuals
+      //    are MG-style cropped close-ups instead of full page screenshots.
+      const writerSlotsCropped = injectCropTargets(result.script.slots);
+      allSlots.push(...framing, ...writerSlotsCropped, ...moneyMath);
       acceptedCount++;
     }
     if (acceptedCount === 0) {

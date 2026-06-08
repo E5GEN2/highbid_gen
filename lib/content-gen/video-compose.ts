@@ -47,6 +47,21 @@ interface ComposeLayer {
   /** When the upstream tool returned an on-disk path, the producer surfaces
    *  it here so we can read from disk without a self-loop HTTP call. */
   local_path?: string | null;
+  /** Crop the source image to one of the yt-capture's named bboxes before
+   *  Ken Burns. Closes the gap between "full channel page" vs MG-style
+   *  close-up of the about modal stats box. Supported values mirror
+   *  bboxKeyFor() in yt-crop.ts:
+   *    subscriber_count | video_count | total_views | joined_date
+   *    channel_name | channel_avatar
+   *    top_video_card | top_video_views | top_video_thumb | top_video_title
+   *    video_card_N | video_thumb_N | video_views_N | video_title_N
+   *  When set AND the source is a yt_capture image, video-compose looks up
+   *  the bbox via captureId, crops + pads, then proceeds normally. */
+  crop_target?: string;
+  /** Capture id (content_gen_yt_screens.id) — surfaces from the producer when
+   *  crop_target is set so video-compose can fetch bboxes_jsonb without
+   *  re-parsing the file_url. */
+  capture_id?: number | null;
 }
 interface ResolvedCompose {
   bg: 'white' | 'dark_gray';
@@ -123,27 +138,54 @@ async function renderStubImage(url: string, width: number, height: number, bg: '
 }
 
 /** Resolve any layer.url to a local file path. Returns null when the layer
- *  is a stub we don't know how to render (audio stubs for now). */
+ *  is a stub we don't know how to render (audio stubs for now). Handles
+ *  crop_target — when set on a yt_capture layer, looks up the bbox by name
+ *  and extracts a tight crop instead of using the full PNG. */
 async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_gray', width: number, height: number): Promise<{ kind: 'image' | 'video' | 'skip'; path: string | null }> {
-  // First-class: if the gem returned a local_path (real image_gen, yt_capture,
-  // etc.), use it directly — fastest + most reliable.
+  // Resolve to base path first, then optionally crop.
+  let basePath: string | null = null;
+  let captureId: number | null = layer.capture_id ?? null;
+  let kindHint: 'image' | 'video' = 'image';
+
   if (layer.local_path) {
-    const p = layer.local_path;
-    return { kind: p.endsWith('.webm') || p.endsWith('.mp4') ? 'video' : 'image', path: p };
+    basePath = layer.local_path;
+    kindHint = (basePath.endsWith('.webm') || basePath.endsWith('.mp4')) ? 'video' : 'image';
+  } else if (layer.url) {
+    const url = layer.url;
+    if (url.startsWith('/api/admin/content-gen/yt-capture/file')) {
+      // Pull captureId from the URL if not already in layer
+      if (captureId == null) {
+        const m = url.match(/[?&]id=(\d+)/);
+        if (m) captureId = parseInt(m[1], 10);
+      }
+      basePath = await resolveYtCaptureUrl(url);
+      kindHint = basePath?.endsWith('.webm') ? 'video' : 'image';
+    } else if (url.startsWith('stub://image_gen/')) {
+      basePath = await renderStubImage(url, width, height, bg);
+      kindHint = 'image';
+    }
   }
-  const url = layer.url ?? '';
-  if (!url) return { kind: 'skip', path: null };
-  if (url.startsWith('/api/admin/content-gen/yt-capture/file')) {
-    const p = await resolveYtCaptureUrl(url);
-    if (!p) return { kind: 'skip', path: null };
-    return { kind: p.endsWith('.webm') ? 'video' : 'image', path: p };
+  if (!basePath) return { kind: 'skip', path: null };
+
+  // Apply crop if requested AND we have a captureId (so we can look up bboxes).
+  // Crop only applies to images — webm/mp4 inputs are pass-through.
+  if (layer.crop_target && captureId != null && kindHint === 'image') {
+    try {
+      const { loadBBoxes, bboxKeyFor, cropToBBox } = await import('./yt-crop');
+      const bboxes = await loadBBoxes(captureId);
+      const key = bboxKeyFor(layer.crop_target);
+      if (key && bboxes[key]) {
+        const cropped = await cropToBBox(basePath, bboxes[key], { pad: 32 });
+        return { kind: 'image', path: cropped };
+      }
+      // bbox missing — log + fall through to full image.
+      console.warn(`[video-compose] crop_target="${layer.crop_target}" not in bboxes for capture=${captureId} (keys: ${Object.keys(bboxes).slice(0, 5).join(',')}…)`);
+    } catch (e) {
+      console.warn(`[video-compose] crop failed: ${(e as Error).message}`);
+    }
   }
-  if (url.startsWith('stub://image_gen/')) {
-    const p = await renderStubImage(url, width, height, bg);
-    return { kind: 'image', path: p };
-  }
-  // Audio / unknown stubs — skip in the visual pipeline.
-  return { kind: 'skip', path: null };
+
+  return { kind: kindHint, path: basePath };
 }
 
 /** Build a single width×height clip for one slot (default 1920×1080 16:9),

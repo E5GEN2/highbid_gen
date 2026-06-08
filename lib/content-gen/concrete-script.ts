@@ -64,6 +64,11 @@ export interface ComposeLayer {
   ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right';
   /** When channel=overlay, position the layer over the main video */
   position?: { x: number | string; y: number | string; w: number | string; h: number | string };
+  /** Crop a yt_capture image to one of its named bboxes before further
+   *  processing. Closes the gap between "full channel page" vs MG-style
+   *  cropped close-up of the relevant stats box. See yt-crop.ts for
+   *  supported targets. */
+  crop_target?: string;
 }
 
 export interface Slot {
