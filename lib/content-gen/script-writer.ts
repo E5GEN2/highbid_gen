@@ -266,38 +266,54 @@ function extractJson(text: string): string {
 }
 
 /** Call Gemini Flash via PapaiAPI to author a ConcreteScript. Validates the
- *  output before returning. We deliberately AVOID responseMimeType=json — it
- *  slows Flash to the proxy's 60s upstream deadline. Plain text + JSON
- *  instruction is reliable and faster; extractJson() strips fences. */
+ *  output before returning. Avoids responseMimeType=json which slows Flash;
+ *  uses instruction-based JSON output + extractJson() instead. PapaiAPI is
+ *  flaky (504 deadline on busy upstream), so retry transient failures up to
+ *  3 times with exponential backoff. */
 export async function writeScript(input: ScriptWriterInput, apiKey: string): Promise<ScriptWriterResult> {
   const system = buildSystemPrompt();
   const user = buildUserPrompt(input);
-  const t0 = Date.now();
-  const response = await fetch(
-    // gemini-flash-latest = current Flash with full output. Was hitting
-    // upstream 504 on plain gemini-flash with structured-output mode.
-    'https://papaiapi.com/v1beta/models/gemini-flash-latest:generateContent',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ parts: [{ text: user }] }],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 4096,
-        },
-      }),
-    },
-  );
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini error ${response.status} (${Date.now() - t0}ms): ${errorText.slice(0, 400)}`);
+  const MAX_ATTEMPTS = 3;
+  let lastError: Error | null = null;
+  let response: Response | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const t0 = Date.now();
+    try {
+      response = await fetch(
+        'https://papaiapi.com/v1beta/models/gemini-flash-latest:generateContent',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ parts: [{ text: user }] }],
+            generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+          }),
+        },
+      );
+      if (response.ok) break;
+      const errorText = await response.text();
+      const elapsed = Date.now() - t0;
+      lastError = new Error(`Gemini error ${response.status} (${elapsed}ms, attempt ${attempt}/${MAX_ATTEMPTS}): ${errorText.slice(0, 200)}`);
+      // 504/503/502/429 are transient — retry. 4xx schemas/auth — don't.
+      if (response.status >= 500 || response.status === 429) {
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, 800 * attempt));
+          continue;
+        }
+      }
+      throw lastError;
+    } catch (e) {
+      lastError = e as Error;
+      if (attempt === MAX_ATTEMPTS) throw lastError;
+      await new Promise(r => setTimeout(r, 800 * attempt));
+    }
   }
+  if (!response || !response.ok) throw lastError ?? new Error('writeScript failed with no response');
 
   const data = await response.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
