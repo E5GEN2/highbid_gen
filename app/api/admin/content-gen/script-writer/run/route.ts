@@ -43,12 +43,16 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
     [channelId],
   );
 
-  const top = await pool.query<{ video_id: string; title: string; view_count: number }>(
-    `SELECT video_id, title, view_count FROM niche_spy_videos
+  // niche_spy_videos stores the full URL, not a separate video_id column.
+  // Extract the video id with a regex on the URL.
+  const top = await pool.query<{ url: string; title: string; view_count: number }>(
+    `SELECT url, title, view_count FROM niche_spy_videos
       WHERE channel_id = $1 AND view_count IS NOT NULL
       ORDER BY view_count DESC LIMIT 1`,
     [channelId],
   );
+  const topRow = top.rows[0];
+  const topVideoId = topRow?.url?.match(/(?:shorts\/|watch\?v=)([A-Za-z0-9_-]{6,})/)?.[1];
 
   // total_views is approximated as avg_views * video_count — the table doesn't
   // store the exact lifetime total. Good enough for stub narration.
@@ -65,9 +69,9 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
     joined_date: ch.channel_created_at ?? ch.first_upload_at ?? undefined,
     niche: ana.rows[0]?.niche ?? undefined,
     sub_niche: ana.rows[0]?.sub_niche ?? undefined,
-    top_video_id: top.rows[0]?.video_id,
-    top_video_title: top.rows[0]?.title,
-    top_video_view_count: top.rows[0]?.view_count != null ? Number(top.rows[0].view_count) : undefined,
+    top_video_id: topVideoId,
+    top_video_title: topRow?.title,
+    top_video_view_count: topRow?.view_count != null ? Number(topRow.view_count) : undefined,
   };
 }
 
