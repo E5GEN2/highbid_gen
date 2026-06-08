@@ -59,6 +59,11 @@ interface ComposeArgs {
   height: number;
   fps: number;
   default_bg?: 'white' | 'dark_gray';
+  /** Music bed token from audio-sfx-class-b registry. When set, video_compose
+   *  runs a final pass that mixes the bed under voice+sfx with ducking.
+   *  Default 'bed' = soft lofi backdrop per the spec. Set to null/'none' to
+   *  skip the music bed (e.g. for tests). */
+  music_token?: string | null;
   __bag__: Record<string, Record<string, Record<string, unknown>>>;
   __job_id__: number;
 }
@@ -275,26 +280,58 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
     totalDur += compose.hold_s;
   }
 
-  // Stage 2 — concat with concat demuxer (codec-compatible since we always
-  // re-encode with the same H.264 settings above).
+  // Stage 2 — concat with concat demuxer.
   const concatFile = path.join(stageDir, 'concat.txt');
   await fs.writeFile(concatFile, clipPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
-  const outName = `job-${jobId}-${Date.now()}.mp4`;
-  const outPath = path.join(COMPOSE_DIR, outName);
+  const concatPath = path.join(stageDir, 'concat.mp4');
   await ff([
     '-y', '-f', 'concat', '-safe', '0', '-i', concatFile,
     '-c', 'copy',
-    outPath,
+    concatPath,
   ]).catch(async () => {
-    // Fallback: re-encode concat (slower but bulletproof if codecs drift).
     await ff([
       '-y', '-f', 'concat', '-safe', '0', '-i', concatFile,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-r', String(fps),
       '-preset', 'medium', '-crf', '20',
-      outPath,
+      concatPath,
     ]);
   });
+
+  // Stage 3 — music bed pass. Generate a music track for the total duration,
+  // mix UNDER voice+sfx with ducking. Per the audio-sfx spec the bed is
+  // -6dB under voice with 200ms release. We use a simple amix with weights
+  // (sidechain compress would be ideal but adds a lot of filter complexity).
+  // music_token=null disables the bed entirely.
+  const outName = `job-${jobId}-${Date.now()}.mp4`;
+  const outPath = path.join(COMPOSE_DIR, outName);
+  const musicToken = (args.music_token === undefined ? 'bed' : args.music_token) || null;
+  if (musicToken) {
+    try {
+      const { getSfx } = await import('./sfx');
+      const music = await getSfx(musicToken, totalDur);
+      // amix: [0]=concat audio (voice+sfx), [1]=music (dialed to ~0.25 vol).
+      // We side-step true sidechaining by giving voice/sfx ~4x the weight of
+      // music. Plus volume filter on the music itself for headroom.
+      await ff([
+        '-y', '-i', concatPath, '-i', music.local_path,
+        '-filter_complex',
+          `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.25,` +
+          `apad=pad_dur=${totalDur.toFixed(3)},atrim=0:${totalDur.toFixed(3)}[bed];` +
+          `[0:a][bed]amix=inputs=2:duration=longest:dropout_transition=0:weights='4 1'[aout]`,
+        '-map', '0:v', '-map', '[aout]',
+        '-c:v', 'copy',
+        '-c:a', 'aac', '-b:a', '160k',
+        outPath,
+      ]);
+    } catch (e) {
+      // Music bed is best-effort — log and fall back to concat without bed.
+      console.warn(`[producer:music-bed] failed for token=${musicToken}: ${(e as Error).message}`);
+      await fs.copyFile(concatPath, outPath);
+    }
+  } else {
+    await fs.copyFile(concatPath, outPath);
+  }
 
   // Cleanup stage dir
   try { await fs.rm(stageDir, { recursive: true, force: true }); } catch { /* ignore */ }
