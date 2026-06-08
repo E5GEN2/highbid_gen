@@ -780,18 +780,22 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         const count = await loc.count();
         const minW = rule.min_w ?? 2, maxW = rule.max_w ?? Infinity;
         const minH = rule.min_h ?? 2, maxH = rule.max_h ?? Infinity;
+        const minY = rule.min_y ?? -Infinity, maxY = rule.max_y ?? Infinity;
         let bestBox: { x: number; y: number; w: number; h: number } | null = null;
         let bestArea = Infinity;
-        const dbgList: Array<{ w: number; h: number; visible: boolean }> = [];
+        const dbgList: Array<{ w: number; h: number; visible: boolean; y: number }> = [];
         for (let i = 0; i < Math.min(count, 30); i++) {
           const item = loc.nth(i);
           let box: { x: number; y: number; width: number; height: number } | null = null;
           try { box = await item.boundingBox({ timeout: 1000 }); } catch { box = null; }
           if (!box) continue;
           const vis = await item.isVisible({ timeout: 500 }).catch(() => false);
-          dbgList.push({ w: Math.round(box.width), h: Math.round(box.height), visible: vis });
+          dbgList.push({ w: Math.round(box.width), h: Math.round(box.height), visible: vis, y: Math.round(box.y) });
           if (!vis) continue;
           if (box.width < minW || box.width > maxW || box.height < minH || box.height > maxH) continue;
+          // Y-bounds filter: same logic as the JS walker — drop matches
+          // outside the modal area for about_page rules.
+          if (box.y < minY || box.y > maxY) continue;
           if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) continue;
           const area = box.width * box.height;
           if (area < bestArea) {
