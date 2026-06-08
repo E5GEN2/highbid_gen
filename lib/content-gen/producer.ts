@@ -72,27 +72,18 @@ export async function startJob(input: ProducerStartInput): Promise<number> {
   );
   const jobId = r.rows[0].id;
 
-  // Insert one row per (slot, gem). We do this in a single bulk INSERT for
-  // speed — at 20 slots × 3 gems each = 60 rows, this is one round-trip.
-  const rows: Array<{ slot_id: string; slot_index: number; gem_id: string; tool: string; args: unknown }> = [];
-  script.slots.forEach((slot, slot_index) => {
-    slot.gems.forEach((g) => {
-      rows.push({ slot_id: slot.slot_id, slot_index, gem_id: g.id, tool: g.tool, args: g.args });
-    });
-  });
-  if (rows.length > 0) {
-    const values: unknown[] = [];
-    const placeholders: string[] = [];
-    rows.forEach((row, i) => {
-      const base = i * 5;
-      placeholders.push(`($1, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}::jsonb)`);
-      values.push(row.slot_id, row.slot_index, row.gem_id, row.tool, JSON.stringify(row.args));
-    });
-    await pool.query(
-      `INSERT INTO content_gen_producer_gems (job_id, slot_id, slot_index, gem_id, tool, args_jsonb)
-       VALUES ${placeholders.map(p => p.replace('$1', String(jobId))).join(', ')}`,
-      values,
-    );
+  // Insert per-gem rows. Simple per-row insert in a single SQL roundtrip
+  // each — at ~60 rows max for a full video this is sub-second total.
+  for (let slot_index = 0; slot_index < script.slots.length; slot_index++) {
+    const slot = script.slots[slot_index];
+    for (const g of slot.gems) {
+      await pool.query(
+        `INSERT INTO content_gen_producer_gems
+           (job_id, slot_id, slot_index, gem_id, tool, args_jsonb)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [jobId, slot.slot_id, slot_index, g.id, g.tool, JSON.stringify(g.args)],
+      );
+    }
   }
   return jobId;
 }
