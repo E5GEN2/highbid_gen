@@ -57,6 +57,21 @@ export async function GET(req: NextRequest) {
     [id],
   );
   if (r.rows.length === 0) return NextResponse.json({ error: 'job not found' }, { status: 404 });
+
+  // Pull per-slot narration durations so we can compute REAL slot midpoints
+  // (slot duration = narration duration when locked via {{narr.duration_s}}).
+  // Fall back to even spacing when narr.dur is missing.
+  const narrRows = await pool.query<{ slot_id: string; slot_index: number; duration_s: number | null }>(
+    `SELECT slot_id, slot_index, (output_jsonb->>'duration_s')::float AS duration_s
+       FROM content_gen_producer_gems
+      WHERE job_id=$1 AND gem_id='narr' AND status='done'
+      ORDER BY slot_index ASC`,
+    [id],
+  );
+  const slotDurations: Array<{ slot_id: string; duration_s: number }> = narrRows.rows.map(row => ({
+    slot_id: row.slot_id,
+    duration_s: row.duration_s ?? 2.0,
+  }));
   const final_video_url = r.rows[0].final_video_url;
   if (!final_video_url) return NextResponse.json({ error: 'job has no final_video_url (not done?)' }, { status: 400 });
 
@@ -78,13 +93,23 @@ export async function GET(req: NextRequest) {
   const dur = await ffprobeDuration(mp4Path);
   if (dur <= 0) return NextResponse.json({ error: 'could not probe duration' }, { status: 500 });
 
-  // Per-slot midpoint timestamps if we have slot data; else evenly-spaced.
+  // Compute timestamps:
+  //   - If we have per-slot narration durations, use REAL midpoints (sum of
+  //     prior durations + this slot's duration / 2). Most accurate.
+  //   - Else if slotCount <= count, fall back to even-spacing.
+  //   - Else: evenly-spaced sample frames with generic labels.
   let timestamps: number[];
   let labels: string[];
-  if (slotCount > 0 && slotCount <= count) {
-    // Estimate each slot's midpoint by dividing duration evenly across slots
-    // (we don't store per-slot durations in the job — only the script's
-    // declared hold_s, which is a template ref. So approximation it is.)
+  if (slotDurations.length > 0 && slotDurations.length <= count) {
+    // Real midpoints from gem narration durations.
+    let cumulative = 0;
+    timestamps = slotDurations.map(s => {
+      const mid = cumulative + s.duration_s / 2;
+      cumulative += s.duration_s;
+      return mid;
+    });
+    labels = slotDurations.map(s => s.slot_id);
+  } else if (slotCount > 0 && slotCount <= count) {
     const step = dur / slotCount;
     timestamps = Array.from({ length: slotCount }, (_, i) => step * i + step / 2);
     labels = slotIds;
