@@ -325,8 +325,12 @@ async function swapMostPopularCallout(slots: Slot[], ch: ChannelData): Promise<S
 
 function injectCropTargets(slots: Slot[]): Slot[] {
   const beatToCrop: Record<string, string> = {
-    channel_proof_1: 'about_panel',
-    channel_proof_2: 'about_panel',
+    channel_proof_1:   'about_panel',
+    channel_proof_2:   'about_panel',
+    // Fallback: when most_popular_callout swap can't run (channel lacks
+    // niche_spy_videos data), at least crop the videos_tab capture to the
+    // first card so we don't show the entire grid + sidebar.
+    top_video_callout: 'top_video_card',
   };
   return slots.map(slot => {
     const target = beatToCrop[slot.beat_id];
@@ -340,6 +344,29 @@ function injectCropTargets(slots: Slot[]): Slot[] {
           return l;
         }),
       },
+    };
+  });
+}
+
+/** Force channel_proof_1 to use kind=about_page (matches MG's treatment).
+ *  The script-writer prompt allows either channel_page OR about_page for
+ *  this beat, and Gemini sometimes picks channel_page which shows the
+ *  banner backdrop instead of the clean stats column. Override to
+ *  about_page so the about_panel crop lands on the modal stats. */
+function forceProofKind(slots: Slot[]): Slot[] {
+  return slots.map(slot => {
+    if (slot.beat_id !== 'channel_proof_1') return slot;
+    return {
+      ...slot,
+      gems: slot.gems.map(g => {
+        if (g.id !== 'main') return g;
+        if (g.tool !== 'yt_capture') return g;
+        if (g.args.kind === 'about_page') return g; // already correct
+        return {
+          ...g,
+          args: { ...g.args, kind: 'about_page' },
+        };
+      }),
     };
   });
 }
@@ -398,13 +425,17 @@ export async function POST(req: NextRequest) {
       // 3. Money_math sequence — 5 cards calculating $X,XXX from top-video
       //    views. Skips if channel has no top-video data.
       const moneyMath = buildMoneyMathSlots(niche_index, ch);
-      // 4. Two post-processors on the writer's proof slots:
-      //    (a) crop the channel_proof_1/2 screenshots to the about_panel
-      //        (MG renders these as cropped close-ups of the stats column).
-      //    (b) swap top_video_callout from yt_capture to the composed
-      //        most_popular_callout card (MG renders this as a single
-      //        YT-card-shaped composition on white, not a screenshot).
-      const cropped = injectCropTargets(result.script.slots);
+      // 4. Three post-processors on the writer's proof slots:
+      //    (a) force channel_proof_1 to use kind=about_page (writer
+      //        sometimes picks channel_page — but MG always shows the
+      //        clean about-modal stats column for subs callouts).
+      //    (b) crop channel_proof_1/2 to about_panel + top_video_callout
+      //        to video_card_0 as a fallback.
+      //    (c) if channel has top_video data, swap top_video_callout
+      //        from yt_capture to the composed most_popular_callout card
+      //        (MG renders this as a YT-card-shaped composition on white).
+      const kindForced = forceProofKind(result.script.slots);
+      const cropped = injectCropTargets(kindForced);
       const writerSlotsTransformed = await swapMostPopularCallout(cropped, ch);
       allSlots.push(...framing, ...writerSlotsTransformed, ...moneyMath);
       acceptedCount++;
