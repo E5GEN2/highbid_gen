@@ -26,9 +26,12 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
   const pool = await getPool();
   const r = await pool.query<{
     channel_id: string; channel_name: string | null; subscriber_count: number | null;
-    total_views: number | null; video_count: number | null; channel_handle: string | null;
+    video_count: number | null; channel_handle: string | null;
+    channel_created_at: string | null; first_upload_at: string | null;
+    recent_videos_avg_views: number | null;
   }>(
-    `SELECT channel_id, channel_name, subscriber_count, total_views, video_count, channel_handle
+    `SELECT channel_id, channel_name, subscriber_count, video_count, channel_handle,
+            channel_created_at, first_upload_at, recent_videos_avg_views
        FROM niche_spy_channels WHERE channel_id = $1`,
     [channelId],
   );
@@ -47,12 +50,19 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
     [channelId],
   );
 
+  // total_views is approximated as avg_views * video_count — the table doesn't
+  // store the exact lifetime total. Good enough for stub narration.
+  const totalApprox = (ch.recent_videos_avg_views != null && ch.video_count != null)
+    ? Number(ch.recent_videos_avg_views) * Number(ch.video_count)
+    : undefined;
+
   return {
     channelId: ch.channel_id,
     channel_name: ch.channel_name ?? ch.channel_id,
-    subscriber_count: ch.subscriber_count ?? undefined,
-    total_views: ch.total_views ?? undefined,
+    subscriber_count: ch.subscriber_count != null ? Number(ch.subscriber_count) : undefined,
+    total_views: totalApprox,
     video_count: ch.video_count ?? undefined,
+    joined_date: ch.channel_created_at ?? ch.first_upload_at ?? undefined,
     niche: ana.rows[0]?.niche ?? undefined,
     sub_niche: ana.rows[0]?.sub_niche ?? undefined,
     top_video_id: top.rows[0]?.video_id,
