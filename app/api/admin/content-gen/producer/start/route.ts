@@ -95,6 +95,64 @@ function humanizeNumber(n: number): string {
   return `${n}`;
 }
 
+/** Hand-authored slots — bypass the writer for purely structural cards. */
+type Slot = ConcreteScript['slots'][number];
+
+function makeFramingSlot(slot_id: string, beat_id: string, narration: string, mainTextCardArgs: Record<string, unknown>, sfxTokens: string[] = ['whoosh'], bg: 'white' | 'dark_gray' = 'white'): Slot {
+  return {
+    slot_id, beat_id, narration,
+    gems: [
+      { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
+      { id: 'main', tool: 'image_gen', args: mainTextCardArgs },
+      { id: 'sfx',  tool: 'sfx_render', args: { tokens: sfxTokens } },
+    ],
+    compose: {
+      bg,
+      hold_s: '{{narr.duration_s}}',
+      layers: [
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct' },
+        { from: 'narr', channel: 'voice' },
+        { from: 'sfx',  channel: 'fx' },
+      ],
+    },
+  };
+}
+
+function buildNicheIntroSlots(niche_index: number, niche_label: string): Slot[] {
+  const base = `niche_${niche_index}`;
+  return [
+    makeFramingSlot(`${base}_intro_card`, 'intro_card', `Number ${niche_index}.`,
+      { composition: 'text_card', text: `Number ${niche_index}.`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+    makeFramingSlot(`${base}_niche_name_card`, 'niche_name_card', `${niche_label}.`,
+      { composition: 'text_card', text: `${niche_label}.`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+  ];
+}
+
+/** 4-card CTA at the end of a listicle. The action card MUST contain
+ *  "check out [this/next] video" (winner-coded 17×). */
+function buildCtaSlots(niche_count: number): Slot[] {
+  return [
+    makeFramingSlot('cta_card_1', 'video_cta', `So these are the ${niche_count} faceless niches.`,
+      { composition: 'text_card', text: `So these are the ${niche_count} faceless niches.`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+    makeFramingSlot('cta_card_2', 'video_cta', `And each one has huge potential.`,
+      { composition: 'text_card', text: `And each one has huge potential.`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+    makeFramingSlot('cta_card_3', 'video_cta', `If you want to discover more faceless niches like these,`,
+      { composition: 'text_card', text: `If you want to discover more faceless niches,`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+    makeFramingSlot('cta_card_4', 'video_cta', `check out this video right here.`,
+      { composition: 'text_card', text: `check out this video right here.`, bg_mode: 'white', color_treatment: 'money_shot_green' },
+      ['ascending_electronic_sting']),
+  ];
+}
+
+function nicheLabelFor(ch: ChannelData, fallbackIdx: number): string {
+  return ch.sub_niche || ch.niche || `Faceless niche ${fallbackIdx}`;
+}
+
 export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   const body = await req.json().catch(() => ({})) as {
@@ -113,20 +171,29 @@ export async function POST(req: NextRequest) {
   if (body.script) {
     script = body.script;
   } else if (body.channels && body.channels.length > 0 && body.beat_id) {
-    // Multi-channel listicle path: per-channel writer call, merged script.
+    // Multi-channel listicle path. Per channel:
+    //   1. Hand-authored intro_card "Number N" + niche_name_card (no writer needed).
+    //   2. Writer call for the proof beats (channel_proof_1/2 + top_video_callout).
+    // After all niches: hand-authored 4-card video_cta.
+    // Total slots = N * (2 framing + writer's slots) + 4 CTA.
     const beat_id = body.beat_id;
-    const channels = body.channels.slice(0, 16);   // safety cap
-    const perNicheScripts: ConcreteScript[] = [];
+    const channels = body.channels.slice(0, 16);
+    const allSlots: ConcreteScript['slots'] = [];
     const failures: Array<{ channelId: string; reason: string }> = [];
+    let acceptedCount = 0;
     for (let i = 0; i < channels.length; i++) {
       const cid = channels[i];
       const ch = await loadChannel(cid);
       if (!ch) { failures.push({ channelId: cid, reason: 'not in DB' }); continue; }
       const beats = stubNarration(beat_id, ch);
       if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
+      const niche_index = acceptedCount + 1;
+      // 1. Framing slots (no writer): intro_card "Number N" + niche_name_card.
+      const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index));
+      // 2. Writer call for the proof beats.
       const input: ScriptWriterInput = {
         channel: ch,
-        niche_index: i + 1,
+        niche_index,
         video_id: `listicle-${beat_id}-${cid.slice(-6)}`,
         beats,
         voice: 'money_groot',
@@ -137,26 +204,28 @@ export async function POST(req: NextRequest) {
         failures.push({ channelId: cid, reason: result.errors?.[0]?.message?.slice(0, 200) ?? 'writer failed' });
         continue;
       }
-      perNicheScripts.push(result.script);
+      allSlots.push(...framing, ...result.script.slots);
+      acceptedCount++;
     }
-    if (perNicheScripts.length === 0) {
+    if (acceptedCount === 0) {
       return NextResponse.json({ error: 'every channel failed to author', failures }, { status: 500 });
     }
-    // Merge: take first script's context/final shape, concat all slots.
-    const first = perNicheScripts[0];
+    // 3. Append CTA (4 cards) — uses real accepted niche count.
+    allSlots.push(...buildCtaSlots(acceptedCount));
+
     script = {
       schema_version: '1',
       context: {
-        ...first.context,
-        channelId: channels.join(','),   // marker — real channels are in slot_ids
-        channel_name: `listicle-${channels.length}-niches`,
+        channelId: channels.join(','),
+        channel_name: `listicle-${acceptedCount}-niches`,
         video_id: `listicle-${Date.now()}`,
+        niche_index: 0,
       },
-      slots: perNicheScripts.flatMap(s => s.slots),
+      slots: allSlots,
       final: {
         tool: 'video_compose',
         args: {
-          slot_order: perNicheScripts.flatMap(s => s.slots.map(slot => slot.slot_id)),
+          slot_order: allSlots.map(s => s.slot_id),
           width: 1920, height: 1080, fps: 30,
           default_bg: 'dark_gray',
           music_token: 'bed',
