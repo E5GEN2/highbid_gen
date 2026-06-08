@@ -51,7 +51,7 @@ export const ANNOTATABLE = {
 export type HighlightStyle = 'yellow_ring' | 'yellow_box' | 'yellow_highlight' | 'yellow_circle';
 /** Post-process composite shapes (drawn via SVG/Sharp AFTER the screenshot).
  *  Distinct from HighlightStyle which is CSS-on-element. */
-export type CompositeShapeStyle = 'sharpie_circle' | 'arrow' | 'circle_with_label' | 'glow_ring' | 'underline';
+export type CompositeShapeStyle = 'sharpie_circle' | 'arrow' | 'circle_with_label' | 'glow_ring' | 'underline' | 'vertical_bar';
 export type AnnotateElement =
   'subscriber_count' | 'video_count' | 'total_views' | 'joined_date' | 'view_count';
 
@@ -492,8 +492,19 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       timezoneId: 'UTC',
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       extraHTTPHeaders: { 'Accept-Language': geoCfg.lang },
+      // YouTube dark mode for MG-style screenshots — MG captures channel
+      // pages and the about modal with dark theme so the natural BG is dark
+      // gray + white text. Two paths set it together (defense in depth):
+      //   1. prefers-color-scheme: dark (CSS media query)
+      //   2. YT theme cookie (f6=400, set below before navigation)
+      colorScheme: 'dark',
       ...(captureMode === 'scroll_record' ? { recordVideo: { dir: videosDir, size: VIEWPORT } } : {}),
     });
+    // YouTube reads `PREF` cookie to pick the theme. f6=400 → dark. f6=4 → light.
+    // We set this BEFORE the first navigation so the SSR HTML comes back dark.
+    await context.addCookies([
+      { name: 'PREF', value: 'tz=UTC&f6=400', domain: '.youtube.com', path: '/' },
+    ]).catch(() => {});
     const page = await context.newPage();
     if (captureMode === 'scroll_record') {
       // Reach into the active page's video object — its path() resolves to

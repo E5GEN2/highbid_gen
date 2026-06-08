@@ -274,7 +274,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
         annotate_element: { type: 'string', enum: ['subscriber_count', 'video_count', 'total_views', 'joined_date', 'view_count'] },
         annotate_kind:    { type: 'string', enum: ['css', 'composite'], description: 'css=inline highlight on element; composite=post-process SVG shape.' },
         annotate_style:   { type: 'string', enum: ['yellow_ring', 'yellow_box', 'yellow_highlight', 'yellow_circle'], description: 'Used when annotate_kind=css.' },
-        annotate_shape:   { type: 'string', enum: ['sharpie_circle', 'arrow', 'circle_with_label', 'glow_ring', 'underline'], description: 'Used when annotate_kind=composite.' },
+        annotate_shape:   { type: 'string', enum: ['sharpie_circle', 'arrow', 'circle_with_label', 'glow_ring', 'underline', 'vertical_bar'], description: 'Used when annotate_kind=composite.' },
         annotate_label:   { type: 'string', description: 'Label text for circle_with_label shape.' },
         annotate_arrow_from: { type: 'string', enum: ['top', 'bottom', 'left', 'right', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] },
         force: { type: 'boolean' },

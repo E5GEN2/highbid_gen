@@ -136,5 +136,24 @@ export function compositeBBox(target: string, bboxes: BBoxMap): BBox | null {
       h: u.h + 230,
     };
   }
+  if (target === 'videos_grid') {
+    // Union of the first 8 video_card bboxes (typically 4×2 visible on the
+    // videos tab). Falls back to whatever 4×2 are present. Crops out the
+    // YT sidebar / header / search bar / right rail entirely so what
+    // remains is exactly the grid MG shows.
+    const cardKeys = ['video_card_0','video_card_1','video_card_2','video_card_3',
+                      'video_card_4','video_card_5','video_card_6','video_card_7'];
+    const found = cardKeys.map(k => bboxes[k]).filter((b): b is BBox => b != null);
+    if (found.length === 0) return null;
+    const u = unionBBox(found);
+    if (!u) return null;
+    // Modest padding — keep tight to the grid so YT chrome stays out.
+    return {
+      x: Math.max(0, u.x - 20),
+      y: Math.max(0, u.y - 30),
+      w: u.w + 40,
+      h: u.h + 60,
+    };
+  }
   return null;
 }

@@ -302,41 +302,24 @@ function ytJoinedFormat(iso: string | undefined): string {
 }
 
 /** Insert a `top_videos_pano` slot immediately after channel_proof_2 for a
- *  given niche. The pano composition shows a 4×2 grid of the channel's top
- *  videos on a dark gray rounded card / white outer canvas. This is the
- *  MG "look at all these hits" moment per the user's reference frame.
+ *  given niche. Per user correction: this is NOT a data-driven mockup —
+ *  it's a real yt_capture(videos_tab) screenshot cropped to the videos_grid
+ *  composite bbox (union of the first 8 video cards). YT dark mode is on
+ *  globally so the captured bg is dark gray + white text — matching MG.
  *
- *  Pulls up to 8 top-by-view-count videos from niche_spy_videos for the
- *  channel. Skips entirely if the channel has < 2 videos in DB (the panel
- *  would look broken with only one or two cells filled). */
+ *  Skips entirely if the channel has < 4 videos in DB (the grid would
+ *  look broken). */
 async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData): Promise<Slot | null> {
   const pool = await getPool();
-  const r = await pool.query<{ url: string | null; title: string | null; view_count: string | null; posted_at: string | null }>(
-    `SELECT url, title, view_count, posted_at
-       FROM niche_spy_videos
-      WHERE channel_id = $1 AND view_count IS NOT NULL AND title IS NOT NULL
-      ORDER BY view_count DESC NULLS LAST
-      LIMIT 8`,
+  const cnt = await pool.query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM niche_spy_videos
+      WHERE channel_id = $1 AND view_count IS NOT NULL AND title IS NOT NULL`,
     [ch.channelId],
   );
-  const videos = r.rows
-    .map(row => {
-      const m = row.url?.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/);
-      const id = m?.[1];
-      if (!id) return null;
-      return {
-        video_id: id,
-        title: row.title ?? '',
-        views: Number(row.view_count ?? 0),
-        age_phrase: relativeAge(row.posted_at),
-      };
-    })
-    .filter((v): v is { video_id: string; title: string; views: number; age_phrase: string } => v != null);
-  if (videos.length < 2) return null;
+  if (parseInt(cnt.rows[0]?.n ?? '0', 10) < 4) return null;
 
   // Narration is generic — describes the channel's overall popularity.
   // Keeps the writer out of the loop for this slot (no IP risk).
-  const watermark = (ch.channel_name ?? 'CHANNEL').toUpperCase().slice(0, 14);
   const narration = `And look at their hottest videos.`;
   const base = `niche_${niche_index}`;
   return {
@@ -345,12 +328,10 @@ async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData): Pro
     narration,
     gems: [
       { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
-      { id: 'main', tool: 'image_gen', args: {
-        composition: 'top_videos_pano',
-        text: '',
-        bg_mode: 'white',
-        channel_watermark: watermark,
-        videos,
+      { id: 'main', tool: 'yt_capture', args: {
+        channelId: ch.channelId,
+        kind: 'videos_tab',
+        mode: 'static',
       }},
       { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
     ],
@@ -358,7 +339,9 @@ async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData): Pro
       bg: 'white',
       hold_s: '{{narr.duration_s}}',
       layers: [
-        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct' },
+        // crop_target=videos_grid → video-compose unions video_card_0..7
+        // bboxes and crops the screenshot to just the 4×2 grid.
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: 'videos_grid' },
         { from: 'narr', channel: 'voice' },
         { from: 'sfx',  channel: 'fx' },
       ],
@@ -512,16 +495,26 @@ function injectCropTargets(slots: Slot[]): Slot[] {
  *  about_page so the about_panel crop lands on the modal stats. */
 function forceProofKind(slots: Slot[]): Slot[] {
   return slots.map(slot => {
-    if (slot.beat_id !== 'channel_proof_1') return slot;
+    // channel_proof_1 → about_page + subscriber_count vertical_bar
+    // channel_proof_2 → about_page + total_views vertical_bar
+    if (slot.beat_id !== 'channel_proof_1' && slot.beat_id !== 'channel_proof_2') return slot;
+    const element = slot.beat_id === 'channel_proof_1' ? 'subscriber_count' : 'total_views';
     return {
       ...slot,
       gems: slot.gems.map(g => {
         if (g.id !== 'main') return g;
         if (g.tool !== 'yt_capture') return g;
-        if (g.args.kind === 'about_page') return g; // already correct
         return {
           ...g,
-          args: { ...g.args, kind: 'about_page' },
+          args: {
+            ...g.args,
+            kind: 'about_page',
+            annotate_element: element,
+            // MG-style thin yellow vertical bar to the LEFT of the row,
+            // NOT the sharpie circle (which is messy on small modal text).
+            annotate_kind: 'composite',
+            annotate_shape: 'vertical_bar',
+          },
         };
       }),
     };
@@ -583,37 +576,31 @@ export async function POST(req: NextRequest) {
       //    views. Skips if channel has no top-video data.
       const moneyMath = buildMoneyMathSlots(niche_index, ch);
       // 4. Post-processors on the writer's proof slots, in order:
-      //    (a) channel_proof_1/2 → swap to the composed channel_about_panel
-      //        image_gen (replaces yt_capture(about_page) entirely). MG
-      //        composes this on white, not a screenshot crop. Yellow
-      //        highlight is a thin vertical bar next to the called-out row.
-      //    (b) top_video_callout → swap to composed most_popular_callout
-      //        card if channel has top-video data.
-      //    (c) Fallback crop targets only get applied to slots that
-      //        DIDN'T get swapped in (a)/(b) — e.g. a niche with no
-      //        top_video data still falls through to the videos_tab crop.
-      //    (d) forceProofKind is no longer needed since the proof slots
-      //        are now composed (not captured), but kept defensively for
-      //        any beat the writer adds that we haven't swapped yet.
-      const proofSwapped = swapChannelProof(result.script.slots, ch);
+      //    (a) Force channel_proof_1 to use kind=about_page so the
+      //        about_panel crop lands on the modal stats column.
+      //    (b) Inject crop_target on the visual layer so video-compose
+      //        crops the YT screenshot to the relevant region:
+      //          channel_proof_1/2 → about_panel (stats column)
+      //          top_video_callout → top_video_card (single thumb card)
+      //    (c) If channel has top_video data, swap top_video_callout
+      //        from yt_capture to the composed most_popular_callout card
+      //        (per MG's videos-tab grid → cropped single thumb on white).
+      //
+      //  YT now renders these screenshots in DARK MODE (PREF cookie f6=400 +
+      //  Playwright colorScheme:dark), so the naturally-captured bg is dark
+      //  gray + white text — matching MG without any mockup composer.
+      const proofSwapped = forceProofKind(result.script.slots);
       const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
-      const kindForced = forceProofKind(callouttSwapped);
-      const writerSlotsTransformed = injectCropTargets(kindForced);
-      // 5. Insert a top_videos_pano slot immediately after channel_proof_2
-      //    (MG's "look at all these popular videos" moment). Skips if
-      //    we lack 2+ videos in DB. Slot uses real top-by-view data from
-      //    niche_spy_videos — composed, not screenshot.
+      const writerSlotsTransformed = injectCropTargets(callouttSwapped);
+      // 5. Insert a top_videos_pano slot (yt_capture(videos_tab) cropped
+      //    to videos_grid) right after channel_proof_2. Skipped if the
+      //    channel has < 4 videos in DB.
       const panoSlot = await buildTopVideosPanoSlot(niche_index, ch);
       const withPano: Slot[] = [];
       for (const slot of writerSlotsTransformed) {
         withPano.push(slot);
-        if (panoSlot && slot.beat_id === 'channel_proof_2') {
-          withPano.push(panoSlot);
-        }
+        if (panoSlot && slot.beat_id === 'channel_proof_2') withPano.push(panoSlot);
       }
-      // Fallback: if the writer didn't emit channel_proof_2 (shouldn't
-      // happen with niche_segment_3 beats), still append the pano slot
-      // before money_math.
       const hasPano = withPano.some(s => s.beat_id === 'top_videos_pano');
       if (panoSlot && !hasPano) withPano.push(panoSlot);
       allSlots.push(...framing, ...withPano, ...moneyMath);

@@ -27,7 +27,8 @@ export type CompositeShape =
   | 'arrow'
   | 'circle_with_label'
   | 'glow_ring'
-  | 'underline';
+  | 'underline'
+  | 'vertical_bar'; // MG-style thin yellow bar to the LEFT of the called-out row
 
 /** Direction the arrow points FROM (the arrow tip lands on the bbox). */
 export type ArrowOrigin = 'top' | 'bottom' | 'left' | 'right' | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
@@ -229,6 +230,20 @@ function drawGlowRing(b: BBox, color: string, stroke: number): string {
  *  / channel names where a circle would be too busy. Drawn as a thick
  *  highlighter-style band UNDER the text, plus a thinner stroke above for the
  *  "two-pass marker" feel. Punchy enough to read at 1080p mobile-Shorts. */
+/** MG-style vertical highlight bar — sits immediately to the LEFT of the
+ *  bbox (typically a stats row in the about-modal). Thin (10px wide),
+ *  spans the height of the row, solid yellow. Mirrors MG frame inspection
+ *  of VES STICK about-panel callout. */
+function drawVerticalBar(b: BBox, color: string): string {
+  const barW = 10;
+  // 6px gap between the text and the bar so the text doesn't overlap.
+  const barX = b.x - barW - 6;
+  // Bar height = row height + small bleed so it visually anchors the row.
+  const barH = b.h + 8;
+  const barY = b.y - 4;
+  return `<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="${color}"/>`;
+}
+
 function drawUnderline(b: BBox, color: string, stroke: number): string {
   const y = b.y + b.h + 6;
   const x1 = b.x - 6, x2 = b.x + b.w + 6;
@@ -306,6 +321,9 @@ export async function applyComposite(pngIn: Buffer, bbox: BBox, spec: CompositeS
     case 'underline':
       shapeSvg = drawUnderline(bbox, color, spec.stroke ?? 6);
       break;
+    case 'vertical_bar':
+      shapeSvg = drawVerticalBar(bbox, color);
+      break;
   }
   const overlay = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${vpW}" height="${vpH}" viewBox="0 0 ${vpW} ${vpH}">${shapeSvg}</svg>`;
@@ -333,6 +351,7 @@ export async function applyCompositeMulti(pngIn: Buffer, layers: Array<{ bbox: B
       case 'circle_with_label': parts.push(drawCircleWithLabel(bbox, color, spec.stroke ?? 5, spec.label || '', vpW, vpH, seed)); break;
       case 'glow_ring':      parts.push(drawGlowRing(bbox, color, spec.stroke ?? 5)); break;
       case 'underline':      parts.push(drawUnderline(bbox, color, spec.stroke ?? 6)); break;
+      case 'vertical_bar':   parts.push(drawVerticalBar(bbox, color)); break;
     }
   }
   const overlay = `<?xml version="1.0" encoding="UTF-8"?>
