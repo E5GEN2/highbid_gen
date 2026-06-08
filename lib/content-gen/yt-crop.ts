@@ -142,16 +142,24 @@ export function compositeBBox(target: string, bboxes: BBoxMap): BBox | null {
       if (!u) return null;
       return { x: u.x - 60, y: u.y - 150, w: u.w + 120, h: u.h + 230 };
     }
-    // Deterministic crop centered on joined_date.
-    //   yTop  = joined.y - 170 → includes URL+Country rows, excludes
-    //                            "More info" heading (sits ~30px above URL).
-    //   yBot  = joined.y + 360 → includes subs/videos/views + Share button.
-    //   xLeft = joined.x - 100 → includes the row icons (icons ~80px left).
-    //   xRight = joined.x + joined.w + 600 → includes long URL row right edge.
-    const yTop = joined.y - 170;
-    const yBot = joined.y + 360;
-    const xLeft = joined.x - 100;
-    const xRight = joined.x + joined.w + 600;
+    // Deterministic crop bounds derived via local Sharp iteration against
+    // the actual captured PNG (see /tmp/iter/crop_test.mjs). These exclude
+    // the modal's channel name + Description text + "More info" heading
+    // entirely and tight-frame the stats column + Share button to match
+    // MG's framing.
+    //
+    // Bounds relative to joined_date bbox:
+    //   yTop  = joined.y - 103  → between "More info" heading and URL row
+    //   yBot  = joined.y + 292  → just below Share button
+    //   xLeft = joined.x - 64   → just left of the row icons
+    //   xRight = joined.x + joined.w + 332 → past long URL row's right edge
+    //
+    // Crop aspect ≈ 1.32 (slightly portrait). When fit:contain into the
+    // 1920×1080 canvas, vertical fills + horizontal gets white margin.
+    const yTop = joined.y - 103;
+    const yBot = joined.y + 292;
+    const xLeft = joined.x - 64;
+    const xRight = joined.x + joined.w + 332;
     return {
       x: Math.max(0, xLeft),
       y: Math.max(0, yTop),
