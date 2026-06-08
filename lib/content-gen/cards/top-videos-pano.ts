@@ -206,12 +206,13 @@ export async function renderTopVideosPano(
   // Pad or truncate the video list so layout is always full.
   const videos = args.videos.slice(0, cells);
 
-  // Card occupies ~92% of canvas; outer white canvas leaves a small margin.
-  const cardMargin = 40;
-  const cardW = width - 2 * cardMargin;
-  const cardH = height - 2 * cardMargin;
-  const cardX = cardMargin;
-  const cardY = cardMargin;
+  // Card occupies ~88% × 80% of canvas; matches MG's outer white margin.
+  const cardMarginX = Math.round(width * 0.06);   // 1920 → ~115
+  const cardMarginY = Math.round(height * 0.10);  // 1080 → ~108
+  const cardW = width - 2 * cardMarginX;
+  const cardH = height - 2 * cardMarginY;
+  const cardX = cardMarginX;
+  const cardY = cardMarginY;
   const cardRadius = 32;
 
   // Inner padding inside the card.
