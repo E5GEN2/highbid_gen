@@ -336,7 +336,9 @@ async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData): Pro
       { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
     ],
     compose: {
-      bg: 'white',
+      // YT dark mode = dark gray bg in the screenshot. Use dark_gray here
+      // so the letterbox around the cropped grid matches the screenshot.
+      bg: 'dark_gray',
       hold_s: '{{narr.duration_s}}',
       layers: [
         // crop_target=videos_grid → video-compose unions video_card_0..7
@@ -517,6 +519,13 @@ function forceProofKind(slots: Slot[]): Slot[] {
           },
         };
       }),
+      compose: {
+        ...slot.compose,
+        // YT dark mode = dark gray modal. Set canvas bg to dark_gray so
+        // the letterbox around the cropped panel matches the modal's
+        // own bg (invisible seam, MG-style).
+        bg: 'dark_gray',
+      },
     };
   });
 }

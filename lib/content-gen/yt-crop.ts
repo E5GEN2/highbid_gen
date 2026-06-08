@@ -120,20 +120,39 @@ export function unionBBox(bboxes: BBox[]): BBox | null {
  */
 export function compositeBBox(target: string, bboxes: BBoxMap): BBox | null {
   if (target === 'about_panel') {
-    const keys = ['subscriber_count', 'video_count', 'total_views', 'joined_date'];
-    const found = keys.map(k => bboxes[k]).filter((b): b is BBox => b != null);
-    if (found.length === 0) return null;
-    const u = unionBBox(found);
-    if (!u) return null;
-    // Pad generously around the union to capture website/country rows
-    // (which sit above subscriber_count) and the share button (below total
-    // views). Empirically: about-panel rows are ~28px tall, 6 rows total,
-    // so pad ~150px above and ~80px below.
+    // Use joined_date + total_views as the y-axis anchors — both are reliable
+    // in current YT layout. URL row sits ~150px above joined, Share button
+    // ~130px below views. Use a deterministic offset so the crop EXCLUDES
+    // channel name + description heading + description text (which appear
+    // above the URL row), matching MG's framing exactly. Subscriber_count
+    // bbox is sometimes flaky (channel header behind modal vs modal row),
+    // so we don't depend on it for the crop bounds.
+    const joined = bboxes.joined_date;
+    const views = bboxes.total_views;
+    if (!joined || !views) {
+      // Fallback to the old union approach if anchors are missing.
+      const keys = ['subscriber_count', 'video_count', 'total_views', 'joined_date'];
+      const found = keys.map(k => bboxes[k]).filter((b): b is BBox => b != null);
+      if (found.length === 0) return null;
+      const u = unionBBox(found);
+      if (!u) return null;
+      return { x: u.x - 60, y: u.y - 150, w: u.w + 120, h: u.h + 230 };
+    }
+    // Tight MG-style framing.
+    const topPad = 170;     // include URL+Country rows above joined,
+                            // exclude "More info" heading (sits ~30px higher)
+    const bottomPad = 130;  // include Share channel button below views
+    const leftPad = 100;    // include row icons (icons ~80px left of text)
+    const rightPad = 350;   // include the long URL row's right edge
+    const xLeft = Math.min(joined.x, views.x) - leftPad;
+    const xRight = Math.max(joined.x + joined.w, views.x + views.w) + rightPad;
+    const yTop = joined.y - topPad;
+    const yBot = views.y + views.h + bottomPad;
     return {
-      x: u.x - 60,
-      y: u.y - 150,
-      w: u.w + 120,
-      h: u.h + 230,
+      x: Math.max(0, xLeft),
+      y: Math.max(0, yTop),
+      w: xRight - xLeft,
+      h: yBot - yTop,
     };
   }
   if (target === 'videos_grid') {
