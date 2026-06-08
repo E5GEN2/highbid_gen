@@ -41,6 +41,10 @@ export interface NarrationBeat {
 export interface ChannelData {
   channelId: string;
   channel_name: string;
+  /** YT handle, with or without leading @ (e.g. "@VESSTICK"). Used by the
+   *  channel_about_panel composer to render the "www.youtube.com/@handle"
+   *  row. */
+  channel_handle?: string;
   subscriber_count?: number;
   total_views?: number;
   video_count?: number;

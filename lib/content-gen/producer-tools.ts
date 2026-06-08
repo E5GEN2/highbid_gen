@@ -189,7 +189,7 @@ async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> 
 // ───────────────────────────────────────────────────────────────────
 
 async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
-  const composition = String(args.composition ?? 'text_card') as 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout';
+  const composition = String(args.composition ?? 'text_card') as 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel';
   const text = String(args.text ?? '');
   const bg_mode = (args.bg_mode === 'dark_gray' ? 'dark_gray' : 'white') as 'white' | 'dark_gray';
   const color_treatment = args.color_treatment as 'neutral' | 'money_shot_green' | 'inline_green' | 'inline_red' | 'chalk_cream' | 'yellow_ring' | undefined;
@@ -206,6 +206,14 @@ async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
     age_phrase: args.age_phrase as string | undefined,
     duration_badge: args.duration_badge as string | undefined,
     channel_watermark: args.channel_watermark as string | undefined,
+    // Forward the fields specific to channel_about_panel
+    handle: args.handle as string | undefined,
+    country: args.country as string | undefined,
+    joined_phrase: args.joined_phrase as string | undefined,
+    subscribers_text: args.subscribers_text as string | undefined,
+    video_count_text: args.video_count_text as string | undefined,
+    total_views_text: args.total_views_text as string | undefined,
+    highlight_row: args.highlight_row as 'handle' | 'country' | 'joined' | 'subscribers' | 'videos' | 'views' | null | undefined,
   });
   return {
     file_url: result.file_url,

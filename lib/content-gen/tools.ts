@@ -159,8 +159,9 @@ export interface SfxOutput {
 /** image_gen — generate a non-YT visual (text_card / icon_card / chalkboard /
  *  title-sequence card). Compositions follow slot-rendering-class-b. */
 export interface ImageGenArgs {
-  composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout';
-  /** Primary copy on the card. For most_popular_callout this is the video title. */
+  composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel';
+  /** Primary copy on the card. For most_popular_callout this is the video title.
+   *  Optional when composition=channel_about_panel (panel is fully data-driven). */
   text: string;
   /** Color treatment from the visual grammar */
   color_treatment?: ColorTreatment;
@@ -179,6 +180,21 @@ export interface ImageGenArgs {
   duration_badge?: string;
   /** Optional channel watermark (e.g. "NoFL") inside the thumbnail bottom-left. */
   channel_watermark?: string;
+  // ── Fields specific to channel_about_panel composition ──
+  /** Channel handle with or without leading @ (e.g. "@VESSTICK"). */
+  handle?: string;
+  /** Country line shown under handle (e.g. "United States"). */
+  country?: string;
+  /** Pre-formatted "Joined DD Mon YYYY" phrase. */
+  joined_phrase?: string;
+  /** Pre-formatted subscribers row (e.g. "437k subscribers"). */
+  subscribers_text?: string;
+  /** Pre-formatted videos row (e.g. "122 videos"). */
+  video_count_text?: string;
+  /** Pre-formatted views row (e.g. "110,311,861 views"). */
+  total_views_text?: string;
+  /** Which row to mark with the yellow vertical highlight bar. */
+  highlight_row?: 'handle' | 'country' | 'joined' | 'subscribers' | 'videos' | 'views' | null;
 }
 export interface ImageGenOutput {
   file_url: string;
@@ -298,11 +314,25 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       required: ['composition', 'text', 'bg_mode'],
       additionalProperties: false,
       properties: {
-        composition:     { type: 'string', enum: ['text_card', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence'] },
+        composition:     { type: 'string', enum: ['text_card', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence', 'most_popular_callout', 'channel_about_panel'] },
         text:            { type: 'string' },
         color_treatment: { type: 'string', enum: [...COLOR_TREATMENTS] },
         bg_mode:         { type: 'string', enum: ['white', 'dark_gray'] },
         icon:            { type: 'string', enum: [...ICON_IDS], description: 'Required when composition=icon_card.' },
+        // most_popular_callout fields
+        video_id:          { type: 'string', description: 'most_popular_callout: YT video id.' },
+        views:             { type: 'number', description: 'most_popular_callout: raw view count.' },
+        age_phrase:        { type: 'string', description: 'most_popular_callout: pre-formatted relative age.' },
+        duration_badge:    { type: 'string', description: 'most_popular_callout: duration overlay.' },
+        channel_watermark: { type: 'string', description: 'most_popular_callout: thumbnail watermark text.' },
+        // channel_about_panel fields
+        handle:            { type: 'string', description: 'channel_about_panel: handle (e.g. @VESSTICK).' },
+        country:           { type: 'string', description: 'channel_about_panel: country line.' },
+        joined_phrase:     { type: 'string', description: 'channel_about_panel: "Joined DD Mon YYYY".' },
+        subscribers_text:  { type: 'string', description: 'channel_about_panel: subscribers row text.' },
+        video_count_text:  { type: 'string', description: 'channel_about_panel: videos row text.' },
+        total_views_text:  { type: 'string', description: 'channel_about_panel: views row text.' },
+        highlight_row:     { type: ['string', 'null'], enum: ['handle', 'country', 'joined', 'subscribers', 'videos', 'views', null], description: 'channel_about_panel: which row to mark with the yellow vertical bar.' },
       },
     },
     output_fields: ['file_url', 'width', 'height'],

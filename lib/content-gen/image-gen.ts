@@ -252,6 +252,32 @@ export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1
     };
   }
 
+  // Special composition: channel_about_panel — composes the MG-style
+  // "More info" stats card on white from channel data (handle, country,
+  // joined, subscribers, videos, views). Highlight is a thin yellow
+  // vertical bar next to the called-out row.
+  if (args.composition === 'channel_about_panel') {
+    if (!args.subscribers_text || !args.video_count_text || !args.total_views_text) {
+      throw new Error('channel_about_panel: subscribers_text, video_count_text, total_views_text required');
+    }
+    const { renderChannelAboutPanel } = await import('./cards/channel-about-panel');
+    const r = await renderChannelAboutPanel({
+      handle: args.handle ?? '@channel',
+      country: args.country,
+      joined_phrase: args.joined_phrase,
+      subscribers: args.subscribers_text,
+      video_count: args.video_count_text,
+      total_views: args.total_views_text,
+      highlight: args.highlight_row ?? null,
+    }, width, height);
+    await fs.copyFile(r.local_path, outPath);
+    return {
+      file_url: `/api/admin/content-gen/producer/file?path=${encodeURIComponent('images/' + hash + '.png')}`,
+      width, height,
+      local_path: outPath,
+    };
+  }
+
   let svg: string;
   switch (args.composition) {
     case 'text_card':                    svg = renderTextCard(args, width, height); break;

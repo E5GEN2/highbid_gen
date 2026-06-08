@@ -22,11 +22,12 @@ export const maxDuration = 600;
 async function loadChannel(channelId: string): Promise<ChannelData | null> {
   const pool = await getPool();
   const r = await pool.query<{
-    channel_id: string; channel_name: string | null; subscriber_count: number | null;
+    channel_id: string; channel_name: string | null; channel_handle: string | null;
+    subscriber_count: number | null;
     video_count: number | null; channel_created_at: string | null; first_upload_at: string | null;
     recent_videos_avg_views: number | null;
   }>(
-    `SELECT channel_id, channel_name, subscriber_count, video_count,
+    `SELECT channel_id, channel_name, channel_handle, subscriber_count, video_count,
             channel_created_at, first_upload_at, recent_videos_avg_views
        FROM niche_spy_channels WHERE channel_id = $1`,
     [channelId],
@@ -62,6 +63,7 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
   return {
     channelId: ch.channel_id,
     channel_name: ch.channel_name ?? ch.channel_id,
+    channel_handle: ch.channel_handle ?? undefined,
     subscriber_count: ch.subscriber_count != null ? Number(ch.subscriber_count) : undefined,
     total_views: totalApprox,
     video_count: ch.video_count ?? undefined,
@@ -266,6 +268,88 @@ function relativeAge(postedAt: string | undefined | null): string {
   return years === 1 ? '1 year ago' : `${years} years ago`;
 }
 
+/** Format a YT-style row text from a number — matches the about-modal
+ *  display: 437k / 1.2M (no decimals < 1k, lowercase suffix). */
+function ytSubFormat(n: number | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '— subscribers';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M subscribers`;
+  if (n >= 1_000)     return `${Math.round(n / 1_000)}k subscribers`;
+  return `${n} subscribers`;
+}
+function ytVideoCountFormat(n: number | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '— videos';
+  return `${n} ${n === 1 ? 'video' : 'videos'}`;
+}
+function ytViewsFormat(n: number | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '— views';
+  // Comma-grouped, matches YT's actual format ("110,311,861 views").
+  return `${Math.round(n).toLocaleString('en-US')} views`;
+}
+function ytJoinedFormat(iso: string | undefined): string {
+  if (!iso) return 'Joined';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return 'Joined';
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `Joined ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}
+
+/** Swap channel_proof_1/2 slots: replace yt_capture(about_page) with the
+ *  composed channel_about_panel card. MG-style: dark gray card on white
+ *  canvas with the "More info" stats column and a thin yellow vertical
+ *  highlight bar next to the called-out row.
+ *
+ *  channel_proof_1 highlights subscribers; channel_proof_2 highlights views. */
+function swapChannelProof(slots: Slot[], ch: ChannelData): Slot[] {
+  const subs = ytSubFormat(ch.subscriber_count);
+  const videos = ytVideoCountFormat(ch.video_count);
+  const views = ytViewsFormat(ch.total_views);
+  const joined = ytJoinedFormat(ch.joined_date);
+  // niche_spy_channels.channel_handle is the source of truth ("@VESSTICK").
+  // Falls back to channel_name (composer prepends @ if missing).
+  const handle = ch.channel_handle ?? ch.channel_name ?? 'channel';
+
+  return slots.map(slot => {
+    if (slot.beat_id !== 'channel_proof_1' && slot.beat_id !== 'channel_proof_2') return slot;
+    const highlight = slot.beat_id === 'channel_proof_1' ? 'subscribers' : 'views';
+    return {
+      ...slot,
+      gems: slot.gems.map(g => {
+        if (g.id !== 'main') return g;
+        return {
+          id: 'main',
+          tool: 'image_gen',
+          args: {
+            composition: 'channel_about_panel',
+            text: '',                 // panel is fully data-driven
+            bg_mode: 'white',
+            handle,
+            country: 'United States', // YT doesn't always expose this in API; placeholder for visual consistency
+            joined_phrase: joined,
+            subscribers_text: subs,
+            video_count_text: videos,
+            total_views_text: views,
+            highlight_row: highlight,
+          },
+        };
+      }),
+      compose: {
+        ...slot.compose,
+        // Card already renders on white.
+        bg: 'white',
+        // Strip any crop_target — the composed card is the final image,
+        // cropping it would chop content.
+        layers: slot.compose.layers.map(l => {
+          if (l.channel === 'video') {
+            const { crop_target: _ct, ...rest } = l;
+            return rest;
+          }
+          return l;
+        }),
+      },
+    };
+  });
+}
+
 /** Swap the writer's top_video_callout slot to use the composed
  *  most_popular_callout card instead of a screenshot crop. Per the visual
  *  grammar (visual-packaging-class-b.json:83-95) and confirmed by frame
@@ -425,18 +509,23 @@ export async function POST(req: NextRequest) {
       // 3. Money_math sequence — 5 cards calculating $X,XXX from top-video
       //    views. Skips if channel has no top-video data.
       const moneyMath = buildMoneyMathSlots(niche_index, ch);
-      // 4. Three post-processors on the writer's proof slots:
-      //    (a) force channel_proof_1 to use kind=about_page (writer
-      //        sometimes picks channel_page — but MG always shows the
-      //        clean about-modal stats column for subs callouts).
-      //    (b) crop channel_proof_1/2 to about_panel + top_video_callout
-      //        to video_card_0 as a fallback.
-      //    (c) if channel has top_video data, swap top_video_callout
-      //        from yt_capture to the composed most_popular_callout card
-      //        (MG renders this as a YT-card-shaped composition on white).
-      const kindForced = forceProofKind(result.script.slots);
-      const cropped = injectCropTargets(kindForced);
-      const writerSlotsTransformed = await swapMostPopularCallout(cropped, ch);
+      // 4. Post-processors on the writer's proof slots, in order:
+      //    (a) channel_proof_1/2 → swap to the composed channel_about_panel
+      //        image_gen (replaces yt_capture(about_page) entirely). MG
+      //        composes this on white, not a screenshot crop. Yellow
+      //        highlight is a thin vertical bar next to the called-out row.
+      //    (b) top_video_callout → swap to composed most_popular_callout
+      //        card if channel has top-video data.
+      //    (c) Fallback crop targets only get applied to slots that
+      //        DIDN'T get swapped in (a)/(b) — e.g. a niche with no
+      //        top_video data still falls through to the videos_tab crop.
+      //    (d) forceProofKind is no longer needed since the proof slots
+      //        are now composed (not captured), but kept defensively for
+      //        any beat the writer adds that we haven't swapped yet.
+      const proofSwapped = swapChannelProof(result.script.slots, ch);
+      const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
+      const kindForced = forceProofKind(callouttSwapped);
+      const writerSlotsTransformed = injectCropTargets(kindForced);
       allSlots.push(...framing, ...writerSlotsTransformed, ...moneyMath);
       acceptedCount++;
     }
