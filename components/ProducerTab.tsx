@@ -223,6 +223,51 @@ export default function ProducerTab({ active }: { active: boolean }) {
   );
 }
 
+/** Lazy-loads N frames from /producer/frames and renders them as a
+ *  horizontal strip — fulfills the "cut frames to inspect important moments"
+ *  loop in the user's original ask. Frames are cached server-side per job. */
+function FrameStrip({ jobId }: { jobId: number }) {
+  const [frames, setFrames] = useState<Array<{ index: number; ts: number; label: string; url: string }> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch(`/api/admin/content-gen/producer/frames?id=${jobId}&count=8`).then(r => r.json());
+      if (r.ok) setFrames(r.frames);
+      else setErr(r.error ?? 'failed');
+    } catch (e) { setErr((e as Error).message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="border-t border-[#222] px-2 py-2 bg-[#0a0a0a]">
+      <div className="flex items-center gap-2 mb-1">
+        <button onClick={load} disabled={loading}
+          className="text-[10px] px-2 py-0.5 rounded border border-[#333] hover:border-[#555] text-[#aaa] disabled:opacity-50">
+          {loading ? 'Extracting…' : frames ? 'Re-extract frames' : 'Inspect frames'}
+        </button>
+        {err && <span className="text-[10px] text-red-300">{err}</span>}
+      </div>
+      {frames && frames.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {frames.map(f => (
+            <div key={f.index} className="flex-shrink-0 flex flex-col">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={f.url} alt={f.label} className="h-32 w-auto rounded border border-[#222] object-contain bg-black" />
+              <div className="text-[9px] text-[#777] mt-0.5 text-center font-mono">
+                {f.label.length > 22 ? f.label.slice(0, 22) + '…' : f.label}
+                <br />
+                {f.ts.toFixed(1)}s
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function JobDetailView({ detail }: { detail: { job: ProducerJob; gems: ProducerGem[] } }) {
   const { job, gems } = detail;
   // Group gems by slot_id, in slot_index order
@@ -251,11 +296,12 @@ function JobDetailView({ detail }: { detail: { job: ProducerJob; gems: ProducerG
         </div>
       )}
 
-      {/* Final video player */}
+      {/* Final video player + frame inspection */}
       {job.final_video_url && (
         <div className="rounded border border-[#222] overflow-hidden bg-black">
           <video src={job.final_video_url} controls className="w-full max-h-[600px]" />
           <div className="text-[10px] text-[#666] px-2 py-1 font-mono">{job.final_video_url}</div>
+          <FrameStrip jobId={job.id} />
         </div>
       )}
 
