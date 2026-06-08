@@ -17,6 +17,7 @@
  */
 
 import { captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, type AnnotateElement, type HighlightStyle, type CompositeShapeStyle } from './yt-capture';
+import { videoCompose } from './video-compose';
 
 export interface ToolOutput {
   file_url?: string;
@@ -174,22 +175,20 @@ async function runVideoCompose(args: Record<string, unknown>): Promise<ToolOutpu
   const width = (args.width as number) ?? 1080;
   const height = (args.height as number) ?? 1920;
   const fps = (args.fps as number) ?? 30;
-  // Sum the resolved hold_s for total duration.
+  const default_bg = (args.default_bg as 'white' | 'dark_gray') ?? 'dark_gray';
   const bag = (args.__bag__ as Record<string, Record<string, Record<string, unknown>>>) ?? {};
-  let totalDur = 0;
-  for (const sid of slot_order) {
-    const compose = bag[sid]?.__compose__ as { hold_s?: number } | undefined;
-    totalDur += (compose?.hold_s ?? 2.0);
-  }
-  const jobId = args.__job_id__ as number | undefined;
-  // Return a stub url that includes the job_id for traceability.
+  const jobId = (args.__job_id__ as number) ?? 0;
+  if (slot_order.length === 0) throw new Error('video_compose: empty slot_order');
+  const result = await videoCompose({
+    slot_order, width, height, fps, default_bg,
+    __bag__: bag,
+    __job_id__: jobId,
+  });
   return {
-    file_url: `stub://video_compose/job/${jobId ?? 'unknown'}/${slot_order.length}slots`,
-    duration_s: Math.round(totalDur * 100) / 100,
-    width,
-    height,
-    // Surface the resolved bag for debugging
-    slot_order,
-    fps,
+    file_url: result.file_url,
+    duration_s: result.duration_s,
+    width: result.width,
+    height: result.height,
+    local_path: result.local_path,
   };
 }
