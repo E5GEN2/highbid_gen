@@ -398,7 +398,10 @@ export async function writeScript(input: ScriptWriterInput): Promise<ScriptWrite
   const body = JSON.stringify({
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ parts: [{ text: user }] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+    // 16K tokens covers ~20 slots of full gem detail. 4K was truncating mid-
+    // JSON on 6-slot scripts. Gemini 2.5 Flash supports up to 8192 output
+    // tokens by default but the `latest` alias accepts higher caps.
+    generationConfig: { temperature: 0.2, maxOutputTokens: 16384 },
   });
 
   let lastError: Error | null = null;
