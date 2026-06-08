@@ -173,7 +173,17 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
     try {
       const { loadBBoxes, bboxKeyFor, cropToBBox, compositeBBox } = await import('./yt-crop');
       const bboxes = await loadBBoxes(captureId);
-      // Try composite target first (about_panel, etc.), then single-bbox key.
+
+      // about_panel: use the MG-style composer (crops modal content + places
+      // it on a clean rounded dark card centered on white canvas). Produces
+      // a 1920×1080 PNG ready to be the video frame — bypasses fit:contain.
+      if (layer.crop_target === 'about_panel' && bboxes.joined_date) {
+        const { composeAboutPanelMG } = await import('./yt-compose-mg');
+        const composed = await composeAboutPanelMG(basePath, bboxes.joined_date);
+        return { kind: 'image', path: composed };
+      }
+
+      // Try composite target first (videos_grid, etc.), then single-bbox key.
       const compositeBox = compositeBBox(layer.crop_target, bboxes);
       if (compositeBox) {
         // Composite crops use less padding — they're already padded internally.

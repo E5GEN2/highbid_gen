@@ -1,0 +1,111 @@
+/**
+ * MG-style composition primitives.
+ *
+ * Takes a raw YT capture screenshot + bbox info and produces a 1920×1080
+ * PNG ready to be the video frame for a slot. The composition includes
+ * MG-style framing — the cropped content from the real YT dark-mode
+ * screenshot placed inside a clean dark-gray rounded card on a white
+ * outer canvas.
+ *
+ * Crop bounds + card dimensions were dialed in via local Sharp iteration
+ * against the actual captured PNG (see /tmp/iter/crop_test.mjs) and
+ * verified frame-by-frame against the source MG video.
+ */
+
+import path from 'path';
+import os from 'os';
+import sharp from 'sharp';
+import type { BBox } from './yt-capture';
+
+const CANVAS_W = 1920;
+const CANVAS_H = 1080;
+const CANVAS_BG = { r: 255, g: 255, b: 255 };  // white outer canvas (MG style)
+const CARD_BG = { r: 32, g: 32, b: 32 };        // matches YT dark-mode modal
+const CARD_RADIUS = 40;                          // rounded card corners
+
+// Centered card dimensions — ~52% of canvas width, ~72% of canvas height.
+// Both axes have ~150px white margin on all sides, MG-style balanced.
+const CARD_W = 1000;
+const CARD_H = 780;
+const CARD_INNER_PAD_X = 50;
+const CARD_INNER_PAD_Y = 40;
+
+/**
+ * Compose an MG-style "channel about panel" frame.
+ *
+ * Crops the "More info" stats column + Share button from the about-page
+ * screenshot using joined_date as the deterministic anchor, then
+ * composites it inside a centered rounded card on a white canvas.
+ *
+ * Crop bounds (relative to joined_date, dialed in 2026-06-08):
+ *   xLeft  = joined.x - 44              // just left of row icons
+ *   yTop   = joined.y - 110             // includes URL+Country above
+ *                                       //   excludes "More info" heading
+ *   xRight = joined.x + joined.w + 264  // past row text right edge
+ *   yBot   = joined.y + 262             // includes views row + Share button
+ *
+ * Output: 1920×1080 PNG at a temp path the caller can pipe to ffmpeg.
+ */
+export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promise<string> {
+  // 1. Compute crop bounds from joined_date anchor.
+  const cropX = Math.max(0, joined.x - 44);
+  const cropY = Math.max(0, joined.y - 110);
+  const cropW = joined.w + 308;
+  const cropH = 372;
+
+  // Clamp to source dimensions.
+  const meta = await sharp(srcPath).metadata();
+  const srcW = meta.width ?? 1440;
+  const srcH = meta.height ?? 900;
+  const safeW = Math.min(cropW, srcW - cropX);
+  const safeH = Math.min(cropH, srcH - cropY);
+
+  // 2. Extract the cropped content from the source screenshot.
+  const cropped = await sharp(srcPath)
+    .extract({ left: cropX, top: cropY, width: safeW, height: safeH })
+    .png()
+    .toBuffer();
+
+  // 3. Build a clean dark-gray card with rounded corners via SVG.
+  const cardSvg = `<svg width="${CARD_W}" height="${CARD_H}">
+    <rect x="0" y="0" width="${CARD_W}" height="${CARD_H}"
+          rx="${CARD_RADIUS}" ry="${CARD_RADIUS}"
+          fill="rgb(${CARD_BG.r},${CARD_BG.g},${CARD_BG.b})"/>
+  </svg>`;
+  const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+
+  // 4. Resize the cropped content to fit INSIDE the card (preserve aspect).
+  const innerW = CARD_W - 2 * CARD_INNER_PAD_X;
+  const innerH = CARD_H - 2 * CARD_INNER_PAD_Y;
+  const cropAspect = safeW / safeH;
+  const innerAspect = innerW / innerH;
+  let fitW: number, fitH: number;
+  if (cropAspect > innerAspect) {
+    fitW = innerW;
+    fitH = Math.round(innerW / cropAspect);
+  } else {
+    fitH = innerH;
+    fitW = Math.round(innerH * cropAspect);
+  }
+  const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
+
+  // 5. Composite content onto card — centered both axes.
+  const innerLeft = Math.round((CARD_W - fitW) / 2);
+  const innerTop = Math.round((CARD_H - fitH) / 2);
+  const cardWithContent = await sharp(cardBase)
+    .composite([{ input: fitted, left: innerLeft, top: innerTop }])
+    .png()
+    .toBuffer();
+
+  // 6. Place card on white 1920×1080 canvas — centered both axes.
+  const cardX = Math.round((CANVAS_W - CARD_W) / 2);
+  const cardY = Math.round((CANVAS_H - CARD_H) / 2);
+  const outPath = path.join(os.tmpdir(), `mg-about-panel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  await sharp({
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: CANVAS_BG },
+  })
+    .composite([{ input: cardWithContent, left: cardX, top: cardY }])
+    .png()
+    .toFile(outPath);
+  return outPath;
+}
