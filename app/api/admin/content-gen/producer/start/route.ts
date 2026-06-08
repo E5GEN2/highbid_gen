@@ -122,8 +122,9 @@ export async function POST(req: NextRequest) {
       video_id: `producer-${body.beat_id}-${ch.channelId.slice(-6)}`,
       beats,
       voice: 'money_groot',
-      width: 1080,
-      height: 1920,
+      // Long-form 16:9 (MG videos are ~14-min YT long-form, not Shorts).
+      width: 1920,
+      height: 1080,
     };
     const result = await writeScript(input);
     if (!result.ok || !result.script) {

@@ -139,8 +139,9 @@ export async function GET(req: NextRequest) {
     video_id: `slice-${beat_id}-${ch.channelId.slice(-6)}`,
     beats,
     voice: 'money_groot',
-    width: 1080,
-    height: 1920,
+    // Long-form 16:9 (MG videos are ~14-min YT long-form, not Shorts).
+    width: 1920,
+    height: 1080,
   };
 
   const t0 = Date.now();
@@ -165,8 +166,8 @@ export async function POST(req: NextRequest) {
     video_id: body.video_id ?? `wf-${Date.now()}`,
     beats: body.beats,
     voice: body.voice ?? 'money_groot',
-    width: body.width ?? 1080,
-    height: body.height ?? 1920,
+    width: body.width ?? 1920,
+    height: body.height ?? 1080,
   };
 
   const t0 = Date.now();

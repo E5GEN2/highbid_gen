@@ -82,8 +82,10 @@ export const EXAMPLE_SLOT_CHANNEL_PROOF_1: ConcreteScript = {
     args: {
       slot_order: ['niche_1_channel_proof_1'],
       default_bg: 'dark_gray',
-      width: 1080,
-      height: 1920,
+      // Long-form 16:9 — Money Groot is a ~14-min YouTube video, not Shorts.
+      // (See worked-example-mg-reverse-engineered.md — MG videoId 14563 = 14m04s.)
+      width: 1920,
+      height: 1080,
       fps: 30,
     },
   },

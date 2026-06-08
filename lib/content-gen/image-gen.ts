@@ -5,8 +5,8 @@
  * Caches by SHA256 of the input args, so the same (composition + text +
  * bg_mode + color_treatment + icon) → same file. Re-renders are free.
  *
- * Renders at 1080×1920 (matches the producer's canvas) so video-compose
- * can use them without scaling artifacts.
+ * Renders at 1920×1080 by default (long-form 16:9 — MG videos are ~14-min
+ * YT long-form, not Shorts). Caller can override per call.
  *
  *   text_card:  big bold center-set text on solid bg. The "highlighted"
  *               token (matched by color_treatment) gets a colored span.
@@ -209,7 +209,9 @@ function renderTitleSequenceCard(args: ImageGenArgs, width: number, height: numb
 // Top-level entry — called by producer-tools.runImageGen
 // ───────────────────────────────────────────────────────────────────
 
-export async function imageGenerate(args: ImageGenArgs, width = 1080, height = 1920): Promise<ImageGenOutput & { local_path: string }> {
+// Default 16:9 long-form (1920×1080). Money Groot videos are ~14-min YT
+// long-form, not Shorts. Per-call override via args (width/height).
+export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1080): Promise<ImageGenOutput & { local_path: string }> {
   await fs.mkdir(IMG_DIR, { recursive: true });
   const hash = cacheKey(args, width, height);
   const outPath = path.join(IMG_DIR, `${hash}.png`);

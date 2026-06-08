@@ -15,7 +15,8 @@
  *      - YT capture (/api/.../yt-capture/file?id=N) → fetch from disk
  *      - stub://image_gen/... → render a Sharp/SVG placeholder card
  *      - stub://* (audio) → skipped, audio added when real tools land
- *   2. Build a per-slot 1080×1920 clip:
+ *   2. Build a per-slot width×height clip (default 1920×1080 16:9 long-form
+ *      per the MG-decoded spec — see worked-example-mg-reverse-engineered.md):
  *        ffmpeg -loop 1 -i {image} -t {hold_s} -vf "scale + pad to canvas"
  *               -c:v libx264 -pix_fmt yuv420p -r {fps}
  *      Background is filled via pad= color = bg_mode.
@@ -145,7 +146,8 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
   return { kind: 'skip', path: null };
 }
 
-/** Build a single 1080×1920 clip for one slot, with optional narration
+/** Build a single width×height clip for one slot (default 1920×1080 16:9),
+ *  with optional narration
  *  audio mixed in. */
 async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: number, height: number, fps: number, outPath: string): Promise<void> {
   // Find the "video" channel layer — that's the main visual.

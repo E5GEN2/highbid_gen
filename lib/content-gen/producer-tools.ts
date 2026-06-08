@@ -237,8 +237,9 @@ async function runAudioMix(args: Record<string, unknown>): Promise<ToolOutput> {
 
 async function runVideoCompose(args: Record<string, unknown>): Promise<ToolOutput> {
   const slot_order = (args.slot_order as string[]) ?? [];
-  const width = (args.width as number) ?? 1080;
-  const height = (args.height as number) ?? 1920;
+  // Long-form 16:9 defaults (MG videos are ~14-min YT long-form, not Shorts).
+  const width = (args.width as number) ?? 1920;
+  const height = (args.height as number) ?? 1080;
   const fps = (args.fps as number) ?? 30;
   const default_bg = (args.default_bg as 'white' | 'dark_gray') ?? 'dark_gray';
   // Music bed token — defaults to 'bed' (calm lofi). Pass music_token=null

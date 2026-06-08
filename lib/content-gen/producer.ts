@@ -217,8 +217,9 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
   try {
     const composeOut = await runTool('video_compose', {
       slot_order: script.slots.map(s => s.slot_id),
-      width: (script.final.args.width as number) ?? 1080,
-      height: (script.final.args.height as number) ?? 1920,
+      // Long-form 16:9 defaults (MG videos are ~14-min YT long-form).
+      width: (script.final.args.width as number) ?? 1920,
+      height: (script.final.args.height as number) ?? 1080,
       fps: (script.final.args.fps as number) ?? 30,
       default_bg: (script.final.args.default_bg as string) ?? 'dark_gray',
       // Pass the resolved bag — producer-tools.video_compose consumes it

@@ -324,7 +324,7 @@ Narration beats (in playback order):
 ${JSON.stringify(input.beats, null, 2)}
 
 Voice: ${input.voice ?? 'money_groot'}
-Output dimensions: ${input.width ?? 1080}x${input.height ?? 1920}
+Output dimensions: ${input.width ?? 1920}x${input.height ?? 1080}
 
 Return ONLY the JSON object.`;
 }
