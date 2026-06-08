@@ -175,18 +175,27 @@ function renderIconCard(args: ImageGenArgs, width: number, height: number): stri
   const text = String(args.text ?? '').slice(0, MAX_TEXT_LEN);
   const icon = String(args.icon ?? '?');
   const bg = (args.bg_mode === 'dark_gray') ? 'dark_gray' : 'white';
-  const fg = bg === 'dark_gray' ? '#FFFFFF' : '#111111';
+  // Text color comes from color_treatment (matches text_card behaviour).
+  // Icon outline stays neutral (white/black per bg_mode) so it reads as a
+  // separate placeholder marker, not as part of the styled text token.
+  const ct = (args.color_treatment ?? 'neutral') as ColorTreatment;
+  const textColor = COLOR_HEX[ct]?.fg ?? COLOR_HEX.neutral.fg;
+  const iconStroke = bg === 'dark_gray' ? '#FFFFFF' : '#111111';
+  // Push the icon above center, text below — so they don't overlap on
+  // longer text strings. Icon area = upper third; text area = lower third.
   const textFont = fitFontSize(text, width, height, 2);
+  const iconY = Math.round(height * 0.34);
+  const textY = Math.round(height * 0.62);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <rect width="${width}" height="${height}" fill="${BG_HEX[bg]}"/>
-  <circle cx="${width / 2}" cy="${height / 2 - 120}" r="180" fill="none" stroke="${fg}" stroke-width="8" opacity="0.4"/>
-  <text x="${width / 2}" y="${height / 2 - 100}"
-        font-family="system-ui, sans-serif" font-size="40" font-weight="600"
-        fill="${fg}" text-anchor="middle" opacity="0.45">[icon: ${esc(icon)}]</text>
-  <text x="${width / 2}" y="${height / 2 + 180}"
-        font-family="system-ui, sans-serif" font-size="${textFont}" font-weight="800"
-        fill="${fg}" text-anchor="middle">${esc(text)}</text>
+  <circle cx="${width / 2}" cy="${iconY}" r="180" fill="none" stroke="${iconStroke}" stroke-width="8" opacity="0.35"/>
+  <text x="${width / 2}" y="${iconY + 16}"
+        font-family="system-ui, sans-serif" font-size="38" font-weight="600"
+        fill="${iconStroke}" text-anchor="middle" opacity="0.5">[icon: ${esc(icon)}]</text>
+  <text x="${width / 2}" y="${textY}"
+        font-family="system-ui, -apple-system, sans-serif" font-size="${textFont}" font-weight="800"
+        fill="${textColor}" text-anchor="middle">${esc(text)}</text>
 </svg>`;
 }
 
