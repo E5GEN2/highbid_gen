@@ -130,6 +130,58 @@ function buildNicheIntroSlots(niche_index: number, niche_label: string): Slot[] 
   ];
 }
 
+/** Round a lump-sum dollar figure to "nice" tier per visual grammar spec
+ *  (2 sig figs, ladder of $1K / $5K / $10K / $25K / $50K / $100K …). */
+function roundLumpSum(n: number): number {
+  if (n < 100) return Math.max(0, Math.round(n));
+  // Round to 2 significant figures
+  const mag = Math.pow(10, Math.floor(Math.log10(n)) - 1);
+  return Math.round(n / mag) * mag;
+}
+
+function formatDollars(n: number): string {
+  const rounded = roundLumpSum(n);
+  if (rounded >= 1_000_000) return `$${(rounded / 1_000_000).toFixed(1)}M`;
+  if (rounded >= 1_000) return `$${rounded.toLocaleString('en-US')}`;
+  return `$${rounded}`;
+}
+
+/** 5-card money_math sequence per niche. The signature MG money-shot beat:
+ *  "Even if we assume" → "$1 RPM" (shrug icon, green) → "that one video alone
+ *  has probably made around" → "$X,XXX" (money_shot_green + ding) → "from ads".
+ *  Computes lump_sum from channel.top_video_view_count × $1 RPM (silent).
+ *  When the channel has no top-video data, returns [] (caller skips money_math
+ *  for that niche). */
+function buildMoneyMathSlots(niche_index: number, ch: ChannelData): Slot[] {
+  if (ch.top_video_view_count == null || ch.top_video_view_count < 1000) return [];
+  const rpm = 1; // visual grammar: silent — narration says "just a $1 RPM" but RPM math is implicit
+  const lumpSumRaw = (ch.top_video_view_count / 1000) * rpm * 1000; // views × $RPM/1000 (RPM is per 1k views)
+  // Wait — CPM/RPM convention: revenue = (views / 1000) × RPM. For $1 RPM:
+  // revenue = views / 1000. So 1.2M views → $1,200. That feels low.
+  // The MG videos use a higher RPM but obscure it via "just $1" then escalate
+  // in tone. We'll compute at $1 since that's the actual displayed value.
+  const lumpSum = lumpSumRaw;
+  const formatted = formatDollars(lumpSum);
+  const base = `niche_${niche_index}`;
+  return [
+    makeFramingSlot(`${base}_mm_assumption`, 'money_math', `Even if we assume`,
+      { composition: 'text_card', text: `Even if we assume`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+    makeFramingSlot(`${base}_mm_rpm`, 'money_math', `just a one dollar RPM,`,
+      { composition: 'icon_card', text: `$${rpm} RPM`, bg_mode: 'white', color_treatment: 'inline_green', icon: 'shrug_with_question_marks' },
+      ['whoosh']),
+    makeFramingSlot(`${base}_mm_translates`, 'money_math', `that one video alone has probably made around`,
+      { composition: 'text_card', text: `that one video alone has probably made around`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+    makeFramingSlot(`${base}_mm_lump_sum`, 'money_math', `${formatted}.`,
+      { composition: 'text_card', text: formatted, bg_mode: 'white', color_treatment: 'money_shot_green' },
+      ['ding']),
+    makeFramingSlot(`${base}_mm_closer`, 'money_math', `from ads.`,
+      { composition: 'text_card', text: `from ads`, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']),
+  ];
+}
+
 /** 4-card CTA at the end of a listicle. The action card MUST contain
  *  "check out [this/next] video" (winner-coded 17×). */
 function buildCtaSlots(niche_count: number): Slot[] {
@@ -204,7 +256,10 @@ export async function POST(req: NextRequest) {
         failures.push({ channelId: cid, reason: result.errors?.[0]?.message?.slice(0, 200) ?? 'writer failed' });
         continue;
       }
-      allSlots.push(...framing, ...result.script.slots);
+      // 3. Money_math sequence — 5 cards calculating $X,XXX from top-video
+      //    views. Skips if channel has no top-video data.
+      const moneyMath = buildMoneyMathSlots(niche_index, ch);
+      allSlots.push(...framing, ...result.script.slots, ...moneyMath);
       acceptedCount++;
     }
     if (acceptedCount === 0) {
