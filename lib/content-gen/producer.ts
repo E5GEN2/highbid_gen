@@ -200,6 +200,9 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
         ...l,
         url: (localOutput && (localOutput.file_url as string)) ?? null,
         duration_s: (localOutput && (localOutput.duration_s as number)) ?? null,
+        // Surface the on-disk path when the tool produced one. video-compose
+        // prefers this over file_url to avoid HTTP self-loops.
+        local_path: (localOutput && (localOutput.local_path as string)) ?? null,
       };
     });
     bag[slot.slot_id].__compose__ = composeResolved;

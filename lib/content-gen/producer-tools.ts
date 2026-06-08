@@ -18,6 +18,7 @@
 
 import { captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, type AnnotateElement, type HighlightStyle, type CompositeShapeStyle } from './yt-capture';
 import { videoCompose } from './video-compose';
+import { ttsBeat, DEFAULT_VOICE_ID } from './voice';
 
 export interface ToolOutput {
   file_url?: string;
@@ -91,13 +92,25 @@ async function runYtCapture(args: Record<string, unknown>): Promise<ToolOutput> 
 async function runTts(args: Record<string, unknown>): Promise<ToolOutput> {
   const text = String(args.text ?? '');
   if (!text) throw new Error('tts: text required');
-  // STUB duration heuristic: ~3 words/sec at MG narration cadence.
-  const words = text.split(/\s+/).filter(Boolean).length;
-  const duration_s = Math.max(1.0, Math.min(6.0, words / 3.2));
+  // Voice alias map: writer-friendly names → ElevenLabs voice_ids.
+  // money_groot defaults to the calm-male documentary narrator we use
+  // throughout the pipeline (DEFAULT_VOICE_ID).
+  const voiceAlias = String(args.voice ?? 'money_groot');
+  const voice_id = voiceAlias === 'money_groot' ? DEFAULT_VOICE_ID : voiceAlias;
+  const asset = await ttsBeat(text, {
+    voice_id,
+    settings: {
+      ...(args.stability != null ? { stability: Number(args.stability) } : {}),
+      ...(args.similarity_boost != null ? { similarity_boost: Number(args.similarity_boost) } : {}),
+    },
+  });
   return {
-    file_url: `stub://tts/${encodeURIComponent(text.slice(0, 40))}`,
-    duration_s: Math.round(duration_s * 100) / 100,
-    voice: String(args.voice ?? 'money_groot'),
+    file_url: `/api/admin/content-gen/voice/file?hash=${asset.text_hash}`,
+    duration_s: asset.duration_s,
+    voice: asset.voice_id,
+    // Pass local_path so video-compose can read directly off disk without
+    // an HTTP self-loop.
+    local_path: asset.local_path,
   };
 }
 

@@ -43,6 +43,9 @@ interface ComposeLayer {
   ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right';
   url: string | null;
   duration_s: number | null;
+  /** When the upstream tool returned an on-disk path, the producer surfaces
+   *  it here so we can read from disk without a self-loop HTTP call. */
+  local_path?: string | null;
 }
 interface ResolvedCompose {
   bg: 'white' | 'dark_gray';
@@ -132,8 +135,8 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
   return { kind: 'skip', path: null };
 }
 
-/** Build a single 1080×1920 clip for one slot. Image inputs are looped to
- *  hold_s. Video inputs are trimmed/looped to hold_s. Background = bg_mode. */
+/** Build a single 1080×1920 clip for one slot, with optional narration
+ *  audio mixed in. */
 async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: number, height: number, fps: number, outPath: string): Promise<void> {
   // Find the "video" channel layer — that's the main visual.
   const mainLayer = compose.layers.find(l => l.channel === 'video') ?? compose.layers[0];
@@ -143,32 +146,29 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
 
   const resolved = await resolveLayerToLocalFile(mainLayer, bg, width, height);
   if (!resolved.path) {
-    // No usable visual — render a placeholder bg-only card.
     const tmp = await renderStubImage(`stub://image_gen/missing/${encodeURIComponent(slot_id)}`, width, height, bg);
     resolved.kind = 'image';
     resolved.path = tmp;
   }
 
-  // Background hex → ffmpeg "0xRRGGBB" color literal.
-  const padColor = BG_HEX[bg].replace('#', '0x');
+  // Voice layer — the narr gem's output. We prefer local_path (real on-disk
+  // mp3) over file_url to avoid HTTP self-loops in the same process.
+  const voiceLayer = compose.layers.find(l => l.channel === 'voice');
+  const voicePath = voiceLayer?.local_path ?? null;
 
-  // For STILL images we want: scale to fill canvas WIDTH (not height) so the
-  // YT screenshot occupies the full 1080px wide and the dark gray padding
-  // only fills above/below (which we then make smaller by hand-tuned scale).
-  // Plus a slow zoom-in (Ken Burns) for cinematic feel.
-  //   - Pre-upscale 2× via scale (zoompan needs an oversized input for
-  //     smooth sub-pixel zoom without aliasing).
-  //   - zoompan: starts at 1.0× zoom, ramps to 1.08× over the hold duration.
-  //   - Then re-scale + pad to canvas with bg color.
+  const padColor = BG_HEX[bg].replace('#', '0x');
   const totalFrames = Math.max(2, Math.round(hold_s * fps));
   const stillVf = `scale=${width * 2}:-2:flags=lanczos,` +
                   `zoompan=z='1+0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${Math.round(width * height / width)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
                   `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
-  // For VIDEO inputs (scroll_record webm), just pad to canvas without zoom.
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
+  // Build the visual track first as a silent intermediate; then mux audio
+  // in a second pass. Keeps the filtergraph simple and lets us pad audio
+  // with silence to match hold_s exactly.
+  const silentPath = path.join(path.dirname(outPath), `silent-${path.basename(outPath)}`);
   if (resolved.kind === 'image') {
     await ff([
       '-y', '-loop', '1', '-i', resolved.path,
@@ -177,24 +177,51 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-r', String(fps),
       '-preset', 'medium', '-crf', '20',
+      silentPath,
+    ]);
+  } else {
+    await ff([
+      '-y', '-stream_loop', '-1', '-i', resolved.path,
+      '-t', hold_s.toFixed(3),
+      '-vf', videoVf,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-r', String(fps),
+      '-an',
+      '-preset', 'medium', '-crf', '20',
+      silentPath,
+    ]);
+  }
+
+  // Mux audio. If voice exists, lay it down on a stereo AAC track that's
+  // EXACTLY hold_s long (apad + atrim ensures no audio drift). If not, the
+  // slot stays silent but the output still has an empty audio track so
+  // concat doesn't break later.
+  if (voicePath) {
+    await ff([
+      '-y', '-i', silentPath, '-i', voicePath,
+      // Audio filter: convert to stereo 44.1k, normalize loudness slightly,
+      // pad to hold_s with silence, then trim to exact duration.
+      '-filter_complex', `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`,
+      '-map', '0:v', '-map', '[aout]',
+      '-c:v', 'copy',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-shortest',
       outPath,
     ]);
   } else {
-    const vf = videoVf;
-    // Video input — trim to hold_s (or loop if shorter, simplest).
+    // Silent audio track — empty AAC stream sized to hold_s.
     await ff([
-      '-y',
-      '-stream_loop', '-1',     // loop if shorter than hold_s
-      '-i', resolved.path,
-      '-t', hold_s.toFixed(3),
-      '-vf', vf,
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      '-r', String(fps),
-      '-an',                     // strip audio (we'll add later)
-      '-preset', 'medium', '-crf', '20',
+      '-y', '-i', silentPath,
+      '-f', 'lavfi', '-t', hold_s.toFixed(3), '-i', 'anullsrc=cl=stereo:r=44100',
+      '-map', '0:v', '-map', '1:a',
+      '-c:v', 'copy',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-shortest',
       outPath,
     ]);
   }
+  // Cleanup intermediate
+  try { await fs.unlink(silentPath); } catch { /* ignore */ }
 }
 
 /** Top-level entry called by producer-tools.runVideoCompose. */
