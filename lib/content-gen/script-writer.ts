@@ -20,7 +20,7 @@
  *   - "return ONLY the JSON" instruction
  */
 
-import { TOOL_REGISTRY } from './tools';
+import { TOOL_REGISTRY, SFX_TOKENS, MUSIC_TOKENS, ICON_IDS, COLOR_TREATMENTS, DATA_POINT_IDS_FILLABLE, DATA_POINT_IDS_BANNED, DOLLAR_TRIO } from './tools';
 import { EXAMPLE_SLOT_CHANNEL_PROOF_1 } from './concrete-script.example';
 import { validateScript, type ConcreteScript, type ValidationError } from './concrete-script';
 
@@ -107,39 +107,100 @@ output fields available for {{ref}} interpolation: ${t.output_fields.join(', ')}
 }
 
 const VISUAL_GRAMMAR_PER_BEAT = `
-Visual grammar mapping per skeleton beat_id (use this to pick the right tool calls):
+Visual grammar — drives gem choice per skeleton beat_id. bg_mode is dictated, not optional:
+white = narration cards. dark_gray = YouTube-world / proof captures. Never mix on the same card.
 
-  intro_card           → image_gen composition=text_card  (e.g. "Number 1:")  bg_mode=white
+  intro_card           → image_gen composition=text_card  bg_mode=white  ("Number 1:")
   niche_name_card      → image_gen composition=text_card  bg_mode=white
-  mascot_mosaic        → image_gen composition=icon_card  bg_mode=dark_gray   (no narration)
-  channel_proof_1      → yt_capture kind=channel_page annotate_element=subscriber_count
-                         annotate_kind=composite annotate_shape=sharpie_circle bg=dark_gray
-  channel_proof_2      → yt_capture kind=about_page  annotate_element=total_views
-                         annotate_kind=composite annotate_shape=sharpie_circle bg=dark_gray
-  top_video_callout    → yt_capture kind=videos_tab mode=static annotate_element=view_count
-                         annotate_kind=composite annotate_shape=sharpie_circle bg=dark_gray
-  top_views_seq        → yt_capture kind=videos_tab mode=static  (no annotation — sequence of card crops)
-  top_views_pano       → yt_capture kind=videos_tab mode=scroll_record  (no annotation)
-  money_math           → image_gen composition=text_card OR icon_card per card in the skeleton's card_sequence_template
-  recipe_demo          → external clips (out of scope for this writer; treat as text_card fallback)
-  concept_tag          → image_gen composition=chalkboard_card bg_mode=dark_gray
-  transition           → silent — no main visual gem; just sfx
-  video_intro          → image_gen composition=text_card_in_title_sequence  (skip when default behaviour)
-  video_cta            → image_gen composition=text_card per card
+  mascot_mosaic        → image_gen composition=icon_card  bg_mode=dark_gray  (silent, hold 2.0s)
+  channel_proof_1      → data_point_id="channel.subscribers"
+                         yt_capture kind=channel_page (or about_page) annotate_element=subscriber_count
+                         annotate_kind=composite annotate_shape=sharpie_circle  bg=dark_gray
+                         SFX: ["whoosh","ding"]   (ding fires on circle reveal)
+  channel_proof_2      → data_point_id="channel.total_views"
+                         yt_capture kind=about_page annotate_element=total_views
+                         annotate_kind=composite annotate_shape=sharpie_circle  bg=dark_gray
+                         SFX: ["whoosh","ding"]
+  top_video_callout    → data_point_id="video.top_video"  bg=dark_gray
+                         yt_capture kind=videos_tab mode=static annotate_element=view_count
+                         annotate_kind=composite annotate_shape=sharpie_circle
+                         SFX: ["whoosh","ding"]
+  top_views_seq        → EXPAND into 3-5 slots (one per "Nm views," phrase). Each slot:
+                         data_point_id="video.views" card_index=K  bg=dark_gray
+                         yt_capture kind=videos_tab mode=static (the producer crops per card bbox later)
+                         tts narrates a short fragment (2-4 words). SFX: ["whoosh"]
+  top_views_pano       → data_point_id="video.views"  bg=dark_gray
+                         yt_capture kind=videos_tab mode=scroll_record  (no annotation; pan reveals)
+  money_math           → EXPAND into 4-6 slots, one per card. Use the skeleton's card_sequence_template.
+                         Each card is its own slot with card_index. bg=white EXCEPT the cited
+                         top-video card (composition=thumbnail_card → yt_capture videos_tab mode=static,
+                         bg=dark_gray). Money-shot card: composition=text_card color_treatment=money_shot_green
+                         SFX={ding_high_pitch}. Card 3 (RPM line) optionally uses icon=shrug_with_question_marks.
+                         data_point_id rotates: assumption → money.rpm_qualifier (NOT exposed) →
+                         shrug_icon → money.lump_sum (the money-shot).
+  recipe_demo          → external clip slot. For NOW emit a text_card placeholder describing the recipe.
+                         data_point_id="recipe.formula" bg=white
+  concept_tag          → data_point_id stays unset OR "competition.saturated".
+                         image_gen composition=chalkboard_card  bg=dark_gray   (MAX 1 PER NICHE)
+  appreciation_optional→ image_gen composition=text_card  bg=white   (MAX 2 PER VIDEO; place ~50-60% through)
+  transition           → silent. No main visual gem. SFX: ["whoosh"] only.
+  video_intro          → image_gen composition=text_card_in_title_sequence  bg=white  (skip by default)
+  video_cta            → 4 cards. The LAST card (cta.action_card) MUST contain "check out [this/next] video"
+                         and SFX includes "ascending_electronic_sting". bg=white throughout CTA.
 
-When a beat has narration:
-  - ALWAYS include a tts gem with id="narr" containing the beat's text
-  - Set compose.hold_s = "{{narr.duration_s}}" so the visual is locked to the audio
-  - If beat.audio_cue.sfx exists, include a sfx_render gem with id="sfx" and the tokens
+Narration → tts rules:
+  - Beat with narration → ALWAYS gem id="narr", tool="tts", args.voice from input. hold_s = "{{narr.duration_s}}".
+  - Beat with no narration (mascot_mosaic, transition default) → no tts gem; hold_s is the literal number from the beat.
+  - SFX gem id="sfx", tokens drawn ONLY from the SFX enum. Max 2 tokens, NEVER stack >1 on a single cut visually.
+  - When beat.audio_cue.sfx is present, prefer it but coerce token names to the enum (whoosh, ding, etc.).
+`.trim();
 
-When a beat has no narration (mascot_mosaic, transition, silent variants):
-  - No tts gem
-  - compose.hold_s = numeric (from beat.hold_s)
-  - sfx_render is still allowed if audio_cue.sfx is present
+const HARD_RULES = `
+# Hard rules from canonical specs (data-points / slot-rendering / visual-packaging / audio-sfx)
+
+1. NEVER reference these data points in narration or as data_point_id (hard-banned):
+     ${DATA_POINT_IDS_BANNED.join(', ')}
+   "money.rpm_exposed" means do not say "views × RPM = $". Output the conclusion only ($X figure).
+2. Dollar trio is EXCLUSIVE per channel: pick exactly one of ${DOLLAR_TRIO.join(' | ')}
+   (whichever rounds cleanly). money.lump_sum is separate and additive ("one video paid $X").
+3. data_point_id for each non-structural slot MUST be one of: ${DATA_POINT_IDS_FILLABLE.join(', ')}
+   (or omitted for structural beats like intro_card, transition, video_intro).
+4. SFX tokens MUST be drawn from: ${SFX_TOKENS.join(', ')}.
+   - "ding" is MANDATORY on every $ reveal (money-shot card). Pitch implicit by figure size.
+   - "whoosh" is the default cut transition between text-cards.
+   - "ascending_electronic_sting" is RESERVED for the final CTA action card.
+   - Never stack >2 tokens. Never put 2 SFX on the same instant.
+5. Icon ids MUST be drawn from: ${ICON_IDS.join(', ')}.
+6. Color treatments MUST be drawn from: ${COLOR_TREATMENTS.join(', ')}.
+7. Music tokens MUST be drawn from: ${MUSIC_TOKENS.join(', ')}.
+8. bg_mode rule (no exceptions):
+     channel.subscribers / channel.total_views / channel.video_count / channel.upload_rate / video.top_video / video.views
+       → bg_mode="dark_gray" (yt_screenshot world)
+     money.* / niche.category / competition.* / format.* / recipe.formula / cta.*
+       → bg_mode="white" (narration world)
+9. chalkboard_concept_tag (image_gen composition=chalkboard_card) APPEARS AT MOST ONCE PER NICHE.
+10. cta.viewer_appreciation appears AT MOST TWICE PER VIDEO, placed ~50-60% through the body.
+11. First segment of niche 1 should be ≤2.0s (faster than MG's 1.42s cold-open).
+12. Per-niche total target: 35-60s. Drop slots whose underlying data is unavailable rather than padding.
+13. NEVER write any of this fluff:
+    - "Today, I'm going to share" / "What if I told you" / "Imagine if you could" / "Let's talk about"
+    - personal anecdotes ("I tried it myself", "A while back I thought about starting a channel...")
+    - "I hope to see each other in another one of our videos"
+    - "click the link in the description" (alone)
+    - moralistic outros, forced reactions ("Oh! What!"), tool-channel plugs
+    - subscribe-asks framed as gratitude ("These videos take a lot of time...")
+14. CTA action card (last of 4) MUST contain the phrase "check out [this/next] video" (winner-coded 17x).
+15. Slot expansion:
+    - money_math → 4-6 slots, one per card (assumption → optional shrug-icon → RPM qualifier
+      → optional top_video thumb → "this would translate to" → money-shot → "from ads")
+    - top_views_seq → 3-5 slots, one per "Nm views," phrase
+    - money.yearly|daily|monthly → 3 slots ("that's around", "$X/year", "from ads")
+    - money.lump_sum → 6 slots per visual grammar sequence
+    - all others → 1 slot
 `.trim();
 
 export function buildSystemPrompt(): string {
-  return `You are the Script-Writer for a faceless YouTube listicle pipeline. Your job is to convert a narration script (a list of beats with text + hold_s) into a producer-ready ConcreteScript with explicit tool calls.
+  return `You are the Script-Writer for a faceless YouTube listicle pipeline (Class B / "Money Groot" style). Your job is to convert a narration script (a list of beats with text + hold_s) plus channel data into a producer-ready ConcreteScript with explicit tool calls.
 
 ${SCHEMA_SUMMARY}
 
@@ -147,30 +208,31 @@ ${SCHEMA_SUMMARY}
 
 ${toolReferenceBlock()}
 
-# Visual grammar
+# Visual grammar (beat → tool calls)
 
 ${VISUAL_GRAMMAR_PER_BEAT}
 
-# Worked example slot (for one beat, channel_proof_1)
+${HARD_RULES}
+
+# Worked example slot (channel_proof_1)
 
 \`\`\`json
 ${JSON.stringify(EXAMPLE_SLOT_CHANNEL_PROOF_1.slots[0], null, 2)}
 \`\`\`
 
-# Hard rules
+# Output rules
 
-1. Output ONLY the ConcreteScript JSON. No markdown, no code fences, no commentary.
-2. Every gem.tool must be one of the registered tools listed above. NEVER invent tools.
-3. Every gem.args object must satisfy the tool's args schema (required fields present, no unknown fields).
-4. slot_id must be unique within the script. Format: "niche_<N>.<beat_id>".
-5. When a beat has narration text, hold_s MUST be the template "{{narr.duration_s}}" — never a number.
-6. compose.bg follows the visual grammar mapping above per beat_id.
-7. layers ordering matters: video first, then voice, then fx.
-8. final.args.slot_order must list every slot_id in playback order.
-9. Use the input channel.channelId for every yt_capture's channelId arg — never hardcode.
-10. Use the input video_id and niche_index in context.
+A. Output ONLY the ConcreteScript JSON. No markdown, no code fences, no commentary.
+B. Every gem.tool must be one of the registered tools listed above.
+C. Every gem.args object must satisfy the tool's args schema (required fields present, no unknown fields, enum values from the canonical lists).
+D. slot_id must be unique, snake_case, NO DOTS. Format: "niche_<N>_<beat>_<card_index?>" e.g. "niche_1_money_math_3".
+E. When the slot has a tts gem (id="narr"), compose.hold_s MUST be "{{narr.duration_s}}" — never a number.
+F. compose.layers ordering: video → voice → fx.
+G. final.args.slot_order lists every slot_id in playback order.
+H. Use input.channel.channelId for every yt_capture.channelId — never hardcode the channel id.
+I. Set context.channelId / channel_name / niche_index / video_id from input.
 
-When uncertain, fall back to the example slot's shape. Do NOT improvise tool args outside the schema.`;
+When uncertain, fall back to the example slot's shape. Do NOT improvise tool args outside the registered schemas.`;
 }
 
 export function buildUserPrompt(input: ScriptWriterInput): string {

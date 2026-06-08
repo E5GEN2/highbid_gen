@@ -67,9 +67,82 @@ export interface TtsOutput {
   voice: string;
 }
 
-/** sfx_render — mix a sequence of SFX tokens into a single track. */
+/** Canonical SFX token enum — from docs/content-gen/audio-sfx-class-b.json.
+ *  These are the ONLY valid tokens for sfx_render. Anything outside this
+ *  list is a writer hallucination. */
+export const SFX_TOKENS = [
+  'whoosh',          // default transition between cards
+  'ding',            // number / value reveal — pitch rises with figure size
+  'click',
+  'keyboard_typing',
+  'bell_ring',
+  'page_turn',
+  'cash_counting',
+  'soft_chimes',
+  'mouse_click',
+  'ascending_electronic_sting',   // final CTA beat only
+  'generic_impact',
+] as const;
+export type SfxToken = typeof SFX_TOKENS[number];
+
+/** Canonical music track enum — from docs/content-gen/audio-sfx-class-b.json. */
+export const MUSIC_TOKENS = [
+  'upbeat_light',                    // default body bed
+  'upbeat_motivational',
+  'upbeat_tech',
+  'calm_uplifting',
+  'upbeat_calm',                     // CTA
+  'upbeat_corporate',                // niche pivots
+  'phonk_funk',                      // diegetic only — when topic is funk-related
+  'soft_calm',
+  'upbeat_modern_inspirational',
+  'energetic_dramatic',
+] as const;
+export type MusicToken = typeof MUSIC_TOKENS[number];
+
+/** Canonical icon-library enum — from docs/content-gen/visual-packaging-class-b.json. */
+export const ICON_IDS = [
+  'shrug_with_question_marks',       // "we're estimating" — used in lump_sum sequence
+  'pointing_hand',
+  'checkmark_green_circle',
+  'dollar_sign_green_circle',
+  'cat_thumbs_up',
+  'speaker_muted',
+  'speaker_with_sound_waves',
+  'shrug_emoji',
+  'cash_pile',
+] as const;
+export type IconId = typeof ICON_IDS[number];
+
+/** Canonical color-treatment enum (visual-packaging-class-b). */
+export const COLOR_TREATMENTS = ['neutral', 'money_shot_green', 'inline_green', 'inline_red', 'chalk_cream'] as const;
+export type ColorTreatment = typeof COLOR_TREATMENTS[number];
+
+/** Canonical data-point IDs — from docs/content-gen/data-points.json.
+ *  P1 fillable: things the script CAN reference. The slot-rendering grammar
+ *  is keyed on these. */
+export const DATA_POINT_IDS_FILLABLE = [
+  'money.yearly', 'money.daily', 'money.monthly', 'money.per_video', 'money.lump_sum',
+  'channel.upload_rate', 'channel.age', 'channel.subscribers', 'channel.video_count', 'channel.total_views',
+  'growth.in_period',
+  'video.top_video', 'video.views',
+  'niche.category', 'competition.saturated', 'competition.zero',
+  'format.tool_named', 'format.production_type',
+  'time.posting_year',
+  'recipe.formula', 'cta.viewer_appreciation',
+] as const;
+export type DataPointId = typeof DATA_POINT_IDS_FILLABLE[number];
+
+/** HARD-BANNED data-point IDs — never appear in the output. */
+export const DATA_POINT_IDS_BANNED = ['money.rpm_exposed', 'social.likes', 'time.posting_window'] as const;
+
+/** Dollar-trio: exactly one of these per channel (whichever rounds cleanly). */
+export const DOLLAR_TRIO = ['money.yearly', 'money.daily', 'money.monthly'] as const;
+
+/** sfx_render — mix a sequence of SFX tokens into a single track.
+ *  NEVER stack >1 SFX on a single cut (audio-sfx exclude rule). */
 export interface SfxArgs {
-  tokens: string[];           // ['whoosh', 'ding_on_circle_reveal'], etc.
+  tokens: SfxToken[];
   /** Optional total duration the track should fit into. If omitted the
    *  track's natural length is used. */
   fit_duration_s?: number;
@@ -79,16 +152,18 @@ export interface SfxOutput {
   duration_s: number;
 }
 
-/** image_gen — generate a text_card / icon_card / chalkboard image. */
+/** image_gen — generate a non-YT visual (text_card / icon_card / chalkboard /
+ *  title-sequence card). Compositions follow slot-rendering-class-b. */
 export interface ImageGenArgs {
   composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence';
   /** Primary copy on the card */
   text: string;
   /** Color treatment from the visual grammar */
-  color_treatment?: 'neutral' | 'money_shot_green' | 'inline_green' | 'inline_red' | 'chalk_cream';
+  color_treatment?: ColorTreatment;
   bg_mode: 'white' | 'dark_gray';
-  /** Icon id from the line-drawing library (when composition=icon_card) */
-  icon?: string;
+  /** Icon id from the canonical line-drawing library
+   *  (required when composition=icon_card). */
+  icon?: IconId;
 }
 export interface ImageGenOutput {
   file_url: string;
@@ -96,14 +171,14 @@ export interface ImageGenOutput {
   height: number;
 }
 
-/** audio_mix — combine narration + sfx + bed music into the final group bed. */
+/** audio_mix — combine narration + sfx + bed music into the final group bed.
+ *  Ducks music −6dB under voice with 200ms release per audio-sfx spec. */
 export interface AudioMixArgs {
-  /** Ordered list of gem references — each entry is `{slot_id}.{gem_id}` like
-   *  'channel.subs.narr'. Producer resolves them to URLs. */
   narration_refs: string[];
   sfx_refs?: string[];
-  music_token?: string;        // e.g. 'main_bed_v1'
-  ducking_db?: number;         // attenuate music under voice
+  music_token?: MusicToken;
+  /** Ducking attenuation under voice (default −6 dB per spec). */
+  ducking_db?: number;
 }
 export interface AudioMixOutput {
   file_url: string;
@@ -185,13 +260,16 @@ export const TOOL_REGISTRY: ToolSpec[] = [
   },
   {
     name: 'sfx_render',
-    description: 'Render an SFX track from one or more token names (whoosh, ding_on_circle_reveal, etc.). Output can be sized to a target duration.',
+    description: 'Render an SFX track from one or more canonical SFX tokens. NEVER stack more than one SFX per cut (audio-sfx exclude rule). `ding` is mandatory on every $ reveal (pitch rises with figure size); `whoosh` is the default text-card cut transition; `ascending_electronic_sting` is reserved for the final CTA beat.',
     args_schema: {
       type: 'object',
       required: ['tokens'],
       additionalProperties: false,
       properties: {
-        tokens: { type: 'array', items: { type: 'string' }, minItems: 1 },
+        tokens: {
+          type: 'array', minItems: 1, maxItems: 2,
+          items: { type: 'string', enum: [...SFX_TOKENS] },
+        },
         fit_duration_s: { type: 'number', minimum: 0.1 },
       },
     },
@@ -199,7 +277,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
   },
   {
     name: 'image_gen',
-    description: 'Generate a non-YT visual: text_card, icon_card, chalkboard_card, or title-sequence card. Use for compositions that the visual grammar requires from non-screenshot sources.',
+    description: 'Generate a non-YT visual: text_card (narration cards), icon_card (line-drawing illustration), chalkboard_card (concept tag, max 1 per niche), or text_card_in_title_sequence (intro). bg_mode follows the visual-grammar rule: white for narration, dark_gray for YT-world / proof.',
     args_schema: {
       type: 'object',
       required: ['composition', 'text', 'bg_mode'],
@@ -207,16 +285,16 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       properties: {
         composition:     { type: 'string', enum: ['text_card', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence'] },
         text:            { type: 'string' },
-        color_treatment: { type: 'string', enum: ['neutral', 'money_shot_green', 'inline_green', 'inline_red', 'chalk_cream'] },
+        color_treatment: { type: 'string', enum: [...COLOR_TREATMENTS] },
         bg_mode:         { type: 'string', enum: ['white', 'dark_gray'] },
-        icon:            { type: 'string', description: 'Icon id from line-drawing library, required when composition=icon_card.' },
+        icon:            { type: 'string', enum: [...ICON_IDS], description: 'Required when composition=icon_card.' },
       },
     },
     output_fields: ['file_url', 'width', 'height'],
   },
   {
     name: 'audio_mix',
-    description: 'Mix narration + SFX + bed music into a single group-level audio bed. Used by the producer at the audio assembly stage, not per slot.',
+    description: 'Mix narration + SFX + bed music into a group-level audio bed. Ducks music −6 dB under voice with 200 ms release per audio-sfx spec. Music switches at niche/section/mode boundaries; default is `upbeat_light`.',
     args_schema: {
       type: 'object',
       required: ['narration_refs'],
@@ -224,7 +302,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       properties: {
         narration_refs: { type: 'array', items: { type: 'string' }, minItems: 1 },
         sfx_refs:       { type: 'array', items: { type: 'string' } },
-        music_token:    { type: 'string' },
+        music_token:    { type: 'string', enum: [...MUSIC_TOKENS] },
         ducking_db:     { type: 'number' },
       },
     },

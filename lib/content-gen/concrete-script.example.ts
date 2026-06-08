@@ -26,6 +26,7 @@ export const EXAMPLE_SLOT_CHANNEL_PROOF_1: ConcreteScript = {
     {
       slot_id: 'niche_1_channel_proof_1',
       beat_id: 'channel_proof_1',
+      data_point_id: 'channel.subscribers',
       narration: 'This channel already has more than 14 thousand subscribers.',
       gems: [
         {
@@ -51,9 +52,10 @@ export const EXAMPLE_SLOT_CHANNEL_PROOF_1: ConcreteScript = {
           id: 'sfx',
           tool: 'sfx_render',
           args: {
-            tokens: ['whoosh_on_load', 'ding_on_circle_reveal'],
-            // Fit the SFX track to the narration length so the ding lands
-            // before the cut to the next slot.
+            // Canonical SFX enum: whoosh fires on cut-in, ding on the
+            // sharpie-circle reveal. Pitch on the ding is implicit by figure
+            // size (per audio-sfx-class-b spec).
+            tokens: ['whoosh', 'ding'],
             fit_duration_s: 1.8,
           },
         },

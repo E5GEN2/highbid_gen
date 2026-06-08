@@ -68,7 +68,18 @@ export interface ComposeLayer {
 
 export interface Slot {
   slot_id: string;
-  beat_id: string;          // ties to skeleton beat_id for variation tracking
+  /** Skeleton beat id (channel_proof_1, money_math, etc.) — variation tracking. */
+  beat_id: string;
+  /** Canonical data-point id from data-points.json (e.g. "channel.subscribers",
+   *  "money.lump_sum"). The slot-rendering grammar is keyed on this — visual
+   *  recipes look up `slot_renderings[data_point_id]` to drive bg_mode +
+   *  primitive choice. Optional for purely structural beats (intro_card,
+   *  transitions). */
+  data_point_id?: string;
+  /** When a beat expands to a sequence (money_math 4-6 cards, top_views_seq
+   *  3-5 phrases, money.yearly 3 cards), this is the 0-based position within
+   *  the sequence. Omit for single-card beats. */
+  card_index?: number;
   narration?: string;       // empty for silent_visual beats
   gems: Gem[];
   compose: Compose;
