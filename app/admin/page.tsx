@@ -6,6 +6,7 @@ import ContentGenTab from '@/components/ContentGenTab';
 import ImageGenTab from '@/components/ImageGenTab';
 import AudioGenTab from '@/components/AudioGenTab';
 import ScreenCaptureTab from '@/components/ScreenCaptureTab';
+import ProducerTab from '@/components/ProducerTab';
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -34,7 +35,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen' | 'audiogen' | 'screencap'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen' | 'audiogen' | 'screencap' | 'producer'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1697,6 +1698,7 @@ export default function AdminPage() {
     { key: 'imagegen',       label: 'Image Gen',       dot: 'bg-lime-500/70' },
     { key: 'audiogen',       label: 'Audio Gen',       dot: 'bg-sky-500/70' },
     { key: 'screencap',      label: 'Screen Capture',  dot: 'bg-blue-500/70' },
+    { key: 'producer',       label: 'Producer',        dot: 'bg-emerald-500/70' },
     { key: 'embed-reqs',     label: 'Embed reqs',      dot: 'bg-cyan-400/70' },
     { key: 'analyze-vids',   label: 'Analyze Vids',    dot: 'bg-teal-400/70' },
     { key: 'xg-vid-dl',      label: 'XG vid download', dot: 'bg-orange-400/70' },
@@ -6228,6 +6230,14 @@ export default function AdminPage() {
             cached per (channel, kind, day). Live overwatch + gallery. */}
         <div style={{ display: adminSection === 'screencap' ? 'block' : 'none' }}>
           <ScreenCaptureTab active={adminSection === 'screencap'} />
+        </div>
+
+        {/* Producer — orchestrator that takes a ConcreteScript (from
+            script-writer) and drives every gem tool call to render the
+            final mp4. Timeline view: slots × gems with status pills,
+            elapsed_ms, output urls, final video player. */}
+        <div style={{ display: adminSection === 'producer' ? 'block' : 'none' }}>
+          <ProducerTab active={adminSection === 'producer'} />
         </div>
 
         {/* Embedding requests — custom-niche owners file these when
