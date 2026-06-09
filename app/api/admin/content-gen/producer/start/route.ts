@@ -301,6 +301,41 @@ function ytJoinedFormat(iso: string | undefined): string {
   return `Joined ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
+/** Build a `channel_intro` slot — first introduces the channel via the
+ *  MG-style channel chip composition (avatar + name + handle/subs/videos
+ *  + description preview + Subscribe button cropped from channel_page).
+ *  Per MG t≈1-4: the channel reveal opens with this chip view.
+ *  Slot inserted BEFORE channel_proof_1 in the niche flow. */
+function buildChannelIntroSlot(niche_index: number, ch: ChannelData): Slot {
+  const narration = `Take a look at this channel.`;
+  const base = `niche_${niche_index}`;
+  return {
+    slot_id: `${base}_channel_intro`,
+    beat_id: 'channel_intro',
+    narration,
+    gems: [
+      { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
+      { id: 'main', tool: 'yt_capture', args: {
+        channelId: ch.channelId,
+        kind: 'channel_page',
+        mode: 'static',
+      }},
+      { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+    ],
+    compose: {
+      bg: 'white',  // chip composer places card on WHITE outer canvas
+      hold_s: '{{narr.duration_s}}',
+      layers: [
+        // crop_target=channel_chip → composeChannelChipMG renders the chip
+        // inside a dark rounded card on a 1920×1080 white canvas.
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: 'channel_chip' },
+        { from: 'narr', channel: 'voice' },
+        { from: 'sfx',  channel: 'fx' },
+      ],
+    },
+  };
+}
+
 /** Insert a `top_videos_pano` slot immediately after channel_proof_2 for a
  *  given niche. Per user correction: this is NOT a data-driven mockup —
  *  it's a real yt_capture(videos_tab) screenshot cropped to the videos_grid
@@ -605,18 +640,31 @@ export async function POST(req: NextRequest) {
       const proofSwapped = forceProofKind(result.script.slots);
       const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
       const writerSlotsTransformed = injectCropTargets(callouttSwapped);
-      // 5. Insert a top_videos_pano slot (yt_capture(videos_tab) cropped
+      // 5. Insert a channel_intro slot showing the MG-style channel chip
+      //    (yt_capture(channel_page) cropped via composeChannelChipMG).
+      //    Goes RIGHT BEFORE channel_proof_1 in the niche flow — matches
+      //    MG's reveal pacing (chip → about modal subs → about modal views).
+      const channelIntroSlot = buildChannelIntroSlot(niche_index, ch);
+      // 6. Insert a top_videos_pano slot (yt_capture(videos_tab) cropped
       //    to videos_grid) right after channel_proof_2. Skipped if the
       //    channel has < 4 videos in DB.
       const panoSlot = await buildTopVideosPanoSlot(niche_index, ch);
-      const withPano: Slot[] = [];
+      const withInjects: Slot[] = [];
+      let chipInserted = false;
       for (const slot of writerSlotsTransformed) {
-        withPano.push(slot);
-        if (panoSlot && slot.beat_id === 'channel_proof_2') withPano.push(panoSlot);
+        if (!chipInserted && slot.beat_id === 'channel_proof_1') {
+          withInjects.push(channelIntroSlot);
+          chipInserted = true;
+        }
+        withInjects.push(slot);
+        if (panoSlot && slot.beat_id === 'channel_proof_2') withInjects.push(panoSlot);
       }
-      const hasPano = withPano.some(s => s.beat_id === 'top_videos_pano');
-      if (panoSlot && !hasPano) withPano.push(panoSlot);
-      allSlots.push(...framing, ...withPano, ...moneyMath);
+      // Fallback paths: if proof_1 wasn't emitted by writer, chip still goes first;
+      // if proof_2 wasn't, pano appends at end.
+      if (!chipInserted) withInjects.unshift(channelIntroSlot);
+      const hasPano = withInjects.some(s => s.beat_id === 'top_videos_pano');
+      if (panoSlot && !hasPano) withInjects.push(panoSlot);
+      allSlots.push(...framing, ...withInjects, ...moneyMath);
       acceptedCount++;
     }
     if (acceptedCount === 0) {
