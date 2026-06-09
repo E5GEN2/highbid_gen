@@ -381,6 +381,41 @@ function buildChannelIntroSlot(niche_index: number, ch: ChannelData): Slot {
   };
 }
 
+/** Build a `channel_page_full` slot — second stage of MG's channel
+ *  reveal (chip → full page → about modal at t≈1.4 → 3.8 → 6.5).
+ *  Shows the entire channel_page screenshot (banner + chip + tabs +
+ *  grid) on a tinted outer canvas. */
+function buildChannelPageFullSlot(niche_index: number, ch: ChannelData): Slot {
+  const narration = `And this is what they're doing.`;
+  const base = `niche_${niche_index}`;
+  return {
+    slot_id: `${base}_channel_page_full`,
+    beat_id: 'channel_page_full',
+    narration,
+    gems: [
+      { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
+      { id: 'main', tool: 'yt_capture', args: {
+        channelId: ch.channelId,
+        kind: 'channel_page',
+        mode: 'static',
+      }},
+      { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+    ],
+    compose: {
+      bg: 'dark_gray',
+      hold_s: '{{narr.duration_s}}',
+      layers: [
+        // crop_target=channel_page_full → composeChannelPageFullMG renders
+        // the whole page (sidebar stripped) inside a rounded dark card on
+        // a medium-gray outer canvas.
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: 'channel_page_full' },
+        { from: 'narr', channel: 'voice' },
+        { from: 'sfx',  channel: 'fx' },
+      ],
+    },
+  };
+}
+
 /** Insert a `top_videos_pano` slot immediately after channel_proof_2 for a
  *  given niche. Per user correction: this is NOT a data-driven mockup —
  *  it's a real yt_capture(videos_tab) screenshot cropped to the videos_grid
@@ -685,26 +720,24 @@ export async function POST(req: NextRequest) {
       const proofSwapped = forceProofKind(result.script.slots);
       const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
       const writerSlotsTransformed = injectCropTargets(callouttSwapped);
-      // 5. Insert a channel_intro slot showing the MG-style channel chip
-      //    (yt_capture(channel_page) cropped via composeChannelChipMG).
-      //    Goes RIGHT BEFORE channel_proof_1 in the niche flow — matches
-      //    MG's reveal pacing (chip → about modal subs → about modal views).
+      // 5. MG 3-stage channel reveal: chip → full page → about modal.
+      //    All inserted BEFORE channel_proof_1.
       const channelIntroSlot = buildChannelIntroSlot(niche_index, ch);
+      const channelPageFullSlot = buildChannelPageFullSlot(niche_index, ch);
       // 6. Insert top-3 rapid-fire video-card slots after channel_proof_2.
-      //    MG BEAT 7 — "They have videos with X views, Y views, Z views"
-      //    spoken over 3 single thumb cards in sequence.
+      //    MG BEAT 7 — 3 single thumb cards in sequence.
       const rapidFireSlots = await buildTopViewsRapidFireSlots(niche_index, ch);
       // 7. Insert a top_videos_pano slot (yt_capture(videos_tab) cropped
       //    to videos_grid) AFTER the rapid-fire sequence. Skipped if the
       //    channel has < 4 videos in DB.
       const panoSlot = await buildTopVideosPanoSlot(niche_index, ch);
       const withInjects: Slot[] = [];
-      let chipInserted = false;
+      let revealInserted = false;
       let proof2Seen = false;
       for (const slot of writerSlotsTransformed) {
-        if (!chipInserted && slot.beat_id === 'channel_proof_1') {
-          withInjects.push(channelIntroSlot);
-          chipInserted = true;
+        if (!revealInserted && slot.beat_id === 'channel_proof_1') {
+          withInjects.push(channelIntroSlot, channelPageFullSlot);
+          revealInserted = true;
         }
         withInjects.push(slot);
         if (slot.beat_id === 'channel_proof_2') {
@@ -713,9 +746,9 @@ export async function POST(req: NextRequest) {
           proof2Seen = true;
         }
       }
-      // Fallback paths: if proof_1 wasn't emitted by writer, chip still goes first;
+      // Fallback paths: if proof_1 wasn't emitted by writer, reveal pair goes first;
       // if proof_2 wasn't, rapid-fire + pano append at end.
-      if (!chipInserted) withInjects.unshift(channelIntroSlot);
+      if (!revealInserted) withInjects.unshift(channelIntroSlot, channelPageFullSlot);
       if (!proof2Seen) {
         withInjects.push(...rapidFireSlots);
         if (panoSlot) withInjects.push(panoSlot);
