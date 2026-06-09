@@ -78,8 +78,15 @@ async function runYtCapture(args: Record<string, unknown>): Promise<ToolOutput> 
     kind, mode, watchVideoId, annotate,
     force: Boolean(args.force),
   });
+  // Critical: surface the ANNOTATION-SPECIFIC local_path from the capture
+  // result. The DB row is unique on (channel_id, kind, date_bucket) and
+  // gets overwritten across multiple annotated calls for the same
+  // channel+kind+date, so file_url=?id=N would point to whichever
+  // annotation ran LAST. By passing local_path directly we preserve the
+  // annotation-specific file each gem actually captured.
   return {
     file_url: `/api/admin/content-gen/yt-capture/file?id=${r.id}`,
+    local_path: r.local_path,
     asset_kind: r.asset_kind,
     duration_s: r.duration_s,
     bboxes: r.bboxes,
