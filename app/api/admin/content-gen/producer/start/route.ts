@@ -301,6 +301,66 @@ function ytJoinedFormat(iso: string | undefined): string {
   return `Joined ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
+/** Format a view count for the rapid-fire narration — short form like
+ *  "7.9 million views" or "850 thousand views" (matches MG's spoken style). */
+function topViewsNarration(n: number): string {
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    const rounded = m >= 10 ? Math.round(m).toString() : m.toFixed(1).replace(/\.0$/, '');
+    return `${rounded} million views`;
+  }
+  if (n >= 1_000) {
+    return `${Math.round(n / 1_000)} thousand views`;
+  }
+  return `${n} views`;
+}
+
+/** Build 3 thumbnail-rapid-fire slots — MG BEAT 7 "TOP-3 VIEWS RAPID
+ *  SEQUENCE". Each slot shows ONE top video card (cropped from the
+ *  same videos_tab capture using video_card_N bbox) with a short
+ *  narration like "8.8 million views". Insert between channel_proof_2
+ *  and top_videos_pano in the niche flow. */
+async function buildTopViewsRapidFireSlots(niche_index: number, ch: ChannelData): Promise<Slot[]> {
+  const pool = await getPool();
+  const r = await pool.query<{ view_count: number }>(
+    `SELECT view_count FROM niche_spy_videos
+      WHERE channel_id = $1 AND view_count IS NOT NULL
+      ORDER BY view_count DESC NULLS LAST LIMIT 3`,
+    [ch.channelId],
+  );
+  if (r.rows.length === 0) return [];
+
+  const base = `niche_${niche_index}`;
+  return r.rows.map((row, idx) => {
+    const narration = topViewsNarration(row.view_count);
+    return {
+      slot_id: `${base}_top_views_rapid_${idx}`,
+      beat_id: 'top_views_rapid',
+      narration,
+      gems: [
+        { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
+        { id: 'main', tool: 'yt_capture', args: {
+          channelId: ch.channelId,
+          kind: 'videos_tab',
+          mode: 'static',
+        }},
+        { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+      ],
+      compose: {
+        bg: 'dark_gray',
+        hold_s: '{{narr.duration_s}}',
+        layers: [
+          // crop_target=thumbnail_rapid_fire:N → composeThumbnailRapidFireMG
+          // renders the single card on a dark canvas.
+          { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: `thumbnail_rapid_fire:${idx}` },
+          { from: 'narr', channel: 'voice' },
+          { from: 'sfx',  channel: 'fx' },
+        ],
+      },
+    };
+  });
+}
+
 /** Build a `channel_intro` slot — first introduces the channel via the
  *  MG-style channel chip composition (avatar + name + handle/subs/videos
  *  + description preview + Subscribe button cropped from channel_page).
@@ -645,25 +705,36 @@ export async function POST(req: NextRequest) {
       //    Goes RIGHT BEFORE channel_proof_1 in the niche flow — matches
       //    MG's reveal pacing (chip → about modal subs → about modal views).
       const channelIntroSlot = buildChannelIntroSlot(niche_index, ch);
-      // 6. Insert a top_videos_pano slot (yt_capture(videos_tab) cropped
-      //    to videos_grid) right after channel_proof_2. Skipped if the
+      // 6. Insert top-3 rapid-fire video-card slots after channel_proof_2.
+      //    MG BEAT 7 — "They have videos with X views, Y views, Z views"
+      //    spoken over 3 single thumb cards in sequence.
+      const rapidFireSlots = await buildTopViewsRapidFireSlots(niche_index, ch);
+      // 7. Insert a top_videos_pano slot (yt_capture(videos_tab) cropped
+      //    to videos_grid) AFTER the rapid-fire sequence. Skipped if the
       //    channel has < 4 videos in DB.
       const panoSlot = await buildTopVideosPanoSlot(niche_index, ch);
       const withInjects: Slot[] = [];
       let chipInserted = false;
+      let proof2Seen = false;
       for (const slot of writerSlotsTransformed) {
         if (!chipInserted && slot.beat_id === 'channel_proof_1') {
           withInjects.push(channelIntroSlot);
           chipInserted = true;
         }
         withInjects.push(slot);
-        if (panoSlot && slot.beat_id === 'channel_proof_2') withInjects.push(panoSlot);
+        if (slot.beat_id === 'channel_proof_2') {
+          withInjects.push(...rapidFireSlots);
+          if (panoSlot) withInjects.push(panoSlot);
+          proof2Seen = true;
+        }
       }
       // Fallback paths: if proof_1 wasn't emitted by writer, chip still goes first;
-      // if proof_2 wasn't, pano appends at end.
+      // if proof_2 wasn't, rapid-fire + pano append at end.
       if (!chipInserted) withInjects.unshift(channelIntroSlot);
-      const hasPano = withInjects.some(s => s.beat_id === 'top_videos_pano');
-      if (panoSlot && !hasPano) withInjects.push(panoSlot);
+      if (!proof2Seen) {
+        withInjects.push(...rapidFireSlots);
+        if (panoSlot) withInjects.push(panoSlot);
+      }
       allSlots.push(...framing, ...withInjects, ...moneyMath);
       acceptedCount++;
     }
