@@ -109,3 +109,100 @@ export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promis
     .toFile(outPath);
   return outPath;
 }
+
+/**
+ * Compose an MG-style "top videos pano" frame — 4×2 grid of channel videos.
+ *
+ * MG reference (frames2/t182.png) measurements:
+ *   Outer canvas: dark gray rgb(60,60,60), NOT white
+ *   Inner card: near-black rgb(13,13,13), aspect ~2.31 (landscape)
+ *   Card occupies ~78.6% × ~60.6% of canvas, centered with balanced margins
+ *
+ * Inputs:
+ *   srcPath: path to the videos_tab capture PNG (taken at 1700×1500 viewport
+ *            so YT renders 4 cards/row and at least 2 rows fit)
+ *   cardBboxes: array of video_card_N bboxes (first 8 used). Union forms the
+ *               grid bounds. Must come from the same capture as srcPath.
+ */
+const PANO_OUTER_BG = { r: 60, g: 60, b: 60 };    // MG dark canvas
+const PANO_CARD_BG  = { r: 13, g: 13, b: 13 };    // near-black inner card
+const PANO_CARD_W = 1500;                          // ~78% of 1920
+const PANO_CARD_H = 660;                           // ~61% of 1080
+const PANO_CARD_RADIUS = 36;
+const PANO_INNER_PAD = 30;
+
+export async function composeTopVideosPanoMG(srcPath: string, cardBboxes: BBox[]): Promise<string> {
+  if (cardBboxes.length === 0) throw new Error('composeTopVideosPanoMG: no card bboxes');
+
+  // 1. Union the first 8 card bboxes → grid bounds in source coords.
+  const first8 = cardBboxes.slice(0, 8);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const b of first8) {
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.w > maxX) maxX = b.x + b.w;
+    if (b.y + b.h > maxY) maxY = b.y + b.h;
+  }
+  // Pad slightly to include title+meta text below each card.
+  const padX = 16, padTop = 16, padBot = 80;  // bigger bottom pad for title text
+  const cropX = Math.max(0, minX - padX);
+  const cropY = Math.max(0, minY - padTop);
+  const cropW = (maxX + padX) - cropX;
+  const cropH = (maxY + padBot) - cropY;
+
+  // Clamp to source dimensions.
+  const meta = await sharp(srcPath).metadata();
+  const srcW = meta.width ?? 1700;
+  const srcH = meta.height ?? 1500;
+  const safeW = Math.min(cropW, srcW - cropX);
+  const safeH = Math.min(cropH, srcH - cropY);
+
+  // 2. Extract the grid crop.
+  const cropped = await sharp(srcPath)
+    .extract({ left: cropX, top: cropY, width: safeW, height: safeH })
+    .png()
+    .toBuffer();
+
+  // 3. Build the inner dark card with rounded corners.
+  const cardSvg = `<svg width="${PANO_CARD_W}" height="${PANO_CARD_H}">
+    <rect x="0" y="0" width="${PANO_CARD_W}" height="${PANO_CARD_H}"
+          rx="${PANO_CARD_RADIUS}" ry="${PANO_CARD_RADIUS}"
+          fill="rgb(${PANO_CARD_BG.r},${PANO_CARD_BG.g},${PANO_CARD_BG.b})"/>
+  </svg>`;
+  const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+
+  // 4. Resize cropped grid to fit inside the card preserving aspect.
+  const innerW = PANO_CARD_W - 2 * PANO_INNER_PAD;
+  const innerH = PANO_CARD_H - 2 * PANO_INNER_PAD;
+  const cropAspect = safeW / safeH;
+  const innerAspect = innerW / innerH;
+  let fitW: number, fitH: number;
+  if (cropAspect > innerAspect) {
+    fitW = innerW;
+    fitH = Math.round(innerW / cropAspect);
+  } else {
+    fitH = innerH;
+    fitW = Math.round(innerH * cropAspect);
+  }
+  const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
+
+  // 5. Composite content into card, centered.
+  const innerLeft = Math.round((PANO_CARD_W - fitW) / 2);
+  const innerTop = Math.round((PANO_CARD_H - fitH) / 2);
+  const cardWithContent = await sharp(cardBase)
+    .composite([{ input: fitted, left: innerLeft, top: innerTop }])
+    .png()
+    .toBuffer();
+
+  // 6. Place card on the dark-gray outer 1920×1080 canvas — centered.
+  const cardX = Math.round((CANVAS_W - PANO_CARD_W) / 2);
+  const cardY = Math.round((CANVAS_H - PANO_CARD_H) / 2);
+  const outPath = path.join(os.tmpdir(), `mg-pano-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  await sharp({
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: PANO_OUTER_BG },
+  })
+    .composite([{ input: cardWithContent, left: cardX, top: cardY }])
+    .png()
+    .toFile(outPath);
+  return outPath;
+}

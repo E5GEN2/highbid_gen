@@ -34,6 +34,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import sharp from 'sharp';
 import { CLIPS_DIR } from '../clips-dir';
+import type { BBox } from './yt-capture';
 
 const COMPOSE_DIR = path.join(CLIPS_DIR, 'producer_renders');
 
@@ -181,6 +182,22 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
         const { composeAboutPanelMG } = await import('./yt-compose-mg');
         const composed = await composeAboutPanelMG(basePath, bboxes.joined_date);
         return { kind: 'image', path: composed };
+      }
+
+      // videos_grid: MG-style 4×2 grid composer. Pulls the first 8
+      // video_card_N bboxes, crops the grid + composites onto a near-
+      // black rounded card on a dark-gray outer canvas (MG t182 style).
+      if (layer.crop_target === 'videos_grid') {
+        const cardBboxes: BBox[] = [];
+        for (let i = 0; i < 8; i++) {
+          const b = bboxes[`video_card_${i}`];
+          if (b) cardBboxes.push(b);
+        }
+        if (cardBboxes.length >= 4) {
+          const { composeTopVideosPanoMG } = await import('./yt-compose-mg');
+          const composed = await composeTopVideosPanoMG(basePath, cardBboxes);
+          return { kind: 'image', path: composed };
+        }
       }
 
       // Try composite target first (videos_grid, etc.), then single-bbox key.

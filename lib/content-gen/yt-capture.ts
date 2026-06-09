@@ -23,6 +23,12 @@ import { applyComposite } from './yt-annotate-composite';
 
 const SCREENS_DIR = path.join(CLIPS_DIR, 'yt_screens');
 const VIEWPORT = { width: 1440, height: 900 };  // generous card framing; YT looks correct
+/** Per-kind viewport override. videos_tab needs a wider viewport so YT
+ *  renders 4 cards per row (its breakpoint is around 1700px), enabling
+ *  the MG-style 4×2 grid composition. Taller height fits both rows. */
+const VIEWPORT_BY_KIND: Partial<Record<ScreenKind, { width: number; height: number }>> = {
+  videos_tab: { width: 1700, height: 1500 },
+};
 const NAV_TIMEOUT_MS = 45_000;
 const NETIDLE_MS = 3_000;
 const SCREENSHOT_TIMEOUT_MS = 15_000;
@@ -515,8 +521,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // Recording starts the moment the context is created. We track this so
     // we can trim the loading-phase prefix from the final WebM later.
     const contextCreatedAt = Date.now();
+    const effectiveViewport = VIEWPORT_BY_KIND[kind] ?? VIEWPORT;
     const context = await browser.newContext({
-      viewport: VIEWPORT,
+      viewport: effectiveViewport,
       locale: geoCfg.lang.split(',')[0],
       timezoneId: 'UTC',
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -527,7 +534,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       //   1. prefers-color-scheme: dark (CSS media query)
       //   2. YT theme cookie (f6=400, set below before navigation)
       colorScheme: 'dark',
-      ...(captureMode === 'scroll_record' ? { recordVideo: { dir: videosDir, size: VIEWPORT } } : {}),
+      ...(captureMode === 'scroll_record' ? { recordVideo: { dir: videosDir, size: effectiveViewport } } : {}),
     });
     // YouTube reads `PREF` cookie to pick the theme. f6=400 → dark. f6=4 → light.
     // We set this BEFORE the first navigation so the SSR HTML comes back dark.
@@ -758,7 +765,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         }
       }
       return { bboxes: out, debug: debugOut };
-    }, [rulesForKind, VIEWPORT.width, VIEWPORT.height]).catch(() => ({ bboxes: {} as BBoxMap, debug: {} as Record<string, unknown> }));
+    }, [rulesForKind, effectiveViewport.width, effectiveViewport.height]).catch(() => ({ bboxes: {} as BBoxMap, debug: {} as Record<string, unknown> }));
     const bboxes: BBoxMap = (extracted as { bboxes: BBoxMap }).bboxes ?? {};
     const bboxDebug = (extracted as { debug: Record<string, Record<string, unknown>> }).debug ?? {};
 
@@ -797,7 +804,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           // Y-bounds filter: same logic as the JS walker — drop matches
           // outside the modal area for about_page rules.
           if (box.y < minY || box.y > maxY) continue;
-          if (box.x < -4 || box.y < -4 || box.x + box.width > VIEWPORT.width + 4 || box.y + box.height > VIEWPORT.height + 4) continue;
+          if (box.x < -4 || box.y < -4 || box.x + box.width > effectiveViewport.width + 4 || box.y + box.height > effectiveViewport.height + 4) continue;
           const area = box.width * box.height;
           if (area < bestArea) {
             bestArea = area;
@@ -1019,7 +1026,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             }
           }
           return { cards: out, tagCounts, fallbackUsed, firstAncestorChain, rejectDbg };
-        }, VIEWPORT.width);
+        }, effectiveViewport.width);
         const cards = result.cards;
         cards.forEach((c, i) => {
           bboxes[`video_card_${i}`] = c.card;
@@ -1321,7 +1328,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               return { applied: true, in_scope: inScope, out_of_scope: outOfScope, picked: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), tag: renderTarget.tagName.toLowerCase(), text: ownText(el).slice(0, 80) }, candidates: candidatesDbg };
             }
             return { applied: false, in_scope: inScope, out_of_scope: outOfScope, picked: null, candidates: candidatesDbg };
-          }, { reSource, bounds, css, vpW: VIEWPORT.width, vpH: VIEWPORT.height, scopeTags }) as Record<string, unknown>;
+          }, { reSource, bounds, css, vpW: effectiveViewport.width, vpH: effectiveViewport.height, scopeTags }) as Record<string, unknown>;
           await page.waitForTimeout(300);
         } catch (e) {
           annotationDebug = { error: (e as Error).message.slice(0, 200) };
@@ -1361,7 +1368,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
          bytes=$4, proxy_country=$5, proxy_device=$6, asset_kind=$7, capture_mode=$8,
          duration_s=$9, bboxes_jsonb=$10, error=NULL, finished_at=NOW(), updated_at=NOW()
         WHERE id=$11`,
-      [finalPath, VIEWPORT.width, VIEWPORT.height, buf.length, proxy.country, proxy.deviceId,
+      [finalPath, effectiveViewport.width, effectiveViewport.height, buf.length, proxy.country, proxy.deviceId,
        assetKind, captureMode, durationS, JSON.stringify(bboxes), rowId],
     );
 
