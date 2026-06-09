@@ -204,6 +204,22 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
         return { kind: 'image', path: composed };
       }
 
+      // thumbnail_rapid_fire:N — MG-style single video card on dark
+      // canvas (thumbnail + title + meta), used for BEAT 7 top-views
+      // rapid-fire sequence. Anchored on video_card_N bbox of a
+      // videos_tab capture. Per-niche flow emits 3 slots back-to-back
+      // (idx 0,1,2 → top 3 videos by view count).
+      if (typeof layer.crop_target === 'string' && layer.crop_target.startsWith('thumbnail_rapid_fire:')) {
+        const idx = parseInt(layer.crop_target.split(':')[1] ?? '0', 10);
+        const cardKey = `video_card_${idx}` as const;
+        const cardBbox = (bboxes as Record<string, BBox | undefined>)[cardKey];
+        if (cardBbox) {
+          const { composeThumbnailRapidFireMG } = await import('./yt-compose-mg');
+          const composed = await composeThumbnailRapidFireMG(basePath, cardBbox);
+          return { kind: 'image', path: composed };
+        }
+      }
+
       // videos_grid: MG-style 4×2 grid composer. Pulls the first 8
       // video_card_N bboxes, crops the grid + composites onto a near-
       // black rounded card on a dark-gray outer canvas (MG t182 style).

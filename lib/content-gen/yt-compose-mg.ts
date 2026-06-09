@@ -304,6 +304,75 @@ export async function composeChannelPageFullMG(srcPath: string): Promise<string>
 }
 
 /**
+ * Compose an MG-style "single video card" frame — one video card cropped
+ * from a videos_tab capture, placed on a dark canvas. Matches MG t=600.8
+ * reference and is used by the BEAT 7 top-views rapid-fire sequence
+ * (3 cards × ~1s each).
+ *
+ * Crops just the card bbox (which already includes thumbnail + title +
+ * meta in YT's lockup model — see niche-spy-style bbox extraction).
+ * Local verification: /tmp/iter/out_single_card_c.png.
+ */
+const RAPID_OUTER_BG = { r: 35, g: 35, b: 35 };  // MG dark canvas
+const RAPID_CARD_BG  = { r: 22, g: 22, b: 22 };  // slightly darker inner card
+const RAPID_CARD_W = 1100;                        // ~57% of 1920 canvas
+const RAPID_CARD_RADIUS = 36;
+const RAPID_INNER_PAD = 30;
+const RAPID_CROP_PAD = 14;                        // breathing room around card bbox
+
+export async function composeThumbnailRapidFireMG(srcPath: string, cardBbox: BBox): Promise<string> {
+  // 1. Crop the single card from the videos_tab capture. The bbox is from
+  //    YT's yt-lockup-view-model — already covers thumb + title + meta.
+  const cropX = Math.max(0, cardBbox.x - RAPID_CROP_PAD);
+  const cropY = Math.max(0, cardBbox.y - RAPID_CROP_PAD);
+  const cropW = cardBbox.w + 2 * RAPID_CROP_PAD;
+  const cropH = cardBbox.h + 2 * RAPID_CROP_PAD;
+
+  const meta = await sharp(srcPath).metadata();
+  const safeW = Math.min(cropW, (meta.width ?? 0) - cropX);
+  const safeH = Math.min(cropH, (meta.height ?? 0) - cropY);
+  const cropped = await sharp(srcPath)
+    .extract({ left: cropX, top: cropY, width: safeW, height: safeH })
+    .png()
+    .toBuffer();
+
+  // 2. Build the dark rounded card. Adapt card height to maintain the
+  //    crop aspect (so the title row sits naturally below the thumbnail).
+  const cropAspect = safeW / safeH;
+  const cardH = Math.round(RAPID_CARD_W / cropAspect);
+  const cardSvg = `<svg width="${RAPID_CARD_W}" height="${cardH}">
+    <rect x="0" y="0" width="${RAPID_CARD_W}" height="${cardH}"
+          rx="${RAPID_CARD_RADIUS}" ry="${RAPID_CARD_RADIUS}"
+          fill="rgb(${RAPID_CARD_BG.r},${RAPID_CARD_BG.g},${RAPID_CARD_BG.b})"/>
+  </svg>`;
+  const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+
+  // 3. Fit the cropped card inside the inner padded area.
+  const innerW = RAPID_CARD_W - 2 * RAPID_INNER_PAD;
+  const innerH = cardH - 2 * RAPID_INNER_PAD;
+  const fitted = await sharp(cropped)
+    .resize(innerW, innerH, { fit: 'contain', background: RAPID_CARD_BG })
+    .png()
+    .toBuffer();
+  const cardWithContent = await sharp(cardBase)
+    .composite([{ input: fitted, left: RAPID_INNER_PAD, top: RAPID_INNER_PAD }])
+    .png()
+    .toBuffer();
+
+  // 4. Place card centered on dark canvas.
+  const cardX = Math.round((CANVAS_W - RAPID_CARD_W) / 2);
+  const cardY = Math.round((CANVAS_H - cardH) / 2);
+  const outPath = path.join(os.tmpdir(), `mg-rapid-fire-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  await sharp({
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: RAPID_OUTER_BG },
+  })
+    .composite([{ input: cardWithContent, left: cardX, top: cardY }])
+    .png()
+    .toFile(outPath);
+  return outPath;
+}
+
+/**
  * Compose an MG-style "top videos pano" frame — full vertical grid for
  * scroll-down panning. Output is a TALL PNG (1920 × N where N > 1080)
  * that ffmpeg will pan vertically over the slot duration.
