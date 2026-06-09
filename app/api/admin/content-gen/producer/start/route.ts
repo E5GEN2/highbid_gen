@@ -336,13 +336,18 @@ async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData): Pro
       { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
     ],
     compose: {
-      // MG places the cropped videos grid on a WHITE outer canvas.
-      bg: 'white',
+      // Pano composer outputs a 1920×N tall PNG (MG t182-style). The outer
+      // canvas is dark gray; bg here is just the letterbox color if the
+      // ffmpeg pan ever shows beyond the composed asset (shouldn't happen
+      // since the composer fills the full canvas width).
+      bg: 'dark_gray',
       hold_s: '{{narr.duration_s}}',
       layers: [
-        // crop_target=videos_grid → video-compose unions video_card_0..7
-        // bboxes and crops the screenshot to just the 4×2 grid.
-        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: 'videos_grid' },
+        // crop_target=videos_grid → MG composer renders a tall (>1080) PNG
+        // with the full grid in a dark rounded card on dark canvas.
+        // ken_burns=scroll_down → ffmpeg pans vertically over the slot
+        // duration, matching MG's slow scroll-down behavior.
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'scroll_down', crop_target: 'videos_grid' },
         { from: 'narr', channel: 'voice' },
         { from: 'sfx',  channel: 'fx' },
       ],

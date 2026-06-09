@@ -24,10 +24,10 @@ import { applyComposite } from './yt-annotate-composite';
 const SCREENS_DIR = path.join(CLIPS_DIR, 'yt_screens');
 const VIEWPORT = { width: 1440, height: 900 };  // generous card framing; YT looks correct
 /** Per-kind viewport override. videos_tab needs a wider viewport so YT
- *  renders 4 cards per row (its breakpoint is around 1700px), enabling
- *  the MG-style 4×2 grid composition. Taller height fits both rows. */
+ *  renders 4 cards per row (its breakpoint is around 1700px), and a TALL
+ *  viewport so multiple rows fit for the MG-style scroll-down pan. */
 const VIEWPORT_BY_KIND: Partial<Record<ScreenKind, { width: number; height: number }>> = {
-  videos_tab: { width: 1700, height: 1500 },
+  videos_tab: { width: 1700, height: 2500 },
 };
 const NAV_TIMEOUT_MS = 45_000;
 const NETIDLE_MS = 3_000;

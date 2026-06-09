@@ -61,7 +61,7 @@ export interface ComposeLayer {
   /** Visual fit when channel=video */
   fit?: 'contain' | 'cover' | 'fill';
   /** Camera move applied during the hold */
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right';
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down';
   /** When channel=overlay, position the layer over the main video */
   position?: { x: number | string; y: number | string; w: number | string; h: number | string };
   /** Crop a yt_capture image to one of its named bboxes before further

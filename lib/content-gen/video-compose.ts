@@ -42,7 +42,7 @@ interface ComposeLayer {
   from: string;
   channel?: 'video' | 'voice' | 'fx' | 'overlay';
   fit?: 'contain' | 'cover' | 'fill';
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right';
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down';
   url: string | null;
   duration_s: number | null;
   /** When the upstream tool returned an on-disk path, the producer surfaces
@@ -248,10 +248,22 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
 
   const padColor = BG_HEX[bg].replace('#', '0x');
   const totalFrames = Math.max(2, Math.round(hold_s * fps));
-  const stillVf = `scale=${width * 2}:-2:flags=lanczos,` +
+  const kenBurns = mainLayer.ken_burns ?? 'zoom_in_8pct';
+
+  // scroll_down: source PNG is 1920×N (N > height). Pan the visible window
+  // vertically from y=0 to y=(ih-height) over the slot duration. No zoom
+  // — this is a pure scroll. Width is preserved at 1920.
+  const scrollDownVf =
+    `scale=${width}:-2:flags=lanczos,` +
+    `crop=${width}:${height}:0:'min(ih-${height}, n/${Math.max(1, totalFrames - 1)}*(ih-${height}))',` +
+    `setsar=1,fps=${fps}`;
+
+  // Default Ken Burns: subtle 8% zoom-in on the centered image.
+  const stillVfDefault = `scale=${width * 2}:-2:flags=lanczos,` +
                   `zoompan=z='1+0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${Math.round(width * height / width)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
                   `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
+  const stillVf = kenBurns === 'scroll_down' ? scrollDownVf : stillVfDefault;
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
