@@ -124,13 +124,17 @@ export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promis
  *   cardBboxes: array of video_card_N bboxes (first 8 used). Union forms the
  *               grid bounds. Must come from the same capture as srcPath.
  */
-const PANO_OUTER_BG = { r: 60, g: 60, b: 60 };    // MG dark canvas
-const PANO_CARD_BG  = { r: 13, g: 13, b: 13 };    // near-black inner card
-const PANO_CARD_W = 1500;                          // ~78% of 1920
+// MG pano reference (frame VES STICK "Best Falls" grid scroll):
+//   Outer gray border around a big rounded dark card containing the grid.
+//   ~2 rows of cards visible per frame (cards are large — titles legible).
+//   Card extends past canvas top/bottom during mid-scroll.
+const PANO_OUTER_BG = { r: 95, g: 95, b: 95 };    // lighter outer gray (was 60)
+const PANO_CARD_BG  = { r: 22, g: 22, b: 22 };    // dark inner card (was 13)
+const PANO_CARD_W = 1800;                          // ~94% of 1920 — big card
 const PANO_CARD_RADIUS = 36;
-const PANO_CARD_MARGIN_X = (CANVAS_W - PANO_CARD_W) / 2;  // 210px
-const PANO_CARD_MARGIN_Y_TOP = 60;                         // card starts 60px from top
-const PANO_CARD_MARGIN_Y_BOT = 60;
+const PANO_CARD_MARGIN_X = (CANVAS_W - PANO_CARD_W) / 2;  // 60px
+const PANO_CARD_MARGIN_Y_TOP = 100;
+const PANO_CARD_MARGIN_Y_BOT = 100;
 const PANO_INNER_PAD = 30;
 
 /**
