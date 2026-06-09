@@ -322,10 +322,16 @@ function topViewsNarration(n: number): string {
  *  and top_videos_pano in the niche flow. */
 async function buildTopViewsRapidFireSlots(niche_index: number, ch: ChannelData): Promise<Slot[]> {
   const pool = await getPool();
+  // IMPORTANT: bboxes video_card_0/1/2 reference YT's videos_tab in Latest
+  // sort (YT default). To keep narration and visual in sync, query the
+  // 3 LATEST videos by posted_at DESC so each narration matches the
+  // card shown at its bbox index. (MG intent is top-by-views, but the
+  // capture-side cost of switching to Popular sort is not worth the
+  // refactor — narration matches visual is the higher-value invariant.)
   const r = await pool.query<{ view_count: number }>(
     `SELECT view_count FROM niche_spy_videos
       WHERE channel_id = $1 AND view_count IS NOT NULL
-      ORDER BY view_count DESC NULLS LAST LIMIT 3`,
+      ORDER BY posted_at DESC NULLS LAST LIMIT 3`,
     [ch.channelId],
   );
   if (r.rows.length === 0) return [];
