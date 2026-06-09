@@ -184,6 +184,16 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
         return { kind: 'image', path: composed };
       }
 
+      // channel_chip: MG-style channel identity card. Crops the chip area
+      // (avatar + name + handle/subs/videos + description + Subscribe) from
+      // a channel_page screenshot and places it inside a rounded dark card
+      // on a white outer canvas. Anchored on subscriber_count bbox.
+      if (layer.crop_target === 'channel_chip' && bboxes.subscriber_count) {
+        const { composeChannelChipMG } = await import('./yt-compose-mg');
+        const composed = await composeChannelChipMG(basePath, bboxes.subscriber_count);
+        return { kind: 'image', path: composed };
+      }
+
       // videos_grid: MG-style 4×2 grid composer. Pulls the first 8
       // video_card_N bboxes, crops the grid + composites onto a near-
       // black rounded card on a dark-gray outer canvas (MG t182 style).

@@ -138,6 +138,91 @@ const PANO_CARD_MARGIN_Y_BOT = 100;
 const PANO_INNER_PAD = 30;
 
 /**
+ * Compose an MG-style "channel chip" frame — the channel identity card
+ * (avatar + name + handle/subs/videos + description preview + Subscribe).
+ *
+ * MG reference (frame VES STICK at t≈1-4 of the source video, plus the
+ * user-shared image 1): a wide chip rendered inside a rounded dark card
+ * on a white outer canvas, centered. The chip is cropped from a real
+ * channel_page screenshot (YT dark mode) using subscriber_count as the
+ * deterministic anchor.
+ *
+ * Crop bounds (verified locally — see /tmp/iter/out_chip_h.png):
+ *   yTop  = subs.y - 86   → just below the channel banner
+ *   yBot  = subs.y + 124  → past the Subscribe button
+ *   xLeft = subs.x - 366  → past the avatar's left edge
+ *   xRight = subs.x + subs.w + 340 → past the description's right edge
+ */
+const CHIP_CARD_W = 1500;
+const CHIP_CARD_H = 700;
+const CHIP_CARD_RADIUS = 40;
+const CHIP_INNER_PAD = 40;
+
+export async function composeChannelChipMG(srcPath: string, subs: BBox): Promise<string> {
+  // 1. Compute crop bounds from subscriber_count anchor.
+  const cropX = Math.max(0, subs.x - 366);
+  const cropY = Math.max(0, subs.y - 86);
+  const cropW = subs.x + subs.w + 340 - cropX;
+  const cropH = subs.y + 124 - cropY;
+
+  // Clamp to source dimensions.
+  const meta = await sharp(srcPath).metadata();
+  const srcW = meta.width ?? 1440;
+  const srcH = meta.height ?? 900;
+  const safeW = Math.min(cropW, srcW - cropX);
+  const safeH = Math.min(cropH, srcH - cropY);
+
+  // 2. Extract chip content.
+  const cropped = await sharp(srcPath)
+    .extract({ left: cropX, top: cropY, width: safeW, height: safeH })
+    .png()
+    .toBuffer();
+
+  // 3. Build clean dark card.
+  const cardSvg = `<svg width="${CHIP_CARD_W}" height="${CHIP_CARD_H}">
+    <rect x="0" y="0" width="${CHIP_CARD_W}" height="${CHIP_CARD_H}"
+          rx="${CHIP_CARD_RADIUS}" ry="${CHIP_CARD_RADIUS}"
+          fill="rgb(${CARD_BG.r},${CARD_BG.g},${CARD_BG.b})"/>
+  </svg>`;
+  const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+
+  // 4. Fit content inside card preserving aspect.
+  const innerW = CHIP_CARD_W - 2 * CHIP_INNER_PAD;
+  const innerH = CHIP_CARD_H - 2 * CHIP_INNER_PAD;
+  const cropAspect = safeW / safeH;
+  const innerAspect = innerW / innerH;
+  let fitW: number, fitH: number;
+  if (cropAspect > innerAspect) {
+    fitW = innerW;
+    fitH = Math.round(innerW / cropAspect);
+  } else {
+    fitH = innerH;
+    fitW = Math.round(innerH * cropAspect);
+  }
+  const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
+
+  // 5. Composite content into card, centered.
+  const innerLeft = Math.round((CHIP_CARD_W - fitW) / 2);
+  const innerTop = Math.round((CHIP_CARD_H - fitH) / 2);
+  const cardWithContent = await sharp(cardBase)
+    .composite([{ input: fitted, left: innerLeft, top: innerTop }])
+    .png()
+    .toBuffer();
+
+  // 6. Place card centered on white canvas.
+  const cardX = Math.round((CANVAS_W - CHIP_CARD_W) / 2);
+  const cardY = Math.round((CANVAS_H - CHIP_CARD_H) / 2);
+  const outPath = path.join(os.tmpdir(), `mg-channel-chip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  await sharp({
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: CANVAS_BG },
+  })
+    .composite([{ input: cardWithContent, left: cardX, top: cardY }])
+    .png()
+    .toFile(outPath);
+  return outPath;
+}
+
+/**
  * Compose an MG-style "top videos pano" frame — full vertical grid for
  * scroll-down panning. Output is a TALL PNG (1920 × N where N > 1080)
  * that ffmpeg will pan vertically over the slot duration.
