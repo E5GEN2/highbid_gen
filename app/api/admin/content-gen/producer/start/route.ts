@@ -301,44 +301,23 @@ function ytJoinedFormat(iso: string | undefined): string {
   return `Joined ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-/** Format a view count for the rapid-fire narration — short form like
- *  "7.9 million views" or "850 thousand views" (matches MG's spoken style). */
-function topViewsNarration(n: number): string {
-  if (n >= 1_000_000) {
-    const m = n / 1_000_000;
-    const rounded = m >= 10 ? Math.round(m).toString() : m.toFixed(1).replace(/\.0$/, '');
-    return `${rounded} million views`;
-  }
-  if (n >= 1_000) {
-    return `${Math.round(n / 1_000)} thousand views`;
-  }
-  return `${n} views`;
-}
-
 /** Build 3 thumbnail-rapid-fire slots — MG BEAT 7 "TOP-3 VIEWS RAPID
- *  SEQUENCE". Each slot shows ONE top video card (cropped from the
- *  same videos_tab capture using video_card_N bbox) with a short
- *  narration like "8.8 million views". Insert between channel_proof_2
- *  and top_videos_pano in the niche flow. */
+ *  SEQUENCE". Each slot shows ONE video card (cropped from the
+ *  videos_tab capture using video_card_N bbox). Narrations are generic
+ *  so they don't go stale when niche_spy DB drifts from live YT data —
+ *  the rendered card already shows the view count + age in its own
+ *  meta line. Insert between channel_proof_2 and top_videos_pano in
+ *  the niche flow. */
 async function buildTopViewsRapidFireSlots(niche_index: number, ch: ChannelData): Promise<Slot[]> {
-  const pool = await getPool();
-  // IMPORTANT: bboxes video_card_0/1/2 reference YT's videos_tab in Latest
-  // sort (YT default). To keep narration and visual in sync, query the
-  // 3 LATEST videos by posted_at DESC so each narration matches the
-  // card shown at its bbox index. (MG intent is top-by-views, but the
-  // capture-side cost of switching to Popular sort is not worth the
-  // refactor — narration matches visual is the higher-value invariant.)
-  const r = await pool.query<{ view_count: number }>(
-    `SELECT view_count FROM niche_spy_videos
-      WHERE channel_id = $1 AND view_count IS NOT NULL
-      ORDER BY posted_at DESC NULLS LAST LIMIT 3`,
-    [ch.channelId],
-  );
-  if (r.rows.length === 0) return [];
-
+  // 3 rapid-fire slots, each showing video_card_0/1/2 from the latest
+  // videos_tab capture. Narrations are intentionally generic — the
+  // rendered card already shows view count + age in its meta line, so
+  // the spoken text doesn't need to repeat (and risk going stale if DB
+  // drifts from what YT serves on the live page). Each slot is ~1s
+  // matching MG's hold_s_per_card in the visual grammar.
+  const NARRATIONS = ['Look at this one.', 'And this one.', 'And another.'];
   const base = `niche_${niche_index}`;
-  return r.rows.map((row, idx) => {
-    const narration = topViewsNarration(row.view_count);
+  return NARRATIONS.map((narration, idx) => {
     return {
       slot_id: `${base}_top_views_rapid_${idx}`,
       beat_id: 'top_views_rapid',
