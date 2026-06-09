@@ -194,6 +194,16 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
         return { kind: 'image', path: composed };
       }
 
+      // channel_page_full: MG-style full channel page (banner + chip + tabs
+      // + grid). Crops YT sidebar away and places the page content in a
+      // rounded dark card on a medium-gray outer canvas. No bbox anchor
+      // needed — uses fixed proportional crop of the captured viewport.
+      if (layer.crop_target === 'channel_page_full') {
+        const { composeChannelPageFullMG } = await import('./yt-compose-mg');
+        const composed = await composeChannelPageFullMG(basePath);
+        return { kind: 'image', path: composed };
+      }
+
       // videos_grid: MG-style 4×2 grid composer. Pulls the first 8
       // video_card_N bboxes, crops the grid + composites onto a near-
       // black rounded card on a dark-gray outer canvas (MG t182 style).

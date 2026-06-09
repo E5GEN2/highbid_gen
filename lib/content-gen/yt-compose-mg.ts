@@ -223,6 +223,87 @@ export async function composeChannelChipMG(srcPath: string, subs: BBox): Promise
 }
 
 /**
+ * Compose an MG-style "full channel page" frame — banner + chip + tabs
+ * + grid, on a lighter outer canvas with the YT page in a rounded dark
+ * card.
+ *
+ * MG reference frame at t=3.8 (see /tmp/mg_analysis/frames_yt/mg_t3.8.png).
+ * Local verification: /tmp/iter/out_cp_b.png matched the framing.
+ *
+ * Crops the YT sidebar away (always at x:0-248), keeping the content
+ * area (x:248-1440, y:48-900 in a 1440×900 capture). Places that
+ * cropped page inside a dark rounded card on a medium-gray canvas.
+ */
+const CPAGE_OUTER_BG = { r: 95, g: 95, b: 95 };
+const CPAGE_CARD_BG  = { r: 16, g: 16, b: 16 };
+const CPAGE_CARD_W = 1760;
+const CPAGE_CARD_H = 980;
+const CPAGE_CARD_RADIUS = 36;
+const CPAGE_INNER_PAD = 24;
+
+export async function composeChannelPageFullMG(srcPath: string): Promise<string> {
+  // 1. Crop the page content area (excludes YT sidebar + top search bar).
+  const meta = await sharp(srcPath).metadata();
+  const srcW = meta.width ?? 1440;
+  const srcH = meta.height ?? 900;
+  // YT sidebar width in 1440×900 capture = ~248px. Top search bar = ~48px.
+  const sidebarW = Math.round(srcW * 248 / 1440);
+  const topBarH = Math.round(srcH * 48 / 900);
+  const cropX = sidebarW;
+  const cropY = topBarH;
+  const cropW = srcW - cropX;
+  const cropH = srcH - cropY;
+
+  const cropped = await sharp(srcPath)
+    .extract({ left: cropX, top: cropY, width: cropW, height: cropH })
+    .png()
+    .toBuffer();
+
+  // 2. Build clean dark card with rounded corners.
+  const cardSvg = `<svg width="${CPAGE_CARD_W}" height="${CPAGE_CARD_H}">
+    <rect x="0" y="0" width="${CPAGE_CARD_W}" height="${CPAGE_CARD_H}"
+          rx="${CPAGE_CARD_RADIUS}" ry="${CPAGE_CARD_RADIUS}"
+          fill="rgb(${CPAGE_CARD_BG.r},${CPAGE_CARD_BG.g},${CPAGE_CARD_BG.b})"/>
+  </svg>`;
+  const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+
+  // 3. Fit cropped page inside card preserving aspect.
+  const innerW = CPAGE_CARD_W - 2 * CPAGE_INNER_PAD;
+  const innerH = CPAGE_CARD_H - 2 * CPAGE_INNER_PAD;
+  const cropAspect = cropW / cropH;
+  const innerAspect = innerW / innerH;
+  let fitW: number, fitH: number;
+  if (cropAspect > innerAspect) {
+    fitW = innerW;
+    fitH = Math.round(innerW / cropAspect);
+  } else {
+    fitH = innerH;
+    fitW = Math.round(innerH * cropAspect);
+  }
+  const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
+
+  // 4. Composite content into card, centered.
+  const innerLeft = Math.round((CPAGE_CARD_W - fitW) / 2);
+  const innerTop = Math.round((CPAGE_CARD_H - fitH) / 2);
+  const cardWithContent = await sharp(cardBase)
+    .composite([{ input: fitted, left: innerLeft, top: innerTop }])
+    .png()
+    .toBuffer();
+
+  // 5. Place card centered on light-gray outer canvas.
+  const cardX = Math.round((CANVAS_W - CPAGE_CARD_W) / 2);
+  const cardY = Math.round((CANVAS_H - CPAGE_CARD_H) / 2);
+  const outPath = path.join(os.tmpdir(), `mg-channel-page-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  await sharp({
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: CPAGE_OUTER_BG },
+  })
+    .composite([{ input: cardWithContent, left: cardX, top: cardY }])
+    .png()
+    .toFile(outPath);
+  return outPath;
+}
+
+/**
  * Compose an MG-style "top videos pano" frame — full vertical grid for
  * scroll-down panning. Output is a TALL PNG (1920 × N where N > 1080)
  * that ffmpeg will pan vertically over the slot duration.
