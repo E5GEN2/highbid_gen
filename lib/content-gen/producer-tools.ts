@@ -171,6 +171,12 @@ async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> 
   if (tokens.length === 0) throw new Error('sfx_render: tokens required');
   const fit = args.fit_duration_s as number | undefined;
 
+  // tool_call emission — shows what tokens are being resolved + fit window.
+  // Surfaces ElevenLabs sound-gen invocations (often the slowest sub-step
+  // when a fresh token is generated).
+  const { emitToolCall } = await import('./exec-context');
+  await emitToolCall(`sfx:fetch (${tokens.length} tokens)`, { tokens, fit });
+
   // Fetch each canonical token via the existing sfx lib (cached by content
   // hash, generated via ElevenLabs sound-gen). Returns local mp3 paths.
   const assets = await Promise.all(tokens.map(t => getSfx(t).catch(e => {
@@ -179,6 +185,9 @@ async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> 
   })));
   const valid = assets.filter((a): a is NonNullable<typeof a> => a !== null);
   if (valid.length === 0) throw new Error('sfx_render: all tokens failed to resolve');
+  await emitToolCall(`sfx:resolved (${valid.length}/${tokens.length})`, {
+    resolved: valid.length, requested: tokens.length,
+  });
 
   // Concat the SFX assets into a single track. ffmpeg concat filter handles
   // gapless joining; if a `fit_duration_s` was requested, we pad with
@@ -234,6 +243,14 @@ async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
   const bg_mode = (args.bg_mode === 'dark_gray' ? 'dark_gray' : 'white') as 'white' | 'dark_gray';
   const color_treatment = args.color_treatment as 'neutral' | 'money_shot_green' | 'inline_green' | 'inline_red' | 'chalk_cream' | 'yellow_ring' | undefined;
   const icon = args.icon as 'shrug_with_question_marks' | 'pointing_hand' | 'checkmark_green_circle' | 'dollar_sign_green_circle' | 'cat_thumbs_up' | 'speaker_muted' | 'speaker_with_sound_waves' | 'shrug_emoji' | 'cash_pile' | undefined;
+  // tool_call sub-event so the Execution drawer shows what composition
+  // is being rendered (text_card, money_math, top_videos_pano, etc.) +
+  // its dominant args.
+  const { emitToolCall } = await import('./exec-context');
+  await emitToolCall(`image_gen:${composition}`, {
+    composition, bg_mode, color_treatment,
+    text_preview: text.slice(0, 60) || undefined,
+  });
   const result = await imageGenerate({
     composition,
     text,
