@@ -134,11 +134,17 @@ export async function refreshChannelStats(
 
   // 4. Persist. Only overwrite columns when API returns >0 (defensive against
   //    YT occasionally returning zero counts during rolling updates).
+  //    EXPLICIT ::bigint casts on subscriber_count and total_views — these
+  //    can exceed INT4 max (2.1B) for whales like MrBeast (128B views). Without
+  //    the cast, Postgres types the `$N > 0` comparison as INTEGER and
+  //    overflows at bind time with "value X is out of range for type integer"
+  //    (observed 2026-06-10 on the 10-channel listicle render — every channel
+  //    with >2.1B views failed loadChannel).
   await pool.query(
     `UPDATE niche_spy_channels SET
-       subscriber_count   = CASE WHEN $2 > 0 THEN $2 ELSE subscriber_count END,
+       subscriber_count   = CASE WHEN $2::bigint > 0 THEN $2::bigint ELSE subscriber_count END,
        video_count        = CASE WHEN $3 > 0 THEN $3 ELSE video_count END,
-       total_views        = CASE WHEN $4 > 0 THEN $4 ELSE total_views END,
+       total_views        = CASE WHEN $4::bigint > 0 THEN $4::bigint ELSE total_views END,
        stats_refreshed_at = $5
      WHERE channel_id = $1`,
     [channelId, subscriberCount, videoCount, viewCount, refreshedAt],
