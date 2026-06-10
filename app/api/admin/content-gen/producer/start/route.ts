@@ -659,25 +659,35 @@ function injectCropTargets(slots: Slot[]): Slot[] {
  *  about_page so the about_panel crop lands on the modal stats. */
 function forceProofKind(slots: Slot[]): Slot[] {
   return slots.map(slot => {
-    // channel_proof_1 → about_page + subscriber_count vertical_bar
-    // channel_proof_2 → about_page + total_views vertical_bar
+    // channel_proof_1 → about_page + highlight subscribers row
+    // channel_proof_2 → about_page + highlight views row
     if (slot.beat_id !== 'channel_proof_1' && slot.beat_id !== 'channel_proof_2') return slot;
-    const element = slot.beat_id === 'channel_proof_1' ? 'subscriber_count' : 'total_views';
+    const highlightRow: 'subscribers' | 'views' =
+      slot.beat_id === 'channel_proof_1' ? 'subscribers' : 'views';
     return {
       ...slot,
       gems: slot.gems.map(g => {
         if (g.id !== 'main') return g;
         if (g.tool !== 'yt_capture') return g;
+        // 2026-06-10 user feedback: previous flow baked a static yellow
+        // vertical_bar into the captured PNG, which then doubled with
+        // the new animated highlight (two yellow lines). Now the capture
+        // is clean — the L→R animated highlight is added entirely at
+        // video-compose time via ffmpeg drawbox keyed by highlight_row
+        // below.
+        //
+        // We KEEP annotate_element so the walker still scopes the about
+        // modal (otherwise the bbox extractor only returns joined_date
+        // and misses subscriber_count / total_views). We DROP annotate_kind
+        // and annotate_shape so the composite drawing step is skipped —
+        // no static bar baked into the PNG.
+        const element = highlightRow === 'subscribers' ? 'subscriber_count' : 'total_views';
         return {
           ...g,
           args: {
             ...g.args,
             kind: 'about_page',
             annotate_element: element,
-            // MG-style thin yellow vertical bar to the LEFT of the row,
-            // NOT the sharpie circle (which is messy on small modal text).
-            annotate_kind: 'composite',
-            annotate_shape: 'vertical_bar',
           },
         };
       }),
@@ -687,6 +697,11 @@ function forceProofKind(slots: Slot[]): Slot[] {
         // (the rounded corners of the modal naturally show through the
         // crop). NOT dark_gray — that was wrong.
         bg: 'white',
+        // Add the highlight_row directive to the about_panel layer so
+        // video-compose knows which stats row to animate over.
+        layers: (slot.compose.layers ?? []).map(l =>
+          l.crop_target === 'about_panel' ? { ...l, highlight_row: highlightRow } : l
+        ),
       },
     };
   });

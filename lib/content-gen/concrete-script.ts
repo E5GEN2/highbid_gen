@@ -72,6 +72,10 @@ export interface ComposeLayer {
   /** Index of the target avatar in a channel_logos_montage (0–9) used by
    *  ken_burns='zoom_in_to_target' to compute the zoompan center. */
   target_idx?: number;
+  /** Which row of the about-modal to MG-highlight (yellow rectangle that
+   *  animates L→R covering the row text). Used with crop_target='about_panel'.
+   *  Looked up against bboxes (subscriber_count / video_count / total_views). */
+  highlight_row?: 'subscribers' | 'videos' | 'views';
 }
 
 export interface Slot {

@@ -111,6 +111,52 @@ export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promis
 }
 
 /**
+ * Compute where a stats row (subscriber_count, total_views, video_count)
+ * lands in canvas coords AFTER composeAboutPanelMG's crop + scale +
+ * placement. Mirrors the composer math 1:1 so the ffmpeg drawbox
+ * animation aligns exactly with the rendered row.
+ *
+ * Inputs:
+ *   joined: same anchor bbox composer was called with (in source coords)
+ *   row:    bbox of the row to highlight (subscriber_count etc.) in source coords
+ */
+export function aboutPanelRowCanvasPos(joined: BBox, row: BBox): { x: number; y: number; w: number; h: number } {
+  const cropX = joined.x - 44;
+  const cropY = joined.y - 110;
+  const cropW = joined.w + 308;
+  const cropH = 372;
+
+  const innerW = CARD_W - 2 * CARD_INNER_PAD_X;
+  const innerH = CARD_H - 2 * CARD_INNER_PAD_Y;
+  const cropAspect = cropW / cropH;
+  const innerAspect = innerW / innerH;
+  let fitW: number, fitH: number;
+  if (cropAspect > innerAspect) {
+    fitW = innerW;
+    fitH = Math.round(innerW / cropAspect);
+  } else {
+    fitH = innerH;
+    fitW = Math.round(innerH * cropAspect);
+  }
+  const scale = fitW / cropW;
+
+  const rowXInCrop = row.x - cropX;
+  const rowYInCrop = row.y - cropY;
+
+  const cardX = Math.round((CANVAS_W - CARD_W) / 2);
+  const cardY = Math.round((CANVAS_H - CARD_H) / 2);
+  const innerLeft = Math.round((CARD_W - fitW) / 2);
+  const innerTop = Math.round((CARD_H - fitH) / 2);
+
+  return {
+    x: Math.round(cardX + innerLeft + rowXInCrop * scale),
+    y: Math.round(cardY + innerTop + rowYInCrop * scale),
+    w: Math.round(row.w * scale),
+    h: Math.round(row.h * scale),
+  };
+}
+
+/**
  * Compose an MG-style "top videos pano" frame — 4×2 grid of channel videos.
  *
  * MG reference (frames2/t182.png) measurements:

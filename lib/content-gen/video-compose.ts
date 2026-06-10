@@ -46,6 +46,11 @@ interface ComposeLayer {
   /** Index of target avatar (0–9) for ken_burns='zoom_in_to_target' on a
    *  2×5 channel_logos_montage. Maps to grid cell (col, row) and zoompan center. */
   target_idx?: number;
+  /** Highlight a stats row in about_panel — MG-style L→R yellow animation. */
+  highlight_row?: 'subscribers' | 'videos' | 'views';
+  /** Computed by the about_panel dispatch after the composer runs — gives the
+   *  row's canvas-coord position so the ffmpeg drawbox animation aligns exactly. */
+  highlight_canvas?: { x: number; y: number; w: number; h: number };
   url: string | null;
   duration_s: number | null;
   /** When the upstream tool returned an on-disk path, the producer surfaces
@@ -181,9 +186,59 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
       // about_panel: use the MG-style composer (crops modal content + places
       // it on a clean rounded dark card centered on white canvas). Produces
       // a 1920×1080 PNG ready to be the video frame — bypasses fit:contain.
+      //
+      // If layer.highlight_row is set, dynamically PIXEL-SCAN the composed
+      // PNG to find the text row positions, pick by index, and stash on
+      // the layer. Bbox math from joined_date was unreliable (extractor
+      // returned wrong views.y from the channel-page header behind the
+      // dimmed modal). Scanning the actual rendered canvas is robust:
+      // it can't be off-by-a-row regardless of source layout shifts.
       if (layer.crop_target === 'about_panel' && bboxes.joined_date) {
         const { composeAboutPanelMG } = await import('./yt-compose-mg');
         const composed = await composeAboutPanelMG(basePath, bboxes.joined_date);
+
+        if (layer.highlight_row) {
+          // Scan the COMPOSED PNG (1920×1080) for text rows in the modal area.
+          // Narrow scan column (x=650-760) catches every row — wider columns
+          // miss short rows like "28 videos". Threshold > 50 = white text on
+          // dark bg. 8 ≤ rowH < 30 to reject icons / button outlines.
+          const sharp = (await import('sharp')).default;
+          const { data, info } = await sharp(composed).raw().toBuffer({ resolveWithObject: true });
+          const rows: Array<{ top: number; h: number }> = [];
+          let inRow = false, startY = 0;
+          for (let y = 200; y < 900; y++) {
+            let bright = 0;
+            for (let x = 650; x < 760; x++) {
+              const off = (y * info.width + x) * info.channels;
+              bright += (data[off] + data[off + 1] + data[off + 2]) / 3;
+            }
+            bright /= 110;
+            if (bright > 50 && !inRow) { startY = y; inRow = true; }
+            else if (bright <= 50 && inRow) {
+              const h = y - startY;
+              if (h >= 8 && h < 30) rows.push({ top: startY, h });
+              inRow = false;
+            }
+          }
+          // Modal rows in order: url, country, joined, SUBS, videos, VIEWS,
+          // share-btn-top, share-btn-bot.
+          const rowIdx =
+            layer.highlight_row === 'subscribers' ? 3
+            : layer.highlight_row === 'videos'    ? 4
+            : 5; // views
+          const r = rows[rowIdx];
+          if (r) {
+            const TEXT_X = 637;       // canvas x right after the icon column
+            const PAD = 8;            // small vertical padding around row
+            layer.highlight_canvas = {
+              x: TEXT_X,
+              y: r.top - PAD,
+              w: 290,                  // covers worst-case row text width
+              h: r.h + 2 * PAD,
+            };
+          }
+        }
+
         return { kind: 'image', path: composed };
       }
 
@@ -322,9 +377,37 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
                   `zoompan=z='1+0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${Math.round(width * height / width)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
                   `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
+
+  // MG-style highlight: yellow rect that grows L→R over the row text. Animated
+  // via N drawbox calls with between(t,start,end) enable clauses (drawbox can't
+  // animate width via a single expression — its `t` param is thickness, not time).
+  // Verified locally: /tmp/iter/hl_mg_t{0.05,0.3,0.6}.png.
+  let highlightVf = '';
+  if (mainLayer.highlight_canvas) {
+    const hl = mainLayer.highlight_canvas;
+    // Skip the icon (24 px) at the row's left so highlight starts at the text.
+    const TEXT_X_OFFSET = 24;
+    const TEXT_PAD = 12;  // small right padding
+    const startX = hl.x + TEXT_X_OFFSET;
+    const maxW = hl.w - TEXT_X_OFFSET + TEXT_PAD;
+    const HIGHLIGHT_DUR = 0.6;
+    const N = 18;
+    const segments: string[] = [];
+    for (let i = 1; i <= N; i++) {
+      const start = ((i - 1) * HIGHLIGHT_DUR / N).toFixed(4);
+      const end = (i * HIGHLIGHT_DUR / N).toFixed(4);
+      const w = Math.round(i * maxW / N);
+      const enable = (i === N) ? `gte(t\\,${start})` : `between(t\\,${start}\\,${end})`;
+      // 0.45 opacity — keeps text legible through yellow (0.7 made "107K
+      // subscribers" hard to read per user feedback 2026-06-10).
+      segments.push(`drawbox=x=${startX}:y=${hl.y}:w=${w}:h=${hl.h}:color=yellow@0.45:thickness=fill:enable='${enable}'`);
+    }
+    highlightVf = ',' + segments.join(',');
+  }
+
   const stillVf =
-    kenBurns === 'scroll_down' ? scrollDownVf
-    : (zoomToTargetVf ?? stillVfDefault);
+    (kenBurns === 'scroll_down' ? scrollDownVf
+     : (zoomToTargetVf ?? stillVfDefault)) + highlightVf;
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
