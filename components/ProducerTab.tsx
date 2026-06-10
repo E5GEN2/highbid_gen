@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ExecutionGraph from './ExecutionGraph';
+import CachePanel from './CachePanel';
 
 /**
  * Admin → Producer tab.
@@ -155,7 +156,7 @@ export default function ProducerTab({ active }: { active: boolean }) {
       {msg && <div className="mb-4 text-xs text-[#bbb] bg-[#101010] border border-[#222] rounded px-3 py-2">{msg}</div>}
 
       {/* Status chips */}
-      <div className="flex items-center gap-2 mb-5 text-xs flex-wrap">
+      <div className="flex items-center gap-2 mb-3 text-xs flex-wrap">
         {(['pending', 'running', 'done', 'failed'] as const).map(s => (
           <span key={s} className={`px-2 py-1 rounded border ${STATUS_STYLE[s]}`}>
             {s}: {counts[s] ?? 0}
@@ -166,6 +167,10 @@ export default function ProducerTab({ active }: { active: boolean }) {
           {loading ? 'Refresh…' : 'Refresh'}
         </button>
       </div>
+
+      {/* Tool cache management — collapsed by default; expand to see per-tool
+          row counts, hit counts, sample disk sizes; invalidate per tool or all. */}
+      <CachePanel />
 
       {/* Start form */}
       <div className="rounded-lg border border-[#1f1f1f] bg-[#101010] p-4 mb-6 flex items-center gap-3 flex-wrap">
