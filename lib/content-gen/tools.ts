@@ -254,6 +254,16 @@ export interface ToolSpec {
   args_schema: Record<string, unknown>;
   /** Fields available on the output for `{{ref}}` interpolation. */
   output_fields: string[];
+  /** Tool implementation version. Bump when the tool's behavior changes
+   *  in a way that should invalidate cached outputs (filter formula
+   *  changed, composer geometry changed, prompt rewrite, etc.). Bumping
+   *  the version is what makes the producer re-run the tool instead of
+   *  returning a cached asset. */
+  version?: string;
+  /** Field names in args that should be EXCLUDED from the cache key. Use
+   *  for things like force=true / sync=true / timestamps that should
+   *  trigger a fresh run but not invalidate other callers' cache hits. */
+  cache_key_excludes?: string[];
 }
 
 /** The canonical tool registry — single source of truth for both the writer
@@ -281,6 +291,8 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'asset_kind', 'bboxes', 'page_width', 'page_height', 'duration_s'],
+    version: 'v1.0.0',
+    cache_key_excludes: ['force'],
   },
   {
     name: 'tts',
@@ -297,6 +309,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'duration_s', 'voice'],
+    version: 'v1.0.0',
   },
   {
     name: 'sfx_render',
@@ -314,6 +327,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'duration_s'],
+    version: 'v1.0.0',
   },
   {
     name: 'image_gen',
@@ -348,6 +362,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'width', 'height'],
+    version: 'v1.0.0',
   },
   {
     name: 'logos_montage',
@@ -362,6 +377,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'local_path'],
+    version: 'v1.0.0',
   },
   {
     name: 'audio_mix',

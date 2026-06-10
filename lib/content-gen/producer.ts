@@ -88,8 +88,15 @@ export async function startJob(input: ProducerStartInput): Promise<number> {
   return jobId;
 }
 
-/** Mark a gem started, then run its tool, then persist the result. */
-async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; output?: Record<string, unknown>; error?: string }> {
+/** Mark a gem started, then run its tool, then persist the result.
+ *
+ *  Tool cache: before invoking the tool, look up (tool, version, args)
+ *  in content_gen_tool_cache. On hit, write the cached output to the
+ *  gem row + mark cache_hit=true, skip the tool call entirely. Saves
+ *  the cost of yt_capture / TTS / image_gen / composer runs across
+ *  re-renders with the same inputs. Bump TOOL_REGISTRY entry's
+ *  `version` to invalidate. */
+async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; output?: Record<string, unknown>; error?: string; cached?: boolean }> {
   const pool = await getPool();
   const t0 = Date.now();
   await pool.query(
@@ -98,6 +105,26 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
       WHERE job_id=$1 AND slot_id=$2 AND gem_id=$3`,
     [jobId, slot_id, gem_id],
   );
+
+  // Cache lookup (skipped if tool exports no version OR if args contains
+  // force=true — caller is explicitly asking for a fresh run).
+  const { lookupCache, storeCache, extractAssetPaths } = await import('./tool-cache');
+  const wantsForce = args.force === true;
+  if (!wantsForce) {
+    const cached = await lookupCache(tool, args);
+    if (cached) {
+      const elapsed = Date.now() - t0;
+      await pool.query(
+        `UPDATE content_gen_producer_gems
+            SET status='done', output_jsonb=$1::jsonb, elapsed_ms=$2,
+                finished_at=NOW(), cache_hit=TRUE, cache_row_id=$3
+          WHERE job_id=$4 AND slot_id=$5 AND gem_id=$6`,
+        [JSON.stringify(cached.output), elapsed, cached.origin.row_id, jobId, slot_id, gem_id],
+      );
+      return { ok: true, output: cached.output, cached: true };
+    }
+  }
+
   try {
     const out = await runTool(tool, args);
     const elapsed = Date.now() - t0;
@@ -107,6 +134,10 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
         WHERE job_id=$3 AND slot_id=$4 AND gem_id=$5`,
       [JSON.stringify(out), elapsed, jobId, slot_id, gem_id],
     );
+    // Persist to the cache for future renders. Only cache successful
+    // outputs; skip silently on store errors (cache misses are cheaper
+    // than cache write failures bubbling up).
+    void storeCache(tool, args, out, extractAssetPaths(out));
     return { ok: true, output: out };
   } catch (e) {
     const elapsed = Date.now() - t0;

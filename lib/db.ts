@@ -1949,6 +1949,30 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpg_job ON content_gen_producer_gems(job_id, slot_index, gem_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpg_status ON content_gen_producer_gems(status)`).catch(() => {});
+    // Mark cache hits in the gems table so the GUI / execution graph can
+    // show "cached" badges. Same status enum + new fields for diagnostics.
+    await client.query(`ALTER TABLE content_gen_producer_gems ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN DEFAULT FALSE`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_producer_gems ADD COLUMN IF NOT EXISTS cache_row_id INTEGER`).catch(() => {});
+
+    // Tool-versioned asset cache. UNIQUE on args_hash so the same
+    // (tool, version, args) combo across different jobs deduplicates.
+    // Bumping a tool's version invalidates all rows tagged with the
+    // previous version — the lookupCache call returns null on miss and
+    // the old row gets overwritten via the ON CONFLICT path in storeCache.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_tool_cache (
+        id            SERIAL PRIMARY KEY,
+        tool          TEXT NOT NULL,
+        version       TEXT NOT NULL,
+        args_hash     TEXT NOT NULL UNIQUE,
+        output_jsonb  JSONB NOT NULL,
+        asset_paths   TEXT[] NOT NULL DEFAULT '{}',
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        hit_count     INTEGER NOT NULL DEFAULT 0
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgtc_tool ON content_gen_tool_cache(tool, version, last_used_at DESC)`).catch(() => {});
 
     schemaInitialized = true;
     console.log('Database schema initialized');
