@@ -749,6 +749,16 @@ export async function POST(req: NextRequest) {
   };
 
   let script: ConcreteScript | undefined;
+  // Per-channel events accumulated during the listicle path's writer +
+  // refresh-stats steps. Drained after startJob so we can backfill writer
+  // and db_save nodes into the execution graph with the real job_id.
+  type ChannelEvent = {
+    channelId: string;
+    niche_index: number;
+    channel_label?: string;
+    writer: { ok: boolean; slot_count: number; beats: string[]; first_slot_id?: string; error?: string };
+  };
+  const channelEvents: ChannelEvent[] = [];
 
   if (body.script) {
     script = body.script;
@@ -786,9 +796,19 @@ export async function POST(req: NextRequest) {
       };
       const result = await writeScript(input);
       if (!result.ok || !result.script) {
+        channelEvents.push({
+          channelId: cid, niche_index, channel_label: ch.channel_name ?? cid,
+          writer: { ok: false, slot_count: 0, beats: beats.map(b => b.beat_id),
+                    error: result.errors?.[0]?.message?.slice(0, 200) ?? 'writer failed' },
+        });
         failures.push({ channelId: cid, reason: result.errors?.[0]?.message?.slice(0, 200) ?? 'writer failed' });
         continue;
       }
+      channelEvents.push({
+        channelId: cid, niche_index, channel_label: ch.channel_name ?? cid,
+        writer: { ok: true, slot_count: result.script.slots.length, beats: beats.map(b => b.beat_id),
+                  first_slot_id: result.script.slots[0]?.slot_id },
+      });
       // 3. Money_math sequence — 5 cards calculating $X,XXX from top-video
       //    views. Skips if channel has no top-video data.
       const moneyMath = buildMoneyMathSlots(niche_index, ch);
@@ -900,6 +920,60 @@ export async function POST(req: NextRequest) {
   catch (e) { return NextResponse.json({ error: 'invalid script', detail: (e as Error).message }, { status: 400 }); }
 
   const job_id = await startJob({ script });
+
+  // Retroactively log writer + db_save graph nodes so the Execution
+  // panel shows the first events of the render BEFORE any gem starts.
+  // Multi-channel path emits one writer node per channel + a stats_refresh
+  // db_save node for each. Single-channel path emits one writer node.
+  void (async () => {
+    try {
+      const { upsertNode, addEdge, nodeKey } = await import('@/lib/content-gen/exec-graph');
+      const events = channelEvents;
+      if (events.length === 0 && body.channelId) {
+        // Single-channel path — no accumulator, write one writer node now.
+        const wKey = `writer:${body.channelId}`;
+        await upsertNode({
+          jobId: job_id, nodeKey: wKey, nodeType: 'writer',
+          label: `writer · ${body.channelId.slice(-6)}`, status: 'done',
+          payload: { channelId: body.channelId, beat_id: body.beat_id, slot_count: script.slots.length },
+        });
+        if (script.slots[0]) {
+          await addEdge(job_id, wKey, nodeKey.slot(script.slots[0].slot_id), 'sequence');
+        }
+        return;
+      }
+      for (const ev of events) {
+        const wKey = `writer:${ev.channelId}`;
+        await upsertNode({
+          jobId: job_id, nodeKey: wKey, nodeType: 'writer',
+          label: `writer · niche ${ev.niche_index} · ${ev.channel_label?.slice(0, 16) ?? ev.channelId.slice(-6)}`,
+          status: ev.writer.ok ? 'done' : 'failed',
+          payload: {
+            channelId: ev.channelId, niche_index: ev.niche_index,
+            slot_count: ev.writer.slot_count, beats: ev.writer.beats,
+            error: ev.writer.error,
+          },
+        });
+        // Stats-refresh db_save node — refreshChannelStats was called inside
+        // loadChannel above. We can't distinguish hit vs miss after the fact
+        // without tighter coupling; for now we emit a single db_save per
+        // channel showing the freshly-read row.
+        const dbKey = `db:${ev.channelId}:niche_spy_channels`;
+        await upsertNode({
+          jobId: job_id, nodeKey: dbKey, nodeType: 'db_save',
+          label: `niche_spy_channels · ${ev.channelId.slice(-6)}`, status: 'done',
+          payload: { table: 'niche_spy_channels', channelId: ev.channelId, note: 'refreshChannelStats' },
+        });
+        await addEdge(job_id, dbKey, wKey, 'sequence');
+        // Writer → first writer-emitted slot for this niche, if any.
+        if (ev.writer.ok && ev.writer.first_slot_id) {
+          await addEdge(job_id, wKey, nodeKey.slot(ev.writer.first_slot_id), 'sequence');
+        }
+      }
+    } catch (e) {
+      console.warn(`[producer:${job_id}] graph backfill failed:`, (e as Error).message.slice(0, 200));
+    }
+  })();
 
   if (body.sync) {
     const result = await runJob(job_id);

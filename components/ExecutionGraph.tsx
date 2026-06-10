@@ -136,6 +136,7 @@ export default function ExecutionGraph({ jobId, onClose }: Props) {
   const gemNodes  = (graph?.nodes ?? []).filter(n => n.node_type === 'gem');
   const composeNodes = (graph?.nodes ?? []).filter(n => n.node_type === 'compose');
   const writerNodes  = (graph?.nodes ?? []).filter(n => n.node_type === 'writer');
+  const dbSaveNodes  = (graph?.nodes ?? []).filter(n => n.node_type === 'db_save');
 
   // Group gems by slot key via the `depends_on` edges (slot → gem). Falls
   // back to gem.node_key prefix when no edge is recorded yet.
@@ -213,9 +214,19 @@ export default function ExecutionGraph({ jobId, onClose }: Props) {
       )}
 
       <div className="flex-1 overflow-auto p-4 bg-[#050505]">
+        {dbSaveNodes.length > 0 && (
+          <div className="mb-4">
+            <SectionLabel>Channel data refresh (db_save)</SectionLabel>
+            <div className="flex flex-wrap gap-2">
+              {dbSaveNodes.map(n => <NodeCard key={n.id} n={n} onSelect={() => setSelected(n)} />)}
+            </div>
+            <Connector />
+          </div>
+        )}
+
         {writerNodes.length > 0 && (
           <div className="mb-4">
-            <SectionLabel>Script writer</SectionLabel>
+            <SectionLabel>Script writer ({writerNodes.length} call{writerNodes.length === 1 ? '' : 's'})</SectionLabel>
             <div className="flex flex-wrap gap-2">
               {writerNodes.map(n => <NodeCard key={n.id} n={n} onSelect={() => setSelected(n)} />)}
             </div>
