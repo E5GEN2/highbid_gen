@@ -213,71 +213,19 @@ export default function ExecutionGraph({ jobId, onClose }: Props) {
         </div>
       )}
 
-      <div className="flex-1 overflow-auto p-4 bg-[#050505]">
-        {dbSaveNodes.length > 0 && (
-          <div className="mb-4">
-            <SectionLabel>Channel data refresh (db_save)</SectionLabel>
-            <div className="flex flex-wrap gap-2">
-              {dbSaveNodes.map(n => <NodeCard key={n.id} n={n} onSelect={() => setSelected(n)} />)}
-            </div>
-            <Connector />
-          </div>
-        )}
+      <DagCanvas
+        graph={graph}
+        slotKeyToGems={slotKeyToGems}
+        dbSaveNodes={dbSaveNodes}
+        writerNodes={writerNodes}
+        slotNodes={slotNodes}
+        composeNodes={composeNodes}
+        onSelect={setSelected}
+      />
 
-        {writerNodes.length > 0 && (
-          <div className="mb-4">
-            <SectionLabel>Script writer ({writerNodes.length} call{writerNodes.length === 1 ? '' : 's'})</SectionLabel>
-            <div className="flex flex-wrap gap-2">
-              {writerNodes.map(n => <NodeCard key={n.id} n={n} onSelect={() => setSelected(n)} />)}
-            </div>
-            <Connector />
-          </div>
-        )}
-
-        {slotNodes.map((slot, slotIdx) => {
-          const gems = slotKeyToGems[slot.node_key] ?? [];
-          return (
-            <div key={slot.id} className="mb-3">
-              <div className="flex items-start gap-3">
-                <NodeCard n={slot} width={220} onSelect={() => setSelected(slot)} />
-                <div className="flex flex-wrap gap-2 items-start pt-1">
-                  {gems.map(g => (
-                    <NodeCard key={g.id} n={g} onSelect={() => setSelected(g)} />
-                  ))}
-                </div>
-              </div>
-              {slotIdx < slotNodes.length - 1 && <Connector />}
-            </div>
-          );
-        })}
-
-        {composeNodes.length > 0 && (
-          <div className="mt-6 border-t border-[#222] pt-4">
-            <SectionLabel>Final compose</SectionLabel>
-            <div className="flex gap-2">
-              {composeNodes.map(n => <NodeCard key={n.id} n={n} width={280} onSelect={() => setSelected(n)} />)}
-            </div>
-            {graph?.job.final_video_url && (
-              <div className="mt-3">
-                <a
-                  href={graph.job.final_video_url}
-                  className="text-sm text-blue-300 hover:underline"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  → open final mp4
-                </a>
-              </div>
-            )}
-          </div>
-        )}
-
-        {slotNodes.length === 0 && writerNodes.length === 0 && !err && (
-          <div className="text-center text-[#666] py-8 text-sm">
-            {graph ? 'No graph nodes yet — waiting for first slot.' : 'Loading…'}
-          </div>
-        )}
-      </div>
+      {!err && graph && graph.nodes.length === 0 && (
+        <div className="text-center text-[#666] py-8 text-sm">Loading…</div>
+      )}
 
       {selected && (
         <NodeDetail node={selected} onClose={() => setSelected(null)} />
@@ -288,14 +236,171 @@ export default function ExecutionGraph({ jobId, onClose }: Props) {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-xs uppercase tracking-wider text-[#666] mb-2">{children}</div>
+    <div className="text-[10px] uppercase tracking-wider text-[#666] mb-1 select-none">{children}</div>
   );
 }
 
-function Connector() {
+// ───────────────────────────────────────────────────────────────────
+// Custom DAG canvas — absolute-positioned nodes with SVG edges drawn
+// between them by node_key. Layout is deterministic so SVG paths can
+// reference computed node centers without needing DOM measurement.
+//
+// Lane stack (top → bottom):
+//   db_save      (lane 0)
+//   writer       (lane 1)
+//   slot rows    (lanes 2..N; each slot row has slot card + child gem cards)
+//   compose      (last lane)
+// ───────────────────────────────────────────────────────────────────
+
+const NODE_W = 180;
+const NODE_H = 56;
+const SLOT_W = 220;
+const COMPOSE_W = 280;
+const NODE_GAP_X = 12;
+const LANE_GAP_Y = 56;
+const SLOT_GAP_Y = 14;
+const LANE_PAD_X = 24;
+
+interface PlacedNode {
+  n: GraphNode;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function DagCanvas({
+  graph, slotKeyToGems, dbSaveNodes, writerNodes, slotNodes, composeNodes, onSelect,
+}: {
+  graph: GraphResponse | null;
+  slotKeyToGems: Record<string, GraphNode[]>;
+  dbSaveNodes: GraphNode[];
+  writerNodes: GraphNode[];
+  slotNodes: GraphNode[];
+  composeNodes: GraphNode[];
+  onSelect: (n: GraphNode) => void;
+}) {
+  // Layout pass — compute (x,y,w,h) per node_key. Lane-by-lane top-down.
+  const positions: Record<string, PlacedNode> = {};
+  let y = 16;
+
+  const placeLane = (label: string | null, nodes: GraphNode[], w: number) => {
+    if (nodes.length === 0) return;
+    let x = LANE_PAD_X;
+    for (const n of nodes) {
+      positions[n.node_key] = { n, x, y: y + (label ? 16 : 0), w, h: NODE_H };
+      x += w + NODE_GAP_X;
+    }
+    y += (label ? 16 : 0) + NODE_H + LANE_GAP_Y;
+  };
+
+  placeLane('db_save',  dbSaveNodes, NODE_W);
+  placeLane('writer',   writerNodes, NODE_W);
+
+  // Slot rows — slot card on the left, gem cards laid out horizontally.
+  for (const slot of slotNodes) {
+    const gems = slotKeyToGems[slot.node_key] ?? [];
+    positions[slot.node_key] = { n: slot, x: LANE_PAD_X, y, w: SLOT_W, h: NODE_H };
+    let gemX = LANE_PAD_X + SLOT_W + NODE_GAP_X;
+    for (const g of gems) {
+      positions[g.node_key] = { n: g, x: gemX, y, w: NODE_W, h: NODE_H };
+      gemX += NODE_W + NODE_GAP_X;
+    }
+    y += NODE_H + SLOT_GAP_Y;
+  }
+
+  y += LANE_GAP_Y - SLOT_GAP_Y;
+  placeLane('compose', composeNodes, COMPOSE_W);
+
+  const canvasH = y + 24;
+  const canvasW = Math.max(
+    LANE_PAD_X * 2 + writerNodes.length * (NODE_W + NODE_GAP_X),
+    LANE_PAD_X * 2 + dbSaveNodes.length * (NODE_W + NODE_GAP_X),
+    ...slotNodes.map(s => {
+      const gems = slotKeyToGems[s.node_key] ?? [];
+      return LANE_PAD_X * 2 + SLOT_W + NODE_GAP_X + gems.length * (NODE_W + NODE_GAP_X);
+    }),
+    LANE_PAD_X * 2 + COMPOSE_W,
+    800,
+  );
+
+  // Edge paths — center-to-center curves.
+  const edgePaths: Array<{ id: number; d: string; kind: GraphEdge['kind'] }> = [];
+  for (const e of graph?.edges ?? []) {
+    const a = positions[e.from_key];
+    const b = positions[e.to_key];
+    if (!a || !b) continue;
+    const x1 = a.x + a.w / 2;
+    const y1 = a.y + a.h;
+    const x2 = b.x + b.w / 2;
+    const y2 = b.y;
+    // Cubic Bezier for vertical-ish edges; straight-ish for sibling edges (same y).
+    const dy = Math.abs(y2 - y1);
+    const dx = Math.abs(x2 - x1);
+    let d: string;
+    if (dy < 8) {
+      // Same lane — short horizontal connector.
+      d = `M ${a.x + a.w} ${a.y + a.h / 2} L ${b.x} ${b.y + b.h / 2}`;
+    } else {
+      const cy1 = y1 + Math.min(40, dy * 0.4);
+      const cy2 = y2 - Math.min(40, dy * 0.4);
+      d = `M ${x1} ${y1} C ${x1} ${cy1}, ${x2} ${cy2}, ${x2} ${y2}`;
+    }
+    edgePaths.push({ id: e.id, d, kind: e.kind });
+    void dx;
+  }
+
   return (
-    <div className="h-3 flex justify-start pl-[110px]">
-      <div className="w-px bg-[#333]" />
+    <div className="flex-1 overflow-auto bg-[#050505] relative">
+      <div style={{ position: 'relative', width: canvasW, height: canvasH }}>
+        {/* Lane separator labels (purely decorative, fixed at left edge). */}
+        {dbSaveNodes.length > 0 && (
+          <div style={{ position: 'absolute', left: 4, top: 0, fontSize: 9 }} className="uppercase tracking-wider text-[#444]">db_save</div>
+        )}
+        {writerNodes.length > 0 && (() => {
+          const first = positions[writerNodes[0].node_key];
+          return first ? (
+            <div style={{ position: 'absolute', left: 4, top: first.y - 12, fontSize: 9 }} className="uppercase tracking-wider text-[#444]">writer</div>
+          ) : null;
+        })()}
+        {composeNodes.length > 0 && (() => {
+          const first = positions[composeNodes[0].node_key];
+          return first ? (
+            <div style={{ position: 'absolute', left: 4, top: first.y - 12, fontSize: 9 }} className="uppercase tracking-wider text-[#444]">compose</div>
+          ) : null;
+        })()}
+
+        <svg
+          width={canvasW} height={canvasH}
+          style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
+        >
+          <defs>
+            <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 z" fill="#555" />
+            </marker>
+          </defs>
+          {edgePaths.map(ep => (
+            <path
+              key={ep.id}
+              d={ep.d}
+              fill="none"
+              stroke={ep.kind === 'depends_on' ? '#3a3a3a' : ep.kind === 'compose_input' ? '#444' : '#555'}
+              strokeWidth={ep.kind === 'compose_input' ? 1.5 : 1}
+              strokeDasharray={ep.kind === 'depends_on' ? '4 3' : undefined}
+              markerEnd="url(#arrowhead)"
+            />
+          ))}
+        </svg>
+
+        {Object.values(positions).map(p => (
+          <div
+            key={p.n.node_key}
+            style={{ position: 'absolute', left: p.x, top: p.y, width: p.w, height: p.h }}
+          >
+            <NodeCard n={p.n} width={p.w} onSelect={() => onSelect(p.n)} />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
