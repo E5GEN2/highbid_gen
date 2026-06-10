@@ -170,18 +170,25 @@ function buildNicheIntroSlots(
   niche_label: string,
   allChannelIds: string[],
   channelName?: string,
+  thisChannelId?: string,
 ): Slot[] {
   const base = `niche_${niche_index}`;
   // Threshold >= 1 so single-channel test renders also use the montage
   // (with that one logo). Multi-channel uses the full 2×5 grid as before.
-  // Previously >= 2 → 1-channel tests fell back to a "Number N." text card,
-  // confusing user feedback 2026-06-10 ("intro is missing the channel logos
-  // of the group").
   const useMontage = allChannelIds.length >= 1;
+  // target_idx: position of THIS channel in the group's logos array. The
+  // zoom-in animation focuses on this index in the 2×5 grid. When the
+  // channel is not in the group (shouldn't happen but defensive), default
+  // to niche_index-1.
+  let targetIdx: number;
+  if (thisChannelId) {
+    const idx = allChannelIds.indexOf(thisChannelId);
+    targetIdx = idx >= 0 ? idx : niche_index - 1;
+  } else {
+    targetIdx = niche_index - 1;
+  }
   // Substantive intro hook: "Number N. <channel_name>." instead of just
-  // "Number N." — user feedback 2026-06-10 ("missing voiceover"). The
-  // channel name makes the slot's TTS run 2-3 seconds (matches MG style)
-  // instead of a 1-second beat that reads as silence.
+  // "Number N." — user feedback 2026-06-10 ("missing voiceover").
   const introNarration = channelName
     ? `Number ${niche_index}. ${channelName}.`
     : `Number ${niche_index}.`;
@@ -205,7 +212,7 @@ function buildNicheIntroSlots(
             // cache reuses the same file.
             { from: 'main', channel: 'video', fit: 'contain',
               ken_burns: 'zoom_in_to_target',
-              target_idx: Math.max(0, Math.min(9, niche_index - 1)) },
+              target_idx: Math.max(0, Math.min(allChannelIds.length - 1, targetIdx)) },
             { from: 'narr', channel: 'voice' },
             { from: 'sfx',  channel: 'fx' },
           ],
@@ -756,6 +763,13 @@ export async function POST(req: NextRequest) {
      *  writer once per channel, merges the per-niche scripts into one
      *  ConcreteScript with niche_index 1..N, and renders as a single mp4. */
     channels?: string[];
+    /** Optional override for the intro_card logos_montage composition.
+     *  When provided, the intro shows this full group of channels' logos
+     *  (2×5 grid) regardless of how many channels are actually rendered
+     *  in `channels`. Used for cheap testing — render 1 channel's full
+     *  gems but still see the group's full logo grid in the intro.
+     *  Defaults to `channels` if omitted. */
+    intro_logos_channels?: string[];
     beat_id?: string;
     sync?: boolean;
   };
@@ -796,7 +810,16 @@ export async function POST(req: NextRequest) {
       //    into THIS channel) + niche_name_card. All channels' IDs are
       //    passed so the montage tool can pull all 10 avatars; target_idx
       //    inside the slot picks which one the camera zooms into.
-      const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), channels, ch.channel_name ?? undefined);
+      // Use intro_logos_channels override when caller wants the full group's
+      // logos in the intro montage without rendering gems for every channel
+      // (cheap-test mode). Defaults to `channels` for normal multi-channel
+      // renders where each channel in the array IS being rendered.
+      const introLogosIds = (body.intro_logos_channels && body.intro_logos_channels.length > 0)
+        ? body.intro_logos_channels
+        : channels;
+      // target_idx for the zoom-in is the position of THIS niche's channel
+      // in the group's logos array — found by channelId match.
+      const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), introLogosIds, ch.channel_name ?? undefined, cid);
       // 2. Writer call for the proof beats.
       const input: ScriptWriterInput = {
         channel: ch,
