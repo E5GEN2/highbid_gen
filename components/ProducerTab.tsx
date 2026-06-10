@@ -27,6 +27,8 @@ interface ProducerJob {
   gems_total: number;
   gems_done: number;
   gems_failed: number;
+  /** Count of gems served from content_gen_tool_cache (cache_hit=TRUE). */
+  gems_cached?: number;
   error: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -215,6 +217,12 @@ export default function ProducerTab({ active }: { active: boolean }) {
                 <div className="text-[10px] text-[#666] mt-1 flex items-center gap-2">
                   <span>{j.video_id ?? ''}</span>
                   <span className="ml-auto">{j.gems_done}/{j.gems_total} gems</span>
+                  {j.gems_cached != null && j.gems_cached > 0 && (
+                    <span
+                      className="px-1.5 rounded bg-purple-600/20 text-purple-200 border border-purple-500/40"
+                      title={`${j.gems_cached} gem${j.gems_cached === 1 ? '' : 's'} served from cache`}
+                    >⚡{j.gems_cached}</span>
+                  )}
                 </div>
               </button>
             ))}
@@ -295,6 +303,11 @@ function JobDetailView({ detail, onOpenGraph }: { detail: { job: ProducerJob; ge
           <div className="text-lg text-white font-semibold">Job #{job.id} — {job.channel_name ?? job.channel_id}</div>
           <div className="text-xs text-[#888] mt-1">
             video_id={job.video_id} · {job.gems_done}/{job.gems_total} gems done · {job.gems_failed} failed
+            {job.gems_cached != null && job.gems_cached > 0 && (
+              <span className="ml-2 text-purple-300" title="Served from content_gen_tool_cache">
+                · ⚡ {job.gems_cached} cached ({Math.round(100 * job.gems_cached / Math.max(1, job.gems_done))}%)
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">

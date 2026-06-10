@@ -354,6 +354,27 @@ function NodeDetail({ node, onClose }: { node: GraphNode; onClose: () => void })
             <div className="text-[#bbb]">{new Date(node.finished_at).toLocaleTimeString()}</div>
           </div>
         )}
+        {node.payload && (() => {
+          // Inline asset preview when the gem payload references a file_url.
+          // YT capture / image_gen produce PNGs; video_compose produces mp4.
+          const fileUrl = (node.payload as Record<string, unknown>).file_url;
+          if (typeof fileUrl === 'string' && fileUrl) {
+            const isVideo = /\.mp4(\?|$)|video_compose/.test(fileUrl);
+            return (
+              <div>
+                <div className="text-[#666] mb-1">Asset preview</div>
+                {isVideo ? (
+                  <video src={fileUrl} controls className="w-full rounded border border-[#222] bg-black" />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={fileUrl} alt="gem output" className="w-full rounded border border-[#222] bg-black" />
+                )}
+                <div className="text-[10px] text-[#666] mt-1 font-mono break-all">{fileUrl}</div>
+              </div>
+            );
+          }
+          return null;
+        })()}
         {node.payload && (
           <div>
             <div className="text-[#666] mb-1">Payload</div>

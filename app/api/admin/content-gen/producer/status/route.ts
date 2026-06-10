@@ -38,12 +38,18 @@ export async function GET(req: NextRequest) {
       args.push(status);
       where = `WHERE status = $${args.length}`;
     }
+    // gems_cached counted via correlated subquery so the GUI can show the
+    // cache win-rate on the job list ("X/Y cached"). content_gen_producer_gems
+    // already has the cache_hit column written by runOneGem on every hit.
+    const whereJ = where.replace(/(\bstatus\s*=)/g, 'j.$1');
     const r = await pool.query(
-      `SELECT id, channel_id, channel_name, niche_index, video_id, status,
-              final_video_url, gems_total, gems_done, gems_failed, error,
-              started_at, finished_at, created_at, updated_at
-         FROM content_gen_producer_jobs ${where}
-        ORDER BY id DESC LIMIT $1`,
+      `SELECT j.id, j.channel_id, j.channel_name, j.niche_index, j.video_id, j.status,
+              j.final_video_url, j.gems_total, j.gems_done, j.gems_failed, j.error,
+              j.started_at, j.finished_at, j.created_at, j.updated_at,
+              (SELECT COUNT(*) FROM content_gen_producer_gems g
+                WHERE g.job_id = j.id AND g.cache_hit = TRUE)::int AS gems_cached
+         FROM content_gen_producer_jobs j ${whereJ}
+        ORDER BY j.id DESC LIMIT $1`,
       args,
     );
     // Aggregate counts for the dashboard chips.
