@@ -333,6 +333,40 @@ function JobDetailView({ detail, onOpenGraph, cacheBreakdown }: { detail: { job:
               })}
             </div>
           )}
+          {/* Per-tool timing breakdown — where is this render spending time?
+              Highlights the bottleneck in amber so the user can decide
+              what's worth caching / fixing. */}
+          {(() => {
+            const byTool: Record<string, { total_ms: number; count: number; max_ms: number }> = {};
+            for (const g of detail.gems) {
+              if (g.elapsed_ms == null) continue;
+              const slot = (byTool[g.tool] ??= { total_ms: 0, count: 0, max_ms: 0 });
+              slot.total_ms += g.elapsed_ms;
+              slot.count += 1;
+              if (g.elapsed_ms > slot.max_ms) slot.max_ms = g.elapsed_ms;
+            }
+            const rows = Object.entries(byTool).sort((a, b) => b[1].total_ms - a[1].total_ms);
+            if (rows.length === 0) return null;
+            const slowestMs = rows[0][1].total_ms;
+            const fmt = (ms: number) => ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms/1000).toFixed(1)}s` : `${Math.floor(ms/60000)}m${Math.round((ms%60000)/1000)}s`;
+            return (
+              <div className="flex items-center gap-1.5 mt-1.5 text-[10px] flex-wrap" title="Total elapsed across all gems of this tool · slowest tool tinted amber">
+                <span className="text-[#666] mr-0.5">time:</span>
+                {rows.map(([tool, s]) => {
+                  const slowest = s.total_ms === slowestMs && rows.length > 1;
+                  const cls = slowest
+                    ? 'bg-amber-600/15 text-amber-200 border border-amber-500/30'
+                    : 'bg-[#141414] text-[#aaa] border border-[#262626]';
+                  return (
+                    <span key={tool} className={`px-1.5 py-0.5 rounded font-mono ${cls}`}
+                          title={`${s.count} ${tool} gems · avg ${fmt(s.total_ms / s.count)} · max ${fmt(s.max_ms)}`}>
+                      {tool} {fmt(s.total_ms)}
+                    </span>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
         <div className="flex items-center gap-2">
           <button
