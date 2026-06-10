@@ -193,9 +193,24 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
       // returned wrong views.y from the channel-page header behind the
       // dimmed modal). Scanning the actual rendered canvas is robust:
       // it can't be off-by-a-row regardless of source layout shifts.
-      if (layer.crop_target === 'about_panel' && bboxes.joined_date) {
+      // Anchor priority: joined_date (preferred — bisects the stats column)
+      // → total_views (fallback for channels like MrBeast whose modal has
+      //   no Joined date row; synthesize an anchor ~150px above views to
+      //   center the crop on the stats column).
+      //
+      // Observed 2026-06-10 on job 111: MrBeast about_page modal returned
+      // only { total_views, channel_name } — no joined_date — because his
+      // modal doesn't render a join date. Without this fallback, the
+      // composer skipped, video-compose fell through to fit:contain, and
+      // the user saw a zoomed-in slice of the raw modal description.
+      const anchorBbox = bboxes.joined_date
+        ?? (bboxes.total_views
+              ? { x: bboxes.total_views.x, y: bboxes.total_views.y - 150,
+                  w: bboxes.total_views.w, h: bboxes.total_views.h }
+              : undefined);
+      if (layer.crop_target === 'about_panel' && anchorBbox) {
         const { composeAboutPanelMG } = await import('./yt-compose-mg');
-        const composed = await composeAboutPanelMG(basePath, bboxes.joined_date);
+        const composed = await composeAboutPanelMG(basePath, anchorBbox);
 
         if (layer.highlight_row) {
           // Scan the COMPOSED PNG (1920×1080) for text rows in the modal area.
