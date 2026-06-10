@@ -146,7 +146,22 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
     // tool_call sub-event nodes via emitToolCall / withToolCall without
     // threading a context object through every call.
     const { runWithContext } = await import('./exec-context');
-    const out = await runWithContext({ jobId, slot_id, gem_id }, () => runTool(tool, args));
+    // Per-gem hard timeout — backstop for any tool that doesn't impose
+    // its own. yt_capture has 90s × 3 retries = 270s; sfx_render +
+    // image_gen have no internal timeouts and could hang on external
+    // API calls (ElevenLabs sound-gen, xgodo image-gen). Cap at 5 min
+    // so a wedged gem can't stall the whole producer indefinitely.
+    // Observed 2026-06-10: job 110's yt_capture + sfx_render BOTH
+    // running for 288s+ with no progress — the per-tool timeouts
+    // alone weren't enough; runOneGem now enforces.
+    const GEM_HARD_TIMEOUT_MS = 300_000;
+    const out = await Promise.race([
+      runWithContext({ jobId, slot_id, gem_id }, () => runTool(tool, args)),
+      new Promise<Record<string, unknown>>((_, reject) => setTimeout(
+        () => reject(new Error(`gem HARD_TIMEOUT after ${GEM_HARD_TIMEOUT_MS}ms (tool=${tool})`)),
+        GEM_HARD_TIMEOUT_MS,
+      )),
+    ]);
     const elapsed = Date.now() - t0;
     await pool.query(
       `UPDATE content_gen_producer_gems
