@@ -386,11 +386,25 @@ function JobDetailView({ detail, onOpenGraph, cacheBreakdown }: { detail: { job:
         </div>
       )}
 
-      {/* Final video player + frame inspection */}
+      {/* Final video player + frame inspection + bundle download.
+          The bundle endpoint streams a ZIP of {final.mp4, every gem's
+          local asset organized by slot, manifest.json}. Useful when
+          the user wants to repurpose visuals or hand the render off
+          for external editing. */}
       {job.final_video_url && (
         <div className="rounded border border-[#222] overflow-hidden bg-black">
           <video src={job.final_video_url} controls className="w-full max-h-[600px]" />
-          <div className="text-[10px] text-[#666] px-2 py-1 font-mono">{job.final_video_url}</div>
+          <div className="text-[10px] text-[#666] px-2 py-1 font-mono flex items-center gap-3">
+            <span className="truncate flex-1">{job.final_video_url}</span>
+            <a
+              href={`/api/admin/content-gen/producer/bundle?id=${job.id}`}
+              className="shrink-0 px-2 py-0.5 rounded border border-[#333] hover:border-[#555] text-[#ddd] hover:text-white"
+              title="Download a ZIP of final.mp4 + every gem asset + manifest.json"
+              download
+            >
+              📦 Bundle
+            </a>
+          </div>
           <FrameStrip jobId={job.id} />
         </div>
       )}
