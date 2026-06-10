@@ -385,7 +385,14 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
 function urlFor(kind: ScreenKind, handle: string | null, channelId: string, watchVideoId?: string | null): string {
   const h = handle ? (handle.startsWith('@') ? handle : `@${handle}`) : null;
   switch (kind) {
-    case 'channel_page': return h ? `https://www.youtube.com/${h}` : `https://www.youtube.com/channel/${channelId}`;
+    // channel_page lands on the VIDEOS tab not the Home tab — MG videos show
+    // the Videos tab in the channel reveal (banner + chip + tabs underline
+    // on "Videos" + video grid below). User feedback 2026-06-10 — Home tab
+    // was selected previously because URL was just `/${h}` which YT defaults
+    // to Home. Both the chip composer (top header) and channel_page_full
+    // composer (full banner+chip+grid) crop areas that look identical on
+    // Home and Videos tabs, so changing to `/videos` doesn't break either.
+    case 'channel_page': return h ? `https://www.youtube.com/${h}/videos` : `https://www.youtube.com/channel/${channelId}/videos`;
     case 'about_page':   return h ? `https://www.youtube.com/${h}/about` : `https://www.youtube.com/channel/${channelId}/about`;
     case 'videos_tab':   return h ? `https://www.youtube.com/${h}/videos` : `https://www.youtube.com/channel/${channelId}/videos`;
     case 'watch_page':   if (!watchVideoId) throw new Error('watch_page needs watchVideoId'); return `https://www.youtube.com/watch?v=${watchVideoId}`;

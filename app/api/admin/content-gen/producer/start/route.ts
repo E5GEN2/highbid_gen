@@ -169,10 +169,22 @@ function buildNicheIntroSlots(
   niche_index: number,
   niche_label: string,
   allChannelIds: string[],
+  channelName?: string,
 ): Slot[] {
   const base = `niche_${niche_index}`;
-  const useMontage = allChannelIds.length >= 2;
-  const introNarration = `Number ${niche_index}.`;
+  // Threshold >= 1 so single-channel test renders also use the montage
+  // (with that one logo). Multi-channel uses the full 2×5 grid as before.
+  // Previously >= 2 → 1-channel tests fell back to a "Number N." text card,
+  // confusing user feedback 2026-06-10 ("intro is missing the channel logos
+  // of the group").
+  const useMontage = allChannelIds.length >= 1;
+  // Substantive intro hook: "Number N. <channel_name>." instead of just
+  // "Number N." — user feedback 2026-06-10 ("missing voiceover"). The
+  // channel name makes the slot's TTS run 2-3 seconds (matches MG style)
+  // instead of a 1-second beat that reads as silence.
+  const introNarration = channelName
+    ? `Number ${niche_index}. ${channelName}.`
+    : `Number ${niche_index}.`;
   const introSlot: Slot = useMontage
     ? {
         slot_id: `${base}_intro_card`,
@@ -784,7 +796,7 @@ export async function POST(req: NextRequest) {
       //    into THIS channel) + niche_name_card. All channels' IDs are
       //    passed so the montage tool can pull all 10 avatars; target_idx
       //    inside the slot picks which one the camera zooms into.
-      const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), channels);
+      const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), channels, ch.channel_name ?? undefined);
       // 2. Writer call for the proof beats.
       const input: ScriptWriterInput = {
         channel: ch,

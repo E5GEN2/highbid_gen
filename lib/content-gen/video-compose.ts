@@ -243,12 +243,20 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             : 5; // views
           const r = rows[rowIdx];
           if (r) {
-            const TEXT_X = 637;       // canvas x right after the icon column
+            // TEXT_X = canvas x where "1" of "107K subscribers" / "40,084,120
+            // views" begins (right after the icon column). Measured locally
+            // 2026-06-10 on phantomized composed PNG — text starts at x≈625-640
+            // depending on row; 625 picks up the leftmost stroke reliably.
+            // PRIOR BUG: TEXT_X=637 + TEXT_X_OFFSET=24 in highlight builder put
+            // startX=661 — past the "1", so highlight visibly began at "7K" not
+            // "107K". Reduced to 625 here AND set TEXT_X_OFFSET=0 in the
+            // drawbox builder below so the math composes cleanly: startX = 625.
+            const TEXT_X = 625;       // canvas x at the "1" of "107K subscribers"
             const PAD = 8;            // small vertical padding around row
             layer.highlight_canvas = {
               x: TEXT_X,
               y: r.top - PAD,
-              w: 290,                  // covers worst-case row text width
+              w: 300,                  // covers worst-case row text width (incl. "40,084,120 views")
               h: r.h + 2 * PAD,
             };
           }
@@ -400,8 +408,12 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
   let highlightVf = '';
   if (mainLayer.highlight_canvas) {
     const hl = mainLayer.highlight_canvas;
-    // Skip the icon (24 px) at the row's left so highlight starts at the text.
-    const TEXT_X_OFFSET = 24;
+    // TEXT_X_OFFSET = 0 — highlight_canvas.x is ALREADY at the "1" of "107K
+    // subscribers" / "40,084,120 views" (was set to 625 in the about_panel
+    // pixel-scan step above). Adding an offset here put startX past the "1"
+    // making the L→R animation visibly begin at "7K" instead of "107K"
+    // (user feedback 2026-06-10).
+    const TEXT_X_OFFSET = 0;
     const TEXT_PAD = 12;  // small right padding
     const startX = hl.x + TEXT_X_OFFSET;
     const maxW = hl.w - TEXT_X_OFFSET + TEXT_PAD;
