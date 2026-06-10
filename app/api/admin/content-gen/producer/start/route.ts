@@ -719,10 +719,16 @@ function forceProofKind(slots: Slot[]): Slot[] {
         // (the rounded corners of the modal naturally show through the
         // crop). NOT dark_gray — that was wrong.
         bg: 'white',
-        // Add the highlight_row directive to the about_panel layer so
-        // video-compose knows which stats row to animate over.
+        // Add the highlight_row directive to the visual layer so video-
+        // compose knows which stats row to animate over.
+        //
+        // Match by channel === 'video' (NOT crop_target === 'about_panel')
+        // because crop_target is injected LATER by injectCropTargets;
+        // at this point in the pipeline no layer has it yet. The two
+        // post-processors use the same matcher so they land on the same
+        // layer.
         layers: (slot.compose.layers ?? []).map(l =>
-          l.crop_target === 'about_panel' ? { ...l, highlight_row: highlightRow } : l
+          l.channel === 'video' ? { ...l, highlight_row: highlightRow } : l
         ),
       },
     };
