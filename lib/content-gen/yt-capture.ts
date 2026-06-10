@@ -524,6 +524,10 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   // browser bundle). Locally Playwright falls back to its own bundled
   // chromium-headless-shell when the env var is unset.
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || process.env.CHROMIUM_PATH || undefined;
+  // Lazy-import to avoid bundling exec-context where yt-capture is used
+  // outside a producer context (e.g. the standalone screen-capture admin).
+  const { emitToolCall } = await import('./exec-context');
+  await emitToolCall('browser:launch', { proxy: proxy.url, kind, channelId });
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
@@ -570,7 +574,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       const v = page.video();
       recorderVideoPathPromise = v ? v.path() : null;
     }
+    await emitToolCall('page:goto', { url });
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+    await emitToolCall('page:loaded', { url });
 
     // YouTube/Google consent wall — appears for EU egress + sometimes US.
     // Try "Accept all" / "Reject all" / "I agree" buttons in any locale.
@@ -1356,7 +1362,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           annotationDebug = { error: (e as Error).message.slice(0, 200) };
         }
       }
+      await emitToolCall('screenshot:start', { kind });
       buf = await page.screenshot({ fullPage: false, type: 'png', timeout: SCREENSHOT_TIMEOUT_MS });
+      await emitToolCall('screenshot:done', { bytes: buf.length });
       // Composite annotation pass — runs AFTER the screenshot, draws richer
       // shapes (sharpie circle, arrow, label) via Sharp + SVG overlay. Uses
       // the bbox the walker just found (annotationDebug.picked). When the

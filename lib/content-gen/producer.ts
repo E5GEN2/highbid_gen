@@ -142,7 +142,11 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
   }
 
   try {
-    const out = await runTool(tool, args);
+    // Wrap the tool invocation in an ALS context so deep code can emit
+    // tool_call sub-event nodes via emitToolCall / withToolCall without
+    // threading a context object through every call.
+    const { runWithContext } = await import('./exec-context');
+    const out = await runWithContext({ jobId, slot_id, gem_id }, () => runTool(tool, args));
     const elapsed = Date.now() - t0;
     await pool.query(
       `UPDATE content_gen_producer_gems

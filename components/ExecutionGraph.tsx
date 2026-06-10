@@ -228,7 +228,26 @@ export default function ExecutionGraph({ jobId, onClose }: Props) {
       )}
 
       {selected && (
-        <NodeDetail node={selected} onClose={() => setSelected(null)} />
+        <NodeDetail
+          node={selected}
+          onClose={() => setSelected(null)}
+          toolCalls={
+            // Sub-events for the selected gem — surface yt_capture's
+            // browser:launch / page:goto / screenshot:* steps under the
+            // gem detail. Filtered via the depends_on edges that
+            // exec-context emits when emitToolCall runs.
+            selected.node_type === 'gem'
+              ? (graph?.nodes ?? []).filter(n =>
+                  n.node_type === 'tool_call' &&
+                  (graph?.edges ?? []).some(e =>
+                    e.kind === 'sequence' &&
+                    e.from_key === selected.node_key &&
+                    e.to_key === n.node_key,
+                  ),
+                )
+              : []
+          }
+        />
       )}
     </div>
   );
@@ -542,7 +561,7 @@ function NodeCard({ n, width, onSelect }: { n: GraphNode; width?: number; onSele
   );
 }
 
-function NodeDetail({ node, onClose }: { node: GraphNode; onClose: () => void }) {
+function NodeDetail({ node, onClose, toolCalls }: { node: GraphNode; onClose: () => void; toolCalls?: GraphNode[] }) {
   return (
     <div className="absolute top-14 right-4 bottom-4 w-[420px] bg-[#0d0d0d] border border-[#333] rounded shadow-2xl flex flex-col">
       <div className="flex items-center justify-between px-3 py-2 border-b border-[#222]">
@@ -575,6 +594,7 @@ function NodeDetail({ node, onClose }: { node: GraphNode; onClose: () => void })
         {node.payload && (() => {
           // Inline asset preview when the gem payload references a file_url.
           // YT capture / image_gen produce PNGs; video_compose produces mp4.
+          // (See toolCalls section below for sub-event timeline.)
           const fileUrl = (node.payload as Record<string, unknown>).file_url;
           if (typeof fileUrl === 'string' && fileUrl) {
             const isVideo = /\.mp4(\?|$)|video_compose/.test(fileUrl);
@@ -593,6 +613,29 @@ function NodeDetail({ node, onClose }: { node: GraphNode; onClose: () => void })
           }
           return null;
         })()}
+        {toolCalls && toolCalls.length > 0 && (
+          <div>
+            <div className="text-[#666] mb-1">Tool calls ({toolCalls.length})</div>
+            <ol className="text-[10px] text-[#bbb] space-y-0.5 font-mono">
+              {toolCalls.map((tc, i) => {
+                const elapsedMs = (tc.payload as Record<string, unknown>)?.elapsed_ms as number | undefined;
+                return (
+                  <li key={tc.id} className="flex items-baseline gap-2">
+                    <span className="text-[#666] tabular-nums">{String(i + 1).padStart(2, '0')}</span>
+                    <span className={tc.status === 'failed' ? 'text-red-300' : tc.status === 'running' ? 'text-blue-300' : 'text-[#bbb]'}>
+                      {tc.label}
+                    </span>
+                    {elapsedMs != null && (
+                      <span className="text-[#666] ml-auto">
+                        {elapsedMs < 1000 ? `${elapsedMs}ms` : `${(elapsedMs / 1000).toFixed(2)}s`}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
         {node.payload && (
           <div>
             <div className="text-[#666] mb-1">Payload</div>
