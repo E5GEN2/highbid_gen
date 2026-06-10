@@ -35,10 +35,35 @@ function ffprobeDuration(file: string): Promise<number> {
   });
 }
 
+/** Extract a single frame at `ts`. Uses dual-seek (fast input pre-seek
+ *  to ~1s before, then frame-accurate output seek forward) to avoid the
+ *  classic "f00 is blank" bug: input-only `-ss 0 -i file` often lands
+ *  on a header/black frame before the first keyframe when the encoder
+ *  used a closed GOP. Output-side `-ss` decodes from the pre-seek point
+ *  to the exact frame.
+ *
+ *  Additionally floors ts at 0.1s. The compose pipeline starts at t=0
+ *  with a single-frame fade-in; the actual first visible content is
+ *  usually a few frames in. Sampling at 0.1s reliably picks the first
+ *  rendered card instead of a black bridge frame. */
 function ffextract(file: string, ts: number, outPath: string): Promise<void> {
+  const targetTs = Math.max(0.1, ts);
+  const preSeek = Math.max(0, targetTs - 1.0);
+  const postSeek = targetTs - preSeek;
   return new Promise((resolve, reject) => {
     const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
-      '-ss', ts.toFixed(2), '-i', file, '-frames:v', '1', '-y', outPath]);
+      // Input-side pre-seek — fast, lands on keyframe ≤ preSeek
+      ...(preSeek > 0 ? ['-ss', preSeek.toFixed(2)] : []),
+      '-i', file,
+      // Output-side post-seek — frame-accurate from the pre-seek point
+      '-ss', postSeek.toFixed(2),
+      '-frames:v', '1',
+      // Map first video stream explicitly; avoids surprise on multi-stream mp4
+      '-map', '0:v:0',
+      // Disable frame deduplication so we get the actual frame at this t
+      '-fps_mode', 'passthrough',
+      '-y', outPath,
+    ]);
     p.on('close', c => c === 0 ? resolve() : reject(new Error(`ffmpeg exit ${c}`)));
     p.on('error', reject);
   });
