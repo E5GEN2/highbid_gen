@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import ExecutionGraph from './ExecutionGraph';
 
 /**
  * Admin → Producer tab.
@@ -70,6 +71,9 @@ export default function ProducerTab({ active }: { active: boolean }) {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
+  // Execution graph overlay — when set, the live DAG for that job is shown
+  // as a full-screen panel over the producer tab.
+  const [graphJobId, setGraphJobId] = useState<number | null>(null);
   const [detail, setDetail] = useState<{ job: ProducerJob; gems: ProducerGem[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [startForm, setStartForm] = useState({ channelId: '', beat_id: 'channel_proof_1', sync: false });
@@ -134,11 +138,15 @@ export default function ProducerTab({ active }: { active: boolean }) {
 
   return (
     <div className="max-w-[1600px] mx-auto px-6 py-6 text-[#ddd]">
+      {graphJobId != null && (
+        <ExecutionGraph jobId={graphJobId} onClose={() => setGraphJobId(null)} />
+      )}
+
       <div className="mb-5">
         <h2 className="text-lg font-semibold text-white">Producer</h2>
         <p className="text-xs text-[#888] mt-1">
           Executes a ConcreteScript end-to-end: script-writer → per-slot gems (yt_capture / tts / sfx_render / image_gen) → video_compose → final mp4.
-          One row per (slot, gem). Auto-refreshes every 4s while jobs are in flight.
+          One row per (slot, gem). Auto-refreshes every 4s while jobs are in flight. Click <span className="text-[#ddd]">Execution →</span> on any job to open the live DAG.
         </p>
       </div>
 
@@ -218,7 +226,7 @@ export default function ProducerTab({ active }: { active: boolean }) {
           {!selectedJobId && <div className="text-[#555] text-center py-20">Click a job to see its timeline</div>}
           {selectedJobId && !detail && !detailLoading && <div className="text-[#555] py-20">Loading…</div>}
           {detailLoading && <div className="text-[#888] text-xs">Refreshing…</div>}
-          {detail && <JobDetailView detail={detail} />}
+          {detail && <JobDetailView detail={detail} onOpenGraph={setGraphJobId} />}
         </div>
       </div>
     </div>
@@ -270,7 +278,7 @@ function FrameStrip({ jobId }: { jobId: number }) {
   );
 }
 
-function JobDetailView({ detail }: { detail: { job: ProducerJob; gems: ProducerGem[] } }) {
+function JobDetailView({ detail, onOpenGraph }: { detail: { job: ProducerJob; gems: ProducerGem[] }; onOpenGraph: (id: number) => void }) {
   const { job, gems } = detail;
   // Group gems by slot_id, in slot_index order
   const slotsMap = new Map<string, { slot_index: number; gems: ProducerGem[] }>();
@@ -289,7 +297,16 @@ function JobDetailView({ detail }: { detail: { job: ProducerJob; gems: ProducerG
             video_id={job.video_id} · {job.gems_done}/{job.gems_total} gems done · {job.gems_failed} failed
           </div>
         </div>
-        <span className={`px-2 py-1 rounded border text-xs ${STATUS_STYLE[job.status]}`}>{job.status}</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onOpenGraph(job.id)}
+            className="px-3 py-1 text-xs rounded border border-[#333] bg-[#1a1a1a] hover:bg-[#222] text-[#ddd]"
+            title="Open the live execution graph for this render"
+          >
+            Execution →
+          </button>
+          <span className={`px-2 py-1 rounded border text-xs ${STATUS_STYLE[job.status]}`}>{job.status}</span>
+        </div>
       </div>
 
       {job.error && (
