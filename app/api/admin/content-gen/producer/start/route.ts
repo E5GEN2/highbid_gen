@@ -21,14 +21,27 @@ export const maxDuration = 600;
 
 async function loadChannel(channelId: string): Promise<ChannelData | null> {
   const pool = await getPool();
+
+  // Refresh stats from YT Data API before reading so subscriber_count / video_count /
+  // total_views match what YT is serving on the live page (and what the about_modal
+  // screenshot will show). 5-min cache prevents re-hits across niches sharing a
+  // channel. Failure is silent — we fall back to whatever the DB has.
+  try {
+    const { refreshChannelStats } = await import('@/lib/content-gen/refresh-channel-stats');
+    await refreshChannelStats(pool, channelId);
+  } catch (e) {
+    console.warn(`[loadChannel] refresh failed for ${channelId}: ${(e as Error).message.slice(0, 200)}`);
+  }
+
   const r = await pool.query<{
     channel_id: string; channel_name: string | null; channel_handle: string | null;
     subscriber_count: number | null;
     video_count: number | null; channel_created_at: string | null; first_upload_at: string | null;
     recent_videos_avg_views: number | null;
+    total_views: number | null;
   }>(
     `SELECT channel_id, channel_name, channel_handle, subscriber_count, video_count,
-            channel_created_at, first_upload_at, recent_videos_avg_views
+            channel_created_at, first_upload_at, recent_videos_avg_views, total_views
        FROM niche_spy_channels WHERE channel_id = $1`,
     [channelId],
   );
@@ -58,6 +71,10 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
   );
   const topRow = top.rows[0];
   const topVideoId = topRow?.url?.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/)?.[1];
+  // Prefer the real channel.statistics.viewCount (now stored in total_views
+  // by refreshChannelStats); fall back to recent_videos_avg_views * video_count
+  // only when YT API refresh hasn't run yet for this channel.
+  const totalViewsReal = ch.total_views != null ? Number(ch.total_views) : undefined;
   const totalApprox = ch.recent_videos_avg_views != null && ch.video_count != null
     ? Number(ch.recent_videos_avg_views) * Number(ch.video_count) : undefined;
   return {
@@ -65,7 +82,7 @@ async function loadChannel(channelId: string): Promise<ChannelData | null> {
     channel_name: ch.channel_name ?? ch.channel_id,
     channel_handle: ch.channel_handle ?? undefined,
     subscriber_count: ch.subscriber_count != null ? Number(ch.subscriber_count) : undefined,
-    total_views: totalApprox,
+    total_views: totalViewsReal ?? totalApprox,
     video_count: ch.video_count ?? undefined,
     joined_date: ch.channel_created_at ?? ch.first_upload_at ?? undefined,
     // niche: producer-side listicle label preferred, sub_niche second, niche third.

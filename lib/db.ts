@@ -545,6 +545,12 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS recent_videos_count INTEGER`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS last_recent_videos_fetched_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_recent_fetched ON niche_spy_channels(last_recent_videos_fetched_at NULLS FIRST)`).catch(() => {});
+    // Channel-level total view count (statistics.viewCount from YT Data API).
+    // Different from recent_videos_avg_views * video_count which was a rough
+    // approximation. Needed for MG-style "X,XXX,XXX views" narration to
+    // match what the about modal screenshot actually shows.
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS total_views BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS stats_refreshed_at TIMESTAMPTZ`).catch(() => {});
 
     // Favourites — a single global list (no per-user scoping). One row per
     // starred video. Deleting a video cascades to remove its favourite.
