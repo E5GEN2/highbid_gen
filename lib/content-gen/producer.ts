@@ -106,6 +106,16 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
     [jobId, slot_id, gem_id],
   );
 
+  // Execution-graph node for this gem — mark running so the live UI
+  // can show in-flight state. Errors here never affect the gem run.
+  const { upsertNode, nodeKey } = await import('./exec-graph');
+  const gKey = nodeKey.gem(slot_id, gem_id);
+  await upsertNode({
+    jobId, nodeKey: gKey, nodeType: 'gem',
+    label: `${tool} · ${gem_id}`, status: 'running',
+    payload: { tool, slot_id, gem_id, args_summary: summarizeArgs(args) },
+  });
+
   // Cache lookup (skipped if tool exports no version OR if args contains
   // force=true — caller is explicitly asking for a fresh run).
   const { lookupCache, storeCache, extractAssetPaths } = await import('./tool-cache');
@@ -121,6 +131,12 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
           WHERE job_id=$4 AND slot_id=$5 AND gem_id=$6`,
         [JSON.stringify(cached.output), elapsed, cached.origin.row_id, jobId, slot_id, gem_id],
       );
+      await upsertNode({
+        jobId, nodeKey: gKey, nodeType: 'gem',
+        label: `${tool} · ${gem_id}`, status: 'cached',
+        payload: { tool, cached_from_row: cached.origin.row_id, elapsed_ms: elapsed,
+                   hit_count: cached.origin.hit_count, asset_paths: cached.asset_paths },
+      });
       return { ok: true, output: cached.output, cached: true };
     }
   }
@@ -134,10 +150,17 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
         WHERE job_id=$3 AND slot_id=$4 AND gem_id=$5`,
       [JSON.stringify(out), elapsed, jobId, slot_id, gem_id],
     );
+    const assetPaths = extractAssetPaths(out);
+    await upsertNode({
+      jobId, nodeKey: gKey, nodeType: 'gem',
+      label: `${tool} · ${gem_id}`, status: 'done',
+      payload: { tool, elapsed_ms: elapsed, asset_paths: assetPaths,
+                 file_url: (out as Record<string, unknown>).file_url ?? null },
+    });
     // Persist to the cache for future renders. Only cache successful
     // outputs; skip silently on store errors (cache misses are cheaper
     // than cache write failures bubbling up).
-    void storeCache(tool, args, out, extractAssetPaths(out));
+    void storeCache(tool, args, out, assetPaths);
     return { ok: true, output: out };
   } catch (e) {
     const elapsed = Date.now() - t0;
@@ -148,8 +171,26 @@ async function runOneGem(jobId: number, slot_id: string, gem_id: string, tool: s
         WHERE job_id=$3 AND slot_id=$4 AND gem_id=$5`,
       [msg, elapsed, jobId, slot_id, gem_id],
     );
+    await upsertNode({
+      jobId, nodeKey: gKey, nodeType: 'gem',
+      label: `${tool} · ${gem_id}`, status: 'failed',
+      payload: { tool, elapsed_ms: elapsed, error: msg },
+    });
     return { ok: false, error: msg };
   }
+}
+
+/** Summarize gem args for the execution graph payload — keeps long
+ *  fields (text, urls, etc.) short so the GUI panel doesn't blow up. */
+function summarizeArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(args)) {
+    const v = args[k];
+    if (typeof v === 'string' && v.length > 80) out[k] = v.slice(0, 77) + '…';
+    else if (Array.isArray(v) && v.length > 6) out[k] = `[${v.length} items]`;
+    else out[k] = v;
+  }
+  return out;
 }
 
 /** Run every gem of every slot, then resolve compose refs, then call
@@ -175,19 +216,49 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
   // Track which slots had a critical gem fail
   const slotCritFail: Record<string, string> = {};
 
-  // Slot worker — runs all gems for one slot in parallel.
+  // Slot worker — runs all gems for one slot in parallel. Also drives
+  // the execution-graph slot node (lifecycle: running → done|failed)
+  // and the slot→gem edges so the UI can group gems under their slot.
+  const { upsertNode, addEdge, nodeKey } = await import('./exec-graph');
   async function runSlot(slot: ConcreteScript['slots'][number]): Promise<void> {
+    const sKey = nodeKey.slot(slot.slot_id);
+    await upsertNode({
+      jobId, nodeKey: sKey, nodeType: 'slot',
+      label: slot.slot_id, status: 'running',
+      payload: { beat_id: slot.beat_id, gem_count: slot.gems.length, narration: slot.narration?.slice(0, 80) },
+    });
+    // Pre-emit slot→gem edges so the UI sees the structure even before
+    // a gem starts running.
+    for (const g of slot.gems) {
+      await addEdge(jobId, sKey, nodeKey.gem(slot.slot_id, g.id), 'depends_on');
+    }
+
     const results = await Promise.all(slot.gems.map(g =>
       runOneGem(jobId, slot.slot_id, g.id, g.tool, g.args).then(res => ({ gem_id: g.id, res }))
     ));
     bag[slot.slot_id] = {};
+    let anyFailed = false;
     for (const { gem_id, res } of results) {
       if (res.ok && res.output) {
         bag[slot.slot_id][gem_id] = res.output;
       } else if (CRITICAL_GEM_IDS.has(gem_id)) {
         slotCritFail[slot.slot_id] = `gem "${gem_id}" failed: ${res.error}`;
+        anyFailed = true;
+      } else if (!res.ok) {
+        anyFailed = true;
       }
     }
+    await upsertNode({
+      jobId, nodeKey: sKey, nodeType: 'slot',
+      label: slot.slot_id,
+      status: anyFailed ? 'failed' : 'done',
+      payload: {
+        beat_id: slot.beat_id,
+        gem_count: slot.gems.length,
+        ok_count: results.filter(r => r.res.ok).length,
+        cached_count: results.filter(r => r.res.cached).length,
+      },
+    });
   }
 
   // Fan out slots in batches of MAX_SLOT_CONC.
@@ -249,6 +320,17 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
   if (!TOOLS_BY_NAME.video_compose) {
     throw new Error('video_compose tool not registered');
   }
+  // Compose node — every slot feeds into this (compose_input edges).
+  const composeKey = nodeKey.compose(jobId);
+  await upsertNode({
+    jobId, nodeKey: composeKey, nodeType: 'compose',
+    label: `video_compose · ${script.slots.length} slots`, status: 'running',
+    payload: { slot_count: script.slots.length },
+  });
+  for (const s of script.slots) {
+    await addEdge(jobId, nodeKey.slot(s.slot_id), composeKey, 'compose_input');
+  }
+
   let final_video_url: string | undefined;
   try {
     // Long-form 16:9 (MG long-form per worked-example, NOT Shorts). The
@@ -269,12 +351,22 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
       __job_id__: jobId,
     });
     final_video_url = composeOut.file_url as string;
+    await upsertNode({
+      jobId, nodeKey: composeKey, nodeType: 'compose',
+      label: `video_compose · ${script.slots.length} slots`, status: 'done',
+      payload: { final_video_url, duration_s: composeOut.duration_s },
+    });
   } catch (e) {
     const msg = (e as Error).message.slice(0, 800);
     await pool.query(
       `UPDATE content_gen_producer_jobs SET status='failed', error=$1, finished_at=NOW(), updated_at=NOW() WHERE id=$2`,
       [`compose failed: ${msg}`, jobId],
     );
+    await upsertNode({
+      jobId, nodeKey: composeKey, nodeType: 'compose',
+      label: `video_compose · ${script.slots.length} slots`, status: 'failed',
+      payload: { error: msg },
+    });
     return { ok: false, error: msg };
   }
 

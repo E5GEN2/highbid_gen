@@ -1974,6 +1974,48 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgtc_tool ON content_gen_tool_cache(tool, version, last_used_at DESC)`).catch(() => {});
 
+    // Execution graph — per-render node + edge log for the live "Execution"
+    // tab in the producer admin. Nodes are appended as the producer runs;
+    // the UI fetches them via /api/admin/content-gen/producer/graph and
+    // renders a top-to-bottom DAG.
+    //
+    // node_type: writer | slot | gem | tool_call | cache_hit | db_save | compose
+    // status:    pending | running | done | failed | cached
+    // payload:   freeform per-type metadata (writer beats, gem args summary,
+    //            cache origin row_id, asset paths, error message, etc.)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_producer_graph_nodes (
+        id          SERIAL PRIMARY KEY,
+        job_id      INTEGER NOT NULL REFERENCES content_gen_producer_jobs(id) ON DELETE CASCADE,
+        node_key    TEXT NOT NULL,          -- stable per-(job,role) id used for upserts (e.g. "gem:slot_1:main")
+        node_type   TEXT NOT NULL,
+        label       TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'pending',
+        payload     JSONB,
+        started_at  TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (job_id, node_key)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpgn_job ON content_gen_producer_graph_nodes(job_id, id ASC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpgn_updated ON content_gen_producer_graph_nodes(job_id, updated_at DESC)`).catch(() => {});
+
+    // Edges: from_node_key → to_node_key. kind = 'depends_on' | 'output_of' | 'sequence' | 'compose_input'
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_producer_graph_edges (
+        id          SERIAL PRIMARY KEY,
+        job_id      INTEGER NOT NULL REFERENCES content_gen_producer_jobs(id) ON DELETE CASCADE,
+        from_key    TEXT NOT NULL,
+        to_key      TEXT NOT NULL,
+        kind        TEXT NOT NULL DEFAULT 'sequence',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (job_id, from_key, to_key, kind)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpge_job ON content_gen_producer_graph_edges(job_id, id ASC)`).catch(() => {});
+
     schemaInitialized = true;
     console.log('Database schema initialized');
   } finally {
