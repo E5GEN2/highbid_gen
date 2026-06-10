@@ -497,38 +497,49 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
   const { slot_order, width, height, fps, __bag__: bag, __job_id__: jobId } = args;
   if (!slot_order || slot_order.length === 0) throw new Error('videoCompose: empty slot_order');
 
+  // Tool_call emission — visible in the Execution drawer so users can see
+  // ffmpeg's three stages (build slots → concat → music mix) instead of
+  // a single 30s-90s black box. No-op when called outside a producer.
+  const { emitToolCall, withToolCall } = await import('./exec-context');
+  await emitToolCall('compose:start', { slot_count: slot_order.length, width, height, fps });
+
   const stageDir = path.join(os.tmpdir(), `producer-${jobId}-${Date.now()}`);
   await fs.mkdir(stageDir, { recursive: true });
 
   // Stage 1 — build per-slot clips.
   const clipPaths: string[] = [];
   let totalDur = 0;
-  for (let i = 0; i < slot_order.length; i++) {
-    const sid = slot_order[i];
-    const compose = bag[sid]?.__compose__ as unknown as ResolvedCompose | undefined;
-    if (!compose) throw new Error(`slot ${sid}: missing resolved compose`);
-    const clipPath = path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
-    await buildSlotClip(sid, compose, width, height, fps, clipPath);
-    clipPaths.push(clipPath);
-    totalDur += compose.hold_s;
-  }
+  await withToolCall(`compose:build_slots (${slot_order.length})`, async () => {
+    for (let i = 0; i < slot_order.length; i++) {
+      const sid = slot_order[i];
+      const compose = bag[sid]?.__compose__ as unknown as ResolvedCompose | undefined;
+      if (!compose) throw new Error(`slot ${sid}: missing resolved compose`);
+      const clipPath = path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
+      await buildSlotClip(sid, compose, width, height, fps, clipPath);
+      clipPaths.push(clipPath);
+      totalDur += compose.hold_s;
+    }
+  });
 
   // Stage 2 — concat with concat demuxer.
   const concatFile = path.join(stageDir, 'concat.txt');
   await fs.writeFile(concatFile, clipPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
   const concatPath = path.join(stageDir, 'concat.mp4');
-  await ff([
-    '-y', '-f', 'concat', '-safe', '0', '-i', concatFile,
-    '-c', 'copy',
-    concatPath,
-  ]).catch(async () => {
+  await withToolCall('compose:concat', async () => {
     await ff([
       '-y', '-f', 'concat', '-safe', '0', '-i', concatFile,
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      '-r', String(fps),
-      '-preset', 'medium', '-crf', '20',
+      '-c', 'copy',
       concatPath,
-    ]);
+    ]).catch(async () => {
+      // First attempt failed (clips not stream-copy compatible) — re-encode.
+      await ff([
+        '-y', '-f', 'concat', '-safe', '0', '-i', concatFile,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+        '-r', String(fps),
+        '-preset', 'medium', '-crf', '20',
+        concatPath,
+      ]);
+    });
   });
 
   // Stage 3 — music bed pass. Generate a music track for the total duration,
@@ -541,22 +552,24 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
   const musicToken = (args.music_token === undefined ? 'bed' : args.music_token) || null;
   if (musicToken) {
     try {
-      const { getSfx } = await import('./sfx');
-      const music = await getSfx(musicToken, totalDur);
-      // amix: [0]=concat audio (voice+sfx), [1]=music (dialed to ~0.25 vol).
-      // We side-step true sidechaining by giving voice/sfx ~4x the weight of
-      // music. Plus volume filter on the music itself for headroom.
-      await ff([
-        '-y', '-i', concatPath, '-i', music.local_path,
-        '-filter_complex',
-          `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.25,` +
-          `apad=pad_dur=${totalDur.toFixed(3)},atrim=0:${totalDur.toFixed(3)}[bed];` +
-          `[0:a][bed]amix=inputs=2:duration=longest:dropout_transition=0:weights='4 1'[aout]`,
-        '-map', '0:v', '-map', '[aout]',
-        '-c:v', 'copy',
-        '-c:a', 'aac', '-b:a', '160k',
-        outPath,
-      ]);
+      await withToolCall(`compose:music_bed (${musicToken})`, async () => {
+        const { getSfx } = await import('./sfx');
+        const music = await getSfx(musicToken, totalDur);
+        // amix: [0]=concat audio (voice+sfx), [1]=music (dialed to ~0.25 vol).
+        // We side-step true sidechaining by giving voice/sfx ~4x the weight of
+        // music. Plus volume filter on the music itself for headroom.
+        await ff([
+          '-y', '-i', concatPath, '-i', music.local_path,
+          '-filter_complex',
+            `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.25,` +
+            `apad=pad_dur=${totalDur.toFixed(3)},atrim=0:${totalDur.toFixed(3)}[bed];` +
+            `[0:a][bed]amix=inputs=2:duration=longest:dropout_transition=0:weights='4 1'[aout]`,
+          '-map', '0:v', '-map', '[aout]',
+          '-c:v', 'copy',
+          '-c:a', 'aac', '-b:a', '160k',
+          outPath,
+        ]);
+      });
     } catch (e) {
       // Music bed is best-effort — log and fall back to concat without bed.
       console.warn(`[producer:music-bed] failed for token=${musicToken}: ${(e as Error).message}`);
@@ -566,6 +579,7 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
     await fs.copyFile(concatPath, outPath);
   }
 
+  await emitToolCall('compose:done', { duration_s: totalDur, output: outName });
   // Cleanup stage dir
   try { await fs.rm(stageDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
