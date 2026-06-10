@@ -53,9 +53,45 @@ function argsToCacheKey(tool: string, args: Record<string, unknown>): string {
   return JSON.stringify(canonicalize(filtered));
 }
 
-export function computeCacheHash(tool: string, args: Record<string, unknown>): { version: string; hash: string } {
+// Process-local cache of runtime version overrides. Reloaded periodically
+// so a bump from the admin GUI takes effect within OVERRIDE_TTL_MS without
+// requiring a redeploy. Skip cache entirely for the first call (so a fresh
+// boot picks up existing overrides immediately).
+const OVERRIDE_TTL_MS = 5_000;
+let overridesCache: { suffixes: Record<string, string>; expiresAt: number } | null = null;
+
+async function loadOverrides(): Promise<Record<string, string>> {
+  if (overridesCache && Date.now() < overridesCache.expiresAt) {
+    return overridesCache.suffixes;
+  }
+  try {
+    const pool = await getPool();
+    const r = await pool.query<{ tool: string; suffix: string }>(
+      `SELECT tool, suffix FROM content_gen_tool_version_overrides`,
+    );
+    const suffixes: Record<string, string> = {};
+    for (const row of r.rows) suffixes[row.tool] = row.suffix;
+    overridesCache = { suffixes, expiresAt: Date.now() + OVERRIDE_TTL_MS };
+    return suffixes;
+  } catch {
+    // First-boot table-missing or transient — return empty map; caller
+    // falls back to static version. Don't poison the cache on error.
+    return overridesCache?.suffixes ?? {};
+  }
+}
+
+/** Force-refresh the override cache. Called from the cache API's
+ *  bump_version action so the change takes effect on the next gem. */
+export function invalidateOverridesCache(): void {
+  overridesCache = null;
+}
+
+export async function computeCacheHash(tool: string, args: Record<string, unknown>): Promise<{ version: string; hash: string }> {
   const spec = TOOLS_BY_NAME[tool];
-  const version = spec?.version ?? 'v0';
+  const staticVersion = spec?.version ?? 'v0';
+  const overrides = await loadOverrides();
+  const suffix = overrides[tool];
+  const version = suffix ? `${staticVersion}:${suffix}` : staticVersion;
   const argsKey = argsToCacheKey(tool, args);
   const hash = crypto.createHash('sha256')
     .update(tool, 'utf8')
@@ -77,7 +113,7 @@ export async function lookupCache(
   tool: string,
   args: Record<string, unknown>,
 ): Promise<CachedToolOutput | null> {
-  const { hash } = computeCacheHash(tool, args);
+  const { hash } = await computeCacheHash(tool, args);
   const pool = await getPool();
   const r = await pool.query<{
     id: number;
@@ -122,7 +158,7 @@ export async function storeCache(
   output: Record<string, unknown>,
   assetPaths: string[],
 ): Promise<void> {
-  const { version, hash } = computeCacheHash(tool, args);
+  const { version, hash } = await computeCacheHash(tool, args);
   const pool = await getPool();
   await pool.query(
     `INSERT INTO content_gen_tool_cache (tool, version, args_hash, output_jsonb, asset_paths, created_at, last_used_at, hit_count)

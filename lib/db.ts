@@ -1974,6 +1974,20 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgtc_tool ON content_gen_tool_cache(tool, version, last_used_at DESC)`).catch(() => {});
 
+    // Runtime version overrides for the tool cache. When a row exists for a
+    // tool, the cache lookup uses (static_version + ":" + suffix) as the
+    // version segment of args_hash — so changing the suffix is a namespace
+    // bump. Old cache rows under the previous suffix stay on disk (good:
+    // rollback = DELETE the override); a fresh render repopulates the new
+    // namespace. The admin GUI's "Bump version" button writes here.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_tool_version_overrides (
+        tool       TEXT PRIMARY KEY,
+        suffix     TEXT NOT NULL,
+        bumped_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+
     // Execution graph — per-render node + edge log for the live "Execution"
     // tab in the producer admin. Nodes are appended as the producer runs;
     // the UI fetches them via /api/admin/content-gen/producer/graph and

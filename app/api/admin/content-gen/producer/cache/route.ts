@@ -56,6 +56,13 @@ export async function GET(req: NextRequest) {
       ORDER BY tool`,
   );
 
+  // Load any runtime version overrides so the GUI can show "(bumped)"
+  // beside tools whose effective version differs from the static spec.
+  const overrides = await pool.query<{ tool: string; suffix: string; bumped_at: Date }>(
+    `SELECT tool, suffix, bumped_at FROM content_gen_tool_version_overrides`,
+  );
+  const overrideByTool = new Map(overrides.rows.map(o => [o.tool, o]));
+
   // Estimate disk usage from sample_paths (one row per tool). Coarse but
   // gives the user a vibe-check number without scanning every cached file.
   const tools = await Promise.all(r.rows.map(async row => {
@@ -69,9 +76,12 @@ export async function GET(req: NextRequest) {
         } catch { /* file missing or unreadable — fine */ }
       }
     }
+    const ov = overrideByTool.get(row.tool);
     return {
       tool: row.tool,
       version: row.version,
+      override_suffix: ov?.suffix ?? null,
+      override_bumped_at: ov?.bumped_at ?? null,
       rows: row.rows,
       hits: row.hits,
       oldest: row.oldest,
@@ -86,7 +96,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   const body = await req.json().catch(() => ({})) as {
-    action?: 'invalidate' | 'invalidate_all';
+    action?: 'invalidate' | 'invalidate_all' | 'bump_version' | 'revert_version';
     tool?: string;
     version?: string;
   };
@@ -111,5 +121,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, deleted: r.rowCount, scope: body.tool });
   }
 
-  return NextResponse.json({ error: 'action required (invalidate | invalidate_all)' }, { status: 400 });
+  // Bump version — namespace bump that keeps OLD cache rows on disk so a
+  // revert is possible. Old rows just won't be served because the hash
+  // changes. UPSERT a random short suffix; cache module re-reads within 5s.
+  if (body.action === 'bump_version') {
+    if (!body.tool) return NextResponse.json({ error: 'tool required' }, { status: 400 });
+    const suffix = `bump-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    await pool.query(
+      `INSERT INTO content_gen_tool_version_overrides (tool, suffix, bumped_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (tool) DO UPDATE SET suffix = EXCLUDED.suffix, bumped_at = NOW()`,
+      [body.tool, suffix],
+    );
+    const { invalidateOverridesCache } = await import('@/lib/content-gen/tool-cache');
+    invalidateOverridesCache();
+    return NextResponse.json({ ok: true, tool: body.tool, suffix });
+  }
+
+  // Revert — delete the override so the static version applies again
+  // and any rows cached under it become re-servable.
+  if (body.action === 'revert_version') {
+    if (!body.tool) return NextResponse.json({ error: 'tool required' }, { status: 400 });
+    const r = await pool.query(
+      `DELETE FROM content_gen_tool_version_overrides WHERE tool = $1`,
+      [body.tool],
+    );
+    const { invalidateOverridesCache } = await import('@/lib/content-gen/tool-cache');
+    invalidateOverridesCache();
+    return NextResponse.json({ ok: true, tool: body.tool, reverted: (r.rowCount ?? 0) > 0 });
+  }
+
+  return NextResponse.json({ error: 'action required (invalidate | invalidate_all | bump_version | revert_version)' }, { status: 400 });
 }

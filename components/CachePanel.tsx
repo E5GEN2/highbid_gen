@@ -16,6 +16,10 @@ import { useCallback, useEffect, useState } from 'react';
 interface ToolCacheStats {
   tool: string;
   version: string;
+  /** When non-null, the tool has a runtime version override active —
+   *  cache rows under the previous (static) version are dormant. */
+  override_suffix: string | null;
+  override_bumped_at: string | null;
   rows: number;
   hits: number;
   oldest: string;
@@ -112,6 +116,34 @@ export default function CachePanel() {
     } catch (e) {
       setErr((e as Error).message);
     } finally { setBusy(null); }
+  };
+
+  const bump = async (tool: string) => {
+    if (!confirm(`Bump ${tool} version? Next render runs fresh; old cache rows stay on disk for revert.`)) return;
+    setBusy(tool + ':bump');
+    try {
+      const r = await fetch('/api/admin/content-gen/producer/cache', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ action: 'bump_version', tool }),
+      }).then(r => r.json());
+      if (r.ok) await refresh();
+      else setErr(r.error ?? 'bump failed');
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(null); }
+  };
+
+  const revert = async (tool: string) => {
+    if (!confirm(`Revert ${tool} version override? Re-enables the previous cache namespace.`)) return;
+    setBusy(tool + ':revert');
+    try {
+      const r = await fetch('/api/admin/content-gen/producer/cache', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+        body: JSON.stringify({ action: 'revert_version', tool }),
+      }).then(r => r.json());
+      if (r.ok) await refresh();
+      else setErr(r.error ?? 'revert failed');
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(null); }
   };
 
   const invalidateAll = async () => {
@@ -214,7 +246,15 @@ export default function CachePanel() {
                 {tools.map(t => (
                   <tr key={t.tool} className="border-b border-[#141414]">
                     <td className="py-1 pr-3 font-mono text-[#ddd]">{t.tool}</td>
-                    <td className="py-1 pr-3 text-[#888]">{t.version}</td>
+                    <td className="py-1 pr-3 text-[#888]">
+                      {t.version}
+                      {t.override_suffix && (
+                        <span
+                          className="ml-1 text-amber-300 text-[10px]"
+                          title={`Runtime bump active (suffix=${t.override_suffix}, bumped ${t.override_bumped_at ? timeAgo(t.override_bumped_at) : '?'}). Old cache rows are dormant; click Revert to restore.`}
+                        >⤴ bumped</span>
+                      )}
+                    </td>
                     <td className="py-1 pr-3 text-right text-[#aaa]">{t.rows}</td>
                     <td className="py-1 pr-3 text-right">
                       {t.hits > 0 ? <span className="text-purple-300">⚡{t.hits}</span> : <span className="text-[#666]">—</span>}
@@ -223,7 +263,26 @@ export default function CachePanel() {
                     <td className="py-1 pr-3 text-right text-[#888]" title="Sample size from 4 newest cached assets">
                       {fmtBytes(t.sample_bytes)}
                     </td>
-                    <td className="py-1 pr-3 text-right">
+                    <td className="py-1 pr-3 text-right whitespace-nowrap">
+                      {t.override_suffix ? (
+                        <button
+                          onClick={() => revert(t.tool)}
+                          disabled={busy != null}
+                          className="px-1.5 py-0.5 mr-1 rounded border border-amber-500/40 hover:border-amber-500/60 text-amber-300 disabled:opacity-50"
+                          title="Restore the previous version — re-uses any cache rows still on disk under it"
+                        >
+                          {busy === t.tool + ':revert' ? '…' : 'Revert'}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => bump(t.tool)}
+                          disabled={busy != null}
+                          className="px-1.5 py-0.5 mr-1 rounded border border-[#333] hover:border-[#555] text-[#aaa] disabled:opacity-50"
+                          title="Bump the cache namespace — next render runs fresh; old rows stay for revert"
+                        >
+                          {busy === t.tool + ':bump' ? '…' : 'Bump'}
+                        </button>
+                      )}
                       <button
                         onClick={() => invalidate(t.tool)}
                         disabled={busy != null}
