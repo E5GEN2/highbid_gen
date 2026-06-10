@@ -139,12 +139,55 @@ function makeFramingSlot(slot_id: string, beat_id: string, narration: string, ma
   };
 }
 
-function buildNicheIntroSlots(niche_index: number, niche_label: string): Slot[] {
+/** MG-style niche intro: 2×5 grid of all channel logos, zooming into the
+ *  channel being revealed in THIS niche. Replaces the plain "Number N"
+ *  text card per user correction (2026-06-10: "MG OG does a composition
+ *  of the logos of the channels and zooms into that one which is going
+ *  to speak about"). The grid PNG is shared across niches — only the
+ *  ffmpeg target_idx differs.
+ *
+ *  Falls back to a plain text card if allChannelIds is empty or has only
+ *  one entry (the montage needs at least 2 channels to be meaningful). */
+function buildNicheIntroSlots(
+  niche_index: number,
+  niche_label: string,
+  allChannelIds: string[],
+): Slot[] {
   const base = `niche_${niche_index}`;
+  const useMontage = allChannelIds.length >= 2;
+  const introNarration = `Number ${niche_index}.`;
+  const introSlot: Slot = useMontage
+    ? {
+        slot_id: `${base}_intro_card`,
+        beat_id: 'intro_card',
+        narration: introNarration,
+        gems: [
+          { id: 'narr', tool: 'tts', args: { text: introNarration, voice: 'money_groot' } },
+          { id: 'main', tool: 'logos_montage', args: { channelIds: allChannelIds } },
+          { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+        ],
+        compose: {
+          bg: 'white',
+          hold_s: '{{narr.duration_s}}',
+          layers: [
+            // zoom_in_to_target + target_idx=niche_index-1 (1-indexed in
+            // narration, 0-indexed in grid). The montage PNG is identical
+            // across niches; only target_idx differs, so producer-tools'
+            // cache reuses the same file.
+            { from: 'main', channel: 'video', fit: 'contain',
+              ken_burns: 'zoom_in_to_target',
+              target_idx: Math.max(0, Math.min(9, niche_index - 1)) },
+            { from: 'narr', channel: 'voice' },
+            { from: 'sfx',  channel: 'fx' },
+          ],
+        },
+      }
+    : makeFramingSlot(`${base}_intro_card`, 'intro_card', introNarration,
+        { composition: 'text_card', text: introNarration, bg_mode: 'white', color_treatment: 'neutral' },
+        ['whoosh']);
+
   return [
-    makeFramingSlot(`${base}_intro_card`, 'intro_card', `Number ${niche_index}.`,
-      { composition: 'text_card', text: `Number ${niche_index}.`, bg_mode: 'white', color_treatment: 'neutral' },
-      ['whoosh']),
+    introSlot,
     makeFramingSlot(`${base}_niche_name_card`, 'niche_name_card', `${niche_label}.`,
       { composition: 'text_card', text: `${niche_label}.`, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
@@ -684,8 +727,11 @@ export async function POST(req: NextRequest) {
       const beats = stubNarration(beat_id, ch);
       if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
       const niche_index = acceptedCount + 1;
-      // 1. Framing slots (no writer): intro_card "Number N" + niche_name_card.
-      const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index));
+      // 1. Framing slots (no writer): intro_card (MG logos montage zooming
+      //    into THIS channel) + niche_name_card. All channels' IDs are
+      //    passed so the montage tool can pull all 10 avatars; target_idx
+      //    inside the slot picks which one the camera zooms into.
+      const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), channels);
       // 2. Writer call for the proof beats.
       const input: ScriptWriterInput = {
         channel: ch,

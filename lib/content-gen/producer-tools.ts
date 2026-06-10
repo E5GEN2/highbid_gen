@@ -46,11 +46,44 @@ export async function runTool(name: string, args: Record<string, unknown>): Prom
     case 'tts':           return runTts(args);
     case 'sfx_render':    return runSfxRender(args);
     case 'image_gen':     return runImageGen(args);
+    case 'logos_montage': return runLogosMontage(args);
     case 'audio_mix':     return runAudioMix(args);
     case 'video_compose': return runVideoCompose(args);
     default:
       throw new Error(`unknown tool "${name}"`);
   }
+}
+
+/** logos_montage — render 2×5 channel-avatar montage for MG-style
+ *  niche reveals. Args: { channelIds: string[] } (in display order).
+ *  Caches per video by hash of the channel_id list. */
+async function runLogosMontage(args: Record<string, unknown>): Promise<ToolOutput> {
+  const channelIds = (args.channelIds as string[]) ?? [];
+  if (!Array.isArray(channelIds) || channelIds.length === 0) {
+    throw new Error('logos_montage: channelIds required');
+  }
+  const { getPool } = await import('../db');
+  const pool = await getPool();
+  // Fetch avatars in the SAME order as the input channelIds list, so
+  // target_idx = niche_index in the producer always maps to the right cell.
+  const r = await pool.query<{ channel_id: string; channel_avatar: string | null }>(
+    `SELECT channel_id, channel_avatar FROM niche_spy_channels WHERE channel_id = ANY($1::text[])`,
+    [channelIds],
+  );
+  const byId = new Map(r.rows.map(row => [row.channel_id, row.channel_avatar]));
+  const orderedUrls: (string | null)[] = channelIds.map(id => byId.get(id) ?? null);
+
+  const { composeChannelLogosMontageMG } = await import('./yt-compose-mg');
+  const local_path = await composeChannelLogosMontageMG(orderedUrls);
+  return {
+    file_url: `file://${local_path}`,
+    local_path,
+    asset_kind: 'image',
+    duration_s: null,
+    bboxes: null,
+    page_width: 1920,
+    page_height: 1080,
+  };
 }
 
 // ───────────────────────────────────────────────────────────────────

@@ -350,6 +350,20 @@ export const TOOL_REGISTRY: ToolSpec[] = [
     output_fields: ['file_url', 'width', 'height'],
   },
   {
+    name: 'logos_montage',
+    description: 'Render a 2×5 channel-avatar montage (MG-style "Number N" niche reveal) — 10 circular logos on a white canvas. Used together with ken_burns="zoom_in_to_target" + target_idx to zoom into the channel being revealed in each niche.',
+    args_schema: {
+      type: 'object',
+      required: ['channelIds'],
+      additionalProperties: false,
+      properties: {
+        channelIds: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10,
+                      description: 'Ordered list of channel IDs (target_idx maps to this position).' },
+      },
+    },
+    output_fields: ['file_url', 'local_path'],
+  },
+  {
     name: 'audio_mix',
     description: 'Mix narration + SFX + bed music into a group-level audio bed. Ducks music −6 dB under voice with 200 ms release per audio-sfx spec. Music switches at niche/section/mode boundaries; default is `upbeat_light`.',
     args_schema: {
