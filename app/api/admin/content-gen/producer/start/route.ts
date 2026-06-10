@@ -687,22 +687,27 @@ function forceProofKind(slots: Slot[]): Slot[] {
         if (g.id !== 'main') return g;
         if (g.tool !== 'yt_capture') return g;
         // 2026-06-10 user feedback: previous flow baked a static yellow
-        // vertical_bar into the captured PNG, which then doubled with
-        // the new animated highlight (two yellow lines). Now the capture
-        // is clean — the L→R animated highlight is added entirely at
-        // video-compose time via ffmpeg drawbox keyed by highlight_row
-        // below.
+        // vertical_bar / sharpie_circle into the captured PNG, which
+        // then doubled with the new animated highlight. MG OG has only
+        // the animated highlight, no baked annotation.
         //
         // We KEEP annotate_element so the walker still scopes the about
         // modal (otherwise the bbox extractor only returns joined_date
         // and misses subscriber_count / total_views). We DROP annotate_kind
-        // and annotate_shape so the composite drawing step is skipped —
-        // no static bar baked into the PNG.
+        // and annotate_shape (the writer's gem output sets these to
+        // composite/sharpie_circle; if we just spread ...g.args they
+        // bleed through, so explicit destructure-and-drop is required).
         const element = highlightRow === 'subscribers' ? 'subscriber_count' : 'total_views';
+        const {
+          annotate_kind: _annKind,
+          annotate_shape: _annShape,
+          ...restArgs
+        } = g.args as Record<string, unknown>;
+        void _annKind; void _annShape;
         return {
           ...g,
           args: {
-            ...g.args,
+            ...restArgs,
             kind: 'about_page',
             annotate_element: element,
           },
