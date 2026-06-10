@@ -32,6 +32,18 @@ const VIEWPORT_BY_KIND: Partial<Record<ScreenKind, { width: number; height: numb
 const NAV_TIMEOUT_MS = 45_000;
 const NETIDLE_MS = 3_000;
 const SCREENSHOT_TIMEOUT_MS = 15_000;
+// Hard ceiling on a single captureYtScreen attempt — covers nav + modal
+// open + bbox extraction + screenshot + cleanup. If Playwright wedges
+// somewhere (proxy dies mid-stream, page never reaches "domcontentloaded",
+// some YT layout pathway blocks indefinitely), this raises so the gem
+// fails cleanly instead of hanging the producer slot. The 3-attempt
+// retry loop above this still kicks in on a transient error.
+//
+// 2026-06-10 jobs 107/108: yt_capture gems stuck running 5+ minutes →
+// whole render hung. With a 90s cap, each attempt fails fast, retries
+// pick a different proxy, and if all 3 fail the gem errors out and the
+// producer continues to the next slot.
+const CAPTURE_HARD_TIMEOUT_MS = 90_000;
 
 export type ScreenKind = 'channel_page' | 'about_page' | 'videos_tab' | 'watch_page';
 export type CaptureMode = 'static' | 'scroll_record';
@@ -448,13 +460,23 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
   let lastErr: Error | null = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const result = await runCapture(rowId, channelId, handle, kind, url, opts.geo ?? null, dateBucket, mode, opts.annotate);
+      // Hard timeout — runCapture racing against a setTimeout that rejects.
+      // Without this, a Playwright session that stalls (proxy died mid-
+      // request, YT served a bot wall that never resolves, etc.) holds the
+      // gem in 'running' forever and stalls the producer slot.
+      const result = await Promise.race([
+        runCapture(rowId, channelId, handle, kind, url, opts.geo ?? null, dateBucket, mode, opts.annotate),
+        new Promise<CaptureResult>((_, reject) => setTimeout(
+          () => reject(new Error(`yt_capture HARD_TIMEOUT after ${CAPTURE_HARD_TIMEOUT_MS}ms (attempt ${attempt}/${MAX_ATTEMPTS})`)),
+          CAPTURE_HARD_TIMEOUT_MS,
+        )),
+      ]);
       return result;
     } catch (err) {
       lastErr = err as Error;
       const msg = lastErr.message ?? '';
       const transient =
-        /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|EAI_AGAIN/i
+        /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|EAI_AGAIN|HARD_TIMEOUT/i
           .test(msg);
       if (!transient || attempt === MAX_ATTEMPTS) break;
       // Backoff briefly so we don't hammer a slow proxy pool.
