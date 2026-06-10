@@ -910,6 +910,16 @@ export async function POST(req: NextRequest) {
     if (!result.ok || !result.script) {
       return NextResponse.json({ error: 'script-writer failed', writer_errors: result.errors, raw_response: result.raw_response }, { status: 500 });
     }
+    // Apply the same post-writer transforms as the multi-channel path so
+    // single-channel renders get crop_target injection + about_page kind
+    // upgrade + most_popular_callout swap. Without this, video-compose
+    // falls through to fit:contain on the raw YT screenshots — every
+    // composition shows full YT chrome instead of the MG-style cropped
+    // panel. (Bug surfaced 2026-06-10 on job 109's about_panel showing
+    // YouTube sidebar + search bar instead of just the modal interior.)
+    const proofSwapped = forceProofKind(result.script.slots);
+    const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
+    result.script.slots = injectCropTargets(callouttSwapped);
     script = result.script;
   } else {
     return NextResponse.json({ error: 'one of: body.script | (channelId + beat_id) | (channels[] + beat_id) required' }, { status: 400 });
