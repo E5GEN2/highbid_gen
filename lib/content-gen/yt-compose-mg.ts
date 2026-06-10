@@ -152,18 +152,27 @@ const PANO_INNER_PAD = 30;
  *   yBot  = subs.y + 124  → past the Subscribe button
  *   xLeft = subs.x - 366  → past the avatar's left edge
  *   xRight = subs.x + subs.w + 340 → past the description's right edge
+ *
+ * Revised 2026-06-10 after user feedback: previous crop included visual
+ * trash (banner sliver, partial Subscribe text on left, excess padding).
+ * Tighter bounds + landscape card aspect (~3.4:1) to match MG framing —
+ * verified locally via /tmp/iter/out_chip_tight_b.png.
+ *   Banner ends at y=227 in dark-mode capture → cropY = subs.y-68 = 228
+ *   xLeft = subs.x-356 → x=240 (past Subscribe button gutter)
+ *   Card 1500×440 (was 1500×700) with 20px inner pad (was 40)
  */
 const CHIP_CARD_W = 1500;
-const CHIP_CARD_H = 700;
-const CHIP_CARD_RADIUS = 40;
-const CHIP_INNER_PAD = 40;
+const CHIP_CARD_H = 440;
+const CHIP_CARD_RADIUS = 36;
+const CHIP_INNER_PAD = 20;
 
 export async function composeChannelChipMG(srcPath: string, subs: BBox): Promise<string> {
   // 1. Compute crop bounds from subscriber_count anchor.
-  const cropX = Math.max(0, subs.x - 366);
-  const cropY = Math.max(0, subs.y - 86);
-  const cropW = subs.x + subs.w + 340 - cropX;
-  const cropH = subs.y + 124 - cropY;
+  //    Banner ends at y=227 in YT dark mode → cropY = subs.y - 68 = 228.
+  const cropX = Math.max(0, subs.x - 356);
+  const cropY = Math.max(0, subs.y - 68);
+  const cropW = subs.x + subs.w + 320 - cropX;
+  const cropH = subs.y + 110 - cropY;
 
   // Clamp to source dimensions.
   const meta = await sharp(srcPath).metadata();
