@@ -1739,7 +1739,7 @@ export default function AdminPage() {
           with hover-to-white. Per-tab accent preserved as a 1.5px dot to
           the left of the label so we keep the section identity cue. */}
       <div className="border-b border-[#1a1a1a] bg-[#0a0a0a] sticky top-0 z-10">
-        <div className="max-w-[1400px] mx-auto px-6 flex items-center gap-1 overflow-x-auto -mb-px">
+        <div className="max-w-[1400px] mx-auto px-6 flex flex-wrap items-center gap-x-1 gap-y-0 -mb-px">
           {tabs.map(tab => {
             const active = adminSection === tab.key;
             return (
