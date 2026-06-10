@@ -269,6 +269,16 @@ interface PlacedNode {
   h: number;
 }
 
+/** Slot keys follow the pattern `slot:niche_<N>_<beat>` in listicle
+ *  renders; CTA / non-niche slots fall into the `__other__` bucket. */
+function nicheOfSlot(slotKey: string): string | null {
+  // node_key is "slot:niche_3_channel_proof_1" etc.
+  const m = /^slot:niche_(\d+)_/.exec(slotKey);
+  if (m) return m[1];
+  if (/^slot:cta_/.test(slotKey)) return null; // CTA shares with __other__
+  return null;
+}
+
 function DagCanvas({
   graph, slotKeyToGems, dbSaveNodes, writerNodes, slotNodes, composeNodes, onSelect,
 }: {
@@ -280,8 +290,22 @@ function DagCanvas({
   composeNodes: GraphNode[];
   onSelect: (n: GraphNode) => void;
 }) {
+  // Niche collapse state — keyed by niche index ('1', '2', …, '__other__').
+  // Multi-channel listicle renders produce ~120 slots; without grouping the
+  // panel is overwhelming. Niches start collapsed when there are many.
+  const niches = Array.from(new Set(slotNodes.map(s => nicheOfSlot(s.node_key) ?? '__other__')));
+  const manyNiches = niches.length > 3;
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(manyNiches ? niches : []));
+  const toggle = (k: string) => setCollapsed(prev => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
+
   // Layout pass — compute (x,y,w,h) per node_key. Lane-by-lane top-down.
   const positions: Record<string, PlacedNode> = {};
+  // Niche group headers (clickable bars).
+  const groupBars: Array<{ key: string; y: number; w: number; slotCount: number; gemCount: number; doneCount: number; cachedCount: number; failedCount: number; collapsed: boolean }> = [];
   let y = 16;
 
   const placeLane = (label: string | null, nodes: GraphNode[], w: number) => {
@@ -297,19 +321,51 @@ function DagCanvas({
   placeLane('db_save',  dbSaveNodes, NODE_W);
   placeLane('writer',   writerNodes, NODE_W);
 
-  // Slot rows — slot card on the left, gem cards laid out horizontally.
-  for (const slot of slotNodes) {
-    const gems = slotKeyToGems[slot.node_key] ?? [];
-    positions[slot.node_key] = { n: slot, x: LANE_PAD_X, y, w: SLOT_W, h: NODE_H };
-    let gemX = LANE_PAD_X + SLOT_W + NODE_GAP_X;
-    for (const g of gems) {
-      positions[g.node_key] = { n: g, x: gemX, y, w: NODE_W, h: NODE_H };
-      gemX += NODE_W + NODE_GAP_X;
+  // Group slots by niche. Each group renders a clickable bar; expanded
+  // groups then render slot rows the normal way.
+  const slotsByNiche: Record<string, GraphNode[]> = {};
+  for (const s of slotNodes) {
+    const k = nicheOfSlot(s.node_key) ?? '__other__';
+    (slotsByNiche[k] ??= []).push(s);
+  }
+  const orderedNicheKeys = Object.keys(slotsByNiche).sort((a, b) => {
+    if (a === '__other__') return 1;
+    if (b === '__other__') return -1;
+    return parseInt(a, 10) - parseInt(b, 10);
+  });
+
+  for (const nKey of orderedNicheKeys) {
+    const slots = slotsByNiche[nKey];
+    const allGems = slots.flatMap(s => slotKeyToGems[s.node_key] ?? []);
+    const doneCount   = allGems.filter(g => g.status === 'done').length;
+    const cachedCount = allGems.filter(g => g.status === 'cached').length;
+    const failedCount = allGems.filter(g => g.status === 'failed').length;
+    const isCollapsed = collapsed.has(nKey);
+
+    // Reserve canvas room for the group bar at this y.
+    const barW = Math.max(
+      LANE_PAD_X * 2 + SLOT_W + NODE_GAP_X +
+        Math.max(...slots.map(s => (slotKeyToGems[s.node_key] ?? []).length)) * (NODE_W + NODE_GAP_X),
+      800,
+    );
+    groupBars.push({ key: nKey, y, w: barW, slotCount: slots.length, gemCount: allGems.length, doneCount, cachedCount, failedCount, collapsed: isCollapsed });
+    y += 32;
+
+    if (!isCollapsed) {
+      for (const slot of slots) {
+        const gems = slotKeyToGems[slot.node_key] ?? [];
+        positions[slot.node_key] = { n: slot, x: LANE_PAD_X, y, w: SLOT_W, h: NODE_H };
+        let gemX = LANE_PAD_X + SLOT_W + NODE_GAP_X;
+        for (const g of gems) {
+          positions[g.node_key] = { n: g, x: gemX, y, w: NODE_W, h: NODE_H };
+          gemX += NODE_W + NODE_GAP_X;
+        }
+        y += NODE_H + SLOT_GAP_Y;
+      }
     }
-    y += NODE_H + SLOT_GAP_Y;
+    y += LANE_GAP_Y - SLOT_GAP_Y;
   }
 
-  y += LANE_GAP_Y - SLOT_GAP_Y;
   placeLane('compose', composeNodes, COMPOSE_W);
 
   const canvasH = y + 24;
@@ -391,6 +447,32 @@ function DagCanvas({
             />
           ))}
         </svg>
+
+        {/* Niche group bars — click to collapse/expand all of that niche's slots+gems. */}
+        {groupBars.map(bar => {
+          const label = bar.key === '__other__' ? 'Framing / CTA' : `Niche ${bar.key}`;
+          const ratio = bar.gemCount > 0 ? Math.round(100 * (bar.doneCount + bar.cachedCount) / bar.gemCount) : 0;
+          return (
+            <button
+              key={`bar:${bar.key}`}
+              onClick={() => toggle(bar.key)}
+              style={{ position: 'absolute', left: LANE_PAD_X, top: bar.y, width: bar.w - LANE_PAD_X * 2, height: 24 }}
+              className="text-left rounded px-2 py-0.5 bg-[#0f0f0f] border border-[#1f1f1f] hover:bg-[#161616] flex items-center gap-2 text-[11px]"
+            >
+              <span className="text-[#666]">{bar.collapsed ? '▸' : '▾'}</span>
+              <span className="text-[#ddd] font-semibold">{label}</span>
+              <span className="text-[#666]">·</span>
+              <span className="text-[#999]">{bar.slotCount} slots · {bar.gemCount} gems</span>
+              {bar.cachedCount > 0 && (
+                <span className="text-purple-300">· ⚡{bar.cachedCount}</span>
+              )}
+              {bar.failedCount > 0 && (
+                <span className="text-red-300">· ✕{bar.failedCount}</span>
+              )}
+              <span className="ml-auto text-[#777] text-[10px] font-mono">{ratio}%</span>
+            </button>
+          );
+        })}
 
         {Object.values(positions).map(p => (
           <div
