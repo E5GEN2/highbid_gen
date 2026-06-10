@@ -76,7 +76,7 @@ export default function ProducerTab({ active }: { active: boolean }) {
   // Execution graph overlay — when set, the live DAG for that job is shown
   // as a full-screen panel over the producer tab.
   const [graphJobId, setGraphJobId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<{ job: ProducerJob; gems: ProducerGem[] } | null>(null);
+  const [detail, setDetail] = useState<{ job: ProducerJob; gems: ProducerGem[]; cache_breakdown?: Array<{ tool: string; total: number; cached: number }> } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [startForm, setStartForm] = useState({ channelId: '', beat_id: 'channel_proof_1', sync: false });
   const [submitting, setSubmitting] = useState(false);
@@ -95,7 +95,7 @@ export default function ProducerTab({ active }: { active: boolean }) {
     setDetailLoading(true);
     try {
       const r = await fetch(`/api/admin/content-gen/producer/status?id=${id}`).then(r => r.json());
-      if (r.ok) setDetail({ job: r.job, gems: r.gems });
+      if (r.ok) setDetail({ job: r.job, gems: r.gems, cache_breakdown: r.cache_breakdown });
     } catch { /* */ } finally { setDetailLoading(false); }
   }, []);
 
@@ -234,7 +234,7 @@ export default function ProducerTab({ active }: { active: boolean }) {
           {!selectedJobId && <div className="text-[#555] text-center py-20">Click a job to see its timeline</div>}
           {selectedJobId && !detail && !detailLoading && <div className="text-[#555] py-20">Loading…</div>}
           {detailLoading && <div className="text-[#888] text-xs">Refreshing…</div>}
-          {detail && <JobDetailView detail={detail} onOpenGraph={setGraphJobId} />}
+          {detail && <JobDetailView detail={detail} onOpenGraph={setGraphJobId} cacheBreakdown={detail.cache_breakdown} />}
         </div>
       </div>
     </div>
@@ -286,7 +286,7 @@ function FrameStrip({ jobId }: { jobId: number }) {
   );
 }
 
-function JobDetailView({ detail, onOpenGraph }: { detail: { job: ProducerJob; gems: ProducerGem[] }; onOpenGraph: (id: number) => void }) {
+function JobDetailView({ detail, onOpenGraph, cacheBreakdown }: { detail: { job: ProducerJob; gems: ProducerGem[] }; onOpenGraph: (id: number) => void; cacheBreakdown?: Array<{ tool: string; total: number; cached: number }> }) {
   const { job, gems } = detail;
   // Group gems by slot_id, in slot_index order
   const slotsMap = new Map<string, { slot_index: number; gems: ProducerGem[] }>();
@@ -309,6 +309,25 @@ function JobDetailView({ detail, onOpenGraph }: { detail: { job: ProducerJob; ge
               </span>
             )}
           </div>
+          {cacheBreakdown && cacheBreakdown.length > 0 && (
+            <div className="flex items-center gap-1.5 mt-2 text-[10px] flex-wrap">
+              {cacheBreakdown.map(b => {
+                const fully = b.cached === b.total && b.total > 0;
+                const partial = b.cached > 0 && b.cached < b.total;
+                const cls = fully
+                  ? 'bg-purple-600/20 text-purple-200 border border-purple-500/40'
+                  : partial
+                  ? 'bg-amber-600/20 text-amber-200 border border-amber-500/30'
+                  : 'bg-[#1a1a1a] text-[#888] border border-[#2a2a2a]';
+                return (
+                  <span key={b.tool} className={`px-1.5 py-0.5 rounded font-mono ${cls}`}
+                        title={`${b.cached}/${b.total} ${b.tool} gems served from cache`}>
+                    {b.tool} {fully ? '⚡' : partial ? '◐' : '○'}{b.cached}/{b.total}
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button

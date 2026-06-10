@@ -25,7 +25,17 @@ export async function GET(req: NextRequest) {
     if (!Number.isFinite(id)) return NextResponse.json({ error: 'bad id' }, { status: 400 });
     const result = await getJobStatus(id);
     if (!result.job) return NextResponse.json({ error: 'not found' }, { status: 404 });
-    return NextResponse.json({ ok: true, ...result });
+    // Per-tool cache breakdown — drives the "tts ⚡3/3 · yt_capture 0/3"
+    // chip in the GUI so the user can see at a glance which tools are
+    // burning compute vs. serving from cache.
+    const pool = await getPool();
+    const cacheBreakdown = (await pool.query<{ tool: string; total: number; cached: number }>(
+      `SELECT tool, COUNT(*)::int AS total, SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END)::int AS cached
+         FROM content_gen_producer_gems WHERE job_id = $1 AND status = 'done'
+        GROUP BY tool ORDER BY tool`,
+      [id],
+    )).rows;
+    return NextResponse.json({ ok: true, ...result, cache_breakdown: cacheBreakdown });
   }
 
   if (list) {
