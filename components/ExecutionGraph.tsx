@@ -305,7 +305,7 @@ function DagCanvas({
   // Layout pass — compute (x,y,w,h) per node_key. Lane-by-lane top-down.
   const positions: Record<string, PlacedNode> = {};
   // Niche group headers (clickable bars).
-  const groupBars: Array<{ key: string; y: number; w: number; slotCount: number; gemCount: number; doneCount: number; cachedCount: number; failedCount: number; collapsed: boolean }> = [];
+  const groupBars: Array<{ key: string; y: number; w: number; slotCount: number; gemCount: number; doneCount: number; cachedCount: number; failedCount: number; stuckCount: number; collapsed: boolean }> = [];
   let y = 16;
 
   const placeLane = (label: string | null, nodes: GraphNode[], w: number) => {
@@ -334,12 +334,17 @@ function DagCanvas({
     return parseInt(a, 10) - parseInt(b, 10);
   });
 
+  const nowMs = Date.now();
   for (const nKey of orderedNicheKeys) {
     const slots = slotsByNiche[nKey];
     const allGems = slots.flatMap(s => slotKeyToGems[s.node_key] ?? []);
     const doneCount   = allGems.filter(g => g.status === 'done').length;
     const cachedCount = allGems.filter(g => g.status === 'cached').length;
     const failedCount = allGems.filter(g => g.status === 'failed').length;
+    const stuckCount = allGems.filter(g =>
+      g.status === 'running' && g.started_at &&
+      (nowMs - new Date(g.started_at).getTime()) > 90_000
+    ).length;
     const isCollapsed = collapsed.has(nKey);
 
     // Reserve canvas room for the group bar at this y.
@@ -348,7 +353,7 @@ function DagCanvas({
         Math.max(...slots.map(s => (slotKeyToGems[s.node_key] ?? []).length)) * (NODE_W + NODE_GAP_X),
       800,
     );
-    groupBars.push({ key: nKey, y, w: barW, slotCount: slots.length, gemCount: allGems.length, doneCount, cachedCount, failedCount, collapsed: isCollapsed });
+    groupBars.push({ key: nKey, y, w: barW, slotCount: slots.length, gemCount: allGems.length, doneCount, cachedCount, failedCount, stuckCount, collapsed: isCollapsed });
     y += 32;
 
     if (!isCollapsed) {
@@ -469,6 +474,9 @@ function DagCanvas({
               {bar.failedCount > 0 && (
                 <span className="text-red-300">· ✕{bar.failedCount}</span>
               )}
+              {bar.stuckCount > 0 && (
+                <span className="text-amber-300 animate-pulse" title="Gems running >90s — likely stuck">· ⚠️{bar.stuckCount}</span>
+              )}
               <span className="ml-auto text-[#777] text-[10px] font-mono">{ratio}%</span>
             </button>
           );
@@ -487,24 +495,47 @@ function DagCanvas({
   );
 }
 
+/** Threshold past which a running gem is considered "stuck" — long enough
+ *  to be worth flagging visually so the user spots wedged Playwright /
+ *  ffmpeg / API calls. 90s = same as yt_capture's hard-timeout window;
+ *  if a gem is still running past this it's either close to timing out
+ *  or it's a tool without timeout protection (which is itself a signal). */
+const STUCK_THRESHOLD_MS = 90_000;
+
 function NodeCard({ n, width, onSelect }: { n: GraphNode; width?: number; onSelect: () => void }) {
   const elapsedMs = n.payload?.elapsed_ms as number | undefined;
   const cached = n.status === 'cached';
+  // Stuck detection: gem has been 'running' for too long. Computed against
+  // started_at since elapsed_ms is only stamped after the gem finishes.
+  // Re-evaluated on every render; the 1.5s polling cadence keeps it fresh.
+  const runningMs = n.status === 'running' && n.started_at
+    ? Date.now() - new Date(n.started_at).getTime()
+    : 0;
+  const stuck = runningMs > STUCK_THRESHOLD_MS;
+  const stuckLabel = stuck
+    ? runningMs < 60_000 ? `${Math.floor(runningMs/1000)}s`
+      : `${Math.floor(runningMs/60_000)}m${Math.round((runningMs%60_000)/1000)}s`
+    : null;
   return (
     <button
       onClick={onSelect}
-      className={`text-left rounded-md px-2.5 py-1.5 text-xs ${STATUS_RING[n.status]} hover:brightness-125 transition`}
+      className={`text-left rounded-md px-2.5 py-1.5 text-xs hover:brightness-125 transition ${
+        stuck
+          ? 'ring-2 ring-amber-500 bg-amber-500/15 text-amber-100 animate-pulse'
+          : STATUS_RING[n.status]
+      }`}
       style={{ width: width ?? 180 }}
-      title={n.node_key}
+      title={stuck ? `${n.node_key} — stuck ${stuckLabel}` : n.node_key}
     >
       <div className="flex items-center justify-between gap-2 mb-0.5">
         <span className="font-mono truncate" style={{ maxWidth: '85%' }}>
           {NODE_TYPE_BADGE[n.node_type]} {n.label}
         </span>
         {cached && <span className="text-[10px]">⚡</span>}
+        {stuck && <span className="text-[10px]" title={`stuck ${stuckLabel}`}>⚠️</span>}
       </div>
       <div className="flex items-center justify-between text-[10px] opacity-70">
-        <span>{n.status}</span>
+        <span>{stuck ? `stuck ${stuckLabel}` : n.status}</span>
         {elapsedMs != null && <span>{elapsedMs < 1000 ? `${elapsedMs}ms` : `${(elapsedMs/1000).toFixed(1)}s`}</span>}
       </div>
     </button>
