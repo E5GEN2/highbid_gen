@@ -828,13 +828,9 @@ export async function POST(req: NextRequest) {
       //  gray + white text — matching MG without any mockup composer.
       const proofSwapped = forceProofKind(result.script.slots);
       const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
-      // Swap channel_proof_1/2 to channel_about_panel composer card —
-      // see single-channel path for rationale. Big channels (MrBeast,
-      // Vlad+Niki, etc.) hide the "More info" stats column in their
-      // about modal, so the screenshot crop path fails. The composer
-      // card uses YT API data and works for every channel uniformly.
-      const proofComposed = swapChannelProof(callouttSwapped, ch);
-      const writerSlotsTransformed = injectCropTargets(proofComposed);
+      // DO NOT call swapChannelProof — task #65's animated L→R yellow
+      // highlight depends on the about_page screenshot crop path.
+      const writerSlotsTransformed = injectCropTargets(callouttSwapped);
       // 5. MG 3-stage channel reveal: chip → full page → about modal.
       //    All inserted BEFORE channel_proof_1.
       const channelIntroSlot = buildChannelIntroSlot(niche_index, ch);
@@ -921,21 +917,15 @@ export async function POST(req: NextRequest) {
     // upgrade + most_popular_callout swap. Without this, video-compose
     // falls through to fit:contain on the raw YT screenshots — every
     // composition shows full YT chrome instead of the MG-style cropped
-    // panel. (Bug surfaced 2026-06-10 on job 109's about_panel showing
-    // YouTube sidebar + search bar instead of just the modal interior.)
+    // panel.
     //
-    // PLUS: swapChannelProof replaces the channel_proof_1/2 yt_capture
-    // path with the channel_about_panel image_gen composition. The
-    // screenshot-crop path fails for channels whose "About" modal lacks
-    // a "More info" stats column (MrBeast and other whales hide it).
-    // The composer card uses YT API data (subs, videos, views, joined)
-    // so it works uniformly for every channel. Tradeoff: looks slightly
-    // more "designed" than a real screenshot crop, but visually very
-    // close to MG's actual presentation and 100% reliable.
+    // DO NOT call swapChannelProof here — task #65 (animated L→R yellow
+    // highlight via drawbox in video-compose) depends on the about_page
+    // screenshot crop path. swapChannelProof bypasses that animation by
+    // routing through the static-bar image_gen composer card.
     const proofSwapped = forceProofKind(result.script.slots);
     const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
-    const proofComposed = swapChannelProof(callouttSwapped, ch);
-    result.script.slots = injectCropTargets(proofComposed);
+    result.script.slots = injectCropTargets(callouttSwapped);
     script = result.script;
   } else {
     return NextResponse.json({ error: 'one of: body.script | (channelId + beat_id) | (channels[] + beat_id) required' }, { status: 400 });
