@@ -42,8 +42,15 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
+interface DiskUsage {
+  clips_dir: string;
+  totals: { file_count: number; bytes: number; orphan_count: number; orphan_bytes: number };
+  dirs: Array<{ dir: string; file_count: number; bytes: number; orphan_count: number; orphan_bytes: number }>;
+}
+
 export default function CachePanel() {
   const [tools, setTools] = useState<ToolCacheStats[]>([]);
+  const [disk, setDisk] = useState<DiskUsage | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -52,13 +59,38 @@ export default function CachePanel() {
   const refresh = useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      const r = await fetch('/api/admin/content-gen/producer/cache', { credentials: 'include' }).then(r => r.json());
-      if (r.ok) setTools(r.tools);
-      else setErr(r.error ?? 'failed');
+      const [c, d] = await Promise.all([
+        fetch('/api/admin/content-gen/producer/cache', { credentials: 'include' }).then(r => r.json()),
+        fetch('/api/admin/content-gen/producer/disk-usage', { credentials: 'include' }).then(r => r.json()),
+      ]);
+      if (c.ok) setTools(c.tools);
+      else setErr(c.error ?? 'failed');
+      if (d.ok) setDisk(d);
     } catch (e) {
       setErr((e as Error).message);
     } finally { setLoading(false); }
   }, []);
+
+  const sweepOrphans = async () => {
+    if (!disk) return;
+    if (!confirm(`Delete ${disk.totals.orphan_count} orphan files (${fmtBytes(disk.totals.orphan_bytes)})? They aren't referenced by any cache row, voice/sfx asset, or producer job.`)) return;
+    setBusy('__sweep__');
+    try {
+      const r = await fetch('/api/admin/content-gen/producer/disk-usage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action: 'sweep' }),
+      }).then(r => r.json());
+      if (r.ok) {
+        await refresh();
+      } else {
+        setErr(r.error ?? 'sweep failed');
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally { setBusy(null); }
+  };
 
   useEffect(() => { if (open) void refresh(); }, [open, refresh]);
 
@@ -139,6 +171,31 @@ export default function CachePanel() {
           {err && <div className="mb-2 text-[11px] text-red-300">{err}</div>}
           {tools.length === 0 && !loading && (
             <div className="text-[11px] text-[#666] py-2">Cache is empty. Run a render to populate.</div>
+          )}
+          {disk && (
+            <div className="mb-3 pb-3 border-b border-[#1a1a1a] flex items-center gap-3 text-[11px]">
+              <span className="text-[#666]">Disk:</span>
+              <span className="text-[#ddd]">{fmtBytes(disk.totals.bytes)} across {disk.totals.file_count} files</span>
+              {disk.totals.orphan_count > 0 && (
+                <>
+                  <span className="text-[#666]">·</span>
+                  <span className="text-amber-300">
+                    {disk.totals.orphan_count} orphan ({fmtBytes(disk.totals.orphan_bytes)})
+                  </span>
+                  <button
+                    onClick={sweepOrphans}
+                    disabled={busy != null}
+                    className="ml-auto px-2 py-0.5 text-[10px] rounded border border-amber-500/40 hover:border-amber-500/60 text-amber-300 disabled:opacity-50"
+                    title="Delete files not referenced by any cache row, voice/sfx asset, or producer job"
+                  >
+                    {busy === '__sweep__' ? '…' : 'Sweep orphans'}
+                  </button>
+                </>
+              )}
+              {disk.totals.orphan_count === 0 && (
+                <span className="text-[#666] ml-auto">All files referenced ✓</span>
+              )}
+            </div>
           )}
           {tools.length > 0 && (
             <table className="w-full text-[11px]">
