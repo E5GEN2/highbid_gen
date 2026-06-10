@@ -77,7 +77,16 @@ export async function refreshChannelStats(
 
   // 2. Try up to 5 pairs — keys can be suspended/quota-exhausted; banYtKey
   //    rotates the offender out so the next getNextYtPair returns a fresh one.
+  //
+  //    Each ytFetchViaProxy attempt has a hard 8s cap (Promise.race against
+  //    a rejecting setTimeout). Without this, a wedged xgodo proxy hangs
+  //    the entire producer/start route — observed 2026-06-10 when a curl
+  //    POST to /start sat for 90+ seconds and never returned because
+  //    refreshChannelStats blocked on a proxy that never responded.
+  //    With the cap, the whole loop is bounded at MAX_RETRIES × 8s = 40s
+  //    worst case, but in practice ~1-2s on a healthy proxy.
   const MAX_RETRIES = 5;
+  const PER_ATTEMPT_TIMEOUT_MS = 8_000;
   let item: YtChannelStatsItem | undefined;
   let lastError = '';
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -88,7 +97,19 @@ export async function refreshChannelStats(
     }
     const url =
       `https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${channelId}&key=${pair.key}`;
-    const res = await ytFetchViaProxy(url, pair);
+    let res: Awaited<ReturnType<typeof ytFetchViaProxy>>;
+    try {
+      res = await Promise.race([
+        ytFetchViaProxy(url, pair),
+        new Promise<Awaited<ReturnType<typeof ytFetchViaProxy>>>((_, reject) => setTimeout(
+          () => reject(new Error(`HARD_TIMEOUT ${PER_ATTEMPT_TIMEOUT_MS}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)),
+          PER_ATTEMPT_TIMEOUT_MS,
+        )),
+      ]);
+    } catch (e) {
+      lastError = (e as Error).message;
+      continue;  // proxy hung — try a different one
+    }
     if (!res.ok) {
       if (res.status === 429 || res.status === 403) banYtKey(pair.key);
       lastError = `YT API ${res.status}: ${res.error ?? ''}`;
