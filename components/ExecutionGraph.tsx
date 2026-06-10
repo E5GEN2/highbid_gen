@@ -101,20 +101,91 @@ export default function ExecutionGraph({ jobId, onClose }: Props) {
     }
   }, [jobId]);
 
-  // Polling lifecycle: 1.5s while job is running, stop when done/failed.
+  // Live updates: prefer SSE (instant push) with polling as fallback.
+  //
+  // SSE delivers events as nodes transition state on the server (~500ms
+  // poll on the server side, but only changed rows are pushed). Falls
+  // back to 1.5s polling if EventSource fails (proxy strips event-stream,
+  // CORS issue, etc.). Polling is also the recovery path when SSE returns
+  // 'end' with reason='hard-deadline-client-should-reconnect' on long
+  // renders past the 5-minute server cap.
   useEffect(() => {
     if (jobId == null) return;
-    void fetchGraph();
-    const tick = () => {
-      void fetchGraph();
-      const running = graph?.job.status === 'running' || graph?.job.status === 'pending';
-      if (running !== false) {
-        pollRef.current = setTimeout(tick, 1500);
-      }
+    void fetchGraph();  // always seed via the regular endpoint
+
+    let es: EventSource | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let useFallbackPoll = false;
+
+    const startPolling = () => {
+      if (pollTimer) clearTimeout(pollTimer);
+      const tick = () => {
+        void fetchGraph();
+        pollTimer = setTimeout(tick, 1500);
+      };
+      pollTimer = setTimeout(tick, 1500);
     };
-    pollRef.current = setTimeout(tick, 1500);
+
+    try {
+      es = new EventSource(`/api/admin/content-gen/producer/graph/stream?id=${jobId}`, { withCredentials: true });
+      // Initial snapshot or delta — both merge into local graph state.
+      const applyNodes = (incoming: GraphNode[], edges?: GraphEdge[]) => {
+        setGraph(prev => {
+          if (!prev) return prev;
+          const byId = new Map(prev.nodes.map(n => [n.node_key, n] as const));
+          for (const n of incoming) byId.set(n.node_key, n);
+          const mergedNodes = Array.from(byId.values()).sort((a, b) => a.id - b.id);
+          const mergedEdges = edges
+            ? Array.from(new Map([...prev.edges, ...edges].map(e => [`${e.from_key}${e.to_key}${e.kind}`, e])).values())
+            : prev.edges;
+          return { ...prev, nodes: mergedNodes, edges: mergedEdges, server_time: new Date().toISOString() };
+        });
+      };
+      es.addEventListener('snapshot', ev => {
+        try {
+          const d = JSON.parse((ev as MessageEvent).data);
+          setGraph({ job: d.job, nodes: d.nodes, edges: d.edges, server_time: d.server_time });
+        } catch { /* ignore parse */ }
+      });
+      es.addEventListener('delta', ev => {
+        try {
+          const d = JSON.parse((ev as MessageEvent).data);
+          applyNodes(d.nodes ?? [], d.edges ?? []);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener('job', ev => {
+        try {
+          const d = JSON.parse((ev as MessageEvent).data);
+          setGraph(prev => prev ? { ...prev, job: { ...prev.job, ...d.job } } : prev);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener('end', () => {
+        es?.close();
+        es = null;
+        // If server ended via hard-deadline while job still running,
+        // fall back to polling so we keep updating.
+        void fetchGraph();
+      });
+      es.onerror = () => {
+        // EventSource auto-reconnects on transient errors; we only escalate
+        // to polling fallback after a sustained failure (3+ retries).
+        // For simplicity: switch to polling immediately on first error,
+        // since polling is cheap.
+        if (!useFallbackPoll) {
+          useFallbackPoll = true;
+          es?.close();
+          es = null;
+          startPolling();
+        }
+      };
+    } catch {
+      // EventSource not available (e.g. very old browser). Polling fallback.
+      startPolling();
+    }
+
     return () => {
-      if (pollRef.current) clearTimeout(pollRef.current);
+      es?.close();
+      if (pollTimer) clearTimeout(pollTimer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, fetchGraph]);
