@@ -61,7 +61,7 @@ export interface ComposeLayer {
   /** Visual fit when channel=video */
   fit?: 'contain' | 'cover' | 'fill';
   /** Camera move applied during the hold */
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down';
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target';
   /** When channel=overlay, position the layer over the main video */
   position?: { x: number | string; y: number | string; w: number | string; h: number | string };
   /** Crop a yt_capture image to one of its named bboxes before further
@@ -69,6 +69,9 @@ export interface ComposeLayer {
    *  cropped close-up of the relevant stats box. See yt-crop.ts for
    *  supported targets. */
   crop_target?: string;
+  /** Index of the target avatar in a channel_logos_montage (0–9) used by
+   *  ken_burns='zoom_in_to_target' to compute the zoompan center. */
+  target_idx?: number;
 }
 
 export interface Slot {

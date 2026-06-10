@@ -42,7 +42,10 @@ interface ComposeLayer {
   from: string;
   channel?: 'video' | 'voice' | 'fx' | 'overlay';
   fit?: 'contain' | 'cover' | 'fill';
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down';
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target';
+  /** Index of target avatar (0–9) for ken_burns='zoom_in_to_target' on a
+   *  2×5 channel_logos_montage. Maps to grid cell (col, row) and zoompan center. */
+  target_idx?: number;
   url: string | null;
   duration_s: number | null;
   /** When the upstream tool returned an on-disk path, the producer surfaces
@@ -294,12 +297,34 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     `crop=${width}:${height}:0:'min(ih-${height}, n/${Math.max(1, totalFrames - 1)}*(ih-${height}))',` +
     `setsar=1,fps=${fps}`;
 
+  // zoom_in_to_target: zoompan from zoom=1 → 3 centered on target avatar
+  // (cx,cy) in a 1920×1080 logos montage. mainLayer.target_idx (0–9) maps
+  // to the 2×5 grid: cell_w=384 cell_h=540, center = (col*384+192, row*540+270).
+  // Used by channel_logos_montage slots — MG's "Number N" niche reveal.
+  let zoomToTargetVf: string | null = null;
+  if (kenBurns === 'zoom_in_to_target' && typeof mainLayer.target_idx === 'number') {
+    const idx = mainLayer.target_idx;
+    const col = idx % 5;
+    const row = Math.floor(idx / 5);
+    const cx = col * 384 + 192;
+    const cy = row * 540 + 270;
+    // zoompan x/y are in SOURCE coords: top-left of visible window after
+    // applying zoom. To center visible (iw/zoom × ih/zoom) on (cx,cy):
+    //   x = cx - iw/(2*zoom),  y = cy - ih/(2*zoom)
+    zoomToTargetVf =
+      `zoompan=z='1+2*on/${Math.max(1, totalFrames - 1)}'` +
+      `:x='${cx}-iw/(2*zoom)':y='${cy}-ih/(2*zoom)'` +
+      `:d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+  }
+
   // Default Ken Burns: subtle 8% zoom-in on the centered image.
   const stillVfDefault = `scale=${width * 2}:-2:flags=lanczos,` +
                   `zoompan=z='1+0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${Math.round(width * height / width)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
                   `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
-  const stillVf = kenBurns === 'scroll_down' ? scrollDownVf : stillVfDefault;
+  const stillVf =
+    kenBurns === 'scroll_down' ? scrollDownVf
+    : (zoomToTargetVf ?? stillVfDefault);
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 

@@ -457,3 +457,105 @@ export async function composeTopVideosPanoMG(srcPath: string, cardBboxes: BBox[]
     .toFile(outPath);
   return outPath;
 }
+
+/**
+ * Compose an MG-style channel logos montage (2×5 grid of channel avatars
+ * on a white canvas). Each avatar is rendered as a circle with a thick
+ * black border, matching MG's intro reveal style.
+ *
+ * The output PNG is STATIC — the zoom-in-to-target animation happens at
+ * ffmpeg time via the `logos_zoom_to:N` crop_target hook in video-compose.
+ *
+ * Local verification: /tmp/iter/out_logos_grid.png + /tmp/iter/logos_zoom2_t*.png
+ */
+const LOGOS_CANVAS_BG = { r: 255, g: 255, b: 255 };
+const LOGOS_GRID_COLS = 5;
+const LOGOS_GRID_ROWS = 2;
+const LOGOS_AVATAR_SIZE = 280;
+const LOGOS_BORDER_W = 10;
+export const LOGOS_CELL_W = CANVAS_W / LOGOS_GRID_COLS;   // 384
+export const LOGOS_CELL_H = CANVAS_H / LOGOS_GRID_ROWS;   // 540
+
+/** Return the (cx, cy) center of avatar at idx in the 1920×1080 grid. */
+export function logosTargetCenter(idx: number): { cx: number; cy: number } {
+  const col = idx % LOGOS_GRID_COLS;
+  const row = Math.floor(idx / LOGOS_GRID_COLS);
+  return {
+    cx: Math.round(col * LOGOS_CELL_W + LOGOS_CELL_W / 2),
+    cy: Math.round(row * LOGOS_CELL_H + LOGOS_CELL_H / 2),
+  };
+}
+
+/** Render one avatar as a circular image with a thick black border. */
+async function renderCircleAvatar(srcBuf: Buffer, size: number, borderW: number): Promise<Buffer> {
+  const r = size / 2;
+  const inner = size - 2 * borderW;
+  const maskSvg =
+    `<svg width="${inner}" height="${inner}">` +
+    `<circle cx="${inner / 2}" cy="${inner / 2}" r="${inner / 2}" fill="white"/>` +
+    `</svg>`;
+  const masked = await sharp(srcBuf)
+    .resize(inner, inner, { fit: 'cover' })
+    .composite([{ input: Buffer.from(maskSvg), blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+  const ringSvg =
+    `<svg width="${size}" height="${size}">` +
+    `<circle cx="${r}" cy="${r}" r="${r - borderW / 2}" fill="none" stroke="black" stroke-width="${borderW}"/>` +
+    `</svg>`;
+  return await sharp({
+    create: { width: size, height: size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .composite([
+      { input: masked, left: borderW, top: borderW },
+      { input: Buffer.from(ringSvg), left: 0, top: 0 },
+    ])
+    .png()
+    .toBuffer();
+}
+
+/** Fetch a YT CDN avatar at a larger size — DB stores `=s88-c-k-...`; bump
+ *  to `=s400-` so we have enough resolution for a 280-px circle render. */
+async function fetchYtAvatar(url: string): Promise<Buffer | null> {
+  const upsized = url.replace(/=s\d+-/, '=s400-');
+  try {
+    const r = await fetch(upsized);
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the 2×5 channel logos montage and write it to a PNG.
+ *
+ * @param avatarUrls — 10 channel avatar URLs in display order. Missing
+ *                    URLs render as empty cells.
+ * @returns local path to the rendered PNG (1920×1080, white canvas).
+ */
+export async function composeChannelLogosMontageMG(avatarUrls: (string | null)[]): Promise<string> {
+  const composites: Array<{ input: Buffer; left: number; top: number }> = [];
+  for (let i = 0; i < Math.min(avatarUrls.length, LOGOS_GRID_COLS * LOGOS_GRID_ROWS); i++) {
+    const url = avatarUrls[i];
+    if (!url) continue;
+    const srcBuf = await fetchYtAvatar(url);
+    if (!srcBuf) continue;
+    const circle = await renderCircleAvatar(srcBuf, LOGOS_AVATAR_SIZE, LOGOS_BORDER_W);
+    const { cx, cy } = logosTargetCenter(i);
+    composites.push({
+      input: circle,
+      left: Math.round(cx - LOGOS_AVATAR_SIZE / 2),
+      top: Math.round(cy - LOGOS_AVATAR_SIZE / 2),
+    });
+  }
+
+  const outPath = path.join(os.tmpdir(), `mg-logos-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  await sharp({
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: LOGOS_CANVAS_BG },
+  })
+    .composite(composites)
+    .png()
+    .toFile(outPath);
+  return outPath;
+}
