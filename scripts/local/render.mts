@@ -39,11 +39,21 @@ process.env.CLIPS_DIR = CLIPS;
 process.env.PGSSLMODE = 'disable';      // Railway proxy host has no SSL
 process.env.NODE_ENV = process.env.NODE_ENV ?? 'development';
 
+// --local → run against the mirrored local Postgres (hbgen_local) instead of
+// Railway. Populate it first with scripts/local/pull-local.mts.
+if (process.argv.includes('--local')) {
+  process.env.DATABASE_URL = 'postgresql://localhost:5432/hbgen_local';
+  console.log('[db] LOCAL hbgen_local');
+} else {
+  console.log('[db] RAILWAY');
+}
+
 const t0 = Date.now();
 const log = (...a: unknown[]) => console.log(`[+${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a);
 
 async function main() {
-  const [, , mode, arg1] = process.argv;
+  const positional = process.argv.slice(2).filter(a => !a.startsWith('--'));
+  const [mode, arg1] = positional;
   if (mode !== 'from-job' || !arg1) {
     console.error('usage: render.mts from-job <jobId>');
     process.exit(1);
