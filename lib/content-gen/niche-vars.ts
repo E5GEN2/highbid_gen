@@ -79,7 +79,7 @@ export function simplifyRecipeFormula(formula: string | null | undefined): strin
     if (re.test(s)) { s = s.replace(re, rep); break; }
   }
   // If it still doesn't read as a verb phrase, wrap it.
-  if (!/^(makes|creates|uploads|records|posts|compiles|narrates|produces|simply|just)/i.test(s)) {
+  if (!/^(makes|creates|uploads|records|posts|compiles|narrates|produces|simply|just|uses|explains|covers|shows|features|tells|presents|compares|ranks|builds|edits|animates|documents)/i.test(s)) {
     s = `makes ${s}`;
   }
   // Cap at ~18 words at a NATURAL boundary (", " / " with " / " and " /
@@ -114,12 +114,106 @@ function medianViewsPhrase(median: number | null): string | null {
   return 'thousands of views';
 }
 
+/**
+ * Gemini one-clause recipe line via PapaiAPI, cached in
+ * content_gen_channel_analysis.recipe_formula_simple. The analysis
+ * recipe_formula is a vision-model description ("Videos feature black
+ * silhouettes against a grey, cloudy sky…") — too literal/visual for
+ * narration (user feedback 2026-06-11). This rewrites it MG-style:
+ * what kind of CONTENT it is, 8-12 plain words, verb-first.
+ */
+async function generateRecipeLine(
+  channelId: string,
+  nicheLabel: string | null,
+  formula: string | null,
+  summary: string | null,
+): Promise<string | null> {
+  if (!formula && !summary) return null;
+  const pool = await getPool();
+  // Same key+proxy stack as recipe-showcase (PapaiAPI is unreachable from
+  // some networks; AI Studio keys via xgodo proxy work everywhere).
+  const keyRow = await pool.query<{ id: number; key: string }>(
+    `SELECT id, key FROM xgodo_api_keys
+      WHERE service = 'google_ai_studio' AND status = 'active'
+        AND (banned_until IS NULL OR banned_until < NOW())
+      ORDER BY RANDOM() LIMIT 1`);
+  const apiKey = keyRow.rows[0]?.key;
+  if (!apiKey) return null;
+
+  const prompt = `You write spoken narration for a YouTube video about small faceless channels.
+The narrator has JUST announced the niche name: "${nicheLabel ?? 'unknown'}".
+Your line comes immediately after it and completes: "This channel ___."
+
+Style — match the tone of these reference lines (note how each adds the
+HOW — the production format — beyond the niche name that preceded it):
+- niche "Funny Stickman Fails" → "simply records gameplay of a stickman fail game and uploads it"
+- niche "Roblox Lore" → "makes explanation-style videos about different Roblox games"
+- niche "Pet Clip Compilations" → "compiles viral pet clips into quick montages with trending audio"
+
+Rules:
+- 8 to 12 words, ONE clause
+- Start with a verb: makes / posts / creates / records / compiles / narrates
+- Do NOT restate or rephrase the niche name — the viewer just heard it.
+  Add NEW information: the format, how the videos are made, or what
+  happens in them
+- No visual details like colors, backgrounds, or silhouettes
+- Plain conversational words, no flowery adjectives
+- Output ONLY the clause, no quotes, no period
+
+Channel data:
+Video description: ${formula ?? '—'}
+Recipe summary: ${summary ?? '—'}`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.4, maxOutputTokens: 600, thinkingConfig: { thinkingBudget: 0 } },
+  });
+  // DIRECT first (works from local dev — the key is the auth); proxy
+  // fallback for Railway where egress IP diversity matters.
+  let res: { ok: boolean; status: number; json(): Promise<unknown> } | null = null;
+  try {
+    const rr = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(60_000) });
+    res = { ok: rr.ok, status: rr.status, json: () => rr.json() };
+  } catch { /* direct egress blocked — try proxy */ }
+  if (!res || !res.ok) {
+    try {
+      const { getRandomHealthyProxy } = await import('../xgodo-proxy');
+      const { fetchViaProxy } = await import('../proxy-dispatcher');
+      const proxy = await getRandomHealthyProxy().catch(() => null);
+      if (proxy?.url) {
+        res = await fetchViaProxy(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeoutMs: 60_000 }, proxy.url);
+      }
+    } catch { /* both paths failed */ }
+  }
+  if (!res || !res.ok) { console.warn(`[recipe-line] gemini HTTP ${res?.status ?? 'ERR'} for ${channelId}`); return null; }
+  const data = await res.json().catch(() => null) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } | null;
+  let line = data?.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('').trim() ?? '';
+  line = line.replace(/^["']|["'.]+$/g, '').trim();
+  // Validation per template spec: 5-13 words, single verb start (reject
+  // double-verb glitches like "makes uses a dramatic ..."), and no
+  // wholesale niche-name restating (>=60% of label words reused).
+  const wc = line.split(/\s+/).length;
+  const doubleVerb = /^(makes|posts|creates|records|compiles|narrates|uploads)\s+(makes|posts|creates|records|compiles|narrates|uses|making)\b/i.test(line);
+  const labelWords = (nicheLabel ?? '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+  const lineLower = line.toLowerCase();
+  const overlap = labelWords.length > 0
+    ? labelWords.filter(w => lineLower.includes(w.replace(/s$/, ''))).length / labelWords.length
+    : 0;
+  if (!line || wc < 5 || wc > 13 || doubleVerb || overlap >= 0.8) return null;
+  line = line.charAt(0).toLowerCase() + line.slice(1);
+  await pool.query(
+    `UPDATE content_gen_channel_analysis SET recipe_formula_simple = $2 WHERE channel_id = $1`,
+    [channelId, line]).catch(() => {});
+  return line;
+}
+
 export async function loadNicheVars(channelId: string): Promise<NicheVars> {
   const pool = await getPool();
 
   const [analysis, showcase, rpm, stats] = await Promise.all([
-    pool.query<{ recipe_formula: string | null }>(
-      `SELECT recipe_formula FROM content_gen_channel_analysis WHERE channel_id = $1`, [channelId]),
+    pool.query<{ recipe_formula: string | null; recipe_formula_simple: string | null; niche_label: string | null }>(
+      `SELECT recipe_formula, recipe_formula_simple, niche_label FROM content_gen_channel_analysis WHERE channel_id = $1`, [channelId]),
     pool.query<{ recipe_summary: string | null; beats_jsonb: ShowcaseBeat[] }>(
       `SELECT recipe_summary, beats_jsonb FROM content_gen_recipe_showcase WHERE channel_id = $1`, [channelId]),
     pool.query<{ rpm_typical: number | null; rpm_low: number | null; rpm_high: number | null; geo_guess: string | null }>(
@@ -137,9 +231,26 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
     ? Math.max(1, (Date.now() - new Date(createdAt).getTime()) / (30.44 * 24 * 3600 * 1000))
     : null;
 
+  // Recipe line resolution: cached Gemini line → fresh Gemini generation
+  // (persisted) → rule-based transform of the raw formula as last resort.
+  const ana = analysis.rows[0];
+  let recipeLine = ana?.recipe_formula_simple ?? null;
+  if (!recipeLine && (ana?.recipe_formula || showcase.rows[0]?.recipe_summary)) {
+    // Up to 2 attempts — validation (word count / double-verb / niche-name
+    // parroting) rejects bad generations; a second roll usually lands.
+    for (let attempt = 0; attempt < 3 && !recipeLine; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 900 * attempt));
+      recipeLine = await generateRecipeLine(
+        channelId, ana?.niche_label ?? null, ana?.recipe_formula ?? null,
+        showcase.rows[0]?.recipe_summary ?? null,
+      ).catch(() => null);
+    }
+  }
+  if (!recipeLine) recipeLine = simplifyRecipeFormula(ana?.recipe_formula);
+
   return {
     channelId,
-    recipe_formula_simplified: simplifyRecipeFormula(analysis.rows[0]?.recipe_formula),
+    recipe_formula_simplified: recipeLine,
     recipe_summary: showcase.rows[0]?.recipe_summary ?? null,
     recipe_beats: Array.isArray(showcase.rows[0]?.beats_jsonb) ? showcase.rows[0].beats_jsonb : [],
     rpm_typical: rpm.rows[0]?.rpm_typical ?? null,

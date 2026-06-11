@@ -291,7 +291,9 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'asset_kind', 'bboxes', 'page_width', 'page_height', 'duration_s'],
-    version: 'v1.0.0',
+    // v1.1.0: extractor now captures per-card displayed view-count TEXT
+    // (__meta.views_texts) — bump invalidates stale captures without it.
+    version: 'v1.1.0',
     cache_key_excludes: ['force'],
   },
   {

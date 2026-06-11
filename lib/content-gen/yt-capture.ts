@@ -923,7 +923,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             else if (r.left + r.width < 0 || r.left > vpW + 8) reason = 'off-x';
             rejectDbg.push({ tag: el.tagName.toLowerCase(), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), reason });
           }
-          const out: Array<{ card: { x: number; y: number; w: number; h: number }; thumb?: { x: number; y: number; w: number; h: number }; views?: { x: number; y: number; w: number; h: number }; title?: { x: number; y: number; w: number; h: number } }> = [];
+          const out: Array<{ card: { x: number; y: number; w: number; h: number }; thumb?: { x: number; y: number; w: number; h: number }; views?: { x: number; y: number; w: number; h: number }; viewsText?: string; title?: { x: number; y: number; w: number; h: number } }> = [];
           for (const el of els) {
             const r = (el as HTMLElement).getBoundingClientRect();
             // Skip off-viewport-right and very-small (collapsed/loading) cards.
@@ -941,6 +941,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             }
             // Find view count: span/yt-formatted-string whose own text matches.
             let views: { x: number; y: number; w: number; h: number } | undefined;
+            let viewsText: string | undefined;
             const viewRe = /^\s*[\d.,]+\s*[KMB]?\s*views?\s*$/i;
             const all = Array.from(el.querySelectorAll('span, yt-formatted-string'));
             for (const sub of all) {
@@ -949,6 +950,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               const sr = (sub as HTMLElement).getBoundingClientRect();
               if (sr.width < 20 || sr.width > 240) continue;
               views = { x: Math.round(sr.left), y: Math.round(sr.top), w: Math.round(sr.width), h: Math.round(sr.height) };
+              viewsText = own;
               break;
             }
             // Find title: prefer #video-title, then h3 a (modern), then h3.
@@ -958,7 +960,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               const tr = titleEl.getBoundingClientRect();
               if (tr.width > 60 && tr.height > 12) title = { x: Math.round(tr.left), y: Math.round(tr.top), w: Math.round(tr.width), h: Math.round(tr.height) };
             }
-            out.push({ card, thumb, views, title });
+            out.push({ card, thumb, views, viewsText, title });
             if (out.length >= 24) break;  // sane cap; 4-col grid x 6 rows is plenty
           }
           // FALLBACK extractor: structured selectors found zero. Instead of
@@ -1008,6 +1010,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               // to fill the full card schema (cards extracted by the structured
               // path get all four fields).
               let viewsBox: { x: number; y: number; w: number; h: number } | undefined;
+              let viewsTextFb: string | undefined;
               let titleBox: { x: number; y: number; w: number; h: number } | undefined;
               const subs = Array.from(cardEl.querySelectorAll('span, yt-formatted-string'));
               for (const s of subs) {
@@ -1016,6 +1019,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
                   const sr = (s as HTMLElement).getBoundingClientRect();
                   if (sr.width >= 20 && sr.width <= 240) {
                     viewsBox = { x: Math.round(sr.left), y: Math.round(sr.top), w: Math.round(sr.width), h: Math.round(sr.height) };
+                    viewsTextFb = own;
                     break;
                   }
                 }
@@ -1029,6 +1033,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
                 card: { x: Math.round(cr.left), y: Math.round(cr.top), w: Math.round(cr.width), h: Math.round(cr.height) },
                 thumb: { x: Math.round(ir.left), y: Math.round(ir.top), w: Math.round(ir.width), h: Math.round(ir.height) },
                 views: viewsBox,
+                viewsText: viewsTextFb,
                 title: titleBox,
               });
               if (out.length >= 24) break;
@@ -1063,7 +1068,9 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           return { cards: out, tagCounts, fallbackUsed, firstAncestorChain, rejectDbg };
         }, effectiveViewport.width);
         const cards = result.cards;
+        const viewsTexts: Array<string | null> = [];
         cards.forEach((c, i) => {
+          viewsTexts[i] = (c as { viewsText?: string }).viewsText ?? null;
           bboxes[`video_card_${i}`] = c.card;
           if (c.thumb) bboxes[`video_thumb_${i}`] = c.thumb;
           if (c.views) bboxes[`video_views_${i}`] = c.views;
@@ -1071,6 +1078,13 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         });
         (bboxDebug as Record<string, unknown>).video_cards_count = cards.length;
         (bboxDebug as Record<string, unknown>).video_card_tag_counts = result.tagCounts;
+        // Per-card displayed view-count strings ("970K views") — narration
+        // source of truth (spoken counts must match the screenshot; user
+        // report 2026-06-11). Reserved __meta key inside bboxes_jsonb —
+        // bbox consumers look up specific keys, never iterate.
+        if (viewsTexts.some(t => t)) {
+          (bboxes as unknown as Record<string, unknown>).__meta = { views_texts: viewsTexts };
+        }
         (bboxDebug as Record<string, unknown>).video_card_fallback_used = result.fallbackUsed;
         (bboxDebug as Record<string, unknown>).video_card_first_chain = result.firstAncestorChain;
         (bboxDebug as Record<string, unknown>).video_card_reject_dbg = result.rejectDbg;

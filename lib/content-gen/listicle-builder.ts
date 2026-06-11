@@ -478,17 +478,40 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
   // is on screen — top-by-views numbers over different cards would
   // visibly contradict the meta line. Falls back to the old generic
   // connectives when the DB has no counts.
-  const pool = await getPool();
-  const vc = await pool.query<{ view_count: number | null }>(
-    `SELECT view_count FROM niche_spy_videos
-      WHERE channel_id = $1 AND view_count IS NOT NULL
-      ORDER BY posted_at DESC NULLS LAST LIMIT 3`, [ch.channelId]);
-  const counts = vc.rows.map(r => r.view_count).filter((n): n is number => n != null && n > 0);
-  const NARRATIONS = counts.length === 3
+  // SOURCE OF TRUTH: the captured videos_tab itself. niche_spy_videos only
+  // holds SIGHTED videos (a subset of the channel catalog), so DB counts
+  // routinely contradict the cards on screen (user report 2026-06-11).
+  // captureYtScreen is day-cached — the rapid-fire gems will reuse this
+  // exact capture, so spoken counts always match the rendered cards.
+  let texts: Array<string | null> = [];
+  try {
+    const { captureYtScreen } = await import('./yt-capture');
+    const readMeta = (cap: { bboxes: unknown }) =>
+      (cap.bboxes as Record<string, { views_texts?: Array<string | null> }>).__meta?.views_texts ?? [];
+    let cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static' });
+    texts = readMeta(cap);
+    if (texts.filter(Boolean).length < 3) {
+      // Day-cached capture predates the views-text extractor (v1.1.0) —
+      // force ONE fresh capture; subsequent builds hit the refreshed cache.
+      cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static', force: true });
+      texts = readMeta(cap);
+    }
+  } catch (e) {
+    console.warn(`[rapid-fire] capture readout failed for ${ch.channelId}: ${(e as Error).message.slice(0, 120)}`);
+  }
+  const spokenFromCard = (t: string | null): string | null => {
+    const m = t?.match(/^([\d.,]+)\s*([KMB])?\s*views?$/i);
+    if (!m) return null;
+    const n = parseFloat(m[1].replace(/,/g, ''));
+    const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
+    return Number.isFinite(n) ? spokenNumber(n * mult) : null;
+  };
+  const spoken = [0, 1, 2].map(i => spokenFromCard(texts[i] ?? null));
+  const NARRATIONS = spoken.every(s => s != null)
     ? [
-        `They have videos with ${spokenNumber(counts[0])} views,`,
-        `${spokenNumber(counts[1])} views,`,
-        `and ${spokenNumber(counts[2])} views,`,
+        `They have videos with ${spoken[0]} views,`,
+        `${spoken[1]} views,`,
+        `and ${spoken[2]} views,`,
       ]
     : ['Look at this one.', 'And this one.', 'And another.'];
   const base = `niche_${niche_index}`;
