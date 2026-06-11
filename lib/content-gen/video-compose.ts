@@ -544,6 +544,11 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     // (alphamerge); watermark via a Sharp-generated transparent overlay —
     // no drawtext (font paths differ between mac dev and Railway).
     const PW = 1114, PH = 626, R = 30;
+    // Canvas behind the mini-player: the MG reference frame uses a clearly
+    // LIGHTER charcoal than the global #2A2A2A — without it, any dark clip
+    // content bleeds into the canvas and the composition stops reading
+    // (user reports 2026-06-11 x2). Sampled from the reference: ~#4A4A4D.
+    const PLAYER_CANVAS = '0x4A4A4D';
     const PX = Math.round((width - PW) / 2), PY = Math.round((height - PH) / 2);
     const maskPath = path.join(path.dirname(outPath), `pmask-${path.basename(outPath)}.png`);
     const wmPath = path.join(path.dirname(outPath), `pwm-${path.basename(outPath)}.png`);
@@ -557,7 +562,7 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     await sharp(Buffer.from(
       `<svg width="${PW}" height="${PH}">
         <rect x="1.5" y="1.5" width="${PW - 3}" height="${PH - 3}" rx="${R - 1}"
-              fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+              fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="3"/>
         <text x="34" y="56" font-family="Helvetica, Arial, sans-serif" font-size="40" font-weight="600"
               fill="#FFFFFF" fill-opacity="0.55" letter-spacing="3">${wmName}</text>
         <text x="${PW / 2}" y="${PH - 22}" font-family="Helvetica, Arial, sans-serif" font-size="17" font-weight="500"
@@ -569,7 +574,7 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       '-stream_loop', '-1', '-i', resolved.path,
       '-i', maskPath, '-i', wmPath,
       '-filter_complex',
-        `color=c=${padColor}:s=${width}x${height}:r=${fps}[bg];` +
+        `color=c=${PLAYER_CANVAS}:s=${width}x${height}:r=${fps}[bg];` +
         `[0:v]scale=${PW}:${PH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${PW}:${PH},` +
         `unsharp=5:5:0.4:5:5:0.0,setsar=1,format=rgba[clip];` +
         `[clip][1:v]alphamerge[rounded];` +
