@@ -979,14 +979,15 @@ export function buildMosaicSlot(niche_index: number, videoIds: string[]): Slot |
     beat_id: 'mascot_mosaic',
     narration: '',
     gems: [
-      { id: 'main', tool: 'image_gen', args: { composition: 'thumb_mosaic', text: '', bg_mode: 'dark_gray', video_ids: videoIds } },
+      { id: 'main', tool: 'image_gen', args: { composition: 'thumb_mosaic', text: '', bg_mode: 'white', video_ids: videoIds } },
       { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
     ],
     compose: {
-      bg: 'dark_gray',
+      bg: 'white',
       hold_s: 2.0,
       layers: [
-        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct' },
+        // zoom OUT — the MG grid reveal (decode i=233-234).
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_out_8pct' },
         { from: 'sfx', channel: 'fx' },
       ],
     },

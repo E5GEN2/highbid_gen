@@ -399,7 +399,9 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'width', 'height'],
-    version: 'v1.0.0',
+    // v1.1.0: chalkboard = board GRAPHIC on dark canvas; thumb_mosaic =
+    // gapped tiles on white (matched to decode refs, 2026-06-11).
+    version: 'v1.1.1',  // flush tool-cache rows that captured the pre-salt stale PNG
   },
   {
     name: 'logos_montage',

@@ -423,6 +423,14 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       `:d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
   }
 
+  // zoom_out_8pct: start tight (1.08), settle to full frame — the MG
+  // thumbnail-grid reveal (decode i=233-234 "continues to zoom out").
+  // Same 4x supersample anti-jitter treatment as the zoom-in.
+  const zoomOutVf = `scale=${width * 4}:-2:flags=lanczos,` +
+                  `zoompan=z='1.08-0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${height}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
+                  `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
+                  `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
+
   // Default Ken Burns: subtle 8% zoom-in on the centered image.
   // 4× supersample before zoompan (was 2×) — same anti-jitter rationale as
   // zoom_in_to_target above: integer crop-window rounding at low supersample
@@ -475,6 +483,7 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
   const stillVf =
     (mainLayer.highlight_canvas ? staticStillVf
      : kenBurns === 'scroll_down' ? scrollDownVf
+     : kenBurns === 'zoom_out_8pct' ? zoomOutVf
      : (zoomToTargetVf ?? stillVfDefault)) + highlightVf;
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;

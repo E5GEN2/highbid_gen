@@ -51,8 +51,12 @@ const BG_HEX = { white: '#FFFFFF', dark_gray: '#2A2A2A' } as const;
 const MAX_TEXT_LEN = 80;
 
 /** Hash the args → cache key. */
+// Renderer version — salts the PNG disk cache so restyled compositions
+// regenerate (args alone missed the 2026-06-11 chalkboard restyle).
+const RENDERER_VERSION = 'r2';
+
 function cacheKey(args: ImageGenArgs, width: number, height: number): string {
-  const key = JSON.stringify({ ...args, width, height });
+  const key = JSON.stringify({ v: RENDERER_VERSION, ...args, width, height });
   return crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
 }
 
@@ -186,24 +190,37 @@ function renderChalkboardCard(args: ImageGenArgs, width: number, height: number)
   // Slight rotation for hand-drawn chalkboard feel.
   const rotation = -1.5;
 
-  const tspans = lines.map((ln, i) => `
-    <text x="${width / 2}" y="${startY + i * lineHeight}"
+  // MG reference (decoded timeline t=271): "Dark gray background. A black
+  // chalk board GRAPHIC appears with white text" — the board is an OBJECT
+  // on the canvas, not a full-bleed slate (user feedback 2026-06-11).
+  const BW = Math.round(width * 0.62), BH = Math.round(height * 0.58);
+  const BX = Math.round((width - BW) / 2), BY = Math.round((height - BH) / 2);
+  const boardFont = Math.min(fitFontSize(text, BW, BH, 2), 150);
+  const bLines = wrap(text, Math.max(6, Math.floor((BW * 0.8) / (boardFont * 0.55))), 2);
+  const bLineH = boardFont * 1.15;
+  const bStartY = BY + BH / 2 - (bLines.length * bLineH) / 2 + boardFont * 0.85;
+
+  const tspans = bLines.map((ln, i) => `
+    <text x="${width / 2}" y="${bStartY + i * bLineH}"
           font-family="'Caveat', 'Comic Sans MS', cursive, sans-serif"
-          font-size="${baseFont}" font-weight="700"
+          font-size="${boardFont}" font-weight="700"
           fill="#F5EFD9" text-anchor="middle">${esc(ln)}</text>`).join('');
 
-  // Background: dark slate + a soft noise texture via a filter.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <defs>
     <filter id="chalk-noise" x="0" y="0" width="100%" height="100%">
       <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="2" result="noise"/>
-      <feColorMatrix in="noise" type="matrix" values="0 0 0 0 0.96  0 0 0 0 0.94  0 0 0 0 0.85  0 0 0 0.06 0"/>
+      <feColorMatrix in="noise" type="matrix" values="0 0 0 0 0.96  0 0 0 0 0.94  0 0 0 0 0.85  0 0 0 0.05 0"/>
     </filter>
   </defs>
-  <rect width="${width}" height="${height}" fill="#1F2A2F"/>
-  <rect width="${width}" height="${height}" filter="url(#chalk-noise)"/>
-  <g transform="rotate(${rotation} ${width / 2} ${height / 2})">${tspans}</g>
+  <rect width="${width}" height="${height}" fill="${BG_HEX.dark_gray}"/>
+  <g transform="rotate(${rotation} ${width / 2} ${height / 2})">
+    <rect x="${BX - 14}" y="${BY - 14}" width="${BW + 28}" height="${BH + 28}" rx="10" fill="#5a4632"/>
+    <rect x="${BX}" y="${BY}" width="${BW}" height="${BH}" rx="4" fill="#141414"/>
+    <rect x="${BX}" y="${BY}" width="${BW}" height="${BH}" rx="4" filter="url(#chalk-noise)"/>
+    ${tspans}
+  </g>
 </svg>`;
 }
 
@@ -261,8 +278,14 @@ export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1
   if (args.composition === 'thumb_mosaic') {
     const ids = (args.video_ids ?? []).filter(Boolean);
     if (ids.length === 0) throw new Error('thumb_mosaic: video_ids required');
-    const COLS = 4, ROWS = 3;
-    const cellW = width / COLS, cellH = height / ROWS;
+    // MG reference (i=233-234): thumbnails as DISCRETE tiles with gaps on
+    // a WHITE background, camera zooming OUT to reveal more (user feedback
+    // 2026-06-11 — edge-to-edge dark bands read nothing like it).
+    const COLS = 5, ROWS = 4, GUT = 14;
+    const cellW = Math.floor((width - GUT * (COLS + 1)) / COLS);
+    const cellH = Math.floor(cellW * 9 / 16);
+    const gridH = ROWS * cellH + (ROWS + 1) * GUT;
+    const topPad = Math.round((height - gridH) / 2);
     const fetchThumb = async (vid: string): Promise<Buffer | null> => {
       for (const u of [`https://i.ytimg.com/vi/${vid}/hqdefault.jpg`, `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`]) {
         try {
@@ -281,11 +304,15 @@ export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1
       const col = i % COLS, row = Math.floor(i / COLS);
       const buf = good[i % good.length];
       const cell = await sharp(buf)
-        .resize(Math.round(cellW), Math.round(cellH), { fit: 'cover' })
+        .resize(cellW, cellH, { fit: 'cover' })
         .toBuffer();
-      composites.push({ input: cell, left: Math.round(col * cellW), top: Math.round(row * cellH) });
+      composites.push({
+        input: cell,
+        left: GUT + col * (cellW + GUT),
+        top: topPad + row * (cellH + GUT),
+      });
     }
-    await sharp({ create: { width, height, channels: 3, background: BG_HEX.dark_gray } })
+    await sharp({ create: { width, height, channels: 3, background: BG_HEX.white } })
       .composite(composites).png().toFile(outPath);
     return {
       file_url: `/api/admin/content-gen/producer/file?path=${encodeURIComponent('images/' + hash + '.png')}`,
