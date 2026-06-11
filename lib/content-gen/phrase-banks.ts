@@ -17,6 +17,7 @@
 import { getPool } from '../db';
 
 export type BankId =
+  | 'concept_tag'
   | 'intro_card'
   | 'emphasis_intro'
   | 'consistency_intro'
@@ -83,6 +84,11 @@ export const BANKS: Record<BankId, string[]> = {
   transition_optional: [
     'Moving on,',
     'Next up,',
+  ],
+  // worked example :107-108 — concept_tag (optional, max once per niche)
+  concept_tag: [
+    'The number one thing you must focus on in this niche is {WORD}.',
+    "Here's the thing — what makes these channels work is {WORD}.",
   ],
   // worked example CTA :314-316
   cta_value_card: [

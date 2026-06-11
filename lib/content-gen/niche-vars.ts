@@ -38,6 +38,9 @@ export interface NicheVars {
   /** "hundreds of thousands of views per upload" — median view class. */
   median_views_phrase: string | null;
   uploads_per_month: number | null;
+  /** Single concept word for the chalkboard concept_tag beat (skeleton
+   *  beat 11) — e.g. "CONSISTENCY" / "ATMOSPHERE". Null → beat skipped. */
+  concept_word: string | null;
 }
 
 /** Spoken-friendly view counts: "29 million", "8.8 million", "107 thousand".
@@ -127,7 +130,7 @@ async function generateRecipeLine(
   nicheLabel: string | null,
   formula: string | null,
   summary: string | null,
-): Promise<string | null> {
+): Promise<{ line: string; concept: string | null } | null> {
   if (!formula && !summary) return null;
   const pool = await getPool();
   // Same key+proxy stack as recipe-showcase (PapaiAPI is unreachable from
@@ -150,7 +153,7 @@ HOW — the production format — beyond the niche name that preceded it):
 - niche "Roblox Lore" → "makes explanation-style videos about different Roblox games"
 - niche "Pet Clip Compilations" → "compiles viral pet clips into quick montages with trending audio"
 
-Rules:
+Rules for "line":
 - 8 to 12 words, ONE clause
 - Start with a verb: makes / posts / creates / records / compiles / narrates
 - Do NOT restate or rephrase the niche name — the viewer just heard it.
@@ -158,7 +161,12 @@ Rules:
   happens in them
 - No visual details like colors, backgrounds, or silhouettes
 - Plain conversational words, no flowery adjectives
-- Output ONLY the clause, no quotes, no period
+
+Also pick "concept": the SINGLE most important success factor for this
+niche, ONE word, uppercase — e.g. CONSISTENCY, STORYTELLING, TIMING,
+SIMPLICITY, ATMOSPHERE, CURIOSITY.
+
+Output ONLY JSON: {"line": "...", "concept": "..."}
 
 Channel data:
 Video description: ${formula ?? '—'}
@@ -188,7 +196,15 @@ Recipe summary: ${summary ?? '—'}`;
   }
   if (!res || !res.ok) { console.warn(`[recipe-line] gemini HTTP ${res?.status ?? 'ERR'} for ${channelId}`); return null; }
   const data = await res.json().catch(() => null) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } | null;
-  let line = data?.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('').trim() ?? '';
+  const raw = data?.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('').trim() ?? '';
+  let line = '';
+  let concept: string | null = null;
+  try {
+    const j = JSON.parse(raw.replace(/^```(json)?/m, '').replace(/```$/m, '').trim()) as { line?: string; concept?: string };
+    line = (j.line ?? '').trim();
+    concept = (j.concept ?? '').trim().toUpperCase().replace(/[^A-Z-]/g, '') || null;
+    if (concept && (concept.length < 4 || concept.length > 16)) concept = null;
+  } catch { line = raw; }
   line = line.replace(/^["']|["'.]+$/g, '').trim();
   // Validation per template spec: 5-13 words, single verb start (reject
   // double-verb glitches like "makes uses a dramatic ..."), and no
@@ -203,17 +219,17 @@ Recipe summary: ${summary ?? '—'}`;
   if (!line || wc < 5 || wc > 13 || doubleVerb || overlap >= 0.8) return null;
   line = line.charAt(0).toLowerCase() + line.slice(1);
   await pool.query(
-    `UPDATE content_gen_channel_analysis SET recipe_formula_simple = $2 WHERE channel_id = $1`,
-    [channelId, line]).catch(() => {});
-  return line;
+    `UPDATE content_gen_channel_analysis SET recipe_formula_simple = $2, concept_word = COALESCE($3, concept_word) WHERE channel_id = $1`,
+    [channelId, line, concept]).catch(() => {});
+  return { line, concept };
 }
 
 export async function loadNicheVars(channelId: string): Promise<NicheVars> {
   const pool = await getPool();
 
   const [analysis, showcase, rpm, stats] = await Promise.all([
-    pool.query<{ recipe_formula: string | null; recipe_formula_simple: string | null; niche_label: string | null }>(
-      `SELECT recipe_formula, recipe_formula_simple, niche_label FROM content_gen_channel_analysis WHERE channel_id = $1`, [channelId]),
+    pool.query<{ recipe_formula: string | null; recipe_formula_simple: string | null; niche_label: string | null; concept_word: string | null }>(
+      `SELECT recipe_formula, recipe_formula_simple, niche_label, concept_word FROM content_gen_channel_analysis WHERE channel_id = $1`, [channelId]),
     pool.query<{ recipe_summary: string | null; beats_jsonb: ShowcaseBeat[] }>(
       `SELECT recipe_summary, beats_jsonb FROM content_gen_recipe_showcase WHERE channel_id = $1`, [channelId]),
     pool.query<{ rpm_typical: number | null; rpm_low: number | null; rpm_high: number | null; geo_guess: string | null }>(
@@ -235,15 +251,17 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
   // (persisted) → rule-based transform of the raw formula as last resort.
   const ana = analysis.rows[0];
   let recipeLine = ana?.recipe_formula_simple ?? null;
+  let conceptWord = ana?.concept_word ?? null;
   if (!recipeLine && (ana?.recipe_formula || showcase.rows[0]?.recipe_summary)) {
-    // Up to 2 attempts — validation (word count / double-verb / niche-name
-    // parroting) rejects bad generations; a second roll usually lands.
+    // Up to 3 attempts — validation (word count / double-verb / niche-name
+    // parroting) rejects bad generations; retries absorb 429s.
     for (let attempt = 0; attempt < 3 && !recipeLine; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 900 * attempt));
-      recipeLine = await generateRecipeLine(
+      const gen = await generateRecipeLine(
         channelId, ana?.niche_label ?? null, ana?.recipe_formula ?? null,
         showcase.rows[0]?.recipe_summary ?? null,
       ).catch(() => null);
+      if (gen) { recipeLine = gen.line; conceptWord = conceptWord ?? gen.concept; }
     }
   }
   if (!recipeLine) recipeLine = simplifyRecipeFormula(ana?.recipe_formula);
@@ -260,5 +278,6 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
     age_phrase: agePhrase(createdAt),
     median_views_phrase: medianViewsPhrase(stats.rows[0]?.median_views ?? null),
     uploads_per_month: months && videoCount ? Math.round(videoCount / months) : null,
+    concept_word: conceptWord,
   };
 }

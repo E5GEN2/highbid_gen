@@ -254,6 +254,46 @@ export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1
   const hash = cacheKey(args, width, height);
   const outPath = path.join(IMG_DIR, `${hash}.png`);
 
+  // thumb_mosaic — dense 4x3 grid of the channel's video thumbnails on
+  // dark_gray. The skeleton's mascot_mosaic beat (silent 2.0s abundance
+  // proof — reference signature: grids/mosaics at i=104/216/233/240).
+  // Cells cycle through available ids when fewer than 12.
+  if (args.composition === 'thumb_mosaic') {
+    const ids = (args.video_ids ?? []).filter(Boolean);
+    if (ids.length === 0) throw new Error('thumb_mosaic: video_ids required');
+    const COLS = 4, ROWS = 3;
+    const cellW = width / COLS, cellH = height / ROWS;
+    const fetchThumb = async (vid: string): Promise<Buffer | null> => {
+      for (const u of [`https://i.ytimg.com/vi/${vid}/hqdefault.jpg`, `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`]) {
+        try {
+          const r = await fetch(u, { signal: AbortSignal.timeout(8_000) });
+          if (r.ok) return Buffer.from(await r.arrayBuffer());
+        } catch { /* try next */ }
+      }
+      return null;
+    };
+    const unique = [...new Set(ids)];
+    const bufs = (await Promise.all(unique.map(fetchThumb)));
+    const good = bufs.filter((b): b is Buffer => b != null);
+    if (good.length === 0) throw new Error('thumb_mosaic: no thumbnails fetchable');
+    const composites: sharp.OverlayOptions[] = [];
+    for (let i = 0; i < COLS * ROWS; i++) {
+      const col = i % COLS, row = Math.floor(i / COLS);
+      const buf = good[i % good.length];
+      const cell = await sharp(buf)
+        .resize(Math.round(cellW), Math.round(cellH), { fit: 'cover' })
+        .toBuffer();
+      composites.push({ input: cell, left: Math.round(col * cellW), top: Math.round(row * cellH) });
+    }
+    await sharp({ create: { width, height, channels: 3, background: BG_HEX.dark_gray } })
+      .composite(composites).png().toFile(outPath);
+    return {
+      file_url: `/api/admin/content-gen/producer/file?path=${encodeURIComponent('images/' + hash + '.png')}`,
+      width, height,
+      local_path: outPath,
+    };
+  }
+
   // text_card_reveal — progressive word-pop set for MG-style VO-synced
   // reveal. Renders N+1 variants (k=0 blank … k=N full); identical layout,
   // unspoken words at fill-opacity 0. Returns local_paths for video-compose

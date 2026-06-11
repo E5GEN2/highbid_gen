@@ -968,6 +968,69 @@ export async function applyContinuousNarration(slots: Slot[], voiceAlias = 'mone
   }
 }
 
+/** mascot_mosaic (skeleton beat 3): SILENT 2.0s abundance proof — dense
+ *  4x3 grid of the channel's video thumbnails. No narr gem: the continuous
+ *  narration genuinely pauses here (MG does the same on mosaics). */
+export function buildMosaicSlot(niche_index: number, videoIds: string[]): Slot | null {
+  if (videoIds.length < 3) return null;
+  const base = `niche_${niche_index}`;
+  return {
+    slot_id: `${base}_mascot_mosaic`,
+    beat_id: 'mascot_mosaic',
+    narration: '',
+    gems: [
+      { id: 'main', tool: 'image_gen', args: { composition: 'thumb_mosaic', text: '', bg_mode: 'dark_gray', video_ids: videoIds } },
+      { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+    ],
+    compose: {
+      bg: 'dark_gray',
+      hold_s: 2.0,
+      layers: [
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct' },
+        { from: 'sfx', channel: 'fx' },
+      ],
+    },
+  };
+}
+
+/** concept_tag (skeleton beat 11): chalkboard card with the niche's ONE
+ *  success-factor word; narration from the 2-variant bank. Optional —
+ *  skipped when no concept_word was derived. */
+export function buildConceptSlot(niche_index: number, conceptWord: string, line: string): Slot {
+  const base = `niche_${niche_index}`;
+  return makeFramingSlot(`${base}_concept_tag`, 'concept_tag', line,
+    { composition: 'chalkboard_card', text: conceptWord, bg_mode: 'dark_gray', color_treatment: 'chalk_cream' },
+    ['ding'], 'dark_gray');
+}
+
+/** transition (skeleton beat 13): 0.5s breather at the niche seam —
+ *  silent by default (80%), occasional vocal cue from the bank. */
+export function buildTransitionSlot(niche_index: number, vocalLine: string | null): Slot {
+  const base = `niche_${niche_index}`;
+  if (vocalLine) {
+    return makeFramingSlot(`${base}_transition`, 'transition', vocalLine,
+      { composition: 'text_card', text: vocalLine, bg_mode: 'dark_gray', color_treatment: 'neutral' },
+      ['whoosh'], 'dark_gray');
+  }
+  return {
+    slot_id: `${base}_transition`,
+    beat_id: 'transition',
+    narration: '',
+    gems: [
+      { id: 'main', tool: 'image_gen', args: { composition: 'text_card', text: ' ', bg_mode: 'dark_gray' } },
+      { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+    ],
+    compose: {
+      bg: 'dark_gray',
+      hold_s: 0.5,
+      layers: [
+        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'none' },
+        { from: 'sfx', channel: 'fx' },
+      ],
+    },
+  };
+}
+
 // ───────────────────────────────────────────────────────────────────
 // buildListicleScript — the full multi-channel assembly loop.
 // ───────────────────────────────────────────────────────────────────
@@ -995,6 +1058,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
   const channelEvents: ChannelEvent[] = [];
   let acceptedCount = 0;
 
+  const pool = await getPool();
   // One video seed drives BOTH the script's video_id and the phrase-bank
   // rotation (deterministic within a render, rotates across renders).
   const videoSeed = `listicle-${Date.now()}`;
@@ -1012,7 +1076,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       channelId: cid, recipe_formula_simplified: null, recipe_summary: null,
       recipe_beats: [], rpm_typical: null, rpm_low: null, rpm_high: null,
       geo_guess: null, age_phrase: null, median_views_phrase: null,
-      uploads_per_month: null,
+      uploads_per_month: null, concept_word: null,
     }));
     const niche_index = acceptedCount + 1;
 
@@ -1037,6 +1101,16 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       ? opts.intro_logos_channels
       : channels;
     const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), introLogosIds, ch.channel_name ?? undefined, cid, introLine);
+
+    // mascot_mosaic ids: the channel's top videos by views (thumbnails
+    // tile a 4x3 grid; cells cycle when fewer than 12 are known).
+    const vidRows = await pool.query<{ url: string }>(
+      `SELECT url FROM niche_spy_videos WHERE channel_id = $1 AND url IS NOT NULL
+        ORDER BY view_count DESC NULLS LAST LIMIT 12`, [cid]).catch(() => ({ rows: [] as Array<{ url: string }> }));
+    const mosaicIds = vidRows.rows
+      .map(r => r.url.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/)?.[1])
+      .filter((s): s is string => !!s);
+    const mosaicSlot = buildMosaicSlot(niche_index, mosaicIds);
 
     const input: ScriptWriterInput = {
       channel: ch,
@@ -1137,9 +1211,30 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       withInjects.push(...rapidFireSlots);
       if (panoSlot) withInjects.push(panoSlot);
     }
+    // concept_tag — only when a concept word was derived for this channel.
+    const conceptLine = vars.concept_word
+      ? banks.pick('concept_tag', niche_index)?.replace('{WORD}', vars.concept_word.toLowerCase()) ?? null
+      : null;
+    const conceptSlot = vars.concept_word && conceptLine
+      ? buildConceptSlot(niche_index, vars.concept_word, conceptLine)
+      : null;
+    // transition — vocal 20% of the time, silent breather otherwise.
+    const transitionSlot = buildTransitionSlot(
+      niche_index, banks.pick('transition_optional', niche_index, { skipProbability: 0.8 }));
+
     // Continuous narration for the whole niche group — one natural read,
-    // sliced per slot; reveals wired where applicable.
-    const nicheGroup: Slot[] = [...framing, ...withInjects, ...moneyMath, ...recipeSlots];
+    // sliced per slot; reveals wired where applicable. Slot order follows
+    // the skeleton: intro → name → MOSAIC → reveal/proofs → money →
+    // recipe → CONCEPT → TRANSITION.
+    const nicheGroup: Slot[] = [
+      ...framing,
+      ...(mosaicSlot ? [mosaicSlot] : []),
+      ...withInjects,
+      ...moneyMath,
+      ...recipeSlots,
+      ...(conceptSlot ? [conceptSlot] : []),
+      transitionSlot,
+    ];
     await applyContinuousNarration(nicheGroup);
     allSlots.push(...nicheGroup);
     acceptedCount++;

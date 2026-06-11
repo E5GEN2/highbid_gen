@@ -159,7 +159,7 @@ export interface SfxOutput {
 /** image_gen — generate a non-YT visual (text_card / icon_card / chalkboard /
  *  title-sequence card). Compositions follow slot-rendering-class-b. */
 export interface ImageGenArgs {
-  composition: 'text_card' | 'text_card_reveal' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel' | 'top_videos_pano';
+  composition: 'text_card' | 'text_card_reveal' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel' | 'top_videos_pano' | 'thumb_mosaic';
   /** Primary copy on the card. For most_popular_callout this is the video title.
    *  Optional when composition=channel_about_panel or top_videos_pano (fully data-driven). */
   text: string;
@@ -172,6 +172,8 @@ export interface ImageGenArgs {
   // ── Fields specific to most_popular_callout composition ──
   /** YT video id (11-char) — used to fetch the thumbnail from YT's CDN. */
   video_id?: string;
+  /** thumb_mosaic: video ids whose thumbnails tile the grid. */
+  video_ids?: string[];
   /** Raw view count — humanized to "12M views" by the renderer. */
   views?: number;
   /** Pre-formatted relative age, e.g. "7 months ago" / "2 years ago". */
@@ -371,13 +373,14 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       required: ['composition', 'text', 'bg_mode'],
       additionalProperties: false,
       properties: {
-        composition:     { type: 'string', enum: ['text_card', 'text_card_reveal', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence', 'most_popular_callout', 'channel_about_panel', 'top_videos_pano'] },
+        composition:     { type: 'string', enum: ['text_card', 'text_card_reveal', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence', 'most_popular_callout', 'channel_about_panel', 'top_videos_pano', 'thumb_mosaic'] },
         text:            { type: 'string' },
         color_treatment: { type: 'string', enum: [...COLOR_TREATMENTS] },
         bg_mode:         { type: 'string', enum: ['white', 'dark_gray'] },
         icon:            { type: 'string', enum: [...ICON_IDS], description: 'Required when composition=icon_card.' },
         // most_popular_callout fields
         video_id:          { type: 'string', description: 'most_popular_callout: YT video id.' },
+        video_ids:         { type: 'array', items: { type: 'string' }, description: 'thumb_mosaic: ids whose thumbnails tile the grid.' },
         views:             { type: 'number', description: 'most_popular_callout: raw view count.' },
         age_phrase:        { type: 'string', description: 'most_popular_callout: pre-formatted relative age.' },
         duration_badge:    { type: 'string', description: 'most_popular_callout: duration overlay.' },

@@ -1869,6 +1869,7 @@ export async function initSchema(): Promise<void> {
     // Gemini-simplified one-clause recipe line ("This channel ___.") —
     // generated once per channel by niche-vars, cached here.
     await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS recipe_formula_simple TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS concept_word TEXT`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
