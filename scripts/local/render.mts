@@ -46,6 +46,13 @@ process.env.CLIPS_DIR = CLIPS;
 process.env.PGSSLMODE = 'disable';      // Railway proxy host has no SSL
 process.env.NODE_ENV = process.env.NODE_ENV ?? 'development';
 
+// --labels → TECHNICAL MODE: stamp each slot's slot_id top-right so review
+// feedback can reference exact beats ("niche_1_mm_rpm issue X").
+if (process.argv.includes('--labels')) {
+  process.env.HB_DEBUG_LABELS = '1';
+  console.log('[mode] TECHNICAL — slot labels on');
+}
+
 // --local → run against the mirrored local Postgres (hbgen_local) instead of
 // Railway. Populate it first with scripts/local/pull-local.mts.
 if (process.argv.includes('--local')) {
@@ -95,8 +102,8 @@ async function main() {
     if (built.failures.length) log('warnings:', JSON.stringify(built.failures));
     script = built.script;
   } else {
-    console.error('usage: render.mts from-job <jobId> [--local]');
-    console.error('       render.mts from-channels <UC..,UC..> <beat_id> [--logos UC..,UC..] [--local]');
+    console.error('usage: render.mts from-job <jobId> [--local] [--labels]');
+    console.error('       render.mts from-channels <UC..,UC..> <beat_id> [--logos UC..,UC..] [--local] [--labels]');
     process.exit(1);
   }
   log(`script ready: ${script.slots.length} slots, ${script.slots.reduce((a, s) => a + s.gems.length, 0)} gems`);

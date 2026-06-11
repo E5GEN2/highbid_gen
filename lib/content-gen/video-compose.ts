@@ -592,6 +592,36 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     ]);
   }
 
+  // ── TECHNICAL MODE (HB_DEBUG_LABELS=1, render.mts --labels) ──
+  // Stamp the slot_id in a pill at the top-right of every slot so frames
+  // are referencable in review ("beat niche_1_mm_rpm, issue X"). Env-gated:
+  // never active in production renders; video_compose is uncached so no
+  // cache poisoning.
+  if (process.env.HB_DEBUG_LABELS === '1') {
+    const labelText = esc(slot_id);
+    const fontSize = 26;
+    const padX = 18, padY = 12;
+    const labelW = Math.round(labelText.length * fontSize * 0.62) + padX * 2;
+    const labelH = fontSize + padY * 2;
+    const labelPath = path.join(path.dirname(outPath), `label-${path.basename(outPath)}.png`);
+    await sharp(Buffer.from(
+      `<svg width="${labelW}" height="${labelH}">
+        <rect width="${labelW}" height="${labelH}" rx="9" fill="#000000" fill-opacity="0.62"/>
+        <text x="${padX}" y="${padY + fontSize - 7}" font-family="Menlo, 'DejaVu Sans Mono', monospace"
+              font-size="${fontSize}" font-weight="600" fill="#7CFC9B">${labelText}</text>
+      </svg>`,
+    )).png().toFile(labelPath);
+    const labeledPath = path.join(path.dirname(outPath), `labeled-${path.basename(outPath)}`);
+    await ff([
+      '-y', '-i', silentPath, '-i', labelPath,
+      '-filter_complex', `[0:v][1:v]overlay=W-w-24:24`,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '20',
+      labeledPath,
+    ]);
+    await fs.rename(labeledPath, silentPath);
+    await fs.unlink(labelPath).catch(() => {});
+  }
+
   // Mux audio — generic N-input mixer. Inputs and weights:
   //   voice 1.0 · fx 0.7 · diegetic clip audio 0.18 (≈ -15dB under
   //   narration per the audio-sfx diegetic rule). No inputs → silent
