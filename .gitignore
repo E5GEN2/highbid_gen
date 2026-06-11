@@ -46,3 +46,6 @@ next-env.d.ts
 # Remotion render artifacts
 tmp/clip-cache/
 tmp/renders/
+
+# Local pipeline render artifacts
+/clips/
