@@ -56,6 +56,17 @@ const FULL_TABLES = [
   'xgodo_api_keys',
   'xgodo_proxy_health',
   'niche_spy_channels',
+  // Analysis layer — the 300+ transcript corpus + per-channel reverse-
+  // engineered recipe/RPM data the script skeleton consumes. Transcripts
+  // live in video_analysis_jobs.timeline_jsonb (SAY/SEE/HEAR segments).
+  'video_analysis_jobs',
+  'video_analysis_clips',
+  'content_gen_recipe_showcase',
+  'content_gen_channel_rpm',
+  'content_gen_rpm_cache',
+  'deep_analysis_runs',
+  'deep_analysis_storyboards',
+  'deep_analysis_channels',
 ];
 
 // .env.local DATABASE_URL → Railway
