@@ -16,6 +16,7 @@
 import { writeScript, type ScriptWriterInput, type ChannelData, type NarrationBeat } from './script-writer';
 import { type ConcreteScript } from './concrete-script';
 import { getPool } from '../db';
+import { ttsWithTimestamps, DEFAULT_VOICE_ID, type WordTiming } from './voice';
 
 export type ChannelEvent = {
   channelId: string;
@@ -759,6 +760,91 @@ export function forceProofKind(slots: Slot[]): Slot[] {
   });
 }
 
+
+// ───────────────────────────────────────────────────────────────────
+// Continuous narration (MG-style): ONE ElevenLabs call per slot GROUP
+// (a niche's full beat sequence, or the CTA block) via ttsWithTimestamps,
+// then each slot's narr gem becomes an audio_slice of the master. Spans
+// tile the master at next-slot-first-word boundaries, so the natural
+// pauses between sentences are preserved and the full read survives the
+// per-slot cut+concat — no more robotic per-phrase joins.
+//
+// Word reveal: text cards whose card text EQUALS the slot narration and
+// has >= REVEAL_MIN_WORDS words switch to composition 'text_card_reveal'
+// + ken_burns 'word_reveal' with word_times (slot-relative) from the
+// alignment — words pop in exactly as spoken.
+// ───────────────────────────────────────────────────────────────────
+
+const REVEAL_MIN_WORDS = 4;
+const SLICE_LEAD_PAD_S = 0.06;
+
+function round3(n: number): number { return Math.round(n * 1000) / 1000; }
+
+export async function applyContinuousNarration(slots: Slot[], voiceAlias = 'money_groot'): Promise<void> {
+  const eligible = slots.filter(s =>
+    typeof s.narration === 'string' && s.narration.trim().length > 0 &&
+    s.gems.some(g => g.id === 'narr' && g.tool === 'tts'));
+  if (eligible.length === 0) return;
+
+  const texts = eligible.map(s => s.narration.trim());
+  const voice_id = voiceAlias === 'money_groot' ? DEFAULT_VOICE_ID : voiceAlias;
+  let master;
+  try {
+    master = await ttsWithTimestamps(texts.join(' '), { voice_id });
+  } catch (e) {
+    // Best-effort: keep per-slot tts on failure (robotic but functional).
+    console.warn(`[continuous-narration] master TTS failed, keeping per-slot tts: ${(e as Error).message.slice(0, 200)}`);
+    return;
+  }
+
+  // Char span of each slot's narration inside the joined master text.
+  const spans: Array<{ start_c: number; end_c: number }> = [];
+  let off = 0;
+  for (const t of texts) { spans.push({ start_c: off, end_c: off + t.length }); off += t.length + 1; }
+
+  const wordsIn = (span: { start_c: number; end_c: number }): WordTiming[] =>
+    master.words.filter(w => w.char_start >= span.start_c && w.char_start < span.end_c);
+
+  for (let i = 0; i < eligible.length; i++) {
+    const slot = eligible[i];
+    const slotWords = wordsIn(spans[i]);
+    if (slotWords.length === 0) continue; // alignment hole — keep per-slot tts
+
+    const start = i === 0 ? 0 : Math.max(0, slotWords[0].start - SLICE_LEAD_PAD_S);
+    // Tile: this slot's audio runs until the NEXT slot's first word (minus
+    // lead pad) so inter-sentence pauses belong to the earlier slot and
+    // nothing is dropped. Last slot runs to the end of the master.
+    let end: number;
+    if (i + 1 < eligible.length) {
+      const nextWords = wordsIn(spans[i + 1]);
+      end = nextWords.length
+        ? Math.max(start + 0.3, nextWords[0].start - SLICE_LEAD_PAD_S)
+        : Math.max(start + 0.3, slotWords[slotWords.length - 1].end + 0.15);
+    } else {
+      end = Math.max(start + 0.3, master.duration_s);
+    }
+
+    slot.gems = slot.gems.map(g => g.id === 'narr'
+      ? { id: 'narr', tool: 'audio_slice', args: { src: master.local_path, start_s: round3(start), end_s: round3(end) } }
+      : g);
+
+    // Word reveal — only when the visible card text IS the narration so
+    // the alignment's words map 1:1 onto the card's words.
+    const mainGem = slot.gems.find(g => g.id === 'main');
+    const mainArgs = mainGem?.args as Record<string, unknown> | undefined;
+    const cardText = typeof mainArgs?.text === 'string' ? (mainArgs.text as string).trim() : '';
+    if (mainGem?.tool === 'image_gen' && mainArgs?.composition === 'text_card' &&
+        cardText === slot.narration.trim() && slotWords.length >= REVEAL_MIN_WORDS) {
+      mainArgs.composition = 'text_card_reveal';
+      const layer = slot.compose.layers.find(l => l.channel === 'video');
+      if (layer) {
+        layer.ken_burns = 'word_reveal';
+        layer.word_times = slotWords.map(w => round3(Math.max(0, w.start - start)));
+      }
+    }
+  }
+}
+
 // ───────────────────────────────────────────────────────────────────
 // buildListicleScript — the full multi-channel assembly loop.
 // ───────────────────────────────────────────────────────────────────
@@ -855,14 +941,20 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       withInjects.push(...rapidFireSlots);
       if (panoSlot) withInjects.push(panoSlot);
     }
-    allSlots.push(...framing, ...withInjects, ...moneyMath);
+    // Continuous narration for the whole niche group — one natural read,
+    // sliced per slot; reveals wired where applicable.
+    const nicheGroup: Slot[] = [...framing, ...withInjects, ...moneyMath];
+    await applyContinuousNarration(nicheGroup);
+    allSlots.push(...nicheGroup);
     acceptedCount++;
   }
 
   if (acceptedCount === 0) {
     return { script: null, channelEvents, failures, error: 'every channel failed to author' };
   }
-  allSlots.push(...buildCtaSlots(acceptedCount));
+  const ctaGroup = buildCtaSlots(acceptedCount);
+  await applyContinuousNarration(ctaGroup);
+  allSlots.push(...ctaGroup);
 
   const script: ConcreteScript = {
     schema_version: '1',

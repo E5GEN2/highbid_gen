@@ -169,6 +169,129 @@ export async function ttsBeat(text: string, opts: VoiceOpts = {}): Promise<Voice
   };
 }
 
+// ───────────────────────────────────────────────────────────────────
+// Continuous narration with word-level timecodes (MG-style).
+//
+// One ElevenLabs call per SEGMENT (a niche's full narration, or the CTA
+// block) → natural prosody instead of robotic per-slot joins. The
+// /with-timestamps endpoint returns character-level alignment; we derive
+// word timings, cache them in content_gen_voice_assets.alignment_jsonb,
+// and the listicle builder slices the master into per-slot spans + drives
+// the word-by-word text reveal.
+// ───────────────────────────────────────────────────────────────────
+
+export interface WordTiming {
+  word: string;
+  /** Seconds from start of the master audio. */
+  start: number;
+  end: number;
+  /** Char offset of the word's first character in the input text. */
+  char_start: number;
+}
+
+export interface VoiceAssetTimed extends VoiceAsset {
+  words: WordTiming[];
+}
+
+interface ElAlignment {
+  characters: string[];
+  character_start_times_seconds: number[];
+  character_end_times_seconds: number[];
+}
+
+/** Derive word timings from ElevenLabs character alignment. Words are
+ *  whitespace-separated runs; a word's start = its first char's start,
+ *  end = its last char's end. */
+function wordsFromAlignment(text: string, al: ElAlignment): WordTiming[] {
+  const words: WordTiming[] = [];
+  const n = Math.min(text.length, al.characters.length);
+  let i = 0;
+  while (i < n) {
+    if (/\s/.test(text[i])) { i++; continue; }
+    const charStart = i;
+    while (i < n && !/\s/.test(text[i])) i++;
+    words.push({
+      word: text.slice(charStart, i),
+      start: al.character_start_times_seconds[charStart],
+      end: al.character_end_times_seconds[i - 1],
+      char_start: charStart,
+    });
+  }
+  return words;
+}
+
+/**
+ * TTS a full narration segment in ONE call, returning word-level timecodes.
+ * Cached by the same text-hash scheme as ttsBeat (alignment persisted in
+ * alignment_jsonb; cache rows without alignment regenerate).
+ */
+export async function ttsWithTimestamps(text: string, opts: VoiceOpts = {}): Promise<VoiceAssetTimed> {
+  const cleanText = text.trim();
+  if (!cleanText) throw new Error('empty text');
+
+  const voice_id = opts.voice_id || DEFAULT_VOICE_ID;
+  const model_id = opts.model_id || DEFAULT_MODEL;
+  const settings = { ...DEFAULT_SETTINGS, ...(opts.settings ?? {}) };
+  // 'tw|' prefix keeps these distinct from plain ttsBeat assets of the
+  // same text (different endpoint, carries alignment).
+  const text_hash = hashText(`tw|${cleanText}`, voice_id, model_id, settings);
+
+  const pool = await getPool();
+  const cached = (await pool.query<{ text: string; voice_id: string; model_id: string; local_path: string; duration_s: number; bytes: number; char_count: number; alignment_jsonb: WordTiming[] | null }>(
+    `SELECT text, voice_id, model_id, local_path, duration_s, bytes, char_count, alignment_jsonb
+       FROM content_gen_voice_assets WHERE text_hash = $1`,
+    [text_hash],
+  )).rows[0];
+  if (cached && Array.isArray(cached.alignment_jsonb) && cached.alignment_jsonb.length) {
+    try {
+      const stat = await fs.stat(cached.local_path);
+      if (stat.size > 0) {
+        await pool.query(`UPDATE content_gen_voice_assets SET last_used_at = NOW() WHERE text_hash = $1`, [text_hash]).catch(() => {});
+        const { alignment_jsonb, ...rest } = cached;
+        return { text_hash, ...rest, words: alignment_jsonb, cached: true };
+      }
+    } catch { /* file gone — regenerate */ }
+  }
+
+  const key = await getElevenLabsKey();
+  const url = `${ELEVENLABS_API}/text-to-speech/${voice_id}/with-timestamps?output_format=mp3_44100_128`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'xi-api-key': key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: cleanText, model_id, voice_settings: settings }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`elevenlabs with-timestamps ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const json = await res.json() as { audio_base64: string; alignment?: ElAlignment; normalized_alignment?: ElAlignment };
+  const buf = Buffer.from(json.audio_base64, 'base64');
+  if (buf.length < 500) throw new Error(`elevenlabs returned ${buf.length} bytes (too small)`);
+  const al = json.alignment ?? json.normalized_alignment;
+  if (!al?.characters?.length) throw new Error('elevenlabs returned no alignment');
+  const words = wordsFromAlignment(cleanText, al);
+
+  await fs.mkdir(TTS_DIR, { recursive: true });
+  const localPath = path.join(TTS_DIR, `${text_hash}.mp3`);
+  await fs.writeFile(localPath, buf);
+  const duration_s = await probeDuration(localPath);
+
+  await pool.query(
+    `INSERT INTO content_gen_voice_assets (text_hash, text, voice_id, model_id, settings, local_path, duration_s, bytes, char_count, alignment_jsonb, last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,NOW())
+     ON CONFLICT (text_hash) DO UPDATE SET
+       local_path = EXCLUDED.local_path, duration_s = EXCLUDED.duration_s,
+       bytes = EXCLUDED.bytes, alignment_jsonb = EXCLUDED.alignment_jsonb, last_used_at = NOW()`,
+    [text_hash, cleanText, voice_id, model_id, JSON.stringify(settings), localPath, duration_s, buf.length, cleanText.length, JSON.stringify(words)],
+  );
+
+  return {
+    text_hash, text: cleanText, voice_id, model_id, local_path: localPath,
+    duration_s, bytes: buf.length, char_count: cleanText.length, cached: false, words,
+  };
+}
+
 /** Read a cached TTS file by its text hash (for the serve endpoint). */
 export async function readVoiceFile(text_hash: string): Promise<{ buf: Buffer; contentType: string } | null> {
   const pool = await getPool();

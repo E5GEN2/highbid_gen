@@ -159,7 +159,7 @@ export interface SfxOutput {
 /** image_gen — generate a non-YT visual (text_card / icon_card / chalkboard /
  *  title-sequence card). Compositions follow slot-rendering-class-b. */
 export interface ImageGenArgs {
-  composition: 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel' | 'top_videos_pano';
+  composition: 'text_card' | 'text_card_reveal' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel' | 'top_videos_pano';
   /** Primary copy on the card. For most_popular_callout this is the video title.
    *  Optional when composition=channel_about_panel or top_videos_pano (fully data-driven). */
   text: string;
@@ -312,6 +312,22 @@ export const TOOL_REGISTRY: ToolSpec[] = [
     version: 'v1.0.0',
   },
   {
+    name: 'audio_slice',
+    description: 'Cut a [start_s, end_s) span out of a continuous master narration mp3 (produced by ttsWithTimestamps). Builder-generated only — the writer never emits this.',
+    args_schema: {
+      type: 'object',
+      required: ['src', 'start_s', 'end_s'],
+      additionalProperties: false,
+      properties: {
+        src:     { type: 'string', description: 'Absolute path of the master narration mp3.' },
+        start_s: { type: 'number' },
+        end_s:   { type: 'number' },
+      },
+    },
+    output_fields: ['file_url', 'duration_s'],
+    version: 'v1.0.0',
+  },
+  {
     name: 'sfx_render',
     description: 'Render an SFX track from one or more canonical SFX tokens. NEVER stack more than one SFX per cut (audio-sfx exclude rule). `ding` is mandatory on every $ reveal (pitch rises with figure size); `whoosh` is the default text-card cut transition; `ascending_electronic_sting` is reserved for the final CTA beat.',
     args_schema: {
@@ -337,7 +353,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       required: ['composition', 'text', 'bg_mode'],
       additionalProperties: false,
       properties: {
-        composition:     { type: 'string', enum: ['text_card', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence', 'most_popular_callout', 'channel_about_panel', 'top_videos_pano'] },
+        composition:     { type: 'string', enum: ['text_card', 'text_card_reveal', 'icon_card', 'chalkboard_card', 'text_card_in_title_sequence', 'most_popular_callout', 'channel_about_panel', 'top_videos_pano'] },
         text:            { type: 'string' },
         color_treatment: { type: 'string', enum: [...COLOR_TREATMENTS] },
         bg_mode:         { type: 'string', enum: ['white', 'dark_gray'] },

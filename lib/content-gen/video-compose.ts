@@ -42,10 +42,16 @@ interface ComposeLayer {
   from: string;
   channel?: 'video' | 'voice' | 'fx' | 'overlay';
   fit?: 'contain' | 'cover' | 'fill';
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target';
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target' | 'word_reveal';
   /** Index of target avatar (0–9) for ken_burns='zoom_in_to_target' on a
    *  2×5 channel_logos_montage. Maps to grid cell (col, row) and zoompan center. */
   target_idx?: number;
+  /** ken_burns='word_reveal': word start times (seconds RELATIVE TO SLOT
+   *  START) from the master-narration alignment. Frame k of local_paths
+   *  shows during [word_times[k-1], word_times[k]). */
+  word_times?: number[];
+  /** Progressive PNG set for word_reveal (k=0 blank … k=N full text). */
+  local_paths?: string[] | null;
   /** Highlight a stats row in about_panel — MG-style L→R yellow animation. */
   highlight_row?: 'subscribers' | 'videos' | 'views';
   /** Computed by the about_panel dispatch after the composer runs — gives the
@@ -463,7 +469,41 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
   // in a second pass. Keeps the filtergraph simple and lets us pad audio
   // with silence to match hold_s exactly.
   const silentPath = path.join(path.dirname(outPath), `silent-${path.basename(outPath)}`);
-  if (resolved.kind === 'image') {
+  // word_reveal — MG-style VO-synced text pop: progressive stills (k=0
+  // blank … k=N full) concatenated with per-word durations from the
+  // master-narration alignment. Frame k holds from word_times[k-1] to
+  // word_times[k] (relative to slot start); the final frame holds to
+  // hold_s. Uses the concat demuxer (exact durations), then fit+pad.
+  const wordTimes = mainLayer.word_times;
+  const revealPaths = mainLayer.local_paths;
+  if (kenBurns === 'word_reveal' && Array.isArray(revealPaths) && revealPaths.length >= 2 &&
+      Array.isArray(wordTimes) && wordTimes.length === revealPaths.length - 1) {
+    const minD = 1 / fps;
+    // Boundaries: frame k ∈ [0..N] shows [b_k, b_{k+1}) where
+    // b_0=0, b_k=wordTimes[k-1] (clamped monotonic), b_{N+1}=hold_s.
+    const bounds: number[] = [0];
+    for (const t of wordTimes) bounds.push(Math.min(Math.max(t, bounds[bounds.length - 1] + minD), hold_s));
+    bounds.push(Math.max(hold_s, bounds[bounds.length - 1] + minD));
+    const concatLines: string[] = [];
+    for (let k = 0; k < revealPaths.length; k++) {
+      const d = Math.max(minD, bounds[k + 1] - bounds[k]);
+      concatLines.push(`file '${revealPaths[k].replace(/'/g, "'\\''")}'`);
+      concatLines.push(`duration ${d.toFixed(4)}`);
+    }
+    // concat demuxer quirk: repeat the last file so its final duration sticks.
+    concatLines.push(`file '${revealPaths[revealPaths.length - 1].replace(/'/g, "'\\''")}'`);
+    const listPath = path.join(path.dirname(outPath), `reveal-${path.basename(outPath)}.txt`);
+    await fs.writeFile(listPath, concatLines.join('\n'));
+    await ff([
+      '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
+      '-t', hold_s.toFixed(3),
+      '-vf', staticStillVf,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-r', String(fps),
+      '-preset', 'medium', '-crf', '20',
+      silentPath,
+    ]);
+  } else if (resolved.kind === 'image') {
     await ff([
       '-y', '-loop', '1', '-i', resolved.path,
       '-t', hold_s.toFixed(3),

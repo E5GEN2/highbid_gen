@@ -61,7 +61,12 @@ export interface ComposeLayer {
   /** Visual fit when channel=video */
   fit?: 'contain' | 'cover' | 'fill';
   /** Camera move applied during the hold */
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target';
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target' | 'word_reveal';
+  /** ken_burns='word_reveal': word start times in seconds RELATIVE TO SLOT
+   *  START (from the master-narration alignment). Progressive frame k of
+   *  local_paths shows during [word_times[k-1], word_times[k]) — words pop
+   *  in exactly as spoken (MG style). */
+  word_times?: number[];
   /** When channel=overlay, position the layer over the main video */
   position?: { x: number | string; y: number | string; w: number | string; h: number | string };
   /** Crop a yt_capture image to one of its named bboxes before further

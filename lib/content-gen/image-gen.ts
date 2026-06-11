@@ -136,6 +136,45 @@ function renderTextCard(args: ImageGenArgs, width: number, height: number): stri
 </svg>`;
 }
 
+/** text_card_reveal — variant k of a progressive word reveal (MG style:
+ *  each word pops in as it's spoken). LAYOUT STABILITY: every variant
+ *  renders the FULL text (identical wrap/centering); words beyond k are
+ *  painted with fill-opacity 0. k=0 → blank card, k=wordCount → full. */
+function renderTextCardRevealVariant(args: ImageGenArgs, width: number, height: number, revealCount: number): string {
+  const text = String(args.text ?? '').slice(0, MAX_TEXT_LEN);
+  const bg = (args.bg_mode === 'dark_gray') ? 'dark_gray' : 'white';
+  const ct = (args.color_treatment ?? 'neutral') as ColorTreatment;
+  const colors = COLOR_HEX[ct] ?? COLOR_HEX.neutral;
+  const baseFont = fitFontSize(text, width, height, 3);
+  const lines = wrap(text, Math.max(6, Math.floor((width * 0.85) / (baseFont * 0.55))), 3);
+  const lineHeight = baseFont * 1.18;
+  const totalH = lines.length * lineHeight;
+  const startY = height / 2 - totalH / 2 + baseFont * 0.85;
+  const fontWeight = ct === 'money_shot_green' ? 900 : 800;
+  const fg = colors.fg;
+
+  let wordIdx = 0;
+  const texts = lines.map((ln, i) => {
+    const tspans = ln.split(/\s+/).map((w, wi) => {
+      const visible = wordIdx < revealCount;
+      wordIdx++;
+      const lead = wi > 0 ? ' ' : '';
+      return `<tspan fill-opacity="${visible ? 1 : 0}">${lead}${esc(w)}</tspan>`;
+    }).join('');
+    return `
+    <text x="${width / 2}" y="${startY + i * lineHeight}" xml:space="preserve"
+          font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+          font-size="${baseFont}" font-weight="${fontWeight}"
+          fill="${fg}" text-anchor="middle">${tspans}</text>`;
+  }).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="${width}" height="${height}" fill="${BG_HEX[bg]}"/>
+  ${texts}
+</svg>`;
+}
+
 function renderChalkboardCard(args: ImageGenArgs, width: number, height: number): string {
   const text = String(args.text ?? '').slice(0, MAX_TEXT_LEN);
   const baseFont = fitFontSize(text, width, height, 2);
@@ -210,10 +249,36 @@ function renderTitleSequenceCard(args: ImageGenArgs, width: number, height: numb
 
 // Default 16:9 long-form (1920×1080). Money Groot videos are ~14-min YT
 // long-form, not Shorts. Per-call override via args (width/height).
-export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1080): Promise<ImageGenOutput & { local_path: string }> {
+export async function imageGenerate(args: ImageGenArgs, width = 1920, height = 1080): Promise<ImageGenOutput & { local_path: string; local_paths?: string[] }> {
   await fs.mkdir(IMG_DIR, { recursive: true });
   const hash = cacheKey(args, width, height);
   const outPath = path.join(IMG_DIR, `${hash}.png`);
+
+  // text_card_reveal — progressive word-pop set for MG-style VO-synced
+  // reveal. Renders N+1 variants (k=0 blank … k=N full); identical layout,
+  // unspoken words at fill-opacity 0. Returns local_paths for video-compose
+  // word_reveal mode; local_path/file_url point at the FULL-text frame.
+  // Handled before the single-file cache check (multi-file cache).
+  if (args.composition === 'text_card_reveal') {
+    const words = String(args.text ?? '').trim().split(/\s+/).filter(Boolean);
+    const paths: string[] = [];
+    for (let k = 0; k <= words.length; k++) {
+      const vp = path.join(IMG_DIR, `${hash}-w${String(k).padStart(2, '0')}.png`);
+      const okCached = await fs.stat(vp).then(s => s.size > 0).catch(() => false);
+      if (!okCached) {
+        const vsvg = renderTextCardRevealVariant(args, width, height, k);
+        await sharp(Buffer.from(vsvg)).png().toFile(vp);
+      }
+      paths.push(vp);
+    }
+    await fs.copyFile(paths[paths.length - 1], outPath).catch(() => {});
+    return {
+      file_url: `/api/admin/content-gen/producer/file?path=${encodeURIComponent('images/' + hash + '.png')}`,
+      width, height,
+      local_path: outPath,
+      local_paths: paths,
+    };
+  }
 
   try {
     const st = await fs.stat(outPath);

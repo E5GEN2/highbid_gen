@@ -328,6 +328,9 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
         url: file_url,
         duration_s: (localOutput && (localOutput.duration_s as number)) ?? null,
         local_path: (localOutput && (localOutput.local_path as string)) ?? null,
+        // word_reveal: progressive text-card PNG set from image_gen
+        // text_card_reveal (k=0 blank … k=N full text).
+        local_paths: (localOutput && (localOutput.local_paths as string[])) ?? null,
         capture_id,
       };
     });

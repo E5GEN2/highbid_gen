@@ -1851,6 +1851,9 @@ export async function initSchema(): Promise<void> {
         last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
+    // Word-level timecodes from ElevenLabs /with-timestamps — drives the
+    // continuous-narration slicing + MG-style word-by-word text reveal.
+    await client.query(`ALTER TABLE content_gen_voice_assets ADD COLUMN IF NOT EXISTS alignment_jsonb JSONB`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at

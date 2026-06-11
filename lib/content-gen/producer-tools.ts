@@ -23,6 +23,7 @@ import { spawn } from 'child_process';
 import { captureYtScreen, type ScreenKind, type CaptureMode, type AnnotateSpec, type AnnotateElement, type HighlightStyle, type CompositeShapeStyle } from './yt-capture';
 import { videoCompose } from './video-compose';
 import { ttsBeat, DEFAULT_VOICE_ID } from './voice';
+import { CLIPS_DIR } from '../clips-dir';
 import { getSfx } from './sfx';
 import { imageGenerate } from './image-gen';
 
@@ -44,6 +45,7 @@ export async function runTool(name: string, args: Record<string, unknown>): Prom
   switch (name) {
     case 'yt_capture':    return runYtCapture(args);
     case 'tts':           return runTts(args);
+    case 'audio_slice':   return runAudioSlice(args);
     case 'sfx_render':    return runSfxRender(args);
     case 'image_gen':     return runImageGen(args);
     case 'logos_montage': return runLogosMontage(args);
@@ -52,6 +54,48 @@ export async function runTool(name: string, args: Record<string, unknown>): Prom
     default:
       throw new Error(`unknown tool "${name}"`);
   }
+}
+
+/** audio_slice — cut a per-slot span out of a continuous master narration
+ *  (ttsWithTimestamps). Args: { src, start_s, end_s }. Accurate-seek
+ *  re-encode (not -c copy: mp3 frame boundaries would drift word sync).
+ *  Used by the listicle builder's continuous-narration mode so each slot
+ *  keeps {{narr.duration_s}} hold semantics while the VOICE was generated
+ *  as one natural read. */
+async function runAudioSlice(args: Record<string, unknown>): Promise<ToolOutput> {
+  const src = String(args.src ?? '');
+  const start = Number(args.start_s ?? 0);
+  const end = Number(args.end_s ?? 0);
+  if (!src) throw new Error('audio_slice: src required');
+  if (!(end > start)) throw new Error(`audio_slice: bad span ${start}..${end}`);
+  const fsp = await import('fs/promises');
+  await fsp.access(src).catch(() => { throw new Error(`audio_slice: src missing: ${src}`); });
+
+  const crypto = await import('crypto');
+  const hash = crypto.createHash('sha256').update(`${src}|${start.toFixed(3)}|${end.toFixed(3)}`).digest('hex').slice(0, 16);
+  const outDir = path.join(CLIPS_DIR, 'tts', 'slices');
+  await fsp.mkdir(outDir, { recursive: true });
+  const outPath = path.join(outDir, `${hash}.mp3`);
+
+  const exists = await fsp.stat(outPath).then(s => s.size > 500).catch(() => false);
+  if (!exists) {
+    const { spawn } = await import('child_process');
+    await new Promise<void>((resolve, reject) => {
+      // -ss AFTER -i = decode-accurate seek (sample-precise enough for word sync).
+      const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
+        '-i', src, '-ss', start.toFixed(3), '-t', (end - start).toFixed(3),
+        '-c:a', 'libmp3lame', '-q:a', '2', '-y', outPath]);
+      let err = '';
+      p.stderr.on('data', d => { err += d.toString(); });
+      p.on('close', c => c === 0 ? resolve() : reject(new Error(`audio_slice ffmpeg ${c}: ${err.slice(0, 200)}`)));
+      p.on('error', reject);
+    });
+  }
+  return {
+    file_url: `file://${outPath}`,
+    local_path: outPath,
+    duration_s: Math.round((end - start) * 1000) / 1000,
+  };
 }
 
 /** logos_montage — render 2×5 channel-avatar montage for MG-style
@@ -238,7 +282,7 @@ async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> 
 // ───────────────────────────────────────────────────────────────────
 
 async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
-  const composition = String(args.composition ?? 'text_card') as 'text_card' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel' | 'top_videos_pano';
+  const composition = String(args.composition ?? 'text_card') as 'text_card' | 'text_card_reveal' | 'icon_card' | 'chalkboard_card' | 'text_card_in_title_sequence' | 'most_popular_callout' | 'channel_about_panel' | 'top_videos_pano';
   const text = String(args.text ?? '');
   const bg_mode = (args.bg_mode === 'dark_gray' ? 'dark_gray' : 'white') as 'white' | 'dark_gray';
   const color_treatment = args.color_treatment as 'neutral' | 'money_shot_green' | 'inline_green' | 'inline_red' | 'chalk_cream' | 'yellow_ring' | undefined;
@@ -279,6 +323,9 @@ async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
     width: result.width,
     height: result.height,
     local_path: result.local_path,
+    // text_card_reveal: progressive PNG set (k=0 blank … k=N full text)
+    // consumed by video-compose's word_reveal mode.
+    ...(Array.isArray(result.local_paths) ? { local_paths: result.local_paths } : {}),
   };
 }
 
