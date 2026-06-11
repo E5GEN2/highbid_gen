@@ -1121,6 +1121,10 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       voice: 'money_groot',
       width: 1920, height: 1080,
     };
+    // Stagger writer calls — 11 back-to-back Gemini requests trip the
+    // per-minute quota (Mr. Nightmare dropped with 429 on the MG anchor
+    // render, 2026-06-11).
+    if (acceptedCount > 0) await new Promise(r => setTimeout(r, 3000));
     const result = await writeScript(input);
     if (!result.ok || !result.script) {
       channelEvents.push({

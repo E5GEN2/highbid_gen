@@ -155,7 +155,10 @@ async function runAudioSlice(args: Record<string, unknown>): Promise<ToolOutput>
   const hash = crypto.createHash('sha256').update(`${src}|${start.toFixed(3)}|${end.toFixed(3)}`).digest('hex').slice(0, 16);
   const outDir = path.join(CLIPS_DIR, 'tts', 'slices');
   await fsp.mkdir(outDir, { recursive: true });
-  const outPath = path.join(outDir, `${hash}.mp3`);
+  // WAV, not mp3 — libmp3lame intermittently dies with "inadequate AVFrame
+  // plane padding" on decode-seeked slices (hit on the MG anchor render,
+  // 2026-06-11). PCM sidesteps the encoder entirely; slices are local-only.
+  const outPath = path.join(outDir, `${hash}.wav`);
 
   const exists = await fsp.stat(outPath).then(s => s.size > 500).catch(() => false);
   if (!exists) {
@@ -164,7 +167,8 @@ async function runAudioSlice(args: Record<string, unknown>): Promise<ToolOutput>
       // -ss AFTER -i = decode-accurate seek (sample-precise enough for word sync).
       const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
         '-i', src, '-ss', start.toFixed(3), '-t', (end - start).toFixed(3),
-        '-c:a', 'libmp3lame', '-q:a', '2', '-y', outPath]);
+        '-af', 'aformat=sample_rates=44100:channel_layouts=stereo',
+        '-c:a', 'pcm_s16le', '-y', outPath]);
       let err = '';
       p.stderr.on('data', d => { err += d.toString(); });
       p.on('close', c => c === 0 ? resolve() : reject(new Error(`audio_slice ffmpeg ${c}: ${err.slice(0, 200)}`)));
