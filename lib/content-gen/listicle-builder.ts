@@ -1083,10 +1083,16 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
         narration: b.narration,
         gems: [
           { id: 'narr', tool: 'tts', args: { text: b.narration, voice: 'money_groot' } },
+          // Window EXTENDS past the matched moment (user feedback
+          // 2026-06-11: looping the same 4s for a 10s slot reads as a
+          // glitch). The clip STARTS on the transcript-matched moment —
+          // that VO↔visual relationship is the point — then keeps playing
+          // forward naturally; the slot's hold caps it, so the loop never
+          // fires. 16s covers any narration span.
           { id: 'main', tool: 'clip_extract', args: {
             video_url: b.source_video_url as string,
             clip_start: Number(b.clip_start),
-            clip_end: Number(b.clip_end),
+            clip_end: Number(b.clip_start) + Math.max(16, Number(b.clip_end) - Number(b.clip_start)),
           } },
         ],
         compose: {
