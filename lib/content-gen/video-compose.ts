@@ -384,20 +384,31 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     const idx = mainLayer.target_idx;
     const col = idx % 5;
     const row = Math.floor(idx / 5);
-    const cx = col * 384 + 192;
-    const cy = row * 540 + 270;
-    // zoompan x/y are in SOURCE coords: top-left of visible window after
-    // applying zoom. To center visible (iw/zoom × ih/zoom) on (cx,cy):
+    // ANTI-JITTER: zoompan rounds the crop window x/y to whole INPUT pixels
+    // per frame and samples without interpolation — at zoom 3 on a native-res
+    // input that's up to ~3px of visible frame shake + edge shimmer (user
+    // report 2026-06-11). Upsampling 4× with lanczos BEFORE zoompan makes
+    // the rounding ¼-output-pixel and the sampling clean. Target center
+    // coords scale by the same factor.
+    const SS = 4; // supersample factor
+    const cx = (col * 384 + 192) * SS;
+    const cy = (row * 540 + 270) * SS;
+    // zoompan x/y are in (upsampled) SOURCE coords: top-left of the visible
+    // window. To center visible (iw/zoom × ih/zoom) on (cx,cy):
     //   x = cx - iw/(2*zoom),  y = cy - ih/(2*zoom)
     zoomToTargetVf =
+      `scale=${width * SS}:${height * SS}:flags=lanczos,` +
       `zoompan=z='1+2*on/${Math.max(1, totalFrames - 1)}'` +
       `:x='${cx}-iw/(2*zoom)':y='${cy}-ih/(2*zoom)'` +
       `:d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
   }
 
   // Default Ken Burns: subtle 8% zoom-in on the centered image.
-  const stillVfDefault = `scale=${width * 2}:-2:flags=lanczos,` +
-                  `zoompan=z='1+0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${Math.round(width * height / width)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
+  // 4× supersample before zoompan (was 2×) — same anti-jitter rationale as
+  // zoom_in_to_target above: integer crop-window rounding at low supersample
+  // shows as sub-pixel stepping on slow zooms.
+  const stillVfDefault = `scale=${width * 4}:-2:flags=lanczos,` +
+                  `zoompan=z='1+0.08*on/${totalFrames}':d=${totalFrames}:s=${width}x${height}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',` +
                   `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
