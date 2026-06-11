@@ -314,6 +314,22 @@ export const TOOL_REGISTRY: ToolSpec[] = [
     version: 'v1.0.0',
   },
   {
+    name: 'clip_extract',
+    description: 'Cut [clip_start, clip_end) seconds out of a real channel video (yt-dlp cached download + ffmpeg trim, audio kept for diegetic mix). Powers mini_player b-roll in recipe_demo beats. Builder-generated only.',
+    args_schema: {
+      type: 'object',
+      required: ['video_url', 'clip_start', 'clip_end'],
+      additionalProperties: false,
+      properties: {
+        video_url:  { type: 'string' },
+        clip_start: { type: 'number' },
+        clip_end:   { type: 'number' },
+      },
+    },
+    output_fields: ['file_url', 'duration_s', 'asset_kind'],
+    version: 'v1.0.0',
+  },
+  {
     name: 'audio_slice',
     description: 'Cut a [start_s, end_s) span out of a continuous master narration mp3 (produced by ttsWithTimestamps). Builder-generated only — the writer never emits this.',
     args_schema: {

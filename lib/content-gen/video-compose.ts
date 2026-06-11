@@ -52,6 +52,11 @@ interface ComposeLayer {
   word_times?: number[];
   /** Progressive PNG set for word_reveal (k=0 blank … k=N full text). */
   local_paths?: string[] | null;
+  /** MG mini-player: scale the video into a centered player area on the
+   *  dark canvas instead of full-bleed (recipe_demo b-roll). */
+  player_frame?: boolean;
+  /** Mix the clip's own audio at ~-15dB under narration. */
+  diegetic?: boolean;
   /** Highlight a stats row in about_panel — MG-style L→R yellow animation. */
   highlight_row?: 'subscribers' | 'videos' | 'views';
   /** Computed by the about_panel dispatch after the composer runs — gives the
@@ -464,6 +469,14 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
      : (zoomToTargetVf ?? stillVfDefault)) + highlightVf;
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
+  // MG mini-player: clip scaled into a centered ~69% player area on the
+  // dark canvas (reference signature: b-roll is NEVER full-screen — always
+  // inside the rounded player frame). Rounded corners are a later polish;
+  // the centered-dark-frame look carries the signature.
+  const playerW = Math.round(width * 0.69);
+  const playerH = Math.round(height * 0.69);
+  const playerVf = `scale=w='if(gt(a,${playerW}/${playerH}),${playerW},-2)':h='if(gt(a,${playerW}/${playerH}),-2,${playerH})':force_original_aspect_ratio=decrease,` +
+                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${BG_HEX.dark_gray.replace('#', '0x')},setsar=1,fps=${fps}`;
 
   // Build the visual track first as a silent intermediate; then mux audio
   // in a second pass. Keeps the filtergraph simple and lets us pad audio
@@ -517,7 +530,7 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     await ff([
       '-y', '-stream_loop', '-1', '-i', resolved.path,
       '-t', hold_s.toFixed(3),
-      '-vf', videoVf,
+      '-vf', mainLayer.player_frame ? playerVf : videoVf,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-r', String(fps),
       '-an',
@@ -526,52 +539,41 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     ]);
   }
 
-  // Mux audio. Three cases:
-  //   1. voice + fx → amix both, pad to hold_s, trim, encode AAC
-  //   2. voice only → format voice to stereo, pad/trim to hold_s
-  //   3. neither   → silent AAC stream so all slots have consistent audio
-  if (voicePath && fxPath) {
-    await ff([
-      '-y', '-i', silentPath, '-i', voicePath, '-i', fxPath,
-      '-filter_complex',
-        `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=1.0[v1];` +
-        `[2:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.7[v2];` +
-        `[v1][v2]amix=inputs=2:duration=longest:dropout_transition=0,` +
-        `apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`,
-      '-map', '0:v', '-map', '[aout]',
-      '-c:v', 'copy',
-      '-c:a', 'aac', '-b:a', '128k',
-      '-shortest',
-      outPath,
-    ]);
-  } else if (voicePath) {
-    await ff([
-      '-y', '-i', silentPath, '-i', voicePath,
-      '-filter_complex', `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`,
-      '-map', '0:v', '-map', '[aout]',
-      '-c:v', 'copy',
-      '-c:a', 'aac', '-b:a', '128k',
-      '-shortest',
-      outPath,
-    ]);
-  } else if (fxPath) {
-    await ff([
-      '-y', '-i', silentPath, '-i', fxPath,
-      '-filter_complex', `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`,
-      '-map', '0:v', '-map', '[aout]',
-      '-c:v', 'copy',
-      '-c:a', 'aac', '-b:a', '128k',
-      '-shortest',
-      outPath,
-    ]);
-  } else {
+  // Mux audio — generic N-input mixer. Inputs and weights:
+  //   voice 1.0 · fx 0.7 · diegetic clip audio 0.18 (≈ -15dB under
+  //   narration per the audio-sfx diegetic rule). No inputs → silent
+  //   AAC stream so all slots concat with consistent audio.
+  const audioInputs: Array<{ p: string; vol: number; loop?: boolean }> = [];
+  if (voicePath) audioInputs.push({ p: voicePath, vol: 1.0 });
+  if (fxPath) audioInputs.push({ p: fxPath, vol: 0.7 });
+  if (mainLayer.diegetic && resolved.kind === 'video' && resolved.path) {
+    // LOOPED — the clip visual loops via -stream_loop, so its audio must
+    // too (otherwise a 4s clip leaves 6s of dead air in a 10s slot);
+    // per-input atrim below caps the loop at hold_s.
+    audioInputs.push({ p: resolved.path, vol: 0.18, loop: true });
+  }
+  if (audioInputs.length === 0) {
     await ff([
       '-y', '-i', silentPath,
       '-f', 'lavfi', '-t', hold_s.toFixed(3), '-i', 'anullsrc=cl=stereo:r=44100',
       '-map', '0:v', '-map', '1:a',
-      '-c:v', 'copy',
-      '-c:a', 'aac', '-b:a', '128k',
-      '-shortest',
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest',
+      outPath,
+    ]);
+  } else {
+    const inputArgs = audioInputs.flatMap(a => a.loop ? ['-stream_loop', '-1', '-i', a.p] : ['-i', a.p]);
+    const fmt = audioInputs.map((a, i) =>
+      `[${i + 1}:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=${a.vol}` +
+      (a.loop ? `,atrim=0:${hold_s.toFixed(3)}` : '') + `[a${i}]`).join(';');
+    const mix = audioInputs.length === 1
+      ? `[a0]apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`
+      : `${audioInputs.map((_, i) => `[a${i}]`).join('')}amix=inputs=${audioInputs.length}:duration=longest:dropout_transition=0:normalize=0,` +
+        `apad=pad_dur=${hold_s.toFixed(3)},atrim=0:${hold_s.toFixed(3)}[aout]`;
+    await ff([
+      '-y', '-i', silentPath, ...inputArgs,
+      '-filter_complex', `${fmt};${mix}`,
+      '-map', '0:v', '-map', '[aout]',
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest',
       outPath,
     ]);
   }

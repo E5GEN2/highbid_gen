@@ -46,6 +46,7 @@ export async function runTool(name: string, args: Record<string, unknown>): Prom
     case 'yt_capture':    return runYtCapture(args);
     case 'tts':           return runTts(args);
     case 'audio_slice':   return runAudioSlice(args);
+    case 'clip_extract':  return runClipExtract(args);
     case 'sfx_render':    return runSfxRender(args);
     case 'image_gen':     return runImageGen(args);
     case 'logos_montage': return runLogosMontage(args);
@@ -54,6 +55,82 @@ export async function runTool(name: string, args: Record<string, unknown>): Prom
     default:
       throw new Error(`unknown tool "${name}"`);
   }
+}
+
+/** clip_extract — cut [clip_start, clip_end) out of a channel's real video
+ *  for MG-style mini_player b-roll (recipe_demo beats). Whole-video download
+ *  is cached per YouTube id under clips/video_src (one download serves every
+ *  beat of that video); the trimmed clip KEEPS AUDIO for the diegetic mix
+ *  (audio-sfx spec: source audio at ~-15dB under narration).
+ *  Download: direct first (works from local dev), xgodo proxy fallback
+ *  (Railway egress). */
+async function runClipExtract(args: Record<string, unknown>): Promise<ToolOutput> {
+  const video_url = String(args.video_url ?? '');
+  const start = Number(args.clip_start ?? 0);
+  const end = Number(args.clip_end ?? 0);
+  if (!video_url) throw new Error('clip_extract: video_url required');
+  if (!(end > start)) throw new Error(`clip_extract: bad span ${start}..${end}`);
+  const ytid = video_url.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/)?.[1];
+  if (!ytid) throw new Error(`clip_extract: cannot parse video id from ${video_url}`);
+
+  const srcDir = path.join(CLIPS_DIR, 'video_src');
+  const brollDir = path.join(CLIPS_DIR, 'broll');
+  await fs.mkdir(srcDir, { recursive: true });
+  await fs.mkdir(brollDir, { recursive: true });
+  const srcPath = path.join(srcDir, `${ytid}.mp4`);
+
+  const srcOk = await fs.stat(srcPath).then(s => s.size > 100_000).catch(() => false);
+  if (!srcOk) {
+    const { emitToolCall } = await import('./exec-context');
+    await emitToolCall(`clip_extract:download ${ytid}`, { video_url });
+    const ytdlpArgs = (proxyUrl: string | null) => [
+      '--merge-output-format', 'mp4',
+      '-f', 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b',
+      '-o', srcPath, '--no-warnings', '--no-playlist',
+      ...(proxyUrl ? ['--proxy', proxyUrl] : []),
+      video_url,
+    ];
+    const tryDownload = (proxyUrl: string | null) => new Promise<void>((resolve, reject) => {
+      const proc = spawn('yt-dlp', ytdlpArgs(proxyUrl));
+      const t = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error('yt-dlp timeout (4min)')); }, 240_000);
+      let err = '';
+      proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      proc.on('close', c => { clearTimeout(t); c === 0 ? resolve() : reject(new Error(`yt-dlp exit ${c}: ${err.slice(-180)}`)); });
+      proc.on('error', e => { clearTimeout(t); reject(e); });
+    });
+    try {
+      await tryDownload(null);                  // direct (local dev)
+    } catch (e1) {
+      const { getRandomHealthyProxy } = await import('../xgodo-proxy');
+      const proxy = await getRandomHealthyProxy().catch(() => null);
+      if (!proxy?.url) throw new Error(`clip_extract download failed (direct: ${(e1 as Error).message.slice(0, 120)}; no proxy)`);
+      await tryDownload(proxy.url);             // proxy (Railway)
+    }
+  }
+
+  const crypto = await import('crypto');
+  const hash = crypto.createHash('sha256').update(`${ytid}|${start.toFixed(2)}|${end.toFixed(2)}`).digest('hex').slice(0, 16);
+  const outPath = path.join(brollDir, `${hash}.mp4`);
+  const outOk = await fs.stat(outPath).then(s => s.size > 10_000).catch(() => false);
+  if (!outOk) {
+    await new Promise<void>((resolve, reject) => {
+      // decode-accurate seek; KEEP audio (diegetic mix needs it)
+      const proc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
+        '-i', srcPath, '-ss', start.toFixed(2), '-t', (end - start).toFixed(2),
+        '-c:v', 'libx264', '-crf', '21', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-y', outPath]);
+      let err = '';
+      proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      proc.on('close', c => c === 0 ? resolve() : reject(new Error(`clip trim ffmpeg ${c}: ${err.slice(0, 180)}`)));
+      proc.on('error', reject);
+    });
+  }
+  return {
+    file_url: `file://${outPath}`,
+    local_path: outPath,
+    duration_s: Math.round((end - start) * 100) / 100,
+    asset_kind: 'video',
+  };
 }
 
 /** audio_slice — cut a per-slot span out of a continuous master narration

@@ -77,6 +77,13 @@ export interface ComposeLayer {
   /** Index of the target avatar in a channel_logos_montage (0–9) used by
    *  ken_burns='zoom_in_to_target' to compute the zoompan center. */
   target_idx?: number;
+  /** Render this video layer inside the MG mini-player frame: scaled to a
+   *  centered player area on the dark canvas instead of full-bleed. Used by
+   *  recipe_demo b-roll. */
+  player_frame?: boolean;
+  /** Keep the clip's own audio in the mix at ~-15dB under narration
+   *  (audio-sfx diegetic rule). Only meaningful for video layers. */
+  diegetic?: boolean;
   /** Which row of the about-modal to MG-highlight (yellow rectangle that
    *  animates L→R covering the row text). Used with crop_target='about_panel'.
    *  Looked up against bboxes (subscriber_count / video_count / total_views). */
