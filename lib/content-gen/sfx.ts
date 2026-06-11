@@ -57,6 +57,9 @@ export const TOKENS: Record<string, TokenSpec> = {
 
   soft_chimes:           { kind: 'sfx', prompt: 'soft mellow rising chimes, magical positive reveal, gentle and dreamy', default_duration_s: 1.0, prompt_influence: 0.7 },
   ascending_sting:       { kind: 'sfx', prompt: 'a short ascending electronic sting building up, hopeful, ending on a bright note', default_duration_s: 1.0, prompt_influence: 0.7 },
+  // Alias — the writer/builder emit the registry name (tools.ts SFX_TOKENS);
+  // it failed as "unknown token" on every render until 2026-06-11.
+  ascending_electronic_sting: { kind: 'sfx', prompt: 'a short ascending electronic sting building up, hopeful, ending on a bright note', default_duration_s: 1.0, prompt_influence: 0.7 },
 
   // ── Music beds (longer; durations supplied at call time) ──
   bed:                   { kind: 'music', prompt: 'calm mellow lofi background music for a documentary explainer video, no vocals, gentle synth and warm piano, smooth and looping', default_duration_s: 30, prompt_influence: 0.5 },
