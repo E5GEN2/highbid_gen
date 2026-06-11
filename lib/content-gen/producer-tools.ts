@@ -85,7 +85,10 @@ async function runClipExtract(args: Record<string, unknown>): Promise<ToolOutput
     await emitToolCall(`clip_extract:download ${ytid}`, { video_url });
     const ytdlpArgs = (proxyUrl: string | null) => [
       '--merge-output-format', 'mp4',
-      '-f', 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b',
+      // Prefer a REAL 720p video stream + merge; the old ext-constrained
+      // selector fell through to progressive 360p mp4 on many channels
+      // (user-visible: soft/muddy b-roll upscaled 1.7x).
+      '-f', 'bv*[height<=720]+ba/bv*[height<=720]/b[height<=720]/b',
       '-o', srcPath, '--no-warnings', '--no-playlist',
       ...(proxyUrl ? ['--proxy', proxyUrl] : []),
       video_url,

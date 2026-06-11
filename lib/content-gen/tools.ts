@@ -329,7 +329,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'duration_s', 'asset_kind'],
-    version: 'v1.0.0',
+    version: 'v1.0.1',  // 720p format selector + player border
   },
   {
     name: 'audio_slice',

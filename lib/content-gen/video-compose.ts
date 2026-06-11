@@ -551,8 +551,13 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       `<svg width="${PW}" height="${PH}"><rect width="${PW}" height="${PH}" rx="${R}" fill="#FFFFFF"/></svg>`,
     )).png().toFile(maskPath);
     const wmName = esc(String(mainLayer.watermark_text ?? '').toUpperCase());
+    // Hairline border keeps the player edge readable even when the clip's
+    // own background is near-black and merges with the canvas (user report
+    // 2026-06-11 — frame "disappeared" on dark-bg source videos).
     await sharp(Buffer.from(
       `<svg width="${PW}" height="${PH}">
+        <rect x="1.5" y="1.5" width="${PW - 3}" height="${PH - 3}" rx="${R - 1}"
+              fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
         <text x="34" y="56" font-family="Helvetica, Arial, sans-serif" font-size="40" font-weight="600"
               fill="#FFFFFF" fill-opacity="0.55" letter-spacing="3">${wmName}</text>
         <text x="${PW / 2}" y="${PH - 22}" font-family="Helvetica, Arial, sans-serif" font-size="17" font-weight="500"
@@ -565,7 +570,8 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       '-i', maskPath, '-i', wmPath,
       '-filter_complex',
         `color=c=${padColor}:s=${width}x${height}:r=${fps}[bg];` +
-        `[0:v]scale=${PW}:${PH}:force_original_aspect_ratio=increase,crop=${PW}:${PH},setsar=1,format=rgba[clip];` +
+        `[0:v]scale=${PW}:${PH}:force_original_aspect_ratio=increase:flags=lanczos,crop=${PW}:${PH},` +
+        `unsharp=5:5:0.4:5:5:0.0,setsar=1,format=rgba[clip];` +
         `[clip][1:v]alphamerge[rounded];` +
         `[bg][rounded]overlay=${PX}:${PY}:shortest=0[withclip];` +
         `[withclip][2:v]overlay=${PX}:${PY}[vout]`,
