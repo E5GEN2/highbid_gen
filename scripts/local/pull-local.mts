@@ -56,9 +56,15 @@ const FULL_TABLES = [
   'xgodo_api_keys',
   'xgodo_proxy_health',
   'niche_spy_channels',
-  // Analysis layer — the 300+ transcript corpus + per-channel reverse-
-  // engineered recipe/RPM data the script skeleton consumes. Transcripts
-  // live in video_analysis_jobs.timeline_jsonb (SAY/SEE/HEAR segments).
+];
+
+// Analysis layer — the 300+ transcript corpus + per-channel reverse-
+// engineered recipe/RPM data the script skeleton consumes. Transcripts
+// live in video_analysis_jobs.timeline_jsonb (SAY/SEE/HEAR segments).
+// COPIED AFTER niche_spy_videos: video_analysis_jobs FK-references it, so
+// TRUNCATE niche_spy_videos CASCADE would wipe these if copied earlier
+// (that bug silently emptied the first pull of this layer).
+const ANALYSIS_TABLES = [
   'video_analysis_jobs',
   'video_analysis_clips',
   'content_gen_recipe_showcase',
@@ -233,7 +239,14 @@ async function main() {
 
   log('phase 1 — tables');
   for (const t of FULL_TABLES) await copyTable(src, dstClient, t);
-  await copyTable(src, dstClient, 'niche_spy_videos', `WHERE channel_id = ANY($1)`, [chList]);
+  // Parent before children: the analysis tables FK niche_spy_videos.
+  // BUT video_analysis_jobs references videos from the FULL 300+ corpus
+  // (reference-class channels), not just the draft group — so pull ALL
+  // video rows that transcripts point at, plus the draft channels' rows.
+  await copyTable(src, dstClient, 'niche_spy_videos',
+    `WHERE channel_id = ANY($1)
+        OR id IN (SELECT video_id FROM video_analysis_jobs WHERE video_id IS NOT NULL)`, [chList]);
+  for (const t of ANALYSIS_TABLES) await copyTable(src, dstClient, t);
   await dstClient.query(`SET session_replication_role = DEFAULT`);
   await dstClient.end();
   const dst = new pg.Pool({ connectionString: LOCAL_DB, max: 4 });
