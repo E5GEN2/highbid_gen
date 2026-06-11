@@ -17,6 +17,8 @@ import { writeScript, type ScriptWriterInput, type ChannelData, type NarrationBe
 import { type ConcreteScript } from './concrete-script';
 import { getPool } from '../db';
 import { ttsWithTimestamps, DEFAULT_VOICE_ID, type WordTiming } from './voice';
+import { loadNicheVars, spokenNumber, type NicheVars } from './niche-vars';
+import { BankSession, numberWord } from './phrase-banks';
 
 export type ChannelEvent = {
   channelId: string;
@@ -100,13 +102,27 @@ export async function loadChannel(channelId: string): Promise<ChannelData | null
   };
 }
 
-export function stubNarration(beat_id: string, ch: ChannelData): NarrationBeat[] {
+/** Template beat 5 (proof_2): consistency opener + total views + age.
+ *  "And the views back it up. Over 40 million total views in just about
+ *  13 months." — worked-example BEAT 4 + SR beat 5 (age + total_views). */
+function proof2Text(tv: string, extras?: StubExtras): string {
+  const lead = extras?.consistencyLine ? `${extras.consistencyLine} ` : '';
+  const age = extras?.agePhrase ? ` in a channel that's just ${extras.agePhrase}` : '';
+  return `${lead}Over ${tv} total views${age}.`;
+}
+
+export interface StubExtras {
+  consistencyLine?: string | null;
+  agePhrase?: string | null;
+}
+
+export function stubNarration(beat_id: string, ch: ChannelData, extras?: StubExtras): NarrationBeat[] {
   const sub = ch.subscriber_count != null ? humanizeNumber(ch.subscriber_count) : 'thousands of';
   const tv = ch.total_views != null ? humanizeNumber(ch.total_views) : 'millions of';
   const vv = ch.top_video_view_count != null ? humanizeNumber(ch.top_video_view_count) : 'a million';
   switch (beat_id) {
     case 'channel_proof_1': return [{ beat_id, text: `This channel already has more than ${sub} subscribers.`, hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } }];
-    case 'channel_proof_2': return [{ beat_id, text: `The channel has already gained over ${tv} total views.`, hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } }];
+    case 'channel_proof_2': return [{ beat_id, text: proof2Text(tv, extras), hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'top_video_callout': return [{ beat_id, text: `Their most popular video has more than ${vv} views.`, hold_s: 2.0, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'niche_segment_3':
       // Compound: a full 3-beat per-niche segment. The script-writer
@@ -114,7 +130,7 @@ export function stubNarration(beat_id: string, ch: ChannelData): NarrationBeat[]
       // top video callout. Producer composes all 3 into one mp4.
       return [
         { beat_id: 'channel_proof_1',   text: `This channel already has more than ${sub} subscribers.`, hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } },
-        { beat_id: 'channel_proof_2',   text: `The channel has already gained over ${tv} total views.`,  hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } },
+        { beat_id: 'channel_proof_2',   text: proof2Text(tv, extras),  hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } },
         { beat_id: 'top_video_callout', text: `Their most popular video has more than ${vv} views.`,     hold_s: 2.0, audio_cue: { sfx: ['whoosh', 'ding'] } },
       ];
     case 'niche_segment_full':
@@ -177,6 +193,7 @@ export function buildNicheIntroSlots(
   allChannelIds: string[],
   channelName?: string,
   thisChannelId?: string,
+  introLine?: string | null,
 ): Slot[] {
   const base = `niche_${niche_index}`;
   // Threshold >= 1 so single-channel test renders also use the montage
@@ -193,11 +210,11 @@ export function buildNicheIntroSlots(
   } else {
     targetIdx = niche_index - 1;
   }
-  // Substantive intro hook: "Number N. <channel_name>." instead of just
-  // "Number N." — user feedback 2026-06-10 ("missing voiceover").
-  const introNarration = channelName
-    ? `Number ${niche_index}. ${channelName}.`
-    : `Number ${niche_index}.`;
+  // Template beat 1: bank.intro_card pick ("Number {N}:" / "." / ",").
+  // Falls back to the substantive hook (channel name) when no bank line
+  // was provided (vertical-slice path).
+  const introNarration = introLine
+    ?? (channelName ? `Number ${niche_index}. ${channelName}.` : `Number ${niche_index}.`);
   const introSlot: Slot = useMontage
     ? {
         slot_id: `${base}_intro_card`,
@@ -258,7 +275,23 @@ export function formatDollars(n: number): string {
  *  Computes lump_sum from channel.top_video_view_count × $1 RPM (silent).
  *  When the channel has no top-video data, returns [] (caller skips money_math
  *  for that niche). */
-export function buildMoneyMathSlots(niche_index: number, ch: ChannelData): Slot[] {
+export interface MoneyMathOpts {
+  /** Analyzed RPM (content_gen_channel_rpm.rpm_typical). Narration rounds
+   *  to a whole dollar per the spec's $1/$3/$6/$10 vocabulary. */
+  rpmTypical?: number | null;
+  /** bank.money_opener_optional pick (50% skip) — adds the opener card:
+   *  "Let's take that video with 7.9 million views." */
+  opener?: string | null;
+  /** bank.assumption_modifier pick. */
+  assumption?: string | null;
+  /** bank.math_connector pick. */
+  connector?: string | null;
+  /** geo context card (30% when rpm > $5): "because the videos are ...,
+   *  most viewers likely are from US and UK." */
+  geoLine?: string | null;
+}
+
+export function buildMoneyMathSlots(niche_index: number, ch: ChannelData, opts: MoneyMathOpts = {}): Slot[] {
   if (ch.top_video_view_count == null || ch.top_video_view_count < 1000) return [];
   // RPM is per 1000 views — revenue = (views / 1000) × RPM. For $1 RPM on
   // 4M views the answer is $4,000 (NOT $4M — that previous bug compounded
@@ -269,24 +302,40 @@ export function buildMoneyMathSlots(niche_index: number, ch: ChannelData): Slot[
   //   1M - 10M views  → $3 RPM
   //   ≥ 10M views     → $6 RPM (long viewer holds → premium CPM)
   const v = ch.top_video_view_count;
-  const rpm = v >= 10_000_000 ? 6 : v >= 1_000_000 ? 3 : 1;
+  // RPM: prefer the ANALYZED per-channel value (content_gen_channel_rpm,
+  // derived from the transcript corpus + Gemini reasoning) rounded to a
+  // whole dollar; the view-count tier is only the fallback for channels
+  // that were never analyzed.
+  const rpm = opts.rpmTypical != null && opts.rpmTypical > 0
+    ? Math.min(10, Math.max(1, Math.round(opts.rpmTypical)))
+    : (v >= 10_000_000 ? 6 : v >= 1_000_000 ? 3 : 1);
   const lumpSum = (v / 1000) * rpm;
   const formatted = formatDollars(lumpSum);
   // Per skeleton rpm_modifier_rule:
   //   low RPM ($1-$3) → use "just a" / "Even if we assume" minimizer
   //   higher RPM ($6+) → drop the minimizer ("if we assume")
   const rpmNarration = rpm <= 3 ? `just a $${rpm} RPM,` : `a $${rpm} RPM,`;
-  const assumptionPhrase = rpm <= 3 ? 'Even if we assume' : 'If we assume';
+  const assumptionPhrase = opts.assumption
+    ?? (rpm <= 3 ? 'Even if we assume' : 'If we assume');
+  const connectorPhrase = opts.connector ?? 'that one video alone has probably made around';
   const base = `niche_${niche_index}`;
-  return [
+  const slots: Slot[] = [];
+  // Optional opener (bank, 50%): "Let's take that video with X views."
+  if (opts.opener) {
+    const openerLine = `${opts.opener} with ${spokenNumber(v)} views.`;
+    slots.push(makeFramingSlot(`${base}_mm_opener`, 'money_math', openerLine,
+      { composition: 'text_card', text: openerLine, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']));
+  }
+  slots.push(...[
     makeFramingSlot(`${base}_mm_assumption`, 'money_math', assumptionPhrase,
       { composition: 'text_card', text: assumptionPhrase, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
     makeFramingSlot(`${base}_mm_rpm`, 'money_math', rpmNarration,
       { composition: 'icon_card', text: `$${rpm} RPM`, bg_mode: 'white', color_treatment: 'inline_green', icon: 'shrug_with_question_marks' },
       ['whoosh']),
-    makeFramingSlot(`${base}_mm_translates`, 'money_math', `that one video alone has probably made around`,
-      { composition: 'text_card', text: `that one video alone has probably made around`, bg_mode: 'white', color_treatment: 'neutral' },
+    makeFramingSlot(`${base}_mm_translates`, 'money_math', connectorPhrase,
+      { composition: 'text_card', text: connectorPhrase, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
     makeFramingSlot(`${base}_mm_lump_sum`, 'money_math', `${formatted}.`,
       { composition: 'text_card', text: formatted, bg_mode: 'white', color_treatment: 'money_shot_green' },
@@ -294,12 +343,30 @@ export function buildMoneyMathSlots(niche_index: number, ch: ChannelData): Slot[
     makeFramingSlot(`${base}_mm_closer`, 'money_math', `from ads.`,
       { composition: 'text_card', text: `from ads`, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
-  ];
+  ]);
+  // Optional geo context (spec: 30% when rpm > $5): inserted right after
+  // the RPM card.
+  if (opts.geoLine) {
+    const idx = slots.findIndex(s => s.slot_id.endsWith('_mm_rpm'));
+    const geoSlot = makeFramingSlot(`${base}_mm_geo`, 'money_math', opts.geoLine,
+      { composition: 'text_card', text: opts.geoLine, bg_mode: 'white', color_treatment: 'neutral' },
+      ['whoosh']);
+    slots.splice(idx + 1, 0, geoSlot);
+  }
+  return slots;
 }
 
 /** 4-card CTA at the end of a listicle. The action card MUST contain
  *  "check out [this/next] video" (winner-coded 17×). */
-export function buildCtaSlots(niche_count: number): Slot[] {
+export interface CtaOpts {
+  /** bank.cta_value_card pick. */
+  valueLine?: string | null;
+  /** bank.cta_action_card pick — first variant carries the 17x winner-coded
+   *  "check out this video" phrase. */
+  actionLine?: string | null;
+}
+
+export function buildCtaSlots(niche_count: number, opts: CtaOpts = {}): Slot[] {
   // CTA arc per visual-packaging-class-b.json:
   //   1. Wrap-up text on white       (neutral text_card)
   //   2. Affirmation (checkmark)      (icon_card on white, green ✓)
@@ -307,17 +374,26 @@ export function buildCtaSlots(niche_count: number): Slot[] {
   //   4. Outro: "if you're watching this far, I appreciate it"
   //                                   (cat_thumbs_up icon on dark_gray)
   //   ↑ ascending_electronic_sting SFX on the final card per audio-sfx spec.
+  // Closer: numbers are SPELLED OUT in prose ("the ten faceless niches" —
+  // never a raw digit; reported bug 2026-06-11), with a singular guard for
+  // 1-niche renders.
+  const closer = niche_count === 1
+    ? `So, this is one of the most promising faceless niches right now.`
+    : `So, these are the ${numberWord(niche_count)} faceless niches.`;
+  const valueLine = opts.valueLine
+    ?? `And each one has huge potential if you're serious about starting a channel.`;
+  const actionLine = opts.actionLine ?? `check out this video right here.`;
   return [
-    makeFramingSlot('cta_card_1', 'video_cta', `So these are the ${niche_count} faceless niches.`,
-      { composition: 'text_card', text: `So these are the ${niche_count} faceless niches.`, bg_mode: 'white', color_treatment: 'neutral' },
+    makeFramingSlot('cta_card_1', 'video_cta', closer,
+      { composition: 'text_card', text: closer, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
-    makeFramingSlot('cta_card_2', 'video_cta', `And each one has huge potential.`,
+    makeFramingSlot('cta_card_2', 'video_cta', valueLine,
       { composition: 'icon_card', text: `Huge potential.`, bg_mode: 'white', icon: 'checkmark_green_circle', color_treatment: 'money_shot_green' },
       ['whoosh', 'ding']),
     makeFramingSlot('cta_card_3', 'video_cta', `If you want to discover more faceless niches like these,`,
       { composition: 'icon_card', text: `Discover more.`, bg_mode: 'white', icon: 'pointing_hand', color_treatment: 'neutral' },
       ['whoosh']),
-    makeFramingSlot('cta_card_4', 'video_cta', `check out this video right here.`,
+    makeFramingSlot('cta_card_4', 'video_cta', actionLine,
       { composition: 'icon_card', text: `Check out this video.`, bg_mode: 'dark_gray', icon: 'cat_thumbs_up', color_treatment: 'neutral' },
       ['ascending_electronic_sting'],
       'dark_gray'),
@@ -395,12 +471,26 @@ export function ytJoinedFormat(iso: string | undefined): string {
  *  the niche flow. */
 export async function buildTopViewsRapidFireSlots(niche_index: number, ch: ChannelData): Promise<Slot[]> {
   // 3 rapid-fire slots, each showing video_card_0/1/2 from the latest
-  // videos_tab capture. Narrations are intentionally generic — the
-  // rendered card already shows view count + age in its meta line, so
-  // the spoken text doesn't need to repeat (and risk going stale if DB
-  // drifts from what YT serves on the live page). Each slot is ~1s
-  // matching MG's hold_s_per_card in the visual grammar.
-  const NARRATIONS = ['Look at this one.', 'And this one.', 'And another.'];
+  // videos_tab capture. Template beat 7: the view counts are SPOKEN —
+  // "They have videos with {v0} views, {v1} views, and {v2} views,"
+  // (worked-example :53-57). The cards crop the LATEST-3 videos on the
+  // tab, so we speak the latest-3 counts (posted_at order) to match what
+  // is on screen — top-by-views numbers over different cards would
+  // visibly contradict the meta line. Falls back to the old generic
+  // connectives when the DB has no counts.
+  const pool = await getPool();
+  const vc = await pool.query<{ view_count: number | null }>(
+    `SELECT view_count FROM niche_spy_videos
+      WHERE channel_id = $1 AND view_count IS NOT NULL
+      ORDER BY posted_at DESC NULLS LAST LIMIT 3`, [ch.channelId]);
+  const counts = vc.rows.map(r => r.view_count).filter((n): n is number => n != null && n > 0);
+  const NARRATIONS = counts.length === 3
+    ? [
+        `They have videos with ${spokenNumber(counts[0])} views,`,
+        `${spokenNumber(counts[1])} views,`,
+        `and ${spokenNumber(counts[2])} views,`,
+      ]
+    : ['Look at this one.', 'And this one.', 'And another.'];
   const base = `niche_${niche_index}`;
   return NARRATIONS.map((narration, idx) => {
     return {
@@ -436,8 +526,11 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
  *  + description preview + Subscribe button cropped from channel_page).
  *  Per MG t≈1-4: the channel reveal opens with this chip view.
  *  Slot inserted BEFORE channel_proof_1 in the niche flow. */
-export function buildChannelIntroSlot(niche_index: number, ch: ChannelData): Slot {
-  const narration = `Take a look at this channel.`;
+export function buildChannelIntroSlot(niche_index: number, ch: ChannelData, recipeLine?: string | null): Slot {
+  // Template beat 2 (channel_a_intro): "This channel {recipe_formula_simplified}."
+  // — the recipe IS the niche framing (worked-example :40-42). Fallback for
+  // unanalyzed channels keeps the old connective.
+  const narration = recipeLine ?? `Take a look at this channel.`;
   const base = `niche_${niche_index}`;
   return {
     slot_id: `${base}_channel_intro`,
@@ -470,8 +563,10 @@ export function buildChannelIntroSlot(niche_index: number, ch: ChannelData): Slo
  *  reveal (chip → full page → about modal at t≈1.4 → 3.8 → 6.5).
  *  Shows the entire channel_page screenshot (banner + chip + tabs +
  *  grid) on a tinted outer canvas. */
-export function buildChannelPageFullSlot(niche_index: number, ch: ChannelData): Slot {
-  const narration = `And this is what they're doing.`;
+export function buildChannelPageFullSlot(niche_index: number, ch: ChannelData, emphasisLine?: string | null): Slot {
+  // Template beat 4 opener: bank.emphasis_intro ("And the craziest part is,")
+  // leading directly into proof_1's subscriber line.
+  const narration = emphasisLine ?? `And this is what they're doing.`;
   const base = `niche_${niche_index}`;
   return {
     slot_id: `${base}_channel_page_full`,
@@ -509,7 +604,7 @@ export function buildChannelPageFullSlot(niche_index: number, ch: ChannelData): 
  *
  *  Skips entirely if the channel has < 4 videos in DB (the grid would
  *  look broken). */
-export async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData): Promise<Slot | null> {
+export async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData, medianPhrase?: string | null): Promise<Slot | null> {
   const pool = await getPool();
   const cnt = await pool.query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM niche_spy_videos
@@ -520,7 +615,12 @@ export async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelDat
 
   // Narration is generic — describes the channel's overall popularity.
   // Keeps the writer out of the loop for this slot (no IP risk).
-  const narration = `And look at their hottest videos.`;
+  // Template beat 7 close: "and almost every single upload pulls in
+  // {median_views_phrase}." Falls back to the generic line when median
+  // is unavailable.
+  const narration = medianPhrase
+    ? `And almost every single upload pulls in ${medianPhrase}.`
+    : `And look at their hottest videos.`;
   const base = `niche_${niche_index}`;
   return {
     slot_id: `${base}_top_videos_pano`,
@@ -872,18 +972,48 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
   const channelEvents: ChannelEvent[] = [];
   let acceptedCount = 0;
 
+  // One video seed drives BOTH the script's video_id and the phrase-bank
+  // rotation (deterministic within a render, rotates across renders).
+  const videoSeed = `listicle-${Date.now()}`;
+  const banks = new BankSession(videoSeed);
+  await banks.load().catch(() => { /* history is best-effort */ });
+
   for (let i = 0; i < channels.length; i++) {
     const cid = channels[i];
     const ch = await loadChannel(cid);
     if (!ch) { failures.push({ channelId: cid, reason: 'not in DB' }); continue; }
-    const beats = stubNarration(beat_id, ch);
-    if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
+    // The analysis layer (recipe formula, analyzed RPM, age/median phrases)
+    // — the per-niche template variables. Missing analysis degrades each
+    // line to its pre-template fallback, never blocks the render.
+    const vars: NicheVars = await loadNicheVars(cid).catch(() => ({
+      channelId: cid, recipe_formula_simplified: null, recipe_summary: null,
+      recipe_beats: [], rpm_typical: null, rpm_low: null, rpm_high: null,
+      geo_guess: null, age_phrase: null, median_views_phrase: null,
+      uploads_per_month: null,
+    }));
     const niche_index = acceptedCount + 1;
+
+    // Per-niche bank picks (worked-example template beats 1-9).
+    const introLine = banks.pick('intro_card', niche_index)?.replace('{N}', String(niche_index)) ?? null;
+    const recipeLine = vars.recipe_formula_simplified
+      ? `This channel ${vars.recipe_formula_simplified}.` : null;
+    const emphasisLine = banks.pick('emphasis_intro', niche_index);
+    const consistencyLine = banks.pick('consistency_intro', niche_index);
+    const moneyOpener = banks.pick('money_opener_optional', niche_index, { skipProbability: 0.5 });
+    const assumptionPick = banks.pick('assumption_modifier', niche_index);
+    const connectorPick = banks.pick('math_connector', niche_index);
+    const rpmRounded = vars.rpm_typical != null ? Math.round(vars.rpm_typical) : null;
+    const geoLine = (rpmRounded != null && rpmRounded > 5 && vars.geo_guess)
+      ? `because of the audience, most viewers are likely from ${vars.geo_guess}.`
+      : null;
+
+    const beats = stubNarration(beat_id, ch, { consistencyLine, agePhrase: vars.age_phrase });
+    if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
 
     const introLogosIds = (opts.intro_logos_channels && opts.intro_logos_channels.length > 0)
       ? opts.intro_logos_channels
       : channels;
-    const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), introLogosIds, ch.channel_name ?? undefined, cid);
+    const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), introLogosIds, ch.channel_name ?? undefined, cid, introLine);
 
     const input: ScriptWriterInput = {
       channel: ch,
@@ -909,17 +1039,23 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
                 first_slot_id: result.script.slots[0]?.slot_id },
     });
 
-    const moneyMath = buildMoneyMathSlots(niche_index, ch);
+    const moneyMath = buildMoneyMathSlots(niche_index, ch, {
+      rpmTypical: vars.rpm_typical,
+      opener: moneyOpener,
+      assumption: assumptionPick,
+      connector: connectorPick,
+      geoLine,
+    });
     const proofSwapped = forceProofKind(result.script.slots);
     const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
     // DO NOT call swapChannelProof — task #65's animated highlight needs
     // the about_page screenshot crop path.
     const writerSlotsTransformed = injectCropTargets(callouttSwapped);
 
-    const channelIntroSlot = buildChannelIntroSlot(niche_index, ch);
-    const channelPageFullSlot = buildChannelPageFullSlot(niche_index, ch);
+    const channelIntroSlot = buildChannelIntroSlot(niche_index, ch, recipeLine);
+    const channelPageFullSlot = buildChannelPageFullSlot(niche_index, ch, emphasisLine);
     const rapidFireSlots = await buildTopViewsRapidFireSlots(niche_index, ch);
-    const panoSlot = await buildTopVideosPanoSlot(niche_index, ch);
+    const panoSlot = await buildTopVideosPanoSlot(niche_index, ch, vars.median_views_phrase);
 
     const withInjects: Slot[] = [];
     let revealInserted = false;
@@ -952,7 +1088,10 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
   if (acceptedCount === 0) {
     return { script: null, channelEvents, failures, error: 'every channel failed to author' };
   }
-  const ctaGroup = buildCtaSlots(acceptedCount);
+  const ctaGroup = buildCtaSlots(acceptedCount, {
+    valueLine: banks.pick('cta_value_card', 0),
+    actionLine: banks.pick('cta_action_card', 0),
+  });
   await applyContinuousNarration(ctaGroup);
   allSlots.push(...ctaGroup);
 
@@ -961,7 +1100,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     context: {
       channelId: channels.join(','),
       channel_name: `listicle-${acceptedCount}-niches`,
-      video_id: `listicle-${Date.now()}`,
+      video_id: videoSeed,
       niche_index: 0,
     },
     slots: allSlots,
@@ -975,5 +1114,6 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       },
     },
   };
+  await banks.commit().catch(() => {});
   return { script, channelEvents, failures };
 }

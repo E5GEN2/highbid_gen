@@ -1854,6 +1854,18 @@ export async function initSchema(): Promise<void> {
     // Word-level timecodes from ElevenLabs /with-timestamps — drives the
     // continuous-narration slicing + MG-style word-by-word text reveal.
     await client.query(`ALTER TABLE content_gen_voice_assets ADD COLUMN IF NOT EXISTS alignment_jsonb JSONB`).catch(() => {});
+    // Cross-video phrase-bank rotation history (script-skeleton variation
+    // rules: avoid the last-50 used phrases per bank across generated videos).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_phrase_history (
+        id        SERIAL PRIMARY KEY,
+        bank_id   TEXT NOT NULL,
+        phrase    TEXT NOT NULL,
+        video_id  TEXT,
+        used_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_phrase_history_bank ON content_gen_phrase_history (bank_id, used_at DESC)`).catch(() => {});
     // Self-healing autopilot — every watchdog tick resets errored /
     // stuck / done-with-gaps jobs back to pending so by morning the
     // queue is 100% done without operator clicks. Capped at
