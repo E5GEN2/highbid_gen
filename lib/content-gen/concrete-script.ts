@@ -81,9 +81,13 @@ export interface ComposeLayer {
    *  centered player area on the dark canvas instead of full-bleed. Used by
    *  recipe_demo b-roll. */
   player_frame?: boolean;
-  /** Keep the clip's own audio in the mix at ~-15dB under narration
-   *  (audio-sfx diegetic rule). Only meaningful for video layers. */
+  /** Keep the clip's own audio in the mix at ~-15dB under narration.
+   *  NOTE: MG mini-players do NOT use source audio (user-verified against
+   *  the reference 2026-06-11) — capability kept for other uses. */
   diegetic?: boolean;
+  /** Channel-name watermark over the mini-player (large translucent
+   *  top-left + small bottom-center, per the MG reference). */
+  watermark_text?: string;
   /** Which row of the about-modal to MG-highlight (yellow rectangle that
    *  animates L→R covering the row text). Used with crop_target='about_panel'.
    *  Looked up against bboxes (subscriber_count / video_count / total_views). */

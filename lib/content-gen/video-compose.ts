@@ -52,9 +52,12 @@ interface ComposeLayer {
   word_times?: number[];
   /** Progressive PNG set for word_reveal (k=0 blank … k=N full text). */
   local_paths?: string[] | null;
-  /** MG mini-player: scale the video into a centered player area on the
-   *  dark canvas instead of full-bleed (recipe_demo b-roll). */
+  /** MG mini-player: scale the video into a centered ROUNDED player area
+   *  on the dark canvas instead of full-bleed (recipe_demo b-roll). */
   player_frame?: boolean;
+  /** Channel-name watermark drawn over the mini-player (MG reference:
+   *  large translucent name top-left + small bottom-center). */
+  watermark_text?: string;
   /** Mix the clip's own audio at ~-15dB under narration. */
   diegetic?: boolean;
   /** Highlight a stats row in about_panel — MG-style L→R yellow animation. */
@@ -105,6 +108,12 @@ interface ComposeArgs {
 }
 
 const BG_HEX = { white: '#FFFFFF', dark_gray: '#2A2A2A' } as const;
+
+/** XML-escape for SVG text content (watermark names can contain & etc). */
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
 
 /** Spawn ffmpeg, capture stderr, throw on non-zero exit. */
 function ff(args: string[], timeoutMs = 180_000): Promise<void> {
@@ -469,14 +478,6 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
      : (zoomToTargetVf ?? stillVfDefault)) + highlightVf;
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
-  // MG mini-player: clip scaled into a centered ~69% player area on the
-  // dark canvas (reference signature: b-roll is NEVER full-screen — always
-  // inside the rounded player frame). Rounded corners are a later polish;
-  // the centered-dark-frame look carries the signature.
-  const playerW = Math.round(width * 0.69);
-  const playerH = Math.round(height * 0.69);
-  const playerVf = `scale=w='if(gt(a,${playerW}/${playerH}),${playerW},-2)':h='if(gt(a,${playerW}/${playerH}),-2,${playerH})':force_original_aspect_ratio=decrease,` +
-                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${BG_HEX.dark_gray.replace('#', '0x')},setsar=1,fps=${fps}`;
 
   // Build the visual track first as a silent intermediate; then mux audio
   // in a second pass. Keeps the filtergraph simple and lets us pad audio
@@ -526,11 +527,54 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       '-preset', 'medium', '-crf', '20',
       silentPath,
     ]);
+  } else if (mainLayer.player_frame) {
+    // MG mini-player (matched to the reference frame 2026-06-11): clip
+    // cover-filled into a ROUNDED-corner player at ~58% width centered on
+    // the dark canvas, channel-name watermark large-translucent top-left +
+    // small bottom-center. Rounding via a Sharp-generated alpha mask
+    // (alphamerge); watermark via a Sharp-generated transparent overlay —
+    // no drawtext (font paths differ between mac dev and Railway).
+    const PW = 1114, PH = 626, R = 30;
+    const PX = Math.round((width - PW) / 2), PY = Math.round((height - PH) / 2);
+    const maskPath = path.join(path.dirname(outPath), `pmask-${path.basename(outPath)}.png`);
+    const wmPath = path.join(path.dirname(outPath), `pwm-${path.basename(outPath)}.png`);
+    await sharp(Buffer.from(
+      `<svg width="${PW}" height="${PH}"><rect width="${PW}" height="${PH}" rx="${R}" fill="#FFFFFF"/></svg>`,
+    )).png().toFile(maskPath);
+    const wmName = esc(String(mainLayer.watermark_text ?? '').toUpperCase());
+    await sharp(Buffer.from(
+      `<svg width="${PW}" height="${PH}">
+        <text x="34" y="56" font-family="Helvetica, Arial, sans-serif" font-size="40" font-weight="600"
+              fill="#FFFFFF" fill-opacity="0.55" letter-spacing="3">${wmName}</text>
+        <text x="${PW / 2}" y="${PH - 22}" font-family="Helvetica, Arial, sans-serif" font-size="17" font-weight="500"
+              fill="#FFFFFF" fill-opacity="0.5" letter-spacing="2" text-anchor="middle">${wmName}</text>
+      </svg>`,
+    )).png().toFile(wmPath);
+    await ff([
+      '-y',
+      '-stream_loop', '-1', '-i', resolved.path,
+      '-i', maskPath, '-i', wmPath,
+      '-filter_complex',
+        `color=c=${padColor}:s=${width}x${height}:r=${fps}[bg];` +
+        `[0:v]scale=${PW}:${PH}:force_original_aspect_ratio=increase,crop=${PW}:${PH},setsar=1,format=rgba[clip];` +
+        `[clip][1:v]alphamerge[rounded];` +
+        `[bg][rounded]overlay=${PX}:${PY}:shortest=0[withclip];` +
+        `[withclip][2:v]overlay=${PX}:${PY}[vout]`,
+      '-map', '[vout]',
+      '-t', hold_s.toFixed(3),
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      '-r', String(fps),
+      '-an',
+      '-preset', 'medium', '-crf', '20',
+      silentPath,
+    ]);
+    await fs.unlink(maskPath).catch(() => {});
+    await fs.unlink(wmPath).catch(() => {});
   } else {
     await ff([
       '-y', '-stream_loop', '-1', '-i', resolved.path,
       '-t', hold_s.toFixed(3),
-      '-vf', mainLayer.player_frame ? playerVf : videoVf,
+      '-vf', videoVf,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-r', String(fps),
       '-an',
