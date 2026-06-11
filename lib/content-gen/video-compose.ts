@@ -443,8 +443,18 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     highlightVf = ',' + segments.join(',');
   }
 
+  // Highlight slots are STATIC — the yellow drawbox is painted at fixed
+  // output coords AFTER the video filter, so any Ken Burns motion makes the
+  // text drift out from under the highlight as the slot plays (user report
+  // 2026-06-11). MG's own highlight beats play on a static panel; the L→R
+  // highlight animation carries the motion. Plain fit+pad, no zoompan.
+  const staticStillVf =
+    `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
+
   const stillVf =
-    (kenBurns === 'scroll_down' ? scrollDownVf
+    (mainLayer.highlight_canvas ? staticStillVf
+     : kenBurns === 'scroll_down' ? scrollDownVf
      : (zoomToTargetVf ?? stillVfDefault)) + highlightVf;
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
