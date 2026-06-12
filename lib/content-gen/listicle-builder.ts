@@ -1264,8 +1264,29 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     let saturationSlots: Slot[] = [];
     try {
       const sim = await findSimilarChannels(cid, channels);
-      const b = sim.channels[0];
+      // Relationship verification (channel-b-verify.ts): classify every
+      // candidate we might SHOW on the format/subject axes so the
+      // narration never overclaims ("the same kind of videos" over a
+      // channel that merely shares the subject world — user report
+      // 2026-06-12). Verdicts cache forever per (hero, candidate);
+      // classification is sequential — mostly cache hits after render 1.
+      const { classifyRelationship, relationTail, isUnrelated, isPageWorthy } = await import('./channel-b-verify');
+      const heroEv = { channelId: cid, nicheLabel: ch.niche, recipeFormula: vars.recipe_formula_simplified ?? null };
+      const candidateIds = [...new Set([
+        ...sim.channels.map(c => c.channel_id),
+        ...sim.montagePool.slice(0, 6),
+      ])];
+      const verdicts = new Map<string, Awaited<ReturnType<typeof classifyRelationship>>>();
+      for (const cand of candidateIds) {
+        verdicts.set(cand, await classifyRelationship(heroEv, cand).catch(() => null));
+      }
+      // B = highest-similarity candidate that is not BOTH-axes-different.
+      const b = sim.channels.find(c => {
+        const v = verdicts.get(c.channel_id);
+        return !v || !isUnrelated(v);
+      });
       if (b) {
+        const bVerdict = verdicts.get(b.channel_id) ?? null;
         const chB = await loadChannel(b.channel_id);
         const bVars = await loadNicheVars(b.channel_id).catch(() => null);
         if (chB?.subscriber_count || chB?.total_views) {
@@ -1279,12 +1300,23 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           //   "There is another channel that" -> "makes the same kind of videos"
           //   "And there's another channel"   -> "making the same kind of videos"
           //   "Look at this one."             -> full rewrite
+          // The TAIL comes from the relationship verdict (MG matrix:
+          // generic similarity + 2-4 word specific difference). null
+          // verdict = classification unavailable -> n8 hedge, never the
+          // unverified "same kind" claim.
           const opener = banks.pick('second_channel_opener', niche_index) ?? 'There is another channel that';
+          const vTail = bVerdict
+            ? relationTail(bVerdict)
+            : { that: 'that started uploading similar content', ing: 'uploading similar content' };
+          const tails = vTail ?? { that: 'makes the same kind of videos', ing: 'making the same kind of videos' };
+          // relationTail's that-form starts with "that ..." — drop the
+          // duplicate when the opener already ends with "that".
+          const thatTail = tails.that.replace(/^that\s+/, '');
           const openerLine = opener === 'Look at this one.'
-            ? 'Look at this one — another channel doing the same kind of videos'
+            ? `Look at this one — another channel ${tails.ing}`
             : opener.endsWith('that')
-              ? `${opener} makes the same kind of videos`
-              : `${opener} making the same kind of videos`;
+              ? `${opener} ${thatTail}`
+              : `${opener} ${tails.ing}`;
           // Age claim ONLY when the posting start is actually known
           // (first_upload_at). channel_created_at alone routinely
           // contradicts the visible catalog — Size Cipher: account joined
@@ -1388,6 +1420,43 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
               },
             }] : []),
           ];
+
+          // Double-B (MG niche_2 precedent: Blox Analyst same-subject AND
+          // Rog Hider "exact style with Clash Royale"): when the primary B
+          // is a clean same/same match and ANOTHER strong candidate is a
+          // same-format twist, give it ONE compact page slot with the
+          // delta named. n2b's shape: one page + line, ~3-4s.
+          if (bVerdict && bVerdict.format_match === 'same' && bVerdict.subject_match === 'same') {
+            const twist = sim.channels.find(c => {
+              if (c.channel_id === b.channel_id || c.similarity < 0.8) return false;
+              const v = verdicts.get(c.channel_id);
+              return !!v && v.format_match === 'same' && v.subject_match === 'different'
+                && v.confidence === 'high' && !!v.subject_term;
+            });
+            if (twist) {
+              const tv = verdicts.get(twist.channel_id)!;
+              const twistLine = `And there's another one doing the same style with ${tv!.subject_term}.`;
+              channelBSlots.push({
+                slot_id: `${base}_channel_b_twist`,
+                beat_id: 'channel_b_proof',
+                narration: twistLine,
+                gems: [
+                  { id: 'narr', tool: 'tts', args: { text: twistLine, voice: 'money_groot' } },
+                  { id: 'main', tool: 'yt_capture', args: { channelId: twist.channel_id, kind: 'channel_page', mode: 'static' } },
+                  { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+                ],
+                compose: {
+                  bg: bCanvas,
+                  hold_s: '{{narr.duration_s}}',
+                  layers: [
+                    { from: 'main', channel: 'video' as const, fit: 'contain' as const, crop_target: 'channel_page_full' },
+                    { from: 'narr', channel: 'voice' as const },
+                    { from: 'sfx', channel: 'fx' as const },
+                  ],
+                },
+              });
+            }
+          }
         }
         // saturation_callout — Form A (spec 2B): RAPID sequential lookalike
         // channel pages (the cut rhythm IS the "many channels" claim), then
@@ -1395,7 +1464,20 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
         // "and performing well" / "with the same format." (second card is a
         // word-by-word build — ours reveals automatically at >= 4 words).
         if (sim.saturated) {
-          const others = sim.montagePool.filter(c => c !== b.channel_id).slice(0, 3);
+          // Pages only for verified relatives (at least one axis matches,
+          // high confidence). The montage narration stays GENERIC — MG
+          // never names channels or differences there, so verdicts only
+          // gate screen time; adjacents still count toward the cluster
+          // number, they just never get a page.
+          const shown = new Set(channelBSlots.flatMap(s =>
+            s.gems.filter(g => g.tool === 'yt_capture').map(g => (g.args as { channelId?: string }).channelId ?? '')));
+          const others = sim.montagePool
+            .filter(c => !shown.has(c))
+            .filter(c => {
+              const v = verdicts.get(c);
+              return !!v && isPageWorthy(v);
+            })
+            .slice(0, 3);
           if (others.length === 1) {
             // Form B — extra-channel deep-dive (reference niche_4 Valaritas):
             // page hold -> dark consistency card -> header-less GRID WALL
@@ -1491,7 +1573,11 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           }
         }
         if (channelBSlots.length || saturationSlots.length) {
-          console.log(`[similar] niche ${niche_index}: B=${b.channel_name} (${b.similarity}), sat=${sim.saturationCount}, slots=${channelBSlots.length}+${saturationSlots.length}`);
+          const rel = (id: string) => {
+            const v = verdicts.get(id);
+            return v ? `${v.format_match[0]}fmt/${v.subject_match[0]}subj/${v.confidence[0]}` : '?';
+          };
+          console.log(`[similar] niche ${niche_index}: B=${b.channel_name} (${b.similarity}, ${rel(b.channel_id)}), sat=${sim.saturationCount}, slots=${channelBSlots.length}+${saturationSlots.length}, pool=[${sim.montagePool.slice(0, 6).map(c => rel(c)).join(' ')}]`);
         }
       }
     } catch (e) {

@@ -1866,6 +1866,19 @@ export async function initSchema(): Promise<void> {
       )
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_phrase_history_bank ON content_gen_phrase_history (bank_id, used_at DESC)`).catch(() => {});
+    // Channel-B relationship verdicts (channel-b-verify.ts): hero vs KNN
+    // candidate classified on format/subject axes so the channel_b /
+    // saturation narration never overclaims. Cached forever per pair.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_channel_relationships (
+        hero_channel_id      TEXT NOT NULL,
+        candidate_channel_id TEXT NOT NULL,
+        verdict_jsonb        JSONB NOT NULL,
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (hero_channel_id, candidate_channel_id)
+      )
+    `).catch(() => {});
     // Gemini-simplified one-clause recipe line ("This channel ___.") —
     // generated once per channel by niche-vars, cached here.
     await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS recipe_formula_simple TEXT`).catch(() => {});
