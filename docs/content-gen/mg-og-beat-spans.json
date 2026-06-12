@@ -1,0 +1,724 @@
+{
+  "spans": [
+    {
+      "s": 0.0,
+      "e": 1.4,
+      "label": "niche_1_intro_card"
+    },
+    {
+      "s": 1.4,
+      "e": 3.8,
+      "label": "niche_1_niche_name_card"
+    },
+    {
+      "s": 3.8,
+      "e": 6.0,
+      "label": "niche_1_channel_intro"
+    },
+    {
+      "s": 6.0,
+      "e": 9.8,
+      "label": "niche_1_channel_proof_1"
+    },
+    {
+      "s": 9.8,
+      "e": 13.0,
+      "label": "niche_1_top_videos_pano"
+    },
+    {
+      "s": 13.0,
+      "e": 17.7,
+      "label": "niche_1_top_views_rapid"
+    },
+    {
+      "s": 17.7,
+      "e": 21.3,
+      "label": "niche_1_top_videos_pano"
+    },
+    {
+      "s": 21.3,
+      "e": 24.0,
+      "label": "niche_1_top_video_callout"
+    },
+    {
+      "s": 24.0,
+      "e": 31.0,
+      "label": "niche_1_money_math"
+    },
+    {
+      "s": 31.0,
+      "e": 44.0,
+      "label": "niche_1_recipe_demo"
+    },
+    {
+      "s": 44.0,
+      "e": 53.0,
+      "label": "niche_1_tips"
+    },
+    {
+      "s": 53.0,
+      "e": 66.2,
+      "label": "niche_1_recipe_demo"
+    },
+    {
+      "s": 66.2,
+      "e": 69.7,
+      "label": "niche_1_tool_plug"
+    },
+    {
+      "s": 69.7,
+      "e": 71.8,
+      "label": "niche_1_channel_intro"
+    },
+    {
+      "s": 71.8,
+      "e": 73.9,
+      "label": "niche_1_channel_page_full"
+    },
+    {
+      "s": 73.9,
+      "e": 83.4,
+      "label": "niche_1_tips"
+    },
+    {
+      "s": 83.4,
+      "e": 86.4,
+      "label": "niche_1_channel_b_proof"
+    },
+    {
+      "s": 86.4,
+      "e": 91.2,
+      "label": "niche_1_channel_proof_2"
+    },
+    {
+      "s": 91.2,
+      "e": 95.2,
+      "label": "niche_1_saturation_callout"
+    },
+    {
+      "s": 95.2,
+      "e": 116.4,
+      "label": "niche_1_personal_demo"
+    },
+    {
+      "s": 116.4,
+      "e": 117.1,
+      "label": "niche_2_intro_card"
+    },
+    {
+      "s": 117.1,
+      "e": 118.2,
+      "label": "niche_2_niche_name_card"
+    },
+    {
+      "s": 118.2,
+      "e": 119.4,
+      "label": "niche_2_channel_intro"
+    },
+    {
+      "s": 119.4,
+      "e": 121.9,
+      "label": "niche_2_channel_page_full"
+    },
+    {
+      "s": 121.9,
+      "e": 124.9,
+      "label": "niche_2_channel_proof_2"
+    },
+    {
+      "s": 124.9,
+      "e": 129.4,
+      "label": "niche_2_money_math"
+    },
+    {
+      "s": 129.4,
+      "e": 132.8,
+      "label": "niche_2_channel_b_proof"
+    },
+    {
+      "s": 132.8,
+      "e": 138.9,
+      "label": "niche_2_channel_proof_2"
+    },
+    {
+      "s": 138.9,
+      "e": 144.9,
+      "label": "niche_2_tips"
+    },
+    {
+      "s": 144.9,
+      "e": 158.3,
+      "label": "niche_2_concept_tag"
+    },
+    {
+      "s": 158.3,
+      "e": 163.9,
+      "label": "niche_2_channel_b_proof"
+    },
+    {
+      "s": 163.9,
+      "e": 169.9,
+      "label": "niche_2_transition"
+    },
+    {
+      "s": 169.9,
+      "e": 172.7,
+      "label": "niche_3_intro_card"
+    },
+    {
+      "s": 172.7,
+      "e": 174.7,
+      "label": "niche_3_channel_intro"
+    },
+    {
+      "s": 174.7,
+      "e": 179.8,
+      "label": "niche_3_top_views_rapid"
+    },
+    {
+      "s": 179.8,
+      "e": 182.2,
+      "label": "niche_3_channel_page_full"
+    },
+    {
+      "s": 182.2,
+      "e": 185.4,
+      "label": "niche_3_channel_proof_2"
+    },
+    {
+      "s": 185.4,
+      "e": 189.5,
+      "label": "niche_3_money_math"
+    },
+    {
+      "s": 189.5,
+      "e": 192.9,
+      "label": "niche_3_channel_b_proof"
+    },
+    {
+      "s": 192.9,
+      "e": 197.0,
+      "label": "niche_3_concept_tag"
+    },
+    {
+      "s": 197.0,
+      "e": 203.1,
+      "label": "niche_3_channel_proof_2"
+    },
+    {
+      "s": 203.1,
+      "e": 210.2,
+      "label": "niche_3_recipe_demo"
+    },
+    {
+      "s": 210.2,
+      "e": 226.7,
+      "label": "niche_3_saturation_callout"
+    },
+    {
+      "s": 226.7,
+      "e": 231.1,
+      "label": "niche_3_tips"
+    },
+    {
+      "s": 231.1,
+      "e": 242.0,
+      "label": "niche_3_concept_tag"
+    },
+    {
+      "s": 241.9,
+      "e": 243.4,
+      "label": "niche_4_intro_card"
+    },
+    {
+      "s": 243.4,
+      "e": 244.8,
+      "label": "niche_4_niche_name_card"
+    },
+    {
+      "s": 244.8,
+      "e": 247.3,
+      "label": "niche_4_channel_intro"
+    },
+    {
+      "s": 247.3,
+      "e": 248.3,
+      "label": "niche_4_concept_tag"
+    },
+    {
+      "s": 248.3,
+      "e": 251.3,
+      "label": "niche_4_channel_proof_2"
+    },
+    {
+      "s": 251.3,
+      "e": 262.3,
+      "label": "niche_4_money_math"
+    },
+    {
+      "s": 262.3,
+      "e": 273.5,
+      "label": "niche_4_recipe_demo"
+    },
+    {
+      "s": 273.5,
+      "e": 281.9,
+      "label": "niche_4_channel_b_proof"
+    },
+    {
+      "s": 281.9,
+      "e": 289.7,
+      "label": "niche_4_saturation_callout"
+    },
+    {
+      "s": 289.7,
+      "e": 299.3,
+      "label": "niche_4_concept_tag"
+    },
+    {
+      "s": 299.3,
+      "e": 312.6,
+      "label": "niche_4_tips"
+    },
+    {
+      "s": 312.6,
+      "e": 321.6,
+      "label": "niche_4_concept_tag"
+    },
+    {
+      "s": 321.6,
+      "e": 332.6,
+      "label": "niche_4_tips"
+    },
+    {
+      "s": 332.6,
+      "e": 335.1,
+      "label": "niche_4_concept_tag"
+    },
+    {
+      "s": 335.1,
+      "e": 344.1,
+      "label": "niche_4_tips"
+    },
+    {
+      "s": 344.1,
+      "e": 347.1,
+      "label": "appreciation"
+    },
+    {
+      "s": 347.1,
+      "e": 352.1,
+      "label": "video_cta"
+    },
+    {
+      "s": 352.1,
+      "e": 353.1,
+      "label": "niche_5_intro_card"
+    },
+    {
+      "s": 353.1,
+      "e": 354.1,
+      "label": "niche_5_niche_name_card"
+    },
+    {
+      "s": 354.1,
+      "e": 355.6,
+      "label": "niche_5_channel_intro"
+    },
+    {
+      "s": 355.6,
+      "e": 363.6,
+      "label": "niche_5_channel_page_full"
+    },
+    {
+      "s": 363.6,
+      "e": 369.4,
+      "label": "niche_5_top_video_callout"
+    },
+    {
+      "s": 369.4,
+      "e": 373.6,
+      "label": "niche_5_channel_b_proof"
+    },
+    {
+      "s": 373.6,
+      "e": 379.1,
+      "label": "niche_5_channel_proof_2"
+    },
+    {
+      "s": 379.1,
+      "e": 384.5,
+      "label": "niche_5_money_math"
+    },
+    {
+      "s": 384.5,
+      "e": 385.6,
+      "label": "niche_5_recipe_demo"
+    },
+    {
+      "s": 385.6,
+      "e": 392.7,
+      "label": "niche_5_tips"
+    },
+    {
+      "s": 392.7,
+      "e": 397.9,
+      "label": "niche_5_tips"
+    },
+    {
+      "s": 397.9,
+      "e": 400.4,
+      "label": "niche_6_channel_intro"
+    },
+    {
+      "s": 400.4,
+      "e": 402.8,
+      "label": "niche_6_channel_page_full"
+    },
+    {
+      "s": 402.8,
+      "e": 406.8,
+      "label": "niche_6_channel_proof_2"
+    },
+    {
+      "s": 406.8,
+      "e": 409.5,
+      "label": "niche_6_money_math"
+    },
+    {
+      "s": 409.5,
+      "e": 415.1,
+      "label": "niche_6_concept_tag"
+    },
+    {
+      "s": 415.1,
+      "e": 425.6,
+      "label": "niche_6_tips"
+    },
+    {
+      "s": 425.6,
+      "e": 439.4,
+      "label": "niche_6_recipe_demo"
+    },
+    {
+      "s": 439.4,
+      "e": 447.2,
+      "label": "niche_6_saturation_callout"
+    },
+    {
+      "s": 447.2,
+      "e": 454.9,
+      "label": "niche_6_tips"
+    },
+    {
+      "s": 454.9,
+      "e": 456.1,
+      "label": "niche_7_intro_card"
+    },
+    {
+      "s": 456.1,
+      "e": 456.9,
+      "label": "niche_7_niche_name_card"
+    },
+    {
+      "s": 456.9,
+      "e": 464.1,
+      "label": "niche_7_transition"
+    },
+    {
+      "s": 464.1,
+      "e": 466.1,
+      "label": "niche_7_channel_intro"
+    },
+    {
+      "s": 466.1,
+      "e": 469.5,
+      "label": "niche_7_channel_page_full"
+    },
+    {
+      "s": 469.5,
+      "e": 472.0,
+      "label": "niche_7_channel_proof_2"
+    },
+    {
+      "s": 472.0,
+      "e": 476.0,
+      "label": "niche_7_money_math"
+    },
+    {
+      "s": 476.0,
+      "e": 485.7,
+      "label": "niche_7_channel_proof_1"
+    },
+    {
+      "s": 485.7,
+      "e": 515.5,
+      "label": "niche_7_concept_tag"
+    },
+    {
+      "s": 515.5,
+      "e": 516.7,
+      "label": "niche_8_intro_card"
+    },
+    {
+      "s": 516.7,
+      "e": 518.2,
+      "label": "niche_8_niche_name_card"
+    },
+    {
+      "s": 518.2,
+      "e": 522.8,
+      "label": "niche_8_channel_intro"
+    },
+    {
+      "s": 522.8,
+      "e": 525.8,
+      "label": "niche_8_channel_proof_1"
+    },
+    {
+      "s": 525.8,
+      "e": 527.7,
+      "label": "niche_8_channel_page_full"
+    },
+    {
+      "s": 527.7,
+      "e": 531.4,
+      "label": "niche_8_channel_proof_2"
+    },
+    {
+      "s": 531.4,
+      "e": 540.0,
+      "label": "niche_8_money_math"
+    },
+    {
+      "s": 540.0,
+      "e": 542.2,
+      "label": "niche_8_recipe_demo"
+    },
+    {
+      "s": 542.2,
+      "e": 553.1,
+      "label": "niche_8_tips"
+    },
+    {
+      "s": 553.1,
+      "e": 556.7,
+      "label": "niche_8_channel_b_proof"
+    },
+    {
+      "s": 556.7,
+      "e": 561.0,
+      "label": "niche_8_channel_proof_1"
+    },
+    {
+      "s": 561.0,
+      "e": 574.4,
+      "label": "niche_8_tips"
+    },
+    {
+      "s": 574.4,
+      "e": 582.1,
+      "label": "niche_8_concept_tag"
+    },
+    {
+      "s": 582.1,
+      "e": 583.6,
+      "label": "niche_9_intro_card"
+    },
+    {
+      "s": 583.6,
+      "e": 585.5,
+      "label": "niche_9_channel_intro"
+    },
+    {
+      "s": 585.5,
+      "e": 591.0,
+      "label": "niche_9_channel_proof_1"
+    },
+    {
+      "s": 591.0,
+      "e": 600.8,
+      "label": "niche_9_tips"
+    },
+    {
+      "s": 600.8,
+      "e": 608.8,
+      "label": "niche_9_money_math"
+    },
+    {
+      "s": 608.8,
+      "e": 613.8,
+      "label": "niche_9_recipe_demo"
+    },
+    {
+      "s": 613.8,
+      "e": 627.8,
+      "label": "niche_9_tips"
+    },
+    {
+      "s": 627.8,
+      "e": 644.3,
+      "label": "niche_9_tips"
+    },
+    {
+      "s": 644.3,
+      "e": 651.3,
+      "label": "niche_9_tips"
+    },
+    {
+      "s": 651.3,
+      "e": 661.3,
+      "label": "niche_9_saturation_callout"
+    },
+    {
+      "s": 661.3,
+      "e": 672.0,
+      "label": "niche_9_tips"
+    },
+    {
+      "s": 672.0,
+      "e": 676.1,
+      "label": "niche_9_channel_intro"
+    },
+    {
+      "s": 676.1,
+      "e": 682.0,
+      "label": "niche_9_channel_proof_1"
+    },
+    {
+      "s": 682.0,
+      "e": 694.0,
+      "label": "niche_9_money_math"
+    },
+    {
+      "s": 694.0,
+      "e": 695.2,
+      "label": "niche_10_intro_card"
+    },
+    {
+      "s": 695.2,
+      "e": 695.9,
+      "label": "niche_10_niche_name_card"
+    },
+    {
+      "s": 695.9,
+      "e": 698.9,
+      "label": "niche_10_channel_intro"
+    },
+    {
+      "s": 698.9,
+      "e": 703.9,
+      "label": "niche_10_concept_tag"
+    },
+    {
+      "s": 703.9,
+      "e": 706.7,
+      "label": "niche_10_channel_proof_1"
+    },
+    {
+      "s": 706.7,
+      "e": 717.4,
+      "label": "niche_10_money_math"
+    },
+    {
+      "s": 717.4,
+      "e": 722.2,
+      "label": "niche_10_channel_proof_2"
+    },
+    {
+      "s": 722.2,
+      "e": 728.2,
+      "label": "niche_10_tips"
+    },
+    {
+      "s": 728.2,
+      "e": 734.2,
+      "label": "niche_10_channel_b_proof"
+    },
+    {
+      "s": 734.2,
+      "e": 739.7,
+      "label": "niche_10_tips"
+    },
+    {
+      "s": 739.7,
+      "e": 748.2,
+      "label": "niche_10_tool_plug"
+    },
+    {
+      "s": 748.2,
+      "e": 759.7,
+      "label": "niche_10_tips"
+    },
+    {
+      "s": 759.7,
+      "e": 767.7,
+      "label": "niche_10_saturation_callout"
+    },
+    {
+      "s": 767.7,
+      "e": 768.7,
+      "label": "niche_11_intro_card"
+    },
+    {
+      "s": 768.7,
+      "e": 769.7,
+      "label": "niche_11_niche_name_card"
+    },
+    {
+      "s": 769.7,
+      "e": 773.7,
+      "label": "niche_11_channel_intro"
+    },
+    {
+      "s": 773.7,
+      "e": 777.2,
+      "label": "niche_11_channel_proof_1"
+    },
+    {
+      "s": 777.2,
+      "e": 782.7,
+      "label": "niche_11_money_math"
+    },
+    {
+      "s": 782.7,
+      "e": 789.4,
+      "label": "niche_11_concept_tag"
+    },
+    {
+      "s": 789.4,
+      "e": 793.0,
+      "label": "niche_11_recipe_demo"
+    },
+    {
+      "s": 793.0,
+      "e": 800.3,
+      "label": "niche_11_tips"
+    },
+    {
+      "s": 800.3,
+      "e": 812.7,
+      "label": "niche_11_personal_demo"
+    },
+    {
+      "s": 812.7,
+      "e": 822.7,
+      "label": "niche_11_tips"
+    },
+    {
+      "s": 822.7,
+      "e": 829.4,
+      "label": "video_cta"
+    },
+    {
+      "s": 829.4,
+      "e": 837.2,
+      "label": "video_cta"
+    },
+    {
+      "s": 837.2,
+      "e": 844.4,
+      "label": "video_cta"
+    }
+  ]
+}
