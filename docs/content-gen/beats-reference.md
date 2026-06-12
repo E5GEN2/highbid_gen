@@ -56,6 +56,12 @@ TTS with word timecodes.
 - **Icons get dedicated screens** (MG rule): icon cards render the icon
   alone — no text. Sole sanctioned combo: the RPM-assumption card
   (shrug + "$3 RPM").
+- **Background semantics** (decoded study, N=122 MG text cards): dark
+  text cards are CONNECTORS inside dark visual runs (85% continuity);
+  white cards are statement BREAKS. White-locked: intro/niche-name/
+  emphasis/money/CTA/concept. Dark-locked: transition. Everything else
+  inherits the previous slot's bg (`applyBgPolicy`). MG cadence: median
+  2-3 cuts per bg before flipping; money/CTA may run long white.
 
 ## Removed / not emitted
 

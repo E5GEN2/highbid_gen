@@ -989,6 +989,53 @@ export function buildTransitionSlot(niche_index: number, vocalLine: string | nul
 }
 
 // ───────────────────────────────────────────────────────────────────
+// Background semantics (MG decoded study, 2026-06-11, N=122 text cards):
+// text cards are 50/50 white/dark overall but 73-75% MATCH their
+// neighbors' bg, and a card between two dark cuts stays dark 46:8.
+// The grammar: DARK text cards are CONNECTORS inside dark visual runs
+// (screenshots / b-roll); WHITE cards are deliberate statement breaks —
+// niche names (11:5 white), emphasis-before-a-number, the money chain
+// (longest white run, 17 cuts), CTA (6:0 white). Median run: 2-3 cuts
+// per bg before flipping.
+// ───────────────────────────────────────────────────────────────────
+
+/** Beats whose text/icon cards are ALWAYS white (statement breaks). */
+const WHITE_LOCKED_BEATS = new Set([
+  'intro_card', 'niche_name_card', 'emphasis_card', 'money_math',
+  'video_cta', 'concept_tag',
+]);
+/** Beats whose cards are ALWAYS dark. */
+const DARK_LOCKED_BEATS = new Set(['transition']);
+
+/** Apply the MG continuity rule: any UNLOCKED text/icon card inherits
+ *  the bg of the slot before it (connectors stay inside their run).
+ *  Locked beats are normalized to their semantic bg. Runs as a post-pass
+ *  over the assembled niche group so writer-authored cards inherit too. */
+export function applyBgPolicy(slots: Slot[]): void {
+  let prevBg: 'white' | 'dark_gray' = 'white';
+  for (const s of slots) {
+    const mainGem = s.gems.find(g => g.id === 'main');
+    const args = mainGem?.args as Record<string, unknown> | undefined;
+    const isCard = mainGem?.tool === 'image_gen' &&
+      ['text_card', 'text_card_reveal', 'icon_card'].includes(String(args?.composition));
+    if (isCard) {
+      const target: 'white' | 'dark_gray' | null =
+        WHITE_LOCKED_BEATS.has(s.beat_id) ? 'white'
+        : DARK_LOCKED_BEATS.has(s.beat_id) ? 'dark_gray'
+        : prevBg; // continuity (the 85% rule)
+      if (target && args) {
+        args.bg_mode = target;
+        s.compose.bg = target;
+        for (const l of s.compose.layers) {
+          if (l.channel === 'video') { /* bg drives the canvas */ }
+        }
+      }
+    }
+    prevBg = (s.compose.bg as 'white' | 'dark_gray') ?? prevBg;
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────
 // buildListicleScript — the full multi-channel assembly loop.
 // ───────────────────────────────────────────────────────────────────
 
@@ -1213,6 +1260,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       ...(conceptSlot ? [conceptSlot] : []),
       transitionSlot,
     ];
+    applyBgPolicy(nicheGroup);
     await applyContinuousNarration(nicheGroup);
     allSlots.push(...nicheGroup);
     acceptedCount++;
@@ -1221,10 +1269,12 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
   if (acceptedCount === 0) {
     return { script: null, channelEvents, failures, error: 'every channel failed to author' };
   }
+  // CTA cards are white-locked by the policy.
   const ctaGroup = buildCtaSlots(acceptedCount, {
     valueLine: banks.pick('cta_value_card', 0),
     actionLine: banks.pick('cta_action_card', 0),
   });
+  applyBgPolicy(ctaGroup);
   await applyContinuousNarration(ctaGroup);
   allSlots.push(...ctaGroup);
 
