@@ -106,9 +106,10 @@ export async function loadChannel(channelId: string): Promise<ChannelData | null
  *  "And the views back it up. Over 40 million total views in just about
  *  13 months." — worked-example BEAT 4 + SR beat 5 (age + total_views). */
 function proof2Text(tv: string, extras?: StubExtras): string {
-  const lead = extras?.consistencyLine ? `${extras.consistencyLine} ` : '';
+  // Consistency opener moved to the PANO slot (MG transcript t=9.8-13:
+  // "And their views are absolutely unbelievable." plays over the grid).
   const age = extras?.agePhrase ? ` in a channel that's just ${extras.agePhrase}` : '';
-  return `${lead}Over ${tv} total views${age}.`;
+  return `Over ${tv} total views${age}.`;
 }
 
 export interface StubExtras {
@@ -544,44 +545,6 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
   });
 }
 
-/** Build a `channel_intro` slot — first introduces the channel via the
- *  MG-style channel chip composition (avatar + name + handle/subs/videos
- *  + description preview + Subscribe button cropped from channel_page).
- *  Per MG t≈1-4: the channel reveal opens with this chip view.
- *  Slot inserted BEFORE channel_proof_1 in the niche flow. */
-export function buildChannelIntroSlot(niche_index: number, ch: ChannelData, recipeLine?: string | null): Slot {
-  // Template beat 2 (channel_a_intro): "This channel {recipe_formula_simplified}."
-  // — the recipe IS the niche framing (worked-example :40-42). Fallback for
-  // unanalyzed channels keeps the old connective.
-  const narration = recipeLine ?? `Take a look at this channel.`;
-  const base = `niche_${niche_index}`;
-  return {
-    slot_id: `${base}_channel_intro`,
-    beat_id: 'channel_intro',
-    narration,
-    gems: [
-      { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
-      { id: 'main', tool: 'yt_capture', args: {
-        channelId: ch.channelId,
-        kind: 'channel_page',
-        mode: 'static',
-      }},
-      { id: 'sfx',  tool: 'sfx_render', args: { tokens: ['whoosh'] } },
-    ],
-    compose: {
-      bg: 'white',  // chip composer places card on WHITE outer canvas
-      hold_s: '{{narr.duration_s}}',
-      layers: [
-        // crop_target=channel_chip → composeChannelChipMG renders the chip
-        // inside a dark rounded card on a 1920×1080 white canvas.
-        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: 'channel_chip' },
-        { from: 'narr', channel: 'voice' },
-        { from: 'sfx',  channel: 'fx' },
-      ],
-    },
-  };
-}
-
 /** Build a `channel_page_full` slot — second stage of MG's channel
  *  reveal (chip → full page → about modal at t≈1.4 → 3.8 → 6.5).
  *  Shows the entire channel_page screenshot (banner + chip + tabs +
@@ -627,7 +590,7 @@ export function buildChannelPageFullSlot(niche_index: number, ch: ChannelData, e
  *
  *  Skips entirely if the channel has < 4 videos in DB (the grid would
  *  look broken). */
-export async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData, medianPhrase?: string | null): Promise<Slot | null> {
+export async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelData, medianPhrase?: string | null, narrationLine?: string | null): Promise<Slot | null> {
   const pool = await getPool();
   const cnt = await pool.query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM niche_spy_videos
@@ -638,12 +601,13 @@ export async function buildTopVideosPanoSlot(niche_index: number, ch: ChannelDat
 
   // Narration is generic — describes the channel's overall popularity.
   // Keeps the writer out of the loop for this slot (no IP risk).
-  // Template beat 7 close: "and almost every single upload pulls in
-  // {median_views_phrase}." Falls back to the generic line when median
-  // is unavailable.
-  const narration = medianPhrase
-    ? `And almost every single upload pulls in ${medianPhrase}.`
-    : `And look at their hottest videos.`;
+  // MG transcript t=9.8-13: the consistency opener plays over the grid
+  // ("And their views are absolutely unbelievable."). Median phrase is
+  // the data-driven fallback, generic line last.
+  const narration = narrationLine
+    ?? (medianPhrase
+      ? `And almost every single upload pulls in ${medianPhrase}.`
+      : `And look at their hottest videos.`);
   const base = `niche_${niche_index}`;
   return {
     slot_id: `${base}_top_videos_pano`,
@@ -968,32 +932,6 @@ export async function applyContinuousNarration(slots: Slot[], voiceAlias = 'mone
   }
 }
 
-/** mascot_mosaic (skeleton beat 3): SILENT 2.0s abundance proof — dense
- *  4x3 grid of the channel's video thumbnails. No narr gem: the continuous
- *  narration genuinely pauses here (MG does the same on mosaics). */
-export function buildMosaicSlot(niche_index: number, videoIds: string[]): Slot | null {
-  if (videoIds.length < 3) return null;
-  const base = `niche_${niche_index}`;
-  return {
-    slot_id: `${base}_mascot_mosaic`,
-    beat_id: 'mascot_mosaic',
-    narration: '',
-    gems: [
-      { id: 'main', tool: 'image_gen', args: { composition: 'thumb_mosaic', text: '', bg_mode: 'white', video_ids: videoIds } },
-      { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
-    ],
-    compose: {
-      bg: 'white',
-      hold_s: 2.0,
-      layers: [
-        // zoom OUT — the MG grid reveal (decode i=233-234).
-        { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_out_8pct' },
-        { from: 'sfx', channel: 'fx' },
-      ],
-    },
-  };
-}
-
 /** concept_tag (skeleton beat 11): chalkboard card with the niche's ONE
  *  success-factor word; narration from the 2-variant bank. Optional —
  *  skipped when no concept_word was derived. */
@@ -1095,7 +1033,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       ? `because of the audience, most viewers are likely from ${vars.geo_guess}.`
       : null;
 
-    const beats = stubNarration(beat_id, ch, { consistencyLine, agePhrase: vars.age_phrase });
+    const beats = stubNarration(beat_id, ch, { agePhrase: vars.age_phrase });
     if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
 
     const introLogosIds = (opts.intro_logos_channels && opts.intro_logos_channels.length > 0)
@@ -1103,15 +1041,6 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       : channels;
     const framing = buildNicheIntroSlots(niche_index, nicheLabelFor(ch, niche_index), introLogosIds, ch.channel_name ?? undefined, cid, introLine);
 
-    // mascot_mosaic ids: the channel's top videos by views (thumbnails
-    // tile a 4x3 grid; cells cycle when fewer than 12 are known).
-    const vidRows = await pool.query<{ url: string }>(
-      `SELECT url FROM niche_spy_videos WHERE channel_id = $1 AND url IS NOT NULL
-        ORDER BY view_count DESC NULLS LAST LIMIT 12`, [cid]).catch(() => ({ rows: [] as Array<{ url: string }> }));
-    const mosaicIds = vidRows.rows
-      .map(r => r.url.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/)?.[1])
-      .filter((s): s is string => !!s);
-    const mosaicSlot = buildMosaicSlot(niche_index, mosaicIds);
 
     const input: ScriptWriterInput = {
       channel: ch,
@@ -1191,30 +1120,44 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     // the about_page screenshot crop path.
     const writerSlotsTransformed = injectCropTargets(callouttSwapped);
 
-    const channelIntroSlot = buildChannelIntroSlot(niche_index, ch, recipeLine);
-    const channelPageFullSlot = buildChannelPageFullSlot(niche_index, ch, emphasisLine);
+    // MG transcript t=3.8-6: the recipe line plays over the FULL channel
+    // page — there is no separate chip beat at the niche open. The
+    // emphasis opener is its own white text card (t=6-7: "And the
+    // craziest" card), and the sentence completes over the about-panel
+    // stats (proof_1) — continuous narration carries it across.
+    const channelPageFullSlot = buildChannelPageFullSlot(niche_index, ch, recipeLine ?? `Take a look at this channel.`);
+    const emphasisSlot = emphasisLine
+      ? makeFramingSlot(`niche_${niche_index}_emphasis_card`, 'emphasis_card', emphasisLine,
+          { composition: 'text_card', text: emphasisLine, bg_mode: 'white', color_treatment: 'neutral' },
+          ['whoosh'])
+      : null;
     const rapidFireSlots = await buildTopViewsRapidFireSlots(niche_index, ch);
-    const panoSlot = await buildTopVideosPanoSlot(niche_index, ch, vars.median_views_phrase);
+    const panoSlot = await buildTopVideosPanoSlot(niche_index, ch, vars.median_views_phrase, consistencyLine);
 
     const withInjects: Slot[] = [];
     let revealInserted = false;
-    let proof2Seen = false;
+    let proof1Seen = false;
     for (const slot of writerSlotsTransformed) {
       if (!revealInserted && slot.beat_id === 'channel_proof_1') {
-        withInjects.push(channelIntroSlot, channelPageFullSlot);
+        withInjects.push(channelPageFullSlot);
+        if (emphasisSlot) withInjects.push(emphasisSlot);
         revealInserted = true;
       }
       withInjects.push(slot);
-      if (slot.beat_id === 'channel_proof_2') {
-        withInjects.push(...rapidFireSlots);
+      if (slot.beat_id === 'channel_proof_1') {
+        // MG order (t=9.8-16): proof_1 → grid (pano, consistency line) →
+        // rapid count cards → proof_2.
         if (panoSlot) withInjects.push(panoSlot);
-        proof2Seen = true;
+        withInjects.push(...rapidFireSlots);
+        proof1Seen = true;
       }
     }
-    if (!revealInserted) withInjects.unshift(channelIntroSlot, channelPageFullSlot);
-    if (!proof2Seen) {
-      withInjects.push(...rapidFireSlots);
+    if (!revealInserted) {
+      withInjects.unshift(...(emphasisSlot ? [channelPageFullSlot, emphasisSlot] : [channelPageFullSlot]));
+    }
+    if (!proof1Seen) {
       if (panoSlot) withInjects.push(panoSlot);
+      withInjects.push(...rapidFireSlots);
     }
     // concept_tag — the niche-ESSENCE beat (user direction 2026-06-11:
     // go deeper into what the niche is about, like MG's "Absurd Ranking"
@@ -1239,7 +1182,6 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     // recipe → CONCEPT → TRANSITION.
     const nicheGroup: Slot[] = [
       ...framing,
-      ...(mosaicSlot ? [mosaicSlot] : []),
       ...withInjects,
       ...moneyMath,
       ...recipeSlots,
