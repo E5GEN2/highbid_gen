@@ -41,7 +41,16 @@ export const DEFAULT_SETTINGS = {
   similarity_boost: 0.75,
   style: 0.2,
   use_speaker_boost: true,
+  // MG pacing: the reference narrator runs ~223 WPM vs our ~123 measured
+  // (2026-06-11). speed (ElevenLabs, max 1.2) + NARRATION_TEMPO below
+  // close the gap.
+  speed: 1.1,
 };
+
+/** Pitch-preserving tempo applied AFTER TTS (ffmpeg atempo) on top of the
+ *  ElevenLabs speed setting. Word timestamps are rescaled to match.
+ *  Override per-run: HB_NARRATION_TEMPO=1.0 disables. */
+const NARRATION_TEMPO = Math.min(1.6, Math.max(0.8, parseFloat(process.env.HB_NARRATION_TEMPO ?? '1.22')));
 
 export interface VoiceOpts {
   voice_id?: string;
@@ -81,6 +90,22 @@ function hashText(text: string, voice_id: string, model_id: string, settings: Vo
     .update(`${voice_id}|${model_id}|${settingsKey(settings)}|${text}`)
     .digest('hex')
     .slice(0, 32);
+}
+
+/** Apply pitch-preserving tempo to an mp3 in place (ffmpeg atempo). */
+async function applyTempo(mp3Path: string, tempo: number): Promise<void> {
+  if (Math.abs(tempo - 1) < 0.01) return;
+  const tmp = mp3Path + '.tempo.mp3';
+  await new Promise<void>((resolve, reject) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error',
+      '-i', mp3Path, '-af', `atempo=${tempo.toFixed(3)}`,
+      '-c:a', 'libmp3lame', '-q:a', '2', '-y', tmp]);
+    let err = '';
+    p.stderr.on('data', d => { err += d.toString(); });
+    p.on('close', c => c === 0 ? resolve() : reject(new Error(`atempo ffmpeg ${c}: ${err.slice(0, 160)}`)));
+    p.on('error', reject);
+  });
+  await fs.rename(tmp, mp3Path);
 }
 
 /** Measure audio duration with ffprobe (available wherever the clipping
@@ -152,6 +177,7 @@ export async function ttsBeat(text: string, opts: VoiceOpts = {}): Promise<Voice
   await fs.mkdir(TTS_DIR, { recursive: true });
   const localPath = path.join(TTS_DIR, `${text_hash}.mp3`);
   await fs.writeFile(localPath, buf);
+  await applyTempo(localPath, NARRATION_TEMPO);
   const duration_s = await probeDuration(localPath);
 
   await pool.query(
@@ -234,7 +260,7 @@ export async function ttsWithTimestamps(text: string, opts: VoiceOpts = {}): Pro
   const settings = { ...DEFAULT_SETTINGS, ...(opts.settings ?? {}) };
   // 'tw|' prefix keeps these distinct from plain ttsBeat assets of the
   // same text (different endpoint, carries alignment).
-  const text_hash = hashText(`tw|${cleanText}`, voice_id, model_id, settings);
+  const text_hash = hashText(`tw|tempo:${NARRATION_TEMPO}|${cleanText}`, voice_id, model_id, settings);
 
   const pool = await getPool();
   const cached = (await pool.query<{ text: string; voice_id: string; model_id: string; local_path: string; duration_s: number; bytes: number; char_count: number; alignment_jsonb: WordTiming[] | null }>(
@@ -275,6 +301,12 @@ export async function ttsWithTimestamps(text: string, opts: VoiceOpts = {}): Pro
   await fs.mkdir(TTS_DIR, { recursive: true });
   const localPath = path.join(TTS_DIR, `${text_hash}.mp3`);
   await fs.writeFile(localPath, buf);
+  // Pace to the reference: atempo on the audio, word times scaled 1/tempo
+  // so slicing + word-reveal stay sample-accurate.
+  await applyTempo(localPath, NARRATION_TEMPO);
+  if (Math.abs(NARRATION_TEMPO - 1) >= 0.01) {
+    for (const w of words) { w.start /= NARRATION_TEMPO; w.end /= NARRATION_TEMPO; }
+  }
   const duration_s = await probeDuration(localPath);
 
   await pool.query(
