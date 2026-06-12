@@ -113,3 +113,30 @@ Attested MG forms we cannot render yet:
 - Verdict cache (`content_gen_channel_relationships`) lives on the MAIN
   DB and is shared local/prod; table exists on both (created manually on
   Railway 2026-06-12; initSchema carries it for fresh boots).
+
+---
+
+## Known minors from the 10-channel verification (2026-06-12, jobs 171-181)
+
+Catalogued during the full-video loop; none block rendering:
+
+- **Cross-beat data-snapshot drift**: the hero page / pano / rapid cards /
+  callout can show slightly different counts for the same video (each comes
+  from its own capture or API moment; views even "decrease" between
+  adjacent shots). Deep fix: one capture snapshot feeds every beat of a
+  channel (single-snapshot-per-channel pass in the builder).
+- **recipe_demo footage ↔ narration mismatch** (one instance): the clip
+  window doesn't always show the technique the narration names —
+  recipe-beat clip matching backlog.
+- **Owner-view sort chips** ("Latest / Members only / Public") leak on
+  membership-enabled channels' pages; hero/most pages show
+  Latest/Popular/Oldest. Capture-time normalization candidate.
+- **Tabs row occasionally absent** on a hero page card (capture caught a
+  layout variant); sibling pages render it.
+- **Chip bio clipping** at the card's right edge on 2 long-bio channels
+  ("...mo" instead of "...more") — +10-16px right pad candidate.
+- **B performance claim vs weak videos** (one instance): a dfmt/ssubj B
+  with 15K subs but ~500-view recent videos got "performing extremely
+  well" — consider a recent-median-views floor in the B gate.
+- **cta_card_4 cat icon** is the OG-decoded treatment but reads odd to
+  fresh eyes; revisit with the icon/meme library work.

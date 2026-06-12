@@ -339,6 +339,13 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
     { name: 'tabs_row',         regex: '^\\s*Videos\\s*$',
       hint: 'yt-tab-shape, tp-yt-paper-tab, ytd-c4-tabbed-header-renderer, #tabs',
       min_w: 30, max_w: 120, min_h: 14, max_h: 40, min_y: 360 },
+    // Some channel layouts lead with a Home tab — match it too so the
+    // chip's bottom anchor has a candidate on every layout (job 171:
+    // niches 3/8 chips showed the tabs row again when both subscribe_btn
+    // and tabs_row bboxes were junk/missing).
+    { name: 'tabs_home',        regex: '^\\s*Home\\s*$',
+      hint: 'yt-tab-shape, tp-yt-paper-tab, ytd-c4-tabbed-header-renderer, #tabs',
+      min_w: 30, max_w: 120, min_h: 14, max_h: 40, min_y: 360 },
   ],
   about_page: [
     // about_page: the channel header is visible BEHIND the about modal/dialog,
@@ -636,6 +643,21 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         ));
         return dialogs.some(d => /Joined\s+\w+\s+\d/.test((d as HTMLElement).innerText || ''));
       }, undefined, { timeout: 10_000 }).catch(() => { /* try extraction anyway */ });
+      // Long-bio/links channels overflow the modal's internal scrollbox —
+      // subs/videos/views sit BELOW the fold and every crop strategy fails
+      // (job 173: niches 4/5/8 showed URL/country/joined only). Center the
+      // Joined row so the stats block + Share button are in view.
+      await page.evaluate(() => {
+        const dialogs = Array.from(document.querySelectorAll(
+          'tp-yt-paper-dialog, ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer, [role="dialog"]'
+        ));
+        for (const d of dialogs) {
+          const els = Array.from(d.querySelectorAll('*'));
+          const j = els.find(el => /^Joined\s+\w+\s+\d/.test((el as HTMLElement).innerText?.trim() ?? '') && el.children.length === 0)
+            ?? els.find(el => /Joined\s+\w+\s+\d/.test((el as HTMLElement).innerText ?? ''));
+          if (j) { (j as HTMLElement).scrollIntoView({ block: 'center' }); return; }
+        }
+      }).catch(() => { /* best effort */ });
       await page.waitForTimeout(700);  // small post-open settle for layout
     }
 
@@ -668,9 +690,18 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         return true;
       }).catch(() => false);
       if (clicked) {
-        // The re-sorted grid swaps in place — no reliable DOM signal, so a
-        // fixed settle (thumbs were already loaded by the wait above).
+        // The re-sorted grid swaps in place — fixed settle, then RE-WAIT
+        // for thumbnails: the sort swaps in lazy-loaded cards and job 171
+        // baked a black-thumbnail payoff card (niche_3) from a not-yet-
+        // loaded image.
         await page.waitForTimeout(2_200);
+        await page.waitForFunction(() => {
+          const imgs = Array.from(document.querySelectorAll(
+            'ytd-rich-item-renderer img, ytd-grid-video-renderer img, ytd-rich-grid-renderer img'
+          )) as HTMLImageElement[];
+          return imgs.filter(i => i.src && i.naturalWidth > 50).length >= 4;
+        }, undefined, { timeout: 8_000 }).catch(() => { /* proceed anyway */ });
+        await page.waitForTimeout(400);
       } else {
         console.warn(`[yt-capture] Popular chip not found for ${channelId} — grid stays Latest-sorted`);
       }
@@ -732,6 +763,11 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     const extracted = await page.evaluate(([rules, vpW, vpH]) => {
       const VP_W = vpW as number; const VP_H = vpH as number;
       const out: Record<string, { x: number; y: number; w: number; h: number }> = {};
+      // Matched TEXT per rule — the about modal's displayed numbers are the
+      // narration source of truth (capture == screen; the API refresh can
+      // be one tick fresher than the cached screenshot — job 176 niche_5:
+      // spoken "265 thousand" over a 264K row).
+      const ruleTexts: Record<string, string> = {};
       const ownText = (el: Element): string => {
         let s = '';
         for (const n of Array.from(el.childNodes)) if (n.nodeType === 3) s += n.textContent ?? '';
@@ -871,12 +907,18 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         if (bestEl) {
           const r = (bestEl as HTMLElement).getBoundingClientRect();
           out[rule.name] = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+          ruleTexts[rule.name] = ownText(bestEl).slice(0, 80);
         }
       }
-      return { bboxes: out, debug: debugOut };
+      return { bboxes: out, debug: debugOut, ruleTexts };
     }, [rulesForKind, effectiveViewport.width, effectiveViewport.height]).catch(() => ({ bboxes: {} as BBoxMap, debug: {} as Record<string, unknown> }));
     const bboxes: BBoxMap = (extracted as { bboxes: BBoxMap }).bboxes ?? {};
     const bboxDebug = (extracted as { debug: Record<string, Record<string, unknown>> }).debug ?? {};
+    const ruleTexts = (extracted as { ruleTexts?: Record<string, string> }).ruleTexts ?? {};
+    if (Object.keys(ruleTexts).length) {
+      const metaHolder = (bboxes as unknown as Record<string, unknown>);
+      metaHolder.__meta = { ...(metaHolder.__meta as Record<string, unknown> | undefined), rule_texts: ruleTexts };
+    }
 
     // ── Playwright locator-based fallback ─────────────────────────────
     // For rules where the in-page evaluator returned NO bbox, retry with
@@ -945,6 +987,24 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     //   video_views_0, video_views_1, ...  — view-count text rect (when present)
     //   video_title_0, video_title_1, ...  — title text rect
     //
+    // tabs_strip — DOM-true chip bottom boundary for channel_page: the
+    // tabs container's TOP is where the chip area ends. Every pixel/bbox
+    // heuristic for the chip bottom failed some layout (jobs 173-179:
+    // fixed offsets, subscribe_btn/tabs text bboxes, grid caps, white-pill
+    // scans); the container rect is layout-independent.
+    if (kind === 'channel_page') {
+      const strip = await page.evaluate(() => {
+        const el = document.querySelector('tp-yt-paper-tabs, yt-tab-group-shape, [role="tablist"]')
+          ?? document.querySelector('ytd-feed-filter-chip-bar-renderer');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+      }).catch(() => null);
+      if (strip && strip.w > 100 && strip.y > 200) {
+        (bboxes as Record<string, { x: number; y: number; w: number; h: number }>).tabs_strip = strip;
+      }
+    }
+
     // The renderer reads these to build per-card crops + per-card annotations.
     if (kind === 'videos_tab' || kind === 'videos_tab_popular' || kind === 'channel_page') {
       try {
@@ -1157,7 +1217,8 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         // report 2026-06-11). Reserved __meta key inside bboxes_jsonb —
         // bbox consumers look up specific keys, never iterate.
         if (viewsTexts.some(t => t)) {
-          (bboxes as unknown as Record<string, unknown>).__meta = { views_texts: viewsTexts };
+          const holder = (bboxes as unknown as Record<string, unknown>);
+          holder.__meta = { ...(holder.__meta as Record<string, unknown> | undefined), views_texts: viewsTexts };
         }
         (bboxDebug as Record<string, unknown>).video_card_fallback_used = result.fallbackUsed;
         (bboxDebug as Record<string, unknown>).video_card_first_chain = result.firstAncestorChain;

@@ -64,6 +64,14 @@ export async function runTool(name: string, args: Record<string, unknown>): Prom
  *  (audio-sfx spec: source audio at ~-15dB under narration).
  *  Download: direct first (works from local dev), xgodo proxy fallback
  *  (Railway egress). */
+// Per-video download serialization: recipe_demo slots for one channel can
+// reference the SAME source video and run concurrently — two yt-dlp
+// processes then write the same .part file and the loser's rename fails
+// (job '10-channel render' 2026-06-12: niche_3_recipe_demo_0 died on
+// ".part -> .mp4" while demo_1 won the race). One in-flight download per
+// ytid; followers await the winner.
+const inflightDownloads = new Map<string, Promise<void>>();
+
 async function runClipExtract(args: Record<string, unknown>): Promise<ToolOutput> {
   const video_url = String(args.video_url ?? '');
   const start = Number(args.clip_start ?? 0);
@@ -80,7 +88,10 @@ async function runClipExtract(args: Record<string, unknown>): Promise<ToolOutput
   const srcPath = path.join(srcDir, `${ytid}.mp4`);
 
   const srcOk = await fs.stat(srcPath).then(s => s.size > 100_000).catch(() => false);
-  if (!srcOk) {
+  if (!srcOk && inflightDownloads.has(ytid)) {
+    await inflightDownloads.get(ytid);
+  } else if (!srcOk) {
+    const downloadP = (async () => {
     const { emitToolCall } = await import('./exec-context');
     await emitToolCall(`clip_extract:download ${ytid}`, { video_url });
     const ytdlpArgs = (proxyUrl: string | null) => [
@@ -108,6 +119,13 @@ async function runClipExtract(args: Record<string, unknown>): Promise<ToolOutput
       const proxy = await getRandomHealthyProxy().catch(() => null);
       if (!proxy?.url) throw new Error(`clip_extract download failed (direct: ${(e1 as Error).message.slice(0, 120)}; no proxy)`);
       await tryDownload(proxy.url);             // proxy (Railway)
+    }
+    })();
+    inflightDownloads.set(ytid, downloadP);
+    try {
+      await downloadP;
+    } finally {
+      inflightDownloads.delete(ytid);
     }
   }
 
@@ -297,7 +315,11 @@ async function runTts(args: Record<string, unknown>): Promise<ToolOutput> {
 async function runSfxRender(args: Record<string, unknown>): Promise<ToolOutput> {
   const tokens = (args.tokens as string[]) ?? [];
   if (tokens.length === 0) throw new Error('sfx_render: tokens required');
-  const fit = args.fit_duration_s as number | undefined;
+  // Defensive: an unresolved "{{narr.duration_s}}" template reaches here
+  // as a STRING when the ref didn't resolve (job 173, niche_4 sfx gems
+  // crashed on target.toFixed). No fit -> natural length, never a crash.
+  const fitRaw = args.fit_duration_s;
+  const fit = typeof fitRaw === 'number' && Number.isFinite(fitRaw) ? fitRaw : undefined;
 
   // tool_call emission — shows what tokens are being resolved + fit window.
   // Surfaces ElevenLabs sound-gen invocations (often the slowest sub-step

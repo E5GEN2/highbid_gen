@@ -46,19 +46,53 @@ const CARD_INNER_PAD_Y = 40;
  *
  * Output: 1920×1080 PNG at a temp path the caller can pipe to ffmpeg.
  */
-export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promise<string> {
-  // 1. Compute crop bounds from joined_date anchor.
-  // 2026-06-12 (channel-b gap V10): top was joined.y-110, which sliced the
-  // "More info" heading mid-glyph; bottom was joined.y+262, which reached
-  // past the modal edge and caught ~25px of the page bleeding underneath
-  // (thumbnail row sliver). New bounds: -96 starts exactly below the
-  // heading; +222 ends inside the modal, just under the Share button.
-  // (No row icons exist in the current YT modal — the left gutter is
-  // genuine modal padding, verified against a live capture.)
+/** Placement metadata so the highlight pass can map SOURCE coords to the
+ *  composed canvas without duplicating the crop/fit math. */
+export interface AboutPanelMap { cropX: number; cropY: number; scale: number; offX: number; offY: number }
+
+/** Find the bottom of the about modal from PIXELS: the "Share channel"
+ *  pill is a wide mid-gray rounded button below the stats rows — the one
+ *  reliable landmark on every modal variant. Stats-row bboxes proved
+ *  junk-prone (matched the dimmed page behind the modal) and a fixed
+ *  joined.y+222 both bled past short modals AND cut long ones (jobs
+ *  171/173). Fallback: joined.y + 222. */
+async function findShareBottom(srcPath: string, joined: BBox): Promise<number | null> {
+  const { data, info } = await sharp(srcPath).raw().toBuffer({ resolveWithObject: true });
+  const x0 = Math.max(0, joined.x - 24), x1 = Math.min(info.width - 1, joined.x + 240);
+  const yStart = joined.y + 110, yEnd = Math.min(info.height - 1, joined.y + 430);
+  let pillTop = -1;
+  for (let y = yStart; y < yEnd; y++) {
+    let run = 0, best = 0;
+    for (let x = x0; x < x1; x++) {
+      const off = (y * info.width + x) * info.channels;
+      const b = (data[off] + data[off + 1] + data[off + 2]) / 3;
+      if (b > 52 && b < 165) { run++; if (run > best) best = run; } else run = 0;
+    }
+    if (best >= 110) { pillTop = y; break; }
+  }
+  if (pillTop < 0) return null;
+  // walk to the pill's bottom edge
+  let y = pillTop;
+  for (; y < Math.min(info.height - 1, pillTop + 70); y++) {
+    let run = 0, best = 0;
+    for (let x = x0; x < x1; x++) {
+      const off = (y * info.width + x) * info.channels;
+      const b = (data[off] + data[off + 1] + data[off + 2]) / 3;
+      if (b > 52 && b < 165) { run++; if (run > best) best = run; } else run = 0;
+    }
+    if (best < 60) break;
+  }
+  return y + 20;
+}
+
+export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promise<{ path: string; map: AboutPanelMap }> {
   const cropX = Math.max(0, joined.x - 44);
   const cropY = Math.max(0, joined.y - 96);
-  const cropW = joined.w + 308;
-  const cropH = 318;
+  // 296 (was 308): narrow modals leaked a ~6px page sliver at the card's
+  // right edge (job 178, niche_10 proofs).
+  const cropW = joined.w + 296;
+  const shareBottom = await findShareBottom(srcPath, joined).catch(() => null);
+  const cropH = Math.max(160, (shareBottom ?? joined.y + 222) - cropY);
 
   // Clamp to source dimensions.
   const meta = await sharp(srcPath).metadata();
@@ -114,55 +148,17 @@ export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promis
     .composite([{ input: cardWithContent, left: cardX, top: cardY }])
     .png()
     .toFile(outPath);
-  return outPath;
-}
-
-/**
- * Compute where a stats row (subscriber_count, total_views, video_count)
- * lands in canvas coords AFTER composeAboutPanelMG's crop + scale +
- * placement. Mirrors the composer math 1:1 so the ffmpeg drawbox
- * animation aligns exactly with the rendered row.
- *
- * Inputs:
- *   joined: same anchor bbox composer was called with (in source coords)
- *   row:    bbox of the row to highlight (subscriber_count etc.) in source coords
- */
-export function aboutPanelRowCanvasPos(joined: BBox, row: BBox): { x: number; y: number; w: number; h: number } {
-  // MUST mirror composeAboutPanelMG's crop constants 1:1.
-  const cropX = joined.x - 44;
-  const cropY = joined.y - 96;
-  const cropW = joined.w + 308;
-  const cropH = 318;
-
-  const innerW = CARD_W - 2 * CARD_INNER_PAD_X;
-  const innerH = CARD_H - 2 * CARD_INNER_PAD_Y;
-  const cropAspect = cropW / cropH;
-  const innerAspect = innerW / innerH;
-  let fitW: number, fitH: number;
-  if (cropAspect > innerAspect) {
-    fitW = innerW;
-    fitH = Math.round(innerW / cropAspect);
-  } else {
-    fitH = innerH;
-    fitW = Math.round(innerH * cropAspect);
-  }
-  const scale = fitW / cropW;
-
-  const rowXInCrop = row.x - cropX;
-  const rowYInCrop = row.y - cropY;
-
-  const cardX = Math.round((CANVAS_W - CARD_W) / 2);
-  const cardY = Math.round((CANVAS_H - CARD_H) / 2);
-  const innerLeft = Math.round((CARD_W - fitW) / 2);
-  const innerTop = Math.round((CARD_H - fitH) / 2);
-
   return {
-    x: Math.round(cardX + innerLeft + rowXInCrop * scale),
-    y: Math.round(cardY + innerTop + rowYInCrop * scale),
-    w: Math.round(row.w * scale),
-    h: Math.round(row.h * scale),
+    path: outPath,
+    map: {
+      cropX, cropY,
+      scale: fitW / safeW,
+      offX: cardX + innerLeft,
+      offY: cardY + innerTop,
+    },
   };
 }
+
 
 /**
  * Compose an MG-style "top videos pano" frame — 4×2 grid of channel videos.
@@ -182,7 +178,7 @@ export function aboutPanelRowCanvasPos(joined: BBox, row: BBox): { x: number; y:
 //   Outer gray border around a big rounded dark card containing the grid.
 //   ~2 rows of cards visible per frame (cards are large — titles legible).
 //   Card extends past canvas top/bottom during mid-scroll.
-const PANO_OUTER_BG = { r: 95, g: 95, b: 95 };    // lighter outer gray (was 60)
+const PANO_OUTER_BG = { r: 60, g: 60, b: 60 };    // measured MG dark canvas (job-173 verify: 95 drifted vs every adjacent dark beat)
 const PANO_CARD_BG  = { r: 22, g: 22, b: 22 };    // dark inner card (was 13)
 const PANO_CARD_W = 1800;                          // ~94% of 1920 — big card
 const PANO_CARD_RADIUS = 36;
@@ -234,7 +230,43 @@ const MG_CANVAS_RGB: Record<MgCanvas, { r: number; g: number; b: number }> = {
   dark_gray: { r: 60, g: 60, b: 60 },    // #3C3C3C — measured on MG frames
 };
 
-export async function composeChannelChipMG(srcPath: string, subs: BBox, opts: { canvas?: MgCanvas; subscribeBtn?: BBox; channelName?: BBox; tabsRow?: BBox } = {}): Promise<string> {
+/** Pixel-detect the WHITE Subscribe pill below the stats line — the one
+ *  reliable chip landmark on every layout (same technique as the about
+ *  modal's Share pill). Fixed offsets sliced three different layouts:
+ *  +110 cut buttons (Prumhy), +150 caught tabs (Size Cipher), the +118
+ *  floor cut mid-button (niche_9 B, job 177). */
+async function findSubscribePillBottom(srcPath: string, subs: BBox): Promise<number | null> {
+  const { data, info } = await sharp(srcPath).raw().toBuffer({ resolveWithObject: true });
+  const x0 = Math.max(0, subs.x - 8), x1 = Math.min(info.width - 1, subs.x + 280);
+  // Window to +300: extra bio-link rows push the buttons low (niche_10's
+  // forms.gle row, job 178). Thresholds 185/56 (were 200/80): narrow
+  // Subscribe pills on Join+Community layouts ran ~80px and missed
+  // marginally — three chips fell back to the broken offset chain.
+  const yStart = subs.y + 40, yEnd = Math.min(info.height - 1, subs.y + 300);
+  const rowBest = (y: number): number => {
+    let run = 0, best = 0;
+    for (let x = x0; x < x1; x++) {
+      const off = (y * info.width + x) * info.channels;
+      const b = (data[off] + data[off + 1] + data[off + 2]) / 3;
+      if (b > 185) { run++; if (run > best) best = run; } else run = 0;
+    }
+    return best;
+  };
+  let pillTop = -1;
+  for (let y = yStart; y < yEnd; y++) {
+    // Multi-row confirmation: a real pill is ~36px tall — reject bright
+    // hairlines by requiring the run to persist 12 and 20 rows down.
+    if (rowBest(y) >= 56 && rowBest(y + 12) >= 56 && rowBest(y + 20) >= 40) { pillTop = y; break; }
+  }
+  if (pillTop < 0) return null;
+  let y = pillTop;
+  for (; y < Math.min(info.height - 1, pillTop + 60); y++) {
+    if (rowBest(y) < 36) break;
+  }
+  return y + 14;
+}
+
+export async function composeChannelChipMG(srcPath: string, subs: BBox, opts: { canvas?: MgCanvas; subscribeBtn?: BBox; channelName?: BBox; tabsRow?: BBox; tabsHome?: BBox; gridTop?: BBox; tabsStrip?: BBox } = {}): Promise<string> {
   // 1. Compute crop bounds from subscriber_count anchor.
   //    Banner ends at y=227 in YT dark mode → cropY = subs.y - 68 = 228.
   //    Bottom: just below the Subscribe button when its bbox is known
@@ -248,18 +280,44 @@ export async function composeChannelChipMG(srcPath: string, subs: BBox, opts: { 
   // fixed -68 caught a banner sliver on channels whose banner ends low).
   const nameOk = opts.channelName && opts.channelName.y < subs.y && opts.channelName.y > subs.y - 90;
   const cropY = Math.max(0, nameOk ? opts.channelName!.y - 14 : subs.y - 68);
-  const cropW = subs.x + subs.w + 320 - cropX;
+  // +344 (was +320): the bio's '...more' link clipped mid-glyph at the
+  // card edge on long-bio channels (job 173, niches 3/7).
+  const cropW = subs.x + subs.w + 344 - cropX;
   // Bottom: trust the Subscribe-button bbox only when it sits BELOW the
   // stats line and within chip range — the page can contain other
   // "Subscribe" texts (job 157: a wrong match cut the bio + button off).
+  const pillBottom = await findSubscribePillBottom(srcPath, subs).catch(() => null);
   const btnOk = opts.subscribeBtn && opts.subscribeBtn.y > subs.y + 10 && opts.subscribeBtn.y < subs.y + 240;
-  const tabsOk = opts.tabsRow && opts.tabsRow.y > subs.y + 60 && opts.tabsRow.y < subs.y + 280;
-  const cropBottom = btnOk
-    ? opts.subscribeBtn!.y + opts.subscribeBtn!.h + 16
-    : tabsOk
-      ? opts.tabsRow!.y - 12
-      : subs.y + 150;
-  const cropH = cropBottom - cropY;
+  // Tabs candidates (Videos and/or Home label) — take the TOPMOST valid
+  // one; the chip ends just above the tabs row.
+  const tabsCands = [opts.tabsRow, opts.tabsHome]
+    .filter((t): t is BBox => !!t && t.y > subs.y + 60 && t.y < subs.y + 340)
+    .sort((a, b) => a.y - b.y);
+  // Precedence: DOM tabs-strip top (layout-independent truth) > pixel-
+  // detected Subscribe pill > text bboxes > fixed fallback.
+  const stripOk = opts.tabsStrip && opts.tabsStrip.y > subs.y + 70 && opts.tabsStrip.y < subs.y + 400;
+  let cropBottom = stripOk
+    ? opts.tabsStrip!.y - 12
+    : pillBottom != null
+      ? pillBottom
+      : btnOk
+        ? opts.subscribeBtn!.y + opts.subscribeBtn!.h + 16
+        : tabsCands.length
+          ? tabsCands[0].y - 12
+          : subs.y + 150;
+  // Grid-top cap: tabs sit ~110-130px above the first video card, so the
+  // chip must end at least ~126px above it — catches layouts whose
+  // subscribe/tabs bboxes are all junk (jobs 173/174: niche_8 chip kept
+  // its tabs row through every bbox-based anchor).
+  if (!stripOk && pillBottom == null) {
+    if (opts.gridTop && opts.gridTop.y > subs.y + 80) {
+      cropBottom = Math.min(cropBottom, opts.gridTop.y - 126);
+    }
+    // FLOOR for the guess-based anchors only (the pixel-detected pill
+    // bottom is authoritative): never end above subs.y+118.
+    cropBottom = Math.max(cropBottom, subs.y + 118);
+  }
+  const cropH = Math.max(96, cropBottom - cropY);
 
   // Clamp to source dimensions.
   const meta = await sharp(srcPath).metadata();
@@ -416,10 +474,17 @@ export async function composeThumbnailRapidFireMG(srcPath: string, cardBbox: BBo
   const cropH = cardBbox.h + 2 * RAPID_CROP_PAD;
 
   const meta = await sharp(srcPath).metadata();
-  const safeW = Math.min(cropW, (meta.width ?? 0) - cropX);
-  const safeH = Math.min(cropH, (meta.height ?? 0) - cropY);
+  // Clamp INTO the image: a lazy-rendered card's bbox can sit below the
+  // actual screenshot bottom (bbox y≈2400 on a shorter PNG) — the raw
+  // subtraction went negative and sharp threw "Expected integer for
+  // height but received -60" (job 172).
+  const imgW = meta.width ?? 0, imgH = meta.height ?? 0;
+  const cx = Math.min(cropX, Math.max(0, imgW - 60));
+  const cy = Math.min(cropY, Math.max(0, imgH - 60));
+  const safeW = Math.max(40, Math.min(cropW, imgW - cx));
+  const safeH = Math.max(40, Math.min(cropH, imgH - cy));
   const cropped = await sharp(srcPath)
-    .extract({ left: cropX, top: cropY, width: safeW, height: safeH })
+    .extract({ left: cx, top: cy, width: safeW, height: safeH })
     .png()
     .toBuffer();
 
@@ -506,8 +571,8 @@ export async function composeGridWallMG(srcPath: string, cardBboxes: BBox[], opt
   const meta = await sharp(srcPath).metadata();
   const srcW = meta.width ?? 1700;
   const srcH = meta.height ?? 2500;
-  const safeW = Math.min(cropW, srcW - cropX);
-  cropH = Math.min(cropH, srcH - cropY);
+  const safeW = Math.max(40, Math.min(cropW, srcW - cropX));
+  cropH = Math.max(40, Math.min(cropH, srcH - cropY));
 
   // Scale to reference width; the card wraps tightly; trim the source
   // bottom if the card would exceed the frame.

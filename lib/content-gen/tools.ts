@@ -296,10 +296,9 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'asset_kind', 'bboxes', 'page_width', 'page_height', 'duration_s'],
-    // v1.2.2: tabs_row bbox (chip bottom backstop). v1.2.1: subscribe_btn
-    // bbox. v1.2.0: compact lockup meta normalized to "611K views • 4
-    // months ago" (v1.1.0: per-card views_texts in __meta).
-    version: 'v1.2.2',
+    // v1.2.6: tabs_strip container rect (DOM-true chip bottom). v1.2.5:
+    // rule_texts in __meta. v1.2.4: modal scrolled to Joined.
+    version: 'v1.2.6',
     cache_key_excludes: ['force'],
   },
   {
@@ -406,7 +405,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
     output_fields: ['file_url', 'width', 'height'],
     // v1.1.0: chalkboard = board GRAPHIC on dark canvas; thumb_mosaic =
     // gapped tiles on white (matched to decode refs, 2026-06-11).
-    version: 'v1.3.2',  // forward italic through runImageGen (v1.3.1: white fg on dark cards)
+    version: 'v1.3.3',  // callout dark canvas #3C3C3C (v1.3.2: forward italic)
   },
   {
     name: 'logos_montage',

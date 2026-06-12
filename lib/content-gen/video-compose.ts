@@ -228,9 +228,18 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
               : undefined);
       if (layer.crop_target === 'about_panel' && anchorBbox) {
         const { composeAboutPanelMG } = await import('./yt-compose-mg');
-        const composed = await composeAboutPanelMG(basePath, anchorBbox);
+        const { path: composed, map: panelMap } = await composeAboutPanelMG(basePath, anchorBbox);
 
         if (layer.highlight_row) {
+          // Row targeting, two tiers:
+          //  1. PREFERRED — transform the extracted row bbox (subscriber_
+          //     count / video_count / total_views, modal coords) through
+          //     the composer's crop+fit math (aboutPanelRowCanvasPos).
+          //     Index-based row picking assumed a fixed URL/country/
+          //     joined/subs/videos/views stack; channels missing rows or
+          //     carrying links shifted every index (niches 4/5/8, job 171).
+          //  2. FALLBACK — the original index pixel-scan, used when the
+          //     bbox is absent or its band contains no text.
           // Scan the COMPOSED PNG (1920×1080) for text rows in the modal area.
           // Narrow scan column (x=650-760) catches every row — wider columns
           // miss short rows like "28 videos". Threshold > 50 = white text on
@@ -253,13 +262,33 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
               inRow = false;
             }
           }
-          // Modal rows in order: url, country, joined, SUBS, videos, VIEWS,
-          // share-btn-top, share-btn-bot.
+          // Row targeting: the modal's stack BELOW Joined is invariant —
+          // subscribers, videos, views, [Share]. Absolute indexing from
+          // the crop top broke whenever rows above Joined varied (links,
+          // no-country channels), and the stats-row BBOXES proved junk-
+          // prone (matched the dimmed page behind the modal — jobs
+          // 171/173). The joined bbox is the one reliable anchor: map it
+          // through the composer's placement map, then take the Nth
+          // scanned text row BELOW it.
+          const joinedCanvasY = panelMap.offY + (anchorBbox.y - panelMap.cropY) * panelMap.scale;
+          // Containment match, not a y-threshold: the bbox top maps a few
+          // px ABOVE the row's bright pixels (ascender offset x scale), so
+          // ">,+6" included the joined row itself and every bar landed one
+          // row above its target (job 174, all 10 niches). Find the
+          // scanned row CONTAINING the joined center, slice after it.
+          const joinedCenter = joinedCanvasY + (anchorBbox.h * panelMap.scale) / 2;
+          const jIdx = rows.findIndex(rr => joinedCenter >= rr.top - 4 && joinedCenter <= rr.top + rr.h + 6);
+          const below = jIdx >= 0 ? rows.slice(jIdx + 1) : rows.filter(rr => rr.top > joinedCenter);
+          const belowIdx =
+            layer.highlight_row === 'subscribers' ? 0
+            : layer.highlight_row === 'videos'    ? 1
+            : 2; // views
+          // Legacy absolute index, used only as a desperation fallback.
           const rowIdx =
             layer.highlight_row === 'subscribers' ? 3
             : layer.highlight_row === 'videos'    ? 4
-            : 5; // views
-          const r = rows[rowIdx];
+            : 5;
+          let r: { top: number; h: number } | undefined = below[belowIdx] ?? rows[rowIdx];
           if (r) {
             // Scan the row band HORIZONTALLY for the text's actual extent.
             // A hardcoded TEXT_X (625, measured 2026-06-10) broke whenever
@@ -284,15 +313,25 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             while (cardX0 > 0 && darkAt(cardX0 - 1)) cardX0--;
             while (cardX1 < info.width - 1 && darkAt(cardX1 + 1)) cardX1++;
             // (2) text extent inside the card (white text on near-black).
-            let x0 = -1, x1 = -1;
-            for (let x = cardX0 + 12; x < cardX1 - 12; x++) {
-              let bright = 0;
-              for (let y = r.top; y < r.top + r.h; y++) {
-                const off = (y * info.width + x) * info.channels;
-                bright += (data[off] + data[off + 1] + data[off + 2]) / 3;
+    const scanX = (band: { top: number; h: number }) => {
+              let sx0 = -1, sx1 = -1;
+              for (let x = cardX0 + 12; x < cardX1 - 12; x++) {
+                let bright = 0;
+                for (let y = band.top; y < band.top + band.h; y++) {
+                  const off = (y * info.width + x) * info.channels;
+                  bright += (data[off] + data[off + 1] + data[off + 2]) / 3;
+                }
+                bright /= Math.max(1, band.h);
+                if (bright > 110) { if (sx0 < 0) sx0 = x; sx1 = x; }
               }
-              bright /= Math.max(1, r.h);
-              if (bright > 110) { if (x0 < 0) x0 = x; x1 = x; }
+              return [sx0, sx1] as const;
+            };
+            let [x0, x1] = scanX(r);
+            // Empty band = the bbox was junk (behind-the-modal element):
+            // retry with the index-scan row before giving up.
+            if (x0 < 0 && rows[rowIdx] && (rows[rowIdx].top !== r.top)) {
+              r = rows[rowIdx];
+              [x0, x1] = scanX(r);
             }
             // BAKE the highlight into progressive stills (MG treatment,
             // verified on the OG niche_8 proof beat 2026-06-12): an OPAQUE
@@ -305,8 +344,10 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             // neither problem.
             if (x0 >= 0) {
               const PAD = 6;
-              const X = x0 - 6, Y = Math.max(0, r.top - PAD);
-              const W = (x1 - x0) + 14, H = r.h + 2 * PAD;
+              // -10/+18 (were -6/+14): the leading digit's anti-aliased
+              // left edge poked out of the bar on one row (job 178).
+              const X = x0 - 10, Y = Math.max(0, r.top - PAD);
+              const W = (x1 - x0) + 18, H = r.h + 2 * PAD;
               const K = 13, RAMP_S = 0.6;
               const MARKER = { r: 231, g: 246, b: 26 };   // sampled from the OG bar
               const DARK = 30;                             // covered-text tone
@@ -348,7 +389,7 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
       if (layer.crop_target === 'channel_chip' && bboxes.subscriber_count) {
         const { composeChannelChipMG } = await import('./yt-compose-mg');
         const composed = await composeChannelChipMG(basePath, bboxes.subscriber_count,
-          { canvas: bg, subscribeBtn: bboxes.subscribe_btn, channelName: bboxes.channel_name, tabsRow: bboxes.tabs_row });
+          { canvas: bg, subscribeBtn: bboxes.subscribe_btn, channelName: bboxes.channel_name, tabsRow: bboxes.tabs_row, tabsHome: bboxes.tabs_home, gridTop: bboxes.video_card_0, tabsStrip: bboxes.tabs_strip });
         return { kind: 'image', path: composed };
       }
 
@@ -362,17 +403,60 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
         return { kind: 'image', path: composed };
       }
 
+      // Card-bbox resolver with FALLBACK: the requested index, else the
+      // lowest available card. Job 171 (niche_8 rapid_2): a missing
+      // video_card_2 bbox silently fell through to the RAW screenshot —
+      // full desktop page with masthead+sidebar in the final video. A
+      // wrong-index card beats a raw page; raw is never acceptable.
+      let cardImgH = Infinity;
+      try {
+        const sharpMeta = (await import('sharp')).default;
+        cardImgH = (await sharpMeta(basePath).metadata()).height ?? Infinity;
+      } catch { /* keep Infinity */ }
+      const cardFits = (b: BBox | undefined): b is BBox =>
+        !!b && b.y + Math.min(b.h, 80) <= cardImgH;  // bbox below the actual
+        // screenshot bottom produced a squashed 40px pill card (job 173,
+        // niche_1 payoff) — out-of-image bboxes are MISSING, not clampable.
+      const pickCardBbox = (idx: number): { bbox: BBox; i: number } | undefined => {
+        const exact = (bboxes as Record<string, BBox | undefined>)[`video_card_${idx}`];
+        if (cardFits(exact)) return { bbox: exact, i: idx };
+        // Prefer HIGHER indices first: falling back to card_0 duplicated
+        // rapid_0's card under "And another." narration (job 173 niche_8).
+        for (let i = idx + 1; i < 12; i++) {
+          const b = (bboxes as Record<string, BBox | undefined>)[`video_card_${i}`];
+          if (cardFits(b)) { console.warn(`[video-compose] video_card_${idx} unusable — falling back to video_card_${i}`); return { bbox: b, i }; }
+        }
+        for (let i = idx - 1; i >= 0; i--) {
+          const b = (bboxes as Record<string, BBox | undefined>)[`video_card_${i}`];
+          if (cardFits(b)) { console.warn(`[video-compose] video_card_${idx} unusable — falling back to video_card_${i}`); return { bbox: b, i }; }
+        }
+        return undefined;
+      };
+      // Some layouts' card bbox stops at the title — union in the views
+      // bbox so the meta line ("2.1M views · ...") is inside the crop
+      // (job 174: niche_1 payoff card had no views line to back the
+      // narration claim).
+      const withMetaLine = (pick: { bbox: BBox; i: number }): BBox => {
+        const viewsB = (bboxes as Record<string, BBox | undefined>)[`video_views_${pick.i}`];
+        if (viewsB && viewsB.y + viewsB.h > pick.bbox.y + pick.bbox.h) {
+          return { ...pick.bbox, h: (viewsB.y + viewsB.h + 10) - pick.bbox.y };
+        }
+        return pick.bbox;
+      };
+
       // top_video_card:N — the channel_b payoff card: ONE video card at
       // ~34% frame width on the slot canvas (MG niche_4 "1.3m views" lone
       // card). Same composer as rapid-fire, smaller card.
       if (typeof layer.crop_target === 'string' && layer.crop_target.startsWith('top_video_card:')) {
         const idx = parseInt(layer.crop_target.split(':')[1] ?? '0', 10);
-        const cardBbox = (bboxes as Record<string, BBox | undefined>)[`video_card_${idx}`];
-        if (cardBbox) {
+        const pick = pickCardBbox(idx);
+        if (pick) {
           const { composeThumbnailRapidFireMG } = await import('./yt-compose-mg');
-          const composed = await composeThumbnailRapidFireMG(basePath, cardBbox, { canvas: bg, cardW: 660 });
+          const composed = await composeThumbnailRapidFireMG(basePath, withMetaLine(pick), { canvas: bg, cardW: 660 });
           return { kind: 'image', path: composed };
         }
+        const { composeChannelPageFullMG } = await import('./yt-compose-mg');
+        return { kind: 'image', path: await composeChannelPageFullMG(basePath, { canvas: bg }) };
       }
 
       // videos_wall — header-less videos grid as a wide rounded card
@@ -397,13 +481,17 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
       // (idx 0,1,2 → top 3 videos by view count).
       if (typeof layer.crop_target === 'string' && layer.crop_target.startsWith('thumbnail_rapid_fire:')) {
         const idx = parseInt(layer.crop_target.split(':')[1] ?? '0', 10);
-        const cardKey = `video_card_${idx}` as const;
-        const cardBbox = (bboxes as Record<string, BBox | undefined>)[cardKey];
-        if (cardBbox) {
+        const pick = pickCardBbox(idx);
+        // A LOWER-index fallback would duplicate an earlier rapid slot's
+        // card under "And another." narration (jobs 173/174, niche_8) —
+        // a page card is a distinct visual and the honest resort.
+        if (pick && pick.i >= idx) {
           const { composeThumbnailRapidFireMG } = await import('./yt-compose-mg');
-          const composed = await composeThumbnailRapidFireMG(basePath, cardBbox);
+          const composed = await composeThumbnailRapidFireMG(basePath, withMetaLine(pick));
           return { kind: 'image', path: composed };
         }
+        const { composeChannelPageFullMG } = await import('./yt-compose-mg');
+        return { kind: 'image', path: await composeChannelPageFullMG(basePath, { canvas: bg }) };
       }
 
       // videos_grid: MG-style 4×2 grid composer. Pulls the first 8
@@ -475,8 +563,14 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
   // scroll_down: source PNG is 1920×N (N > height). Pan the visible window
   // vertically from y=0 to y=(ih-height) over the slot duration. No zoom
   // — this is a pure scroll. Width is preserved at 1920.
+  // Pad to at least the frame height BEFORE the sliding crop: a short
+  // grid (channel with few videos) scales to ih < height and crop=W:H
+  // then dies with "Invalid too big or non positive size" — killed the
+  // first 10-channel render's final compose (job 170). With ih == height
+  // the crop's y expression degenerates to 0 (static hold).
   const scrollDownVf =
     `scale=${width}:-2:flags=lanczos,` +
+    `pad=${width}:'max(ih,${height})':(ow-iw)/2:0:color=${padColor},` +
     `crop=${width}:${height}:0:'min(ih-${height}, n/${Math.max(1, totalFrames - 1)}*(ih-${height}))',` +
     `setsar=1,fps=${fps}`;
 

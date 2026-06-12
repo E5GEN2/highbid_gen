@@ -58,12 +58,16 @@ export function isUnrelated(v: RelationVerdict): boolean {
 }
 
 /** Eligible for a silent saturation PAGE. The Form A montage narration
- *  claims "many channels doing this ... with the same format", so a page
- *  requires format_match='same' (subject may differ — MG's Valaritas
- *  shows a different franchise under the same-format claim). Verdicts
- *  only gate screen time; the narration stays generic. */
+ *  claims "many channels doing this ... with the same format" over
+ *  UNNAMED pages — so a page requires format AND subject to hold
+ *  (narrower counts: a sub-slice is still "doing this"). Different-
+ *  subject same-format channels are only shown NAMED (the B twist slot,
+ *  Valaritas precedent) — job 171 put a true-crime channel in a tornado
+ *  niche's montage under the same-format claim. */
 export function isPageWorthy(v: RelationVerdict): boolean {
-  return v.format_match === 'same' && v.confidence === 'high';
+  return v.format_match === 'same'
+    && (v.subject_match === 'same' || v.subject_match === 'narrower')
+    && v.confidence === 'high';
 }
 
 /**
@@ -111,6 +115,11 @@ async function topTitles(channelId: string, n: number): Promise<string[]> {
   return r.rows.map(x => x.title);
 }
 
+/** Bump to invalidate cached verdicts after a prompt change. v2: subject
+ *  "same" sharpened to the specific topic domain (broad-genre matches
+ *  mislabeled a true-crime channel as same-subject in a tornado niche). */
+const PROMPT_V = 2;
+
 export interface HeroEvidence {
   channelId: string;
   nicheLabel?: string;
@@ -127,7 +136,7 @@ export async function classifyRelationship(hero: HeroEvidence, candidateChannelI
   const pool = getMainPool();
   const hit = await pool.query<{ verdict_jsonb: RelationVerdict }>(
     `SELECT verdict_jsonb FROM content_gen_channel_relationships
-      WHERE hero_channel_id = $1 AND candidate_channel_id = $2`,
+      WHERE hero_channel_id = $1 AND candidate_channel_id = $2 AND prompt_v >= ${PROMPT_V}`,
     [hero.channelId, candidateChannelId]).catch(() => ({ rows: [] as Array<{ verdict_jsonb: RelationVerdict }> }));
   if (hit.rows[0]) return hit.rows[0].verdict_jsonb;
 
@@ -155,7 +164,7 @@ ${candTitles.map(t => `- ${t}`).join('\n')}
 
 Classify the candidate against the hero on two INDEPENDENT axes:
 - format_match: "same" if the candidate uses the same VIDEO FORMAT / production style (e.g. size-comparison lineups vs ranked explainer countdowns vs scene breakdowns are all DIFFERENT formats), else "different".
-- subject_match: "same" if the same subject world / topic space; "narrower" if a sub-slice of the hero's subject (one franchise, one entity type); "different" otherwise.
+- subject_match: "same" ONLY if the same SPECIFIC topic domain (e.g. tornado disaster documentaries vs true-crime disappearance stories are DIFFERENT subjects even though both are dark documentary genres; fictional monsters vs real animals are DIFFERENT). "narrower" if a sub-slice of the hero's subject (one franchise, one entity type). "different" otherwise. Sharing a broad genre or mood is NOT "same".
 
 Also output:
 - subject_term: 2-4 plain lowercase words. When subject_match is "different" or "narrower", name the CANDIDATE's subject ("SCP entries", "Game of Thrones scenes"). When "same", name the SHARED subject ("fictional monsters").
@@ -232,9 +241,9 @@ Output ONLY JSON: {"format_match": "...", "subject_match": "...", "subject_term"
   }
 
   await pool.query(
-    `INSERT INTO content_gen_channel_relationships (hero_channel_id, candidate_channel_id, verdict_jsonb)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (hero_channel_id, candidate_channel_id) DO UPDATE SET verdict_jsonb = EXCLUDED.verdict_jsonb, updated_at = NOW()`,
+    `INSERT INTO content_gen_channel_relationships (hero_channel_id, candidate_channel_id, verdict_jsonb, prompt_v)
+     VALUES ($1, $2, $3, ${PROMPT_V})
+     ON CONFLICT (hero_channel_id, candidate_channel_id) DO UPDATE SET verdict_jsonb = EXCLUDED.verdict_jsonb, prompt_v = ${PROMPT_V}, updated_at = NOW()`,
     [hero.channelId, candidateChannelId, JSON.stringify(v)]).catch(() => { /* cache is best-effort */ });
   return v;
 }

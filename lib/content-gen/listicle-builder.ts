@@ -133,9 +133,10 @@ export interface StubExtras {
 }
 
 export function stubNarration(beat_id: string, ch: ChannelData, extras?: StubExtras): NarrationBeat[] {
-  const sub = ch.subscriber_count != null ? humanizeNumber(ch.subscriber_count) : 'thousands of';
-  const tv = ch.total_views != null ? humanizeNumber(ch.total_views) : 'millions of';
-  const vv = ch.top_video_view_count != null ? humanizeNumber(ch.top_video_view_count) : 'a million';
+  // FLOOR rounding — these all feed "more than {N}" / "Over {N}" claims.
+  const sub = ch.subscriber_count != null ? floorHumanizeNumber(ch.subscriber_count) : 'thousands of';
+  const tv = ch.total_views != null ? floorHumanizeNumber(ch.total_views) : 'millions of';
+  const vv = ch.top_video_view_count != null ? floorHumanizeNumber(ch.top_video_view_count) : 'a million';
   switch (beat_id) {
     case 'channel_proof_1': return [{ beat_id, text: `This channel already has more than ${sub} subscribers.`, hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'channel_proof_2': return [{ beat_id, text: proof2Text(tv, extras), hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } }];
@@ -168,6 +169,22 @@ export function humanizeNumber(n: number): string {
   if (n >= 1e9) return `${(n/1e9).toFixed(1)} billion`;
   if (n >= 1e6) return `${(n/1e6).toFixed(1)} million`;
   if (n >= 1e3) return `${Math.round(n/1e3)} thousand`;
+  return `${n}`;
+}
+
+/** FLOOR variant for "more than {N}" / "Over {N}" claims: the spoken
+ *  lower bound must never exceed the number visible on screen. Nearest-
+ *  rounding said "more than 15 thousand" over a 14.6K row (6 datapoint
+ *  contradictions in the job-171 frame verification). Truncates: 9.183M
+ *  -> "9.1 million", 14.6K -> "14 thousand", 2,098,413 -> "2 million". */
+export function floorHumanizeNumber(n: number): string {
+  const trunc1 = (x: number) => {
+    const v = Math.floor(x * 10) / 10;
+    return Number.isInteger(v) ? `${v}` : v.toFixed(1);
+  };
+  if (n >= 1e9) return `${trunc1(n/1e9)} billion`;
+  if (n >= 1e6) return `${trunc1(n/1e6)} million`;
+  if (n >= 1e3) return `${Math.floor(n/1e3)} thousand`;
   return `${n}`;
 }
 
@@ -412,6 +429,10 @@ export function buildCtaSlots(niche_count: number, opts: CtaOpts = {}): Slot[] {
       { composition: 'icon_card', text: ``, bg_mode: 'white', icon: 'pointing_hand', color_treatment: 'neutral' },
       ['whoosh']),
     makeFramingSlot('cta_card_4', 'video_cta', actionLine,
+      // cat_thumbs_up on DARK — the OG-decoded card_4 treatment. The
+      // round-1 "cat reads as noise" complaint was really the white-lock
+      // flipping this card white; with the dark exception restored the
+      // original icon is canon (and card_3 keeps the spec pointing hand).
       { composition: 'icon_card', text: ``, bg_mode: 'dark_gray', icon: 'cat_thumbs_up', color_treatment: 'neutral' },
       ['ascending_electronic_sting'],
       'dark_gray'),
@@ -525,13 +546,24 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
     return Number.isFinite(n) ? spokenNumber(n * mult) : null;
   };
   const spoken = [0, 1, 2].map(i => spokenFromCard(texts[i] ?? null));
-  const NARRATIONS = spoken.every(s => s != null)
+  const nCards = spoken.filter(s => s != null).length;
+  // ADAPT to the catalog: a 2-video channel has no third card and the old
+  // fixed-3 fallback promised "And another." over a page-card fallback
+  // (jobs 174-176, niche_8). Emit only as many rapid slots as cards.
+  const NARRATIONS = nCards >= 3
     ? [
         `They have videos with ${spoken[0]} views,`,
         `${spoken[1]} views,`,
         `and ${spoken[2]} views,`,
       ]
-    : ['Look at this one.', 'And this one.', 'And another.'];
+    : nCards === 2
+      ? [
+          `They have videos with ${spoken[0]} views,`,
+          `and ${spoken[1]} views,`,
+        ]
+      : nCards === 1
+        ? [`They have videos with ${spoken[0]} views,`]
+        : ['Look at this one.', 'And this one.'];
   const base = `niche_${niche_index}`;
   return NARRATIONS.map((narration, idx) => {
     return {
@@ -1024,6 +1056,11 @@ const WHITE_LOCKED_BEATS = new Set([
 ]);
 /** Beats whose cards are ALWAYS dark. */
 const DARK_LOCKED_BEATS = new Set(['transition']);
+/** Slot-level dark exceptions inside white-locked beats: MG's CTA action
+ *  card (cta_card_4, "check out this video" + sting) plays on DARK while
+ *  the rest of the CTA run is white. The blanket video_cta white-lock
+ *  flipped it white (job-173: card_4 rendered as a duplicate of card_3). */
+const DARK_LOCKED_SLOTS = new Set(['cta_card_4']);
 
 /** Apply the MG continuity rule: any UNLOCKED text/icon card inherits
  *  the bg of the slot before it (connectors stay inside their run).
@@ -1036,9 +1073,17 @@ export function applyBgPolicy(slots: Slot[]): void {
     const args = mainGem?.args as Record<string, unknown> | undefined;
     const isCard = mainGem?.tool === 'image_gen' &&
       ['text_card', 'text_card_reveal', 'icon_card'].includes(String(args?.composition));
+    // most_popular_callout is ALWAYS dark (both OG references are dark
+    // cards on the dark canvas; the writer emitted white on some niches —
+    // job 173, niche_4 critical).
+    if (mainGem?.tool === 'image_gen' && String(args?.composition) === 'most_popular_callout' && args) {
+      args.bg_mode = 'dark_gray';
+      s.compose.bg = 'dark_gray';
+    }
     if (isCard) {
       const target: 'white' | 'dark_gray' | null =
-        WHITE_LOCKED_BEATS.has(s.beat_id) ? 'white'
+        DARK_LOCKED_SLOTS.has(s.slot_id) ? 'dark_gray'
+        : WHITE_LOCKED_BEATS.has(s.beat_id) ? 'white'
         : DARK_LOCKED_BEATS.has(s.beat_id) ? 'dark_gray'
         : prevBg; // continuity (the 85% rule)
       if (target && args) {
@@ -1119,6 +1164,28 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     const ageKicker = (vars.age_months != null && vars.age_months <= 9)
       ? banks.pick('age_kicker', niche_index)
       : null;
+    // SCREEN TRUTH for proof numbers: the about CAPTURE's displayed text
+    // (rule_texts, v1.2.5) — the YT-API refresh can be one tick fresher
+    // than the day-cached screenshot and the spoken floor then exceeds
+    // the highlighted row (job 176, niche_5: "265 thousand" over 264K).
+    try {
+      const { captureYtScreen } = await import('./yt-capture');
+      const aboutCap = await captureYtScreen(cid, { kind: 'about_page', mode: 'static' });
+      const rt = (aboutCap.bboxes as unknown as Record<string, { rule_texts?: Record<string, string> }>).__meta?.rule_texts ?? {};
+      const parseShown = (t: string | undefined): number | null => {
+        const m = t?.match(/^([\d.,]+)\s*([KMB])?/i);
+        if (!m) return null;
+        const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
+        const n = parseFloat(m[1].replace(/,/g, '')) * mult;
+        return Number.isFinite(n) ? n : null;
+      };
+      const shownSubs = parseShown(rt.subscriber_count);
+      const shownViews = parseShown(rt.total_views);
+      if (shownSubs != null) ch.subscriber_count = shownSubs;
+      if (shownViews != null) ch.total_views = shownViews;
+    } catch (e) {
+      console.warn(`[about-truth] capture readout failed for ${cid}: ${(e as Error).message.slice(0, 100)}`);
+    }
     const beats = stubNarration(beat_id, ch, {
       agePhrase: vars.age_phrase,
       ageMonths: vars.age_months,
@@ -1280,16 +1347,30 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       for (const cand of candidateIds) {
         verdicts.set(cand, await classifyRelationship(heroEv, cand).catch(() => null));
       }
-      // B = highest-similarity candidate that is not BOTH-axes-different.
-      const b = sim.channels.find(c => {
-        const v = verdicts.get(c.channel_id);
-        return !v || !isUnrelated(v);
-      });
-      if (b) {
-        const bVerdict = verdicts.get(b.channel_id) ?? null;
-        const chB = await loadChannel(b.channel_id);
+      // B = highest-similarity candidate that (a) is not BOTH-axes-
+      // different and (b) clears the MIN-STATS gate. Presence-only stats
+      // let an emptied 86-subscriber channel through while the narration
+      // claimed "performing extremely well" (job 171, niches 5/8).
+      const bMinStatsOk = (c: Awaited<ReturnType<typeof loadChannel>>) =>
+        !!c && (((c.subscriber_count ?? 0) >= 5000)
+          || (((c.total_views ?? 0) >= 500_000) && ((c.video_count ?? 0) >= 3)));
+      let b: typeof sim.channels[number] | null = null;
+      let chB: Awaited<ReturnType<typeof loadChannel>> = null;
+      let bVerdict: ReturnType<typeof verdicts.get> | null = null;
+      for (const cand of sim.channels) {
+        const v = verdicts.get(cand.channel_id) ?? null;
+        if (v && isUnrelated(v)) continue;
+        const c = await loadChannel(cand.channel_id);
+        if (!bMinStatsOk(c)) {
+          console.warn(`[channel-b] ${cand.channel_name} fails min-stats gate (subs=${c?.subscriber_count ?? '?'}, views=${c?.total_views ?? '?'}, vids=${c?.video_count ?? '?'}) — skipping`);
+          continue;
+        }
+        b = cand; chB = c; bVerdict = v;
+        break;
+      }
+      if (b && chB) {
         const bVars = await loadNicheVars(b.channel_id).catch(() => null);
-        if (chB?.subscriber_count || chB?.total_views) {
+        {
           const base = `niche_${niche_index}`;
           // Canvas for the WHOLE channel_b beat — constant within the beat,
           // rotating across niches/videos (reference: niche_1 runs chip+page
@@ -1330,17 +1411,45 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           // exact on-screen figure; speak it rounded DOWN (spec 3A: the
           // voice must never overshoot the card).
           let topSpoken: string | null = null;
+          let bTopIdx = 0;
           try {
             const { captureYtScreen } = await import('./yt-capture');
             const readMeta = (cap: { bboxes: unknown }) =>
               (cap.bboxes as Record<string, { views_texts?: Array<string | null> }>).__meta?.views_texts ?? [];
             let cap = await captureYtScreen(b.channel_id, { kind: 'videos_tab_popular', mode: 'static' });
             let vt = readMeta(cap);
-            if (!vt[0]) {
+            if (!vt.some(t => t)) {
               cap = await captureYtScreen(b.channel_id, { kind: 'videos_tab_popular', mode: 'static', force: true });
               vt = readMeta(cap);
             }
-            topSpoken = roundedDownSpokenViews(vt[0] ?? null);
+            // ARGMAX, not card_0: when the Popular chip isn't found the
+            // grid stays Latest-sorted and card_0 is merely the newest
+            // video — job 171 showed a 426K card as "most popular" while
+            // the page grid displayed 1.3M (niche_1). The max VISIBLE
+            // count is the honest claim either way.
+            const parseViews = (t: string | null): number | null => {
+              const m = t?.match(/^([\d.,]+)\s*([KMB])?\s*views?$/i);
+              if (!m) return null;
+              const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
+              const n = parseFloat(m[1].replace(/,/g, '')) * mult;
+              return Number.isFinite(n) ? n : null;
+            };
+            // Only consider cards that are INSIDE the screenshot: bboxes
+            // are DOM-measured and rows below the 2500px viewport exist in
+            // the DOM but not in the pixels (job 175: argmax landed on
+            // card_18 at y=2574 in a 2500px capture — the crop had no card
+            // to show and the fallback broke voice<->card consistency).
+            const sharpMod = (await import('sharp')).default;
+            const capImgH = (await sharpMod(cap.local_path).metadata().catch(() => ({ height: 2500 }))).height ?? 2500;
+            const capBoxes = cap.bboxes as Record<string, { y: number; h: number } | undefined>;
+            let bestViews: number | null = null;
+            vt.forEach((t, i) => {
+              const card = capBoxes[`video_card_${i}`];
+              if (!card || card.y + card.h > capImgH - 4) return;
+              const n = parseViews(t ?? null);
+              if (n != null && (bestViews == null || n > bestViews)) { bestViews = n; bTopIdx = i; }
+            });
+            topSpoken = bestViews != null ? roundedDownSpokenViews(vt[bTopIdx] ?? null) : null;
           } catch (e) {
             console.warn(`[channel-b] popular capture failed for ${b.channel_id}: ${(e as Error).message.slice(0, 120)}`);
           }
@@ -1413,7 +1522,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
                 hold_s: '{{narr.duration_s}}',
                 dwell_s: 0.8,
                 layers: [
-                  { from: 'main', channel: 'video' as const, fit: 'contain' as const, crop_target: 'top_video_card:0' },
+                  { from: 'main', channel: 'video' as const, fit: 'contain' as const, crop_target: `top_video_card:${bTopIdx}` },
                   { from: 'narr', channel: 'voice' as const },
                   { from: 'sfx', channel: 'fx' as const },
                 ],
@@ -1433,7 +1542,8 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
               return !!v && v.format_match === 'same' && v.subject_match === 'different'
                 && v.confidence === 'high' && !!v.subject_term;
             });
-            if (twist) {
+            const twistStats = twist ? await loadChannel(twist.channel_id) : null;
+            if (twist && bMinStatsOk(twistStats)) {
               const tv = verdicts.get(twist.channel_id)!;
               const twistLine = `And there's another one doing the same style with ${tv!.subject_term}.`;
               channelBSlots.push({
@@ -1471,13 +1581,24 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           // number, they just never get a page.
           const shown = new Set(channelBSlots.flatMap(s =>
             s.gems.filter(g => g.tool === 'yt_capture').map(g => (g.args as { channelId?: string }).channelId ?? '')));
-          const others = sim.montagePool
+          const preGate = sim.montagePool
             .filter(c => !shown.has(c))
             .filter(c => {
               const v = verdicts.get(c);
               return !!v && isPageWorthy(v);
             })
-            .slice(0, 3);
+            .slice(0, 6);
+          // Same min-stats gate as B: an emptied 86-sub channel passed the
+          // verdict check on its HISTORICAL titles and rendered a "this
+          // channel doesn't have any content" page in the montage (job
+          // 173, niche_5). loadChannel refreshes stats (5-min cache).
+          const others: string[] = [];
+          for (const cId of preGate) {
+            if (others.length >= 3) break;
+            const cStats = await loadChannel(cId).catch(() => null);
+            if (bMinStatsOk(cStats)) others.push(cId);
+            else console.warn(`[saturation] ${cId} fails min-stats gate — skipping page`);
+          }
           if (others.length === 1) {
             // Form B — extra-channel deep-dive (reference niche_4 Valaritas):
             // page hold -> dark consistency card -> header-less GRID WALL

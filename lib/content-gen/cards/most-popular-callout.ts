@@ -39,7 +39,8 @@ export interface MostPopularCalloutArgs {
   bg?: 'white' | 'dark_gray';
 }
 
-const BG_HEX = { white: '#FFFFFF', dark_gray: '#2A2A2A' } as const;
+// dark_gray re-measured 2026-06-12 on MG frames: canvas = 60,60,60.
+const BG_HEX = { white: '#FFFFFF', dark_gray: '#3C3C3C' } as const;
 
 function humanizeViews(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B views`;

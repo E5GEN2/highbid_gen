@@ -1874,11 +1874,13 @@ export async function initSchema(): Promise<void> {
         hero_channel_id      TEXT NOT NULL,
         candidate_channel_id TEXT NOT NULL,
         verdict_jsonb        JSONB NOT NULL,
+        prompt_v             INT NOT NULL DEFAULT 1,
         created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (hero_channel_id, candidate_channel_id)
       )
     `).catch(() => {});
+    await client.query(`ALTER TABLE content_gen_channel_relationships ADD COLUMN IF NOT EXISTS prompt_v INT NOT NULL DEFAULT 1`).catch(() => {});
     // Gemini-simplified one-clause recipe line ("This channel ___.") —
     // generated once per channel by niche-vars, cached here.
     await client.query(`ALTER TABLE content_gen_channel_analysis ADD COLUMN IF NOT EXISTS recipe_formula_simple TEXT`).catch(() => {});
