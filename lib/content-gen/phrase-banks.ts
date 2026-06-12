@@ -17,6 +17,7 @@
 import { getPool } from '../db';
 
 export type BankId =
+  | 'age_kicker'
   | 'concept_tag'
   | 'intro_card'
   | 'emphasis_intro'
@@ -89,6 +90,14 @@ export const BANKS: Record<BankId, string[]> = {
   concept_tag: [
     'The number one thing you must focus on in this niche is {WORD}.',
     "Here's the thing — what makes these channels work is {WORD}.",
+  ],
+  // MG transcript t=717-722 (niche 10): the age framing always comes
+  // with an INTERPRETATION of why the age matters. First variant is
+  // MG's own line verbatim.
+  age_kicker: [
+    'and these are usually good numbers for such a short span of time.',
+    'which makes these numbers even more impressive.',
+    "growth like that, that fast, doesn't happen by accident.",
   ],
   // worked example CTA :314-316
   cta_value_card: [

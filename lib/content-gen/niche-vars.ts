@@ -33,8 +33,12 @@ export interface NicheVars {
   rpm_low: number | null;
   rpm_high: number | null;
   geo_guess: string | null;
-  /** "about 13 months old" / "over a year old" — from channel_created_at. */
+  /** MG-style "started posting" age: "only about three months ago" /
+   *  "just over a year ago" — from first_upload_at ?? channel_created_at
+   *  (MG transcript t=717: "started posting only three to four months ago"). */
   age_phrase: string | null;
+  /** Channel age in months (for the young-channel kicker rule). */
+  age_months: number | null;
   /** "hundreds of thousands of views per upload" — median view class. */
   median_views_phrase: string | null;
   uploads_per_month: number | null;
@@ -102,14 +106,15 @@ export function simplifyRecipeFormula(formula: string | null | undefined): strin
   return s.charAt(0).toLowerCase() + s.slice(1);
 }
 
-function agePhrase(createdAt: string | null): string | null {
-  if (!createdAt) return null;
-  const months = Math.max(1, Math.round((Date.now() - new Date(createdAt).getTime()) / (30.44 * 24 * 3600 * 1000)));
-  if (months < 12) return `about ${months} month${months === 1 ? '' : 's'} old`;
-  if (months < 18) return 'over a year old';
-  if (months < 24) return 'about a year and a half old';
-  const years = Math.round(months / 12);
-  return `about ${years} years old`;
+const MONTH_WORDS = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven'];
+function agePhrase(startedAt: string | null): string | null {
+  if (!startedAt) return null;
+  const months = Math.max(1, Math.round((Date.now() - new Date(startedAt).getTime()) / (30.44 * 24 * 3600 * 1000)));
+  if (months === 1) return 'just a month ago';
+  if (months < 12) return `only about ${MONTH_WORDS[months]} months ago`;
+  if (months < 18) return 'just over a year ago';
+  if (months < 24) return 'about a year and a half ago';
+  return `about ${Math.round(months / 12)} years ago`;
 }
 
 function medianViewsPhrase(median: number | null): string | null {
@@ -254,17 +259,18 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
       `SELECT recipe_summary, beats_jsonb FROM content_gen_recipe_showcase WHERE channel_id = $1`, [channelId]),
     pool.query<{ rpm_typical: number | null; rpm_low: number | null; rpm_high: number | null; geo_guess: string | null }>(
       `SELECT rpm_typical, rpm_low, rpm_high, geo_guess FROM content_gen_channel_rpm WHERE channel_id = $1`, [channelId]),
-    pool.query<{ channel_created_at: string | null; video_count: number | null; median_views: number | null }>(
-      `SELECT c.channel_created_at, c.video_count,
+    pool.query<{ channel_created_at: string | null; first_upload_at: string | null; video_count: number | null; median_views: number | null }>(
+      `SELECT c.channel_created_at, c.first_upload_at, c.video_count,
               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v.view_count)
                  FROM niche_spy_videos v WHERE v.channel_id = c.channel_id AND v.view_count IS NOT NULL) AS median_views
          FROM niche_spy_channels c WHERE c.channel_id = $1`, [channelId]),
   ]);
 
-  const createdAt = stats.rows[0]?.channel_created_at ?? null;
+  // "Started posting" maps to first upload, not account creation.
+  const startedAt = stats.rows[0]?.first_upload_at ?? stats.rows[0]?.channel_created_at ?? null;
   const videoCount = stats.rows[0]?.video_count ?? null;
-  const months = createdAt
-    ? Math.max(1, (Date.now() - new Date(createdAt).getTime()) / (30.44 * 24 * 3600 * 1000))
+  const months = startedAt
+    ? Math.max(1, (Date.now() - new Date(startedAt).getTime()) / (30.44 * 24 * 3600 * 1000))
     : null;
 
   // Recipe line resolution: cached Gemini line → fresh Gemini generation
@@ -303,7 +309,8 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
     rpm_low: rpm.rows[0]?.rpm_low ?? null,
     rpm_high: rpm.rows[0]?.rpm_high ?? null,
     geo_guess: rpm.rows[0]?.geo_guess ?? null,
-    age_phrase: agePhrase(createdAt),
+    age_phrase: agePhrase(startedAt),
+    age_months: months != null ? Math.round(months) : null,
     median_views_phrase: medianViewsPhrase(stats.rows[0]?.median_views ?? null),
     uploads_per_month: months && videoCount ? Math.round(videoCount / months) : null,
     concept_word: conceptWord,

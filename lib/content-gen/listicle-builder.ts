@@ -106,15 +106,29 @@ export async function loadChannel(channelId: string): Promise<ChannelData | null
  *  "And the views back it up. Over 40 million total views in just about
  *  13 months." — worked-example BEAT 4 + SR beat 5 (age + total_views). */
 function proof2Text(tv: string, extras?: StubExtras): string {
-  // Consistency opener moved to the PANO slot (MG transcript t=9.8-13:
-  // "And their views are absolutely unbelievable." plays over the grid).
-  const age = extras?.agePhrase ? ` in a channel that's just ${extras.agePhrase}` : '';
-  return `Over ${tv} total views${age}.`;
+  // Age framing per MG transcript t=717-722: "Keep in mind, the channel
+  // started posting only three to four months ago, and these are usually
+  // good numbers for such a short span of time." — "started posting X
+  // ago" phrasing + an INTERPRETING kicker, and ONLY when the age is
+  // actually impressive (young channel). Older channels get plain stats.
+  const stats = `Over ${tv} total views.`;
+  const months = extras?.ageMonths ?? null;
+  if (extras?.agePhrase && months != null && months <= 9 && extras?.ageKicker) {
+    return `${stats} Keep in mind, this channel started posting ${extras.agePhrase}, ${extras.ageKicker}`;
+  }
+  if (extras?.agePhrase && months != null && months <= 18) {
+    // agePhrase already carries its own minimizer ("only about ten
+    // months ago" / "just over a year ago") — no extra "only" here.
+    return `${stats} And this channel started posting ${extras.agePhrase}.`;
+  }
+  return stats;
 }
 
 export interface StubExtras {
   consistencyLine?: string | null;
   agePhrase?: string | null;
+  ageMonths?: number | null;
+  ageKicker?: string | null;
 }
 
 export function stubNarration(beat_id: string, ch: ChannelData, extras?: StubExtras): NarrationBeat[] {
@@ -1016,7 +1030,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     const vars: NicheVars = await loadNicheVars(cid).catch(() => ({
       channelId: cid, recipe_formula_simplified: null, recipe_summary: null,
       recipe_beats: [], rpm_typical: null, rpm_low: null, rpm_high: null,
-      geo_guess: null, age_phrase: null, median_views_phrase: null,
+      geo_guess: null, age_phrase: null, age_months: null, median_views_phrase: null,
       uploads_per_month: null, concept_word: null, concept_insight: null,
     }));
     const niche_index = acceptedCount + 1;
@@ -1035,7 +1049,14 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       ? `because of the audience, most viewers are likely from ${vars.geo_guess}.`
       : null;
 
-    const beats = stubNarration(beat_id, ch, { agePhrase: vars.age_phrase });
+    const ageKicker = (vars.age_months != null && vars.age_months <= 9)
+      ? banks.pick('age_kicker', niche_index)
+      : null;
+    const beats = stubNarration(beat_id, ch, {
+      agePhrase: vars.age_phrase,
+      ageMonths: vars.age_months,
+      ageKicker,
+    });
     if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
 
     const introLogosIds = (opts.intro_logos_channels && opts.intro_logos_channels.length > 0)
