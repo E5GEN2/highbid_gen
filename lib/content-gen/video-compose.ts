@@ -62,9 +62,6 @@ interface ComposeLayer {
   diegetic?: boolean;
   /** Highlight a stats row in about_panel — MG-style L→R yellow animation. */
   highlight_row?: 'subscribers' | 'videos' | 'views';
-  /** Computed by the about_panel dispatch after the composer runs — gives the
-   *  row's canvas-coord position so the ffmpeg drawbox animation aligns exactly. */
-  highlight_canvas?: { x: number; y: number; w: number; h: number };
   url: string | null;
   duration_s: number | null;
   /** When the upstream tool returned an on-disk path, the producer surfaces
@@ -297,13 +294,47 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
               bright /= Math.max(1, r.h);
               if (bright > 110) { if (x0 < 0) x0 = x; x1 = x; }
             }
-            const PAD = 8;            // small vertical padding around row
-            layer.highlight_canvas = {
-              x: x0 >= 0 ? x0 - 6 : 625,
-              y: r.top - PAD,
-              w: x0 >= 0 ? (x1 - x0) + 14 : 300,
-              h: r.h + 2 * PAD,
-            };
+            // BAKE the highlight into progressive stills (MG treatment,
+            // verified on the OG niche_8 proof beat 2026-06-12): an OPAQUE
+            // #E7F61A marker bar that hugs the text, with the covered text
+            // flipped to DARK; the bar sweeps L->R over ~0.6s. The old
+            // drawbox yellow@0.45 approach tinted the white text olive
+            // (off-reference) and its 18 between() segments double-drew at
+            // boundaries, stacking alpha into a visible flicker (user
+            // report). Baking frames + the word_reveal concat path has
+            // neither problem.
+            if (x0 >= 0) {
+              const PAD = 6;
+              const X = x0 - 6, Y = Math.max(0, r.top - PAD);
+              const W = (x1 - x0) + 14, H = r.h + 2 * PAD;
+              const K = 13, RAMP_S = 0.6;
+              const MARKER = { r: 231, g: 246, b: 26 };   // sampled from the OG bar
+              const DARK = 30;                             // covered-text tone
+              const variants: string[] = [composed];
+              for (let k = 1; k <= K; k++) {
+                const wk = Math.max(2, Math.round(W * k / K));
+                const buf = Buffer.from(data);
+                for (let y = Y; y < Math.min(info.height, Y + H); y++) {
+                  for (let x = X; x < Math.min(info.width, X + wk); x++) {
+                    const off = (y * info.width + x) * info.channels;
+                    const bright = (buf[off] + buf[off + 1] + buf[off + 2]) / 3;
+                    // Soft mix keeps the glyph anti-aliasing: fully dark text
+                    // strokes, marker yellow background, blended edges.
+                    const a = Math.max(0, Math.min(1, (bright - 60) / 120));
+                    buf[off] = Math.round(MARKER.r * (1 - a) + DARK * a);
+                    buf[off + 1] = Math.round(MARKER.g * (1 - a) + DARK * a);
+                    buf[off + 2] = Math.round(MARKER.b * (1 - a) + DARK * a);
+                  }
+                }
+                const vPath = path.join(os.tmpdir(), `mg-hl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-k${k}.png`);
+                await sharp(buf, { raw: { width: info.width, height: info.height, channels: info.channels as 3 | 4 } })
+                  .png().toFile(vPath);
+                variants.push(vPath);
+              }
+              layer.local_paths = variants;
+              layer.word_times = Array.from({ length: K }, (_, i) => (i + 1) * RAMP_S / K);
+              layer.ken_burns = 'word_reveal';
+            }
           }
         }
 
@@ -494,51 +525,19 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
                   `scale=w=${width}:h=-2:force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
-  // MG-style highlight: yellow rect that grows L→R over the row text. Animated
-  // via N drawbox calls with between(t,start,end) enable clauses (drawbox can't
-  // animate width via a single expression — its `t` param is thickness, not time).
-  // Verified locally: /tmp/iter/hl_mg_t{0.05,0.3,0.6}.png.
-  let highlightVf = '';
-  if (mainLayer.highlight_canvas) {
-    const hl = mainLayer.highlight_canvas;
-    // TEXT_X_OFFSET = 0 — highlight_canvas.x is ALREADY at the "1" of "107K
-    // subscribers" / "40,084,120 views" (was set to 625 in the about_panel
-    // pixel-scan step above). Adding an offset here put startX past the "1"
-    // making the L→R animation visibly begin at "7K" instead of "107K"
-    // (user feedback 2026-06-10).
-    const TEXT_X_OFFSET = 0;
-    const TEXT_PAD = 12;  // small right padding
-    const startX = hl.x + TEXT_X_OFFSET;
-    const maxW = hl.w - TEXT_X_OFFSET + TEXT_PAD;
-    const HIGHLIGHT_DUR = 0.6;
-    const N = 18;
-    const segments: string[] = [];
-    for (let i = 1; i <= N; i++) {
-      const start = ((i - 1) * HIGHLIGHT_DUR / N).toFixed(4);
-      const end = (i * HIGHLIGHT_DUR / N).toFixed(4);
-      const w = Math.round(i * maxW / N);
-      const enable = (i === N) ? `gte(t\\,${start})` : `between(t\\,${start}\\,${end})`;
-      // 0.45 opacity — keeps text legible through yellow (0.7 made "107K
-      // subscribers" hard to read per user feedback 2026-06-10).
-      segments.push(`drawbox=x=${startX}:y=${hl.y}:w=${w}:h=${hl.h}:color=yellow@0.45:thickness=fill:enable='${enable}'`);
-    }
-    highlightVf = ',' + segments.join(',');
-  }
-
-  // Highlight slots are STATIC — the yellow drawbox is painted at fixed
-  // output coords AFTER the video filter, so any Ken Burns motion makes the
-  // text drift out from under the highlight as the slot plays (user report
-  // 2026-06-11). MG's own highlight beats play on a static panel; the L→R
-  // highlight animation carries the motion. Plain fit+pad, no zoompan.
+  // Static fit+pad, no zoompan — used by ken_burns:'none' slots and the
+  // word_reveal concat path (incl. baked about-panel highlights: MG's
+  // highlight beats play on a static panel; the L->R marker sweep baked
+  // into the stills carries all the motion).
   const staticStillVf =
     `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
     `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
   const stillVf =
-    (mainLayer.highlight_canvas ? staticStillVf
-     : kenBurns === 'scroll_down' ? scrollDownVf
-     : kenBurns === 'zoom_out_8pct' ? zoomOutVf
-     : (zoomToTargetVf ?? stillVfDefault)) + highlightVf;
+    kenBurns === 'scroll_down' ? scrollDownVf
+    : kenBurns === 'zoom_out_8pct' ? zoomOutVf
+    : kenBurns === 'none' ? staticStillVf
+    : (zoomToTargetVf ?? stillVfDefault);
   const videoVf = `scale=w='if(gt(a,${width}/${height}),${width},-2)':h='if(gt(a,${width}/${height}),-2,${height})':force_original_aspect_ratio=decrease,` +
                   `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1,fps=${fps}`;
 
