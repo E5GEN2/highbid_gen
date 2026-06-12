@@ -932,14 +932,16 @@ export async function applyContinuousNarration(slots: Slot[], voiceAlias = 'mone
   }
 }
 
-/** concept_tag (skeleton beat 11): chalkboard card with the niche's ONE
- *  success-factor word; narration from the 2-variant bank. Optional —
- *  skipped when no concept_word was derived. */
+/** concept_tag: the niche-essence beat. Visual = the essence phrase as
+ *  plain bold text on white — MG's actual treatment ("Absurd Ranking",
+ *  decode t=171: "A white background. Black text ... appears"); the
+ *  chalkboard idea was scrapped (no chalkboard exists in the OG video;
+ *  user veto 2026-06-11). Narration = the Gemini insight sentence. */
 export function buildConceptSlot(niche_index: number, conceptWord: string, line: string): Slot {
   const base = `niche_${niche_index}`;
   return makeFramingSlot(`${base}_concept_tag`, 'concept_tag', line,
-    { composition: 'chalkboard_card', text: conceptWord, bg_mode: 'dark_gray', color_treatment: 'chalk_cream' },
-    ['ding'], 'dark_gray');
+    { composition: 'text_card', text: conceptWord, bg_mode: 'white', color_treatment: 'neutral' },
+    ['ding']);
 }
 
 /** transition (skeleton beat 13): 0.5s breather at the niche seam —
