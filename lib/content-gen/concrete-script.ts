@@ -49,6 +49,11 @@ export interface Compose {
   bg: 'white' | 'dark_gray';
   /** Number OR `"{{gem.duration_s}}"` template. */
   hold_s: number | string;
+  /** Extra SILENT hold added after hold_s resolves — MG's dwell-on-the-
+   *  number mechanic (narration ends, the visual sits on the stat for
+   *  0.6-1.05s before the cut; reference instances CB1/CB3). The audio
+   *  track is padded with silence to match. */
+  dwell_s?: number;
   layers: ComposeLayer[];
 }
 

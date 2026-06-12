@@ -384,6 +384,10 @@ async function runImageGen(args: Record<string, unknown>): Promise<ToolOutput> {
     text,
     bg_mode,
     color_treatment,
+    // Italic emphasis builds (saturation verdict — MG reference). This
+    // runner WHITELISTS args; forgetting a field silently drops it
+    // (italic was lost here on job 158).
+    italic: args.italic === true,
     icon,
     // Forward the fields specific to most_popular_callout
     video_id: args.video_id as string | undefined,

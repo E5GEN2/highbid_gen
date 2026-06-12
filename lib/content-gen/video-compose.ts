@@ -107,7 +107,8 @@ interface ComposeArgs {
   __job_id__: number;
 }
 
-const BG_HEX = { white: '#FFFFFF', dark_gray: '#2A2A2A' } as const;
+// dark_gray re-measured 2026-06-12 on MG frames: canvas = 60,60,60.
+const BG_HEX = { white: '#FFFFFF', dark_gray: '#3C3C3C' } as const;
 
 /** XML-escape for SVG text content (watermark names can contain & etc). */
 function esc(s: string): string {
@@ -291,18 +292,47 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
       // on a white outer canvas. Anchored on subscriber_count bbox.
       if (layer.crop_target === 'channel_chip' && bboxes.subscriber_count) {
         const { composeChannelChipMG } = await import('./yt-compose-mg');
-        const composed = await composeChannelChipMG(basePath, bboxes.subscriber_count);
+        const composed = await composeChannelChipMG(basePath, bboxes.subscriber_count,
+          { canvas: bg, subscribeBtn: bboxes.subscribe_btn, channelName: bboxes.channel_name, tabsRow: bboxes.tabs_row });
         return { kind: 'image', path: composed };
       }
 
       // channel_page_full: MG-style full channel page (banner + chip + tabs
       // + grid). Crops YT sidebar away and places the page content in a
-      // rounded dark card on a medium-gray outer canvas. No bbox anchor
-      // needed — uses fixed proportional crop of the captured viewport.
+      // rounded dark card on the slot's canvas (white or the measured
+      // 60,60,60 dark — both attested in the reference).
       if (layer.crop_target === 'channel_page_full') {
         const { composeChannelPageFullMG } = await import('./yt-compose-mg');
-        const composed = await composeChannelPageFullMG(basePath);
+        const composed = await composeChannelPageFullMG(basePath, { canvas: bg });
         return { kind: 'image', path: composed };
+      }
+
+      // top_video_card:N — the channel_b payoff card: ONE video card at
+      // ~34% frame width on the slot canvas (MG niche_4 "1.3m views" lone
+      // card). Same composer as rapid-fire, smaller card.
+      if (typeof layer.crop_target === 'string' && layer.crop_target.startsWith('top_video_card:')) {
+        const idx = parseInt(layer.crop_target.split(':')[1] ?? '0', 10);
+        const cardBbox = (bboxes as Record<string, BBox | undefined>)[`video_card_${idx}`];
+        if (cardBbox) {
+          const { composeThumbnailRapidFireMG } = await import('./yt-compose-mg');
+          const composed = await composeThumbnailRapidFireMG(basePath, cardBbox, { canvas: bg, cardW: 660 });
+          return { kind: 'image', path: composed };
+        }
+      }
+
+      // videos_wall — header-less videos grid as a wide rounded card
+      // (saturation Form B consistency wall; top row clips mid-thumbnail).
+      if (layer.crop_target === 'videos_wall') {
+        const wallBboxes: BBox[] = [];
+        for (let i = 0; i < 12; i++) {
+          const b = bboxes[`video_card_${i}`];
+          if (b) wallBboxes.push(b);
+        }
+        if (wallBboxes.length >= 4) {
+          const { composeGridWallMG } = await import('./yt-compose-mg');
+          const composed = await composeGridWallMG(basePath, wallBboxes, { canvas: bg });
+          return { kind: 'image', path: composed };
+        }
       }
 
       // thumbnail_rapid_fire:N — MG-style single video card on dark

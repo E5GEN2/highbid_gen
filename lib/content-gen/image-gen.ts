@@ -45,7 +45,8 @@ const COLOR_HEX: Record<ColorTreatment, { fg: string; highlight?: string }> = {
   yellow_ring:       { fg: '#111111', highlight: '#FACC15' },    // highlight via underline
 };
 
-const BG_HEX = { white: '#FFFFFF', dark_gray: '#2A2A2A' } as const;
+// dark_gray re-measured 2026-06-12 on MG frames: text-card bg = 60,60,60.
+const BG_HEX = { white: '#FFFFFF', dark_gray: '#3C3C3C' } as const;
 
 /** Sanity-cap text length so we don't render an unreadable wall. */
 const MAX_TEXT_LEN = 80;
@@ -53,7 +54,7 @@ const MAX_TEXT_LEN = 80;
 /** Hash the args → cache key. */
 // Renderer version — salts the PNG disk cache so restyled compositions
 // regenerate (args alone missed the 2026-06-11 chalkboard restyle).
-const RENDERER_VERSION = 'r3'; // r3: reveal paging (<=6 words/screen) + icon-only screens
+const RENDERER_VERSION = 'r5'; // r5: white fg on dark cards (r4: MG dark #3C3C3C + italic builds)
 
 function cacheKey(args: ImageGenArgs, width: number, height: number): string {
   const key = JSON.stringify({ v: RENDERER_VERSION, ...args, width, height });
@@ -116,7 +117,9 @@ function renderTextCard(args: ImageGenArgs, width: number, height: number): stri
   const startY = height / 2 - totalH / 2 + baseFont * 0.85;
 
   const fontWeight = ct === 'money_shot_green' ? 900 : 800;
-  const fg = colors.fg;
+  // Neutral black flips to white on the dark canvas (MG dark cards are
+  // white-on-#3C3C3C; un-flipped this was the dark-on-dark contrast bug).
+  const fg = (bg === 'dark_gray' && colors.fg === '#111111') ? '#FFFFFF' : colors.fg;
   const highlight = colors.highlight;
 
   // Optional yellow-underline highlight bar behind text (yellow_ring on
@@ -129,7 +132,7 @@ function renderTextCard(args: ImageGenArgs, width: number, height: number): stri
   const tspans = lines.map((ln, i) => `
     <text x="${width / 2}" y="${startY + i * lineHeight}"
           font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-          font-size="${baseFont}" font-weight="${fontWeight}"
+          font-size="${baseFont}" font-weight="${fontWeight}"${args.italic ? ' font-style="italic"' : ''}
           fill="${fg}" text-anchor="middle">${esc(ln)}</text>`).join('');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -177,7 +180,9 @@ function renderTextCardRevealVariant(args: ImageGenArgs, width: number, height: 
   const ct = (args.color_treatment ?? 'neutral') as ColorTreatment;
   const colors = COLOR_HEX[ct] ?? COLOR_HEX.neutral;
   const fontWeight = ct === 'money_shot_green' ? 900 : 800;
-  const fg = colors.fg;
+  // Same dark-canvas flip as renderTextCard (the reveal variant missed it
+  // — saturation verdict builds rendered #111 on #3C3C3C, job 157).
+  const fg = (bg === 'dark_gray' && colors.fg === '#111111') ? '#FFFFFF' : colors.fg;
 
   // PAGING (MG rule, user-verified 2026-06-11): only the CURRENT page's
   // words are on screen; earlier pages clear. Variant k shows the page
@@ -207,7 +212,7 @@ function renderTextCardRevealVariant(args: ImageGenArgs, width: number, height: 
     return `
     <text x="${width / 2}" y="${startY + i * lineHeight}" xml:space="preserve"
           font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-          font-size="${baseFont}" font-weight="${fontWeight}"
+          font-size="${baseFont}" font-weight="${fontWeight}"${args.italic ? ' font-style="italic"' : ''}
           fill="${fg}" text-anchor="middle">${tspans}</text>`;
   }).join('');
 

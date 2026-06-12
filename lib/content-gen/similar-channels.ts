@@ -93,17 +93,29 @@ export async function findSimilarChannels(
   const chOf = new Map(map.rows.map(r => [r.id, r.channel_id]));
 
   const excluded = new Set([heroChannelId, ...exclude]);
-  const best = new Map<string, number>();
+  const hits = new Map<string, number[]>();
   for (const r of knn.rows) {
     const ch = chOf.get(r.video_id);
     if (!ch || excluded.has(ch)) continue;
     const sim = parseFloat(r.sim);
-    if (!best.has(ch) || best.get(ch)! < sim) best.set(ch, sim);
+    if (!hits.has(ch)) hits.set(ch, []);
+    hits.get(ch)!.push(sim);
+  }
+  // FORMAT-CONSISTENCY scoring (2026-06-11): a channel whose WHOLE
+  // CATALOG matches beats a channel with one lucky close video — e.g.
+  // Size Cipher (many size-comparison hits) must outrank Nonagon (one
+  // adjacent explainer). score = 0.6*best + 0.3*second + count bonus.
+  const best = new Map<string, number>();   // best sim (for thresholds)
+  const score = new Map<string, number>();  // ranking score
+  for (const [ch, sims] of hits) {
+    sims.sort((a, b) => b - a);
+    best.set(ch, sims[0]);
+    score.set(ch, 0.6 * sims[0] + 0.3 * (sims[1] ?? sims[0] * 0.9) + 0.015 * Math.min(sims.length, 6));
   }
 
   const saturationCount = [...best.values()].filter(s => s >= SATURATION_MIN_SIM).length;
-  const strong = [...best.entries()]
-    .filter(([, s]) => s >= CHANNEL_B_MIN_SIM)
+  const strong = [...score.entries()]
+    .filter(([ch]) => best.get(ch)! >= CHANNEL_B_MIN_SIM)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3);
 
@@ -113,15 +125,15 @@ export async function findSimilarChannels(
       `SELECT channel_id, channel_name, subscriber_count FROM niche_spy_channels WHERE channel_id = ANY($1)`,
       [strong.map(([c]) => c)]);
     const info = new Map(rows.rows.map(r => [r.channel_id, r]));
-    channels = strong.map(([channel_id, similarity]) => ({
+    channels = strong.map(([channel_id]) => ({
       channel_id,
-      similarity: Math.round(similarity * 1000) / 1000,
+      similarity: Math.round((best.get(channel_id) ?? 0) * 1000) / 1000,
       channel_name: info.get(channel_id)?.channel_name ?? null,
       subscriber_count: info.get(channel_id)?.subscriber_count != null ? Number(info.get(channel_id)!.subscriber_count) : null,
     }));
   }
-  const montagePool = [...best.entries()]
-    .filter(([, s]) => s >= SATURATION_MIN_SIM)
+  const montagePool = [...score.entries()]
+    .filter(([ch]) => best.get(ch)! >= SATURATION_MIN_SIM)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .map(([c]) => c);

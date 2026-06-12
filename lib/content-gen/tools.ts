@@ -166,6 +166,9 @@ export interface ImageGenArgs {
   /** Color treatment from the visual grammar */
   color_treatment?: ColorTreatment;
   bg_mode: 'white' | 'dark_gray';
+  /** Italic text — MG's emphasis treatment for word-by-word builds
+   *  (reference: saturation "with the same format" card, 2026-06-12). */
+  italic?: boolean;
   /** Icon id from the canonical line-drawing library
    *  (required when composition=icon_card). */
   icon?: IconId;
@@ -280,8 +283,8 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         channelId: { type: 'string', description: 'YT channel ID like UCM6...' },
-        kind:      { type: 'string', enum: ['channel_page', 'about_page', 'videos_tab', 'watch_page'] },
-        mode:      { type: 'string', enum: ['static', 'scroll_record'], description: 'Defaults to static; videos_tab defaults to scroll_record.' },
+        kind:      { type: 'string', enum: ['channel_page', 'about_page', 'videos_tab', 'videos_tab_popular', 'watch_page'] },
+        mode:      { type: 'string', enum: ['static', 'scroll_record'], description: 'Defaults to static; videos_tab defaults to scroll_record. videos_tab_popular clicks the Popular sort chip first (card_0 = top video).' },
         watchVideoId: { type: 'string', description: 'Required when kind=watch_page.' },
         annotate_element: { type: 'string', enum: ['subscriber_count', 'video_count', 'total_views', 'joined_date', 'view_count'] },
         annotate_kind:    { type: 'string', enum: ['css', 'composite'], description: 'css=inline highlight on element; composite=post-process SVG shape.' },
@@ -293,9 +296,10 @@ export const TOOL_REGISTRY: ToolSpec[] = [
       },
     },
     output_fields: ['file_url', 'asset_kind', 'bboxes', 'page_width', 'page_height', 'duration_s'],
-    // v1.1.0: extractor now captures per-card displayed view-count TEXT
-    // (__meta.views_texts) — bump invalidates stale captures without it.
-    version: 'v1.1.0',
+    // v1.2.2: tabs_row bbox (chip bottom backstop). v1.2.1: subscribe_btn
+    // bbox. v1.2.0: compact lockup meta normalized to "611K views • 4
+    // months ago" (v1.1.0: per-card views_texts in __meta).
+    version: 'v1.2.2',
     cache_key_excludes: ['force'],
   },
   {
@@ -377,6 +381,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
         text:            { type: 'string' },
         color_treatment: { type: 'string', enum: [...COLOR_TREATMENTS] },
         bg_mode:         { type: 'string', enum: ['white', 'dark_gray'] },
+        italic:          { type: 'boolean', description: 'Italic emphasis build (MG saturation verdict treatment).' },
         icon:            { type: 'string', enum: [...ICON_IDS], description: 'Required when composition=icon_card.' },
         // most_popular_callout fields
         video_id:          { type: 'string', description: 'most_popular_callout: YT video id.' },
@@ -401,7 +406,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
     output_fields: ['file_url', 'width', 'height'],
     // v1.1.0: chalkboard = board GRAPHIC on dark canvas; thumb_mosaic =
     // gapped tiles on white (matched to decode refs, 2026-06-11).
-    version: 'v1.2.0',  // reveal paging (<=6 words/screen) + icon-only screens  // flush tool-cache rows that captured the pre-salt stale PNG
+    version: 'v1.3.2',  // forward italic through runImageGen (v1.3.1: white fg on dark cards)
   },
   {
     name: 'logos_montage',

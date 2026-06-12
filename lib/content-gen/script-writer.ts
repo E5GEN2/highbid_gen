@@ -419,18 +419,30 @@ export async function writeScript(input: ScriptWriterInput): Promise<ScriptWrite
       lastError = new Error('no active google_ai_studio key available in pool');
       break;
     }
-    const proxy = await getRandomHealthyProxy();
-    if (!proxy) {
-      lastError = new Error('no healthy xgodo proxy available');
-      break;
-    }
+    // Proxy is MANDATORY where possible: Google keys free-tier quota
+    // per (project, REGION of the caller's IP), and some regions sit at
+    // quota_limit_value=0 (probed 2026-06-11: asia-southeast1 → hard 429
+    // on every key). A US/EU proxy carries its own region's quota.
+    // Direct is a last resort for when no healthy proxy exists at all.
+    const proxy = await getRandomHealthyProxy().catch(() => null);
     try {
-      const res = await fetchViaProxy(GEMINI_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyRow.key },
-        body,
-        timeoutMs: PER_ATTEMPT_TIMEOUT_MS,
-      }, proxy.url);
+      let res: { ok: boolean; status: number; text(): Promise<string> };
+      if (proxy) {
+        res = await fetchViaProxy(GEMINI_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyRow.key },
+          body,
+          timeoutMs: PER_ATTEMPT_TIMEOUT_MS,
+        }, proxy.url);
+      } else {
+        const rr = await fetch(GEMINI_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyRow.key },
+          body,
+          signal: AbortSignal.timeout(PER_ATTEMPT_TIMEOUT_MS),
+        });
+        res = { ok: rr.ok, status: rr.status, text: () => rr.text() };
+      }
 
       lastStatus = res.status;
       const txt = await res.text();
@@ -438,7 +450,7 @@ export async function writeScript(input: ScriptWriterInput): Promise<ScriptWrite
 
       if (!res.ok) {
         lastRawBody = txt.slice(0, 800);
-        lastError = new Error(`Gemini ${res.status} via proxy=${proxy.country ?? '?'} key=${keyRow.id} (${elapsed}ms, attempt ${attempt}/${MAX_ATTEMPTS}): ${lastRawBody}`);
+        lastError = new Error(`Gemini ${res.status} via ${proxy ? `proxy=${proxy.country ?? '?'}` : 'direct'} key=${keyRow.id} (${elapsed}ms, attempt ${attempt}/${MAX_ATTEMPTS}): ${lastRawBody}`);
         // 401/403 = dead key (service-account deleted, banned). Mark invalid
         // so the pool stops handing it out, then rotate immediately (no
         // backoff — the next pickHealthyAiKey returns a different key).
@@ -449,8 +461,10 @@ export async function writeScript(input: ScriptWriterInput): Promise<ScriptWrite
         }
         // 400 = prompt / schema issue. Don't retry — that's our bug.
         if (res.status === 400) break;
-        // 5xx / 429 → backoff + rotate
-        if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 600 * attempt));
+        // 5xx / 429 → backoff + rotate. Overload windows (503 "high
+        // demand") outlast a few seconds — back off long enough to land
+        // outside one (~10/20/30/40/50s; a build is minutes anyway).
+        if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 10_000 * attempt));
         continue;
       }
 

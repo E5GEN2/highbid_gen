@@ -314,6 +314,11 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
     composeResolved.hold_s = typeof slot.compose.hold_s === 'number'
       ? slot.compose.hold_s
       : resolveRef(slot.compose.hold_s, bag as unknown as Record<string, unknown>, slot.slot_id) ?? 2.0;
+    // dwell_s: extra silent hold after the narration ends (MG dwell-on-
+    // the-number). video_compose pads the audio with silence to hold_s.
+    if (typeof slot.compose.dwell_s === 'number' && slot.compose.dwell_s > 0) {
+      composeResolved.hold_s = (composeResolved.hold_s as number) + slot.compose.dwell_s;
+    }
     composeResolved.layers = slot.compose.layers.map(l => {
       // l.from is a local gem id like "main" — look up in bag
       const localOutput = bag[slot.slot_id]?.[l.from];

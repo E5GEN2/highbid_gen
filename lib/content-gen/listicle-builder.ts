@@ -882,6 +882,23 @@ export function forceProofKind(slots: Slot[]): Slot[] {
 const REVEAL_MIN_WORDS = 4;
 const SLICE_LEAD_PAD_S = 0.06;
 
+/** Parse a capture-displayed view-count text ("1.3M views") and speak it
+ *  rounded DOWN to the leading magnitude — the reference's only spoken
+ *  view figure says "more than 1 million" over an on-screen "1.3m views"
+ *  card (channel-b spec 1A): the voice must never overshoot the card. */
+function roundedDownSpokenViews(t: string | null): string | null {
+  const m = t?.match(/^([\d.,]+)\s*([KMB])?\s*views?$/i);
+  if (!m) return null;
+  const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
+  const n = parseFloat(m[1].replace(/,/g, '')) * mult;
+  if (!Number.isFinite(n) || n < 10_000) return null; // too small to be a payoff
+  const mag = n >= 1e6 ? 1e6 : 1e3;
+  let units = Math.floor(n / mag);                           // 1.3M → 1 ; 460K → 460
+  if (units >= 100) units = Math.floor(units / 100) * 100;   // 460 → 400
+  else if (units >= 10) units = Math.floor(units / 10) * 10; // 87 → 80
+  return spokenNumber(units * mag);
+}
+
 function round3(n: number): number { return Math.round(n * 1000) / 1000; }
 
 export async function applyContinuousNarration(slots: Slot[], voiceAlias = 'money_groot'): Promise<void> {
@@ -1232,72 +1249,250 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       if (panoSlot) withInjects.push(panoSlot);
       withInjects.push(...rapidFireSlots);
     }
-    // channel_b_proof + saturation_callout (worked-example BEAT 4 reprise;
-    // MG t=728-734: "Another channel started posting just one month ago
-    // and is already performing well."). Channel B comes from embedding
-    // similarity over the WHOLE rofe library (hero top video KNN on the
-    // pgvector DB — user design 2026-06-11); saturation fires when >= 20
-    // channels clear the looser similarity bar.
+    // channel_b_proof + saturation_callout — canonical spec from the
+    // 14-instance frame decode (docs/content-gen/channel-b-saturation-spec.md
+    // + -gaps.md, 2026-06-12). Channel B comes from embedding similarity
+    // over the WHOLE rofe library (hero top video KNN on the pgvector DB);
+    // saturation fires when >= 20 channels clear the looser bar.
+    //
+    // The deepest reference invariant: NUMBERS LIVE ON SCREEN, CLAIMS LIVE
+    // IN VOICE (0/8 instances speak subs; the one spoken view figure is
+    // rounded DOWN vs the card). Shot grammar: chip -> full page -> proof
+    // amplifier, static card-on-canvas hard cuts, no ken burns, no drawn
+    // highlights; the payoff number gets a silent dwell instead.
     let channelBSlots: Slot[] = [];
-    let saturationSlot: Slot | null = null;
+    let saturationSlots: Slot[] = [];
     try {
       const sim = await findSimilarChannels(cid, channels);
       const b = sim.channels[0];
       if (b) {
         const chB = await loadChannel(b.channel_id);
-        if (chB?.subscriber_count) {
-          const bVars = await loadNicheVars(b.channel_id).catch(() => null);
-          const opener = banks.pick('second_channel_opener', niche_index) ?? "And there's another channel";
-          const agePart = bVars?.age_phrase ? ` that started posting ${bVars.age_phrase}` : ' doing the exact same format';
-          const bLine1 = opener === 'Look at this one.'
-            ? `Look at this one. It started posting ${bVars?.age_phrase ?? 'recently'},`
-            : `${opener}${agePart},`;
-          const bLine2 = `and it already has ${humanizeNumber(chB.subscriber_count)} subscribers${chB.total_views ? ` with ${humanizeNumber(chB.total_views)} total views` : ''}.`;
-          channelBSlots = [{
-            slot_id: `niche_${niche_index}_channel_b_proof`,
-            beat_id: 'channel_b_proof',
-            narration: `${bLine1} ${bLine2}`,
-            gems: [
-              { id: 'narr', tool: 'tts', args: { text: `${bLine1} ${bLine2}`, voice: 'money_groot' } },
-              { id: 'main', tool: 'yt_capture', args: { channelId: b.channel_id, kind: 'channel_page', mode: 'static' } },
-              { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
-            ],
-            compose: {
-              bg: 'white',
-              hold_s: '{{narr.duration_s}}',
-              layers: [
-                { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: 'channel_chip' },
-                { from: 'narr', channel: 'voice' },
-                { from: 'sfx', channel: 'fx' },
+        const bVars = await loadNicheVars(b.channel_id).catch(() => null);
+        if (chB?.subscriber_count || chB?.total_views) {
+          const base = `niche_${niche_index}`;
+          // Canvas for the WHOLE channel_b beat — constant within the beat,
+          // rotating across niches/videos (reference: niche_1 runs chip+page
+          // on WHITE 253,253,253; niche_2 on DARK 60,60,60).
+          const bSeed = videoSeed.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, niche_index);
+          const bCanvas: 'white' | 'dark_gray' = bSeed % 2 === 0 ? 'white' : 'dark_gray';
+          // Bank variants have different grammar tails:
+          //   "There is another channel that" -> "makes the same kind of videos"
+          //   "And there's another channel"   -> "making the same kind of videos"
+          //   "Look at this one."             -> full rewrite
+          const opener = banks.pick('second_channel_opener', niche_index) ?? 'There is another channel that';
+          const openerLine = opener === 'Look at this one.'
+            ? 'Look at this one — another channel doing the same kind of videos'
+            : opener.endsWith('that')
+              ? `${opener} makes the same kind of videos`
+              : `${opener} making the same kind of videos`;
+          // Age claim ONLY when the posting start is actually known
+          // (first_upload_at). channel_created_at alone routinely
+          // contradicts the visible catalog — Size Cipher: account joined
+          // 2013, first upload 2025-12 (gap D2).
+          const fuQ = await (await getPool()).query<{ first_upload_at: string | null }>(
+            `SELECT first_upload_at FROM niche_spy_channels WHERE channel_id = $1`, [b.channel_id],
+          ).catch(() => ({ rows: [] as Array<{ first_upload_at: string | null }> }));
+          const ageReliable = !!fuQ.rows[0]?.first_upload_at && !!bVars?.age_phrase;
+          // Proof amplifier: lone top-video card from a Popular-sorted
+          // capture — card_0 IS the most popular, so views_texts[0] is the
+          // exact on-screen figure; speak it rounded DOWN (spec 3A: the
+          // voice must never overshoot the card).
+          let topSpoken: string | null = null;
+          try {
+            const { captureYtScreen } = await import('./yt-capture');
+            const readMeta = (cap: { bboxes: unknown }) =>
+              (cap.bboxes as Record<string, { views_texts?: Array<string | null> }>).__meta?.views_texts ?? [];
+            let cap = await captureYtScreen(b.channel_id, { kind: 'videos_tab_popular', mode: 'static' });
+            let vt = readMeta(cap);
+            if (!vt[0]) {
+              cap = await captureYtScreen(b.channel_id, { kind: 'videos_tab_popular', mode: 'static', force: true });
+              vt = readMeta(cap);
+            }
+            topSpoken = roundedDownSpokenViews(vt[0] ?? null);
+          } catch (e) {
+            console.warn(`[channel-b] popular capture failed for ${b.channel_id}: ${(e as Error).message.slice(0, 120)}`);
+          }
+          // Sentence plan (category claims only — no subs, no video counts):
+          //   chip:  "{opener} the same kind of videos —"
+          //   page:  age claim if reliable, else performance claim
+          //   card:  "their most popular video has more than {N} views."
+          const midLine = ageReliable
+            ? `it started posting ${bVars!.age_phrase}${topSpoken ? ',' : '.'}`
+            : `and it's already performing extremely well${topSpoken ? ' —' : '.'}`;
+          const topLine = topSpoken
+            ? `${ageReliable ? 'and ' : ''}their most popular video has more than ${topSpoken} views.`
+            : null;
+
+          channelBSlots = [
+            // B0 — header chip: identity + the stats line. The digits
+            // (subs, video count) live HERE, on screen, never in voice.
+            {
+              slot_id: `${base}_channel_b_chip`,
+              beat_id: 'channel_b_proof',
+              narration: `${openerLine} —`,
+              gems: [
+                { id: 'narr', tool: 'tts', args: { text: `${openerLine} —`, voice: 'money_groot' } },
+                { id: 'main', tool: 'yt_capture', args: { channelId: b.channel_id, kind: 'channel_page', mode: 'static' } },
+                { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
               ],
+              compose: {
+                bg: bCanvas,
+                hold_s: '{{narr.duration_s}}',
+                layers: [
+                  { from: 'main', channel: 'video', fit: 'contain', crop_target: 'channel_chip' },
+                  { from: 'narr', channel: 'voice' },
+                  { from: 'sfx', channel: 'fx' },
+                ],
+              },
             },
-          }];
+            // B1 — full channel page card (the format-replication proof: a
+            // wall of same-template thumbnails). Static dead-hold, rounded
+            // card on canvas via channel_page_full (masthead/sidebar gone).
+            {
+              slot_id: `${base}_channel_b_page`,
+              beat_id: 'channel_b_proof',
+              narration: midLine,
+              gems: [
+                { id: 'narr', tool: 'tts', args: { text: midLine, voice: 'money_groot' } },
+                { id: 'main', tool: 'yt_capture', args: { channelId: b.channel_id, kind: 'channel_page', mode: 'static' } },
+              ],
+              compose: {
+                bg: bCanvas,
+                hold_s: '{{narr.duration_s}}',
+                layers: [
+                  { from: 'main', channel: 'video', fit: 'contain', crop_target: 'channel_page_full' },
+                  { from: 'narr', channel: 'voice' },
+                ],
+              },
+            },
+            // B2 — lone top-video card payoff + silent dwell on the number
+            // (reference: narration ends 0.6-1.05s before the cut).
+            ...(topLine ? [{
+              slot_id: `${base}_channel_b_top_video`,
+              beat_id: 'channel_b_proof',
+              narration: topLine,
+              gems: [
+                { id: 'narr', tool: 'tts', args: { text: topLine, voice: 'money_groot' } },
+                { id: 'main', tool: 'yt_capture', args: { channelId: b.channel_id, kind: 'videos_tab_popular', mode: 'static' } },
+                { id: 'sfx', tool: 'sfx_render', args: { tokens: ['ding'] } },
+              ],
+              compose: {
+                bg: bCanvas,
+                hold_s: '{{narr.duration_s}}',
+                dwell_s: 0.8,
+                layers: [
+                  { from: 'main', channel: 'video' as const, fit: 'contain' as const, crop_target: 'top_video_card:0' },
+                  { from: 'narr', channel: 'voice' as const },
+                  { from: 'sfx', channel: 'fx' as const },
+                ],
+              },
+            }] : []),
+          ];
         }
-      }
-      if (sim.saturated && sim.montagePool.length >= 4) {
-        const satLine = `And when you look around, you'll see many channels doing this and performing well with the same format.`;
-        saturationSlot = {
-          slot_id: `niche_${niche_index}_saturation_callout`,
-          beat_id: 'saturation_callout',
-          narration: satLine,
-          gems: [
-            { id: 'narr', tool: 'tts', args: { text: satLine, voice: 'money_groot' } },
-            { id: 'main', tool: 'logos_montage', args: { channelIds: sim.montagePool } },
-            { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
-          ],
-          compose: {
-            bg: 'white',
-            hold_s: '{{narr.duration_s}}',
-            layers: [
-              { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_out_8pct' },
-              { from: 'narr', channel: 'voice' },
-              { from: 'sfx', channel: 'fx' },
-            ],
-          },
-        };
-      }
-      if (channelBSlots.length || saturationSlot) {
-        console.log(`[similar] niche ${niche_index}: B=${sim.channels[0]?.channel_name ?? '-'} (${sim.channels[0]?.similarity ?? '-'}), pool=${sim.saturationCount}`);
+        // saturation_callout — Form A (spec 2B): RAPID sequential lookalike
+        // channel pages (the cut rhythm IS the "many channels" claim), then
+        // two dark verdict text cards. MG SC1: 3 pages at ~0.6s each, then
+        // "and performing well" / "with the same format." (second card is a
+        // word-by-word build — ours reveals automatically at >= 4 words).
+        if (sim.saturated) {
+          const others = sim.montagePool.filter(c => c !== b.channel_id).slice(0, 3);
+          if (others.length === 1) {
+            // Form B — extra-channel deep-dive (reference niche_4 Valaritas):
+            // page hold -> dark consistency card -> header-less GRID WALL
+            // (top row clipped mid-thumbnail; the view-count wall IS the
+            // consistency proof).
+            const satCh = others[0];
+            saturationSlots = [
+              {
+                slot_id: `niche_${niche_index}_saturation_0`,
+                beat_id: 'saturation_callout',
+                narration: `And there's another channel doing the same thing,`,
+                gems: [
+                  { id: 'narr', tool: 'tts', args: { text: `And there's another channel doing the same thing,`, voice: 'money_groot' } },
+                  { id: 'main', tool: 'yt_capture', args: { channelId: satCh, kind: 'channel_page', mode: 'static' } },
+                  { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+                ],
+                compose: {
+                  bg: 'dark_gray' as const,
+                  hold_s: '{{narr.duration_s}}',
+                  layers: [
+                    { from: 'main', channel: 'video' as const, fit: 'contain' as const, crop_target: 'channel_page_full' },
+                    { from: 'narr', channel: 'voice' as const },
+                    { from: 'sfx', channel: 'fx' as const },
+                  ],
+                },
+              },
+              (() => {
+                const s = makeFramingSlot(`niche_${niche_index}_saturation_verdict_0`, 'saturation_callout',
+                  'and their view consistency is amazing.',
+                  { composition: 'text_card', text: 'and their view consistency is amazing.', bg_mode: 'dark_gray', color_treatment: 'neutral' },
+                  ['whoosh'], 'dark_gray');
+                for (const l of s.compose.layers) if (l.channel === 'video') l.ken_burns = 'none';
+                return s;
+              })(),
+              {
+                slot_id: `niche_${niche_index}_saturation_1`,
+                beat_id: 'saturation_callout',
+                narration: `That consistency shows the real potential here.`,
+                gems: [
+                  { id: 'narr', tool: 'tts', args: { text: `That consistency shows the real potential here.`, voice: 'money_groot' } },
+                  { id: 'main', tool: 'yt_capture', args: { channelId: satCh, kind: 'videos_tab', mode: 'static' } },
+                ],
+                compose: {
+                  bg: 'dark_gray' as const,
+                  hold_s: '{{narr.duration_s}}',
+                  dwell_s: 0.6,
+                  layers: [
+                    { from: 'main', channel: 'video' as const, fit: 'contain' as const, crop_target: 'videos_wall' },
+                    { from: 'narr', channel: 'voice' as const },
+                  ],
+                },
+              },
+            ];
+          } else if (others.length >= 2) {
+            const pageFrags = others.length === 3
+              ? ['And when you look around,', `you'll see many channels`, 'doing this']
+              : ['And when you look around,', `you'll see many channels doing this`];
+            saturationSlots = others.map((satCh, si) => ({
+              slot_id: `niche_${niche_index}_saturation_${si}`,
+              beat_id: 'saturation_callout',
+              narration: pageFrags[si],
+              gems: [
+                { id: 'narr', tool: 'tts', args: { text: pageFrags[si], voice: 'money_groot' } },
+                { id: 'main', tool: 'yt_capture', args: { channelId: satCh, kind: 'channel_page', mode: 'static' } },
+                ...(si === 0 ? [{ id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } }] : []),
+              ],
+              compose: {
+                bg: 'dark_gray' as const,
+                hold_s: '{{narr.duration_s}}',
+                layers: [
+                  { from: 'main', channel: 'video' as const, fit: 'contain' as const, crop_target: 'channel_page_full' },
+                  { from: 'narr', channel: 'voice' as const },
+                  ...(si === 0 ? [{ from: 'sfx', channel: 'fx' as const }] : []),
+                ],
+              },
+            }));
+            const verdicts = ['and performing well', 'with the same format.'].map((line, vi) => {
+              // Reference SC1: first card pop-on regular; SECOND card is an
+              // ITALIC word-by-word build.
+              const s = makeFramingSlot(`niche_${niche_index}_saturation_verdict_${vi}`, 'saturation_callout', line,
+                { composition: 'text_card', text: line, bg_mode: 'dark_gray', color_treatment: 'neutral', ...(vi === 1 ? { italic: true } : {}) },
+                ['whoosh'], 'dark_gray');
+              // Static cards (spec: no ken burns on these beats); second
+              // card carries no extra whoosh — one cut cue is enough.
+              for (const l of s.compose.layers) if (l.channel === 'video') l.ken_burns = 'none';
+              if (vi === 1) {
+                s.gems = s.gems.filter(g => g.id !== 'sfx');
+                s.compose.layers = s.compose.layers.filter(l => l.from !== 'sfx');
+              }
+              return s;
+            });
+            saturationSlots.push(...verdicts);
+          }
+        }
+        if (channelBSlots.length || saturationSlots.length) {
+          console.log(`[similar] niche ${niche_index}: B=${b.channel_name} (${b.similarity}), sat=${sim.saturationCount}, slots=${channelBSlots.length}+${saturationSlots.length}`);
+        }
       }
     } catch (e) {
       console.warn(`[similar] lookup failed for ${cid}: ${(e as Error).message.slice(0, 120)}`);
@@ -1330,7 +1525,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       ...moneyMath,
       ...recipeSlots,
       ...channelBSlots,
-      ...(saturationSlot ? [saturationSlot] : []),
+      ...saturationSlots,
       ...(conceptSlot ? [conceptSlot] : []),
       transitionSlot,
     ];

@@ -48,10 +48,17 @@ const CARD_INNER_PAD_Y = 40;
  */
 export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promise<string> {
   // 1. Compute crop bounds from joined_date anchor.
+  // 2026-06-12 (channel-b gap V10): top was joined.y-110, which sliced the
+  // "More info" heading mid-glyph; bottom was joined.y+262, which reached
+  // past the modal edge and caught ~25px of the page bleeding underneath
+  // (thumbnail row sliver). New bounds: -96 starts exactly below the
+  // heading; +222 ends inside the modal, just under the Share button.
+  // (No row icons exist in the current YT modal — the left gutter is
+  // genuine modal padding, verified against a live capture.)
   const cropX = Math.max(0, joined.x - 44);
-  const cropY = Math.max(0, joined.y - 110);
+  const cropY = Math.max(0, joined.y - 96);
   const cropW = joined.w + 308;
-  const cropH = 372;
+  const cropH = 318;
 
   // Clamp to source dimensions.
   const meta = await sharp(srcPath).metadata();
@@ -121,10 +128,11 @@ export async function composeAboutPanelMG(srcPath: string, joined: BBox): Promis
  *   row:    bbox of the row to highlight (subscriber_count etc.) in source coords
  */
 export function aboutPanelRowCanvasPos(joined: BBox, row: BBox): { x: number; y: number; w: number; h: number } {
+  // MUST mirror composeAboutPanelMG's crop constants 1:1.
   const cropX = joined.x - 44;
-  const cropY = joined.y - 110;
+  const cropY = joined.y - 96;
   const cropW = joined.w + 308;
-  const cropH = 372;
+  const cropH = 318;
 
   const innerW = CARD_W - 2 * CARD_INNER_PAD_X;
   const innerH = CARD_H - 2 * CARD_INNER_PAD_Y;
@@ -207,18 +215,51 @@ const PANO_INNER_PAD = 30;
  *   xLeft = subs.x-356 → x=240 (past Subscribe button gutter)
  *   Card 1500×440 (was 1500×700) with 20px inner pad (was 40)
  */
-const CHIP_CARD_W = 1500;
-const CHIP_CARD_H = 440;
+// Reference geometry from the transcript-aligned frame study (2026-06-12,
+// MG niche_1 channel_b "MAX STICK" chip): chip card ~48% of frame width,
+// aspect ~3:1, dark chip on a canvas that is WHITE (253,253,253) or DARK
+// (60,60,60) depending on the niche's canvas run. Card wraps its content
+// TIGHTLY (no letterbox bands) with generous inner padding.
+const CHIP_CONTENT_W = 840;   // 930px card minus padding ≈ 48% of 1920
 const CHIP_CARD_RADIUS = 36;
-const CHIP_INNER_PAD = 20;
+const CHIP_INNER_PAD = 44;
+// Card fill = YT page black (#0D0D0D) so the cropped chip content blends
+// seamlessly into the card (reference chips are one continuous tone; the
+// 32,32,32 modal gray left a visible two-tone band — Prumhy test).
+const CHIP_CARD_BG = { r: 13, g: 13, b: 13 };
 
-export async function composeChannelChipMG(srcPath: string, subs: BBox): Promise<string> {
+export type MgCanvas = 'white' | 'dark_gray';
+const MG_CANVAS_RGB: Record<MgCanvas, { r: number; g: number; b: number }> = {
+  white: { r: 253, g: 253, b: 253 },     // #FDFDFD — measured on MG frames
+  dark_gray: { r: 60, g: 60, b: 60 },    // #3C3C3C — measured on MG frames
+};
+
+export async function composeChannelChipMG(srcPath: string, subs: BBox, opts: { canvas?: MgCanvas; subscribeBtn?: BBox; channelName?: BBox; tabsRow?: BBox } = {}): Promise<string> {
   // 1. Compute crop bounds from subscriber_count anchor.
   //    Banner ends at y=227 in YT dark mode → cropY = subs.y - 68 = 228.
-  const cropX = Math.max(0, subs.x - 356);
-  const cropY = Math.max(0, subs.y - 68);
+  //    Bottom: just below the Subscribe button when its bbox is known
+  //    (reference chips END at the button row — never the tabs row);
+  //    fallback +150 covers the button row even with a links line above
+  //    (+110 half-cut the buttons on channels with links — Prumhy test).
+  // -336 (was -356): the extra 20px caught the page's separator hairlines
+  // left of the avatar (Prumhy test); reference chips are clean black.
+  const cropX = Math.max(0, subs.x - 336);
+  // Top: just above the channel-name row when its bbox is known (the
+  // fixed -68 caught a banner sliver on channels whose banner ends low).
+  const nameOk = opts.channelName && opts.channelName.y < subs.y && opts.channelName.y > subs.y - 90;
+  const cropY = Math.max(0, nameOk ? opts.channelName!.y - 14 : subs.y - 68);
   const cropW = subs.x + subs.w + 320 - cropX;
-  const cropH = subs.y + 110 - cropY;
+  // Bottom: trust the Subscribe-button bbox only when it sits BELOW the
+  // stats line and within chip range — the page can contain other
+  // "Subscribe" texts (job 157: a wrong match cut the bio + button off).
+  const btnOk = opts.subscribeBtn && opts.subscribeBtn.y > subs.y + 10 && opts.subscribeBtn.y < subs.y + 240;
+  const tabsOk = opts.tabsRow && opts.tabsRow.y > subs.y + 60 && opts.tabsRow.y < subs.y + 280;
+  const cropBottom = btnOk
+    ? opts.subscribeBtn!.y + opts.subscribeBtn!.h + 16
+    : tabsOk
+      ? opts.tabsRow!.y - 12
+      : subs.y + 150;
+  const cropH = cropBottom - cropY;
 
   // Clamp to source dimensions.
   const meta = await sharp(srcPath).metadata();
@@ -233,43 +274,31 @@ export async function composeChannelChipMG(srcPath: string, subs: BBox): Promise
     .png()
     .toBuffer();
 
-  // 3. Build clean dark card.
-  const cardSvg = `<svg width="${CHIP_CARD_W}" height="${CHIP_CARD_H}">
-    <rect x="0" y="0" width="${CHIP_CARD_W}" height="${CHIP_CARD_H}"
-          rx="${CHIP_CARD_RADIUS}" ry="${CHIP_CARD_RADIUS}"
-          fill="rgb(${CARD_BG.r},${CARD_BG.g},${CARD_BG.b})"/>
-  </svg>`;
-  const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
-
-  // 4. Fit content inside card preserving aspect.
-  const innerW = CHIP_CARD_W - 2 * CHIP_INNER_PAD;
-  const innerH = CHIP_CARD_H - 2 * CHIP_INNER_PAD;
-  const cropAspect = safeW / safeH;
-  const innerAspect = innerW / innerH;
-  let fitW: number, fitH: number;
-  if (cropAspect > innerAspect) {
-    fitW = innerW;
-    fitH = Math.round(innerW / cropAspect);
-  } else {
-    fitH = innerH;
-    fitW = Math.round(innerH * cropAspect);
-  }
+  // 3. Scale content to the reference width; card wraps it tightly.
+  const fitW = CHIP_CONTENT_W;
+  const fitH = Math.round(CHIP_CONTENT_W * safeH / safeW);
   const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
+  const cardW = fitW + 2 * CHIP_INNER_PAD;
+  const cardH = fitH + 2 * CHIP_INNER_PAD;
 
-  // 5. Composite content into card, centered.
-  const innerLeft = Math.round((CHIP_CARD_W - fitW) / 2);
-  const innerTop = Math.round((CHIP_CARD_H - fitH) / 2);
-  const cardWithContent = await sharp(cardBase)
-    .composite([{ input: fitted, left: innerLeft, top: innerTop }])
-    .png()
-    .toBuffer();
+  const cardSvg = `<svg width="${cardW}" height="${cardH}">
+    <rect x="0" y="0" width="${cardW}" height="${cardH}"
+          rx="${CHIP_CARD_RADIUS}" ry="${CHIP_CARD_RADIUS}"
+          fill="rgb(${CHIP_CARD_BG.r},${CHIP_CARD_BG.g},${CHIP_CARD_BG.b})"/>
+  </svg>`;
+  const cardWithContent = await sharp(Buffer.from(cardSvg)).png().toBuffer()
+    .then(base => sharp(base)
+      .composite([{ input: fitted, left: CHIP_INNER_PAD, top: CHIP_INNER_PAD }])
+      .png()
+      .toBuffer());
 
-  // 6. Place card centered on white canvas.
-  const cardX = Math.round((CANVAS_W - CHIP_CARD_W) / 2);
-  const cardY = Math.round((CANVAS_H - CHIP_CARD_H) / 2);
+  // 4. Place card centered on the canvas.
+  const canvasBg = MG_CANVAS_RGB[opts.canvas ?? 'white'];
+  const cardX = Math.round((CANVAS_W - cardW) / 2);
+  const cardY = Math.round((CANVAS_H - cardH) / 2);
   const outPath = path.join(os.tmpdir(), `mg-channel-chip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
   await sharp({
-    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: CANVAS_BG },
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: { ...canvasBg, alpha: 1 } },
   })
     .composite([{ input: cardWithContent, left: cardX, top: cardY }])
     .png()
@@ -289,14 +318,19 @@ export async function composeChannelChipMG(srcPath: string, subs: BBox): Promise
  * area (x:248-1440, y:48-900 in a 1440×900 capture). Places that
  * cropped page inside a dark rounded card on a medium-gray canvas.
  */
-const CPAGE_OUTER_BG = { r: 95, g: 95, b: 95 };
+// Reference geometry from the transcript-aligned frame study (2026-06-12):
+// MG page cards are ~58-61% of frame width × ~84% height (MAX STICK 55.5%,
+// KAD STICK 60.7%), wrap their content TIGHTLY (no letterbox bands), and
+// sit on a canvas that is WHITE (253,253,253 — niche_1 channel_b) or DARK
+// (60,60,60 — niche_2 channel_b, all saturation pages). The old 95-gray
+// canvas and 92%-width card were both off-reference.
 const CPAGE_CARD_BG  = { r: 16, g: 16, b: 16 };
-const CPAGE_CARD_W = 1760;
-const CPAGE_CARD_H = 980;
 const CPAGE_CARD_RADIUS = 36;
 const CPAGE_INNER_PAD = 24;
+const CPAGE_CONTENT_W = 1120;  // card ≈ 1168px ≈ 61% of 1920
+const CPAGE_MAX_CARD_H = 980;
 
-export async function composeChannelPageFullMG(srcPath: string): Promise<string> {
+export async function composeChannelPageFullMG(srcPath: string, opts: { canvas?: MgCanvas } = {}): Promise<string> {
   // 1. Crop the page content area (excludes YT sidebar + top search bar).
   const meta = await sharp(srcPath).metadata();
   const srcW = meta.width ?? 1440;
@@ -307,50 +341,45 @@ export async function composeChannelPageFullMG(srcPath: string): Promise<string>
   const cropX = sidebarW;
   const cropY = topBarH;
   const cropW = srcW - cropX;
-  const cropH = srcH - cropY;
+  let cropH = srcH - cropY;
+
+  // 2. Scale content to the reference width; the card wraps it tightly.
+  //    If the scaled page is taller than the max card, trim the SOURCE
+  //    bottom (page clips mid-grid at the card edge — reference-canon).
+  let fitW = CPAGE_CONTENT_W;
+  let fitH = Math.round(fitW * cropH / cropW);
+  const maxFitH = CPAGE_MAX_CARD_H - 2 * CPAGE_INNER_PAD;
+  if (fitH > maxFitH) {
+    cropH = Math.round(maxFitH * cropW / fitW);
+    fitH = maxFitH;
+  }
 
   const cropped = await sharp(srcPath)
     .extract({ left: cropX, top: cropY, width: cropW, height: cropH })
     .png()
     .toBuffer();
+  const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
 
-  // 2. Build clean dark card with rounded corners.
-  const cardSvg = `<svg width="${CPAGE_CARD_W}" height="${CPAGE_CARD_H}">
-    <rect x="0" y="0" width="${CPAGE_CARD_W}" height="${CPAGE_CARD_H}"
+  const cardW = fitW + 2 * CPAGE_INNER_PAD;
+  const cardH = fitH + 2 * CPAGE_INNER_PAD;
+  const cardSvg = `<svg width="${cardW}" height="${cardH}">
+    <rect x="0" y="0" width="${cardW}" height="${cardH}"
           rx="${CPAGE_CARD_RADIUS}" ry="${CPAGE_CARD_RADIUS}"
           fill="rgb(${CPAGE_CARD_BG.r},${CPAGE_CARD_BG.g},${CPAGE_CARD_BG.b})"/>
   </svg>`;
-  const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+  const cardWithContent = await sharp(Buffer.from(cardSvg)).png().toBuffer()
+    .then(base => sharp(base)
+      .composite([{ input: fitted, left: CPAGE_INNER_PAD, top: CPAGE_INNER_PAD }])
+      .png()
+      .toBuffer());
 
-  // 3. Fit cropped page inside card preserving aspect.
-  const innerW = CPAGE_CARD_W - 2 * CPAGE_INNER_PAD;
-  const innerH = CPAGE_CARD_H - 2 * CPAGE_INNER_PAD;
-  const cropAspect = cropW / cropH;
-  const innerAspect = innerW / innerH;
-  let fitW: number, fitH: number;
-  if (cropAspect > innerAspect) {
-    fitW = innerW;
-    fitH = Math.round(innerW / cropAspect);
-  } else {
-    fitH = innerH;
-    fitW = Math.round(innerH * cropAspect);
-  }
-  const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
-
-  // 4. Composite content into card, centered.
-  const innerLeft = Math.round((CPAGE_CARD_W - fitW) / 2);
-  const innerTop = Math.round((CPAGE_CARD_H - fitH) / 2);
-  const cardWithContent = await sharp(cardBase)
-    .composite([{ input: fitted, left: innerLeft, top: innerTop }])
-    .png()
-    .toBuffer();
-
-  // 5. Place card centered on light-gray outer canvas.
-  const cardX = Math.round((CANVAS_W - CPAGE_CARD_W) / 2);
-  const cardY = Math.round((CANVAS_H - CPAGE_CARD_H) / 2);
+  // 3. Place card centered on the canvas.
+  const canvasBg = MG_CANVAS_RGB[opts.canvas ?? 'dark_gray'];
+  const cardX = Math.round((CANVAS_W - cardW) / 2);
+  const cardY = Math.round((CANVAS_H - cardH) / 2);
   const outPath = path.join(os.tmpdir(), `mg-channel-page-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
   await sharp({
-    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: CPAGE_OUTER_BG },
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: { ...canvasBg, alpha: 1 } },
   })
     .composite([{ input: cardWithContent, left: cardX, top: cardY }])
     .png()
@@ -368,14 +397,17 @@ export async function composeChannelPageFullMG(srcPath: string): Promise<string>
  * meta in YT's lockup model — see niche-spy-style bbox extraction).
  * Local verification: /tmp/iter/out_single_card_c.png.
  */
-const RAPID_OUTER_BG = { r: 35, g: 35, b: 35 };  // MG dark canvas
+// Canvas re-measured 2026-06-12 on the transcript-aligned frame study:
+// MG's dark canvas is 60,60,60 everywhere (was 35,35,35 here). Card width
+// is per-beat: hero rapid-fire ~57% (1100); channel_b lone top-video card
+// ~34% (660 — MG niche_4 "1.3m views" payoff card).
 const RAPID_CARD_BG  = { r: 22, g: 22, b: 22 };  // slightly darker inner card
 const RAPID_CARD_W = 1100;                        // ~57% of 1920 canvas
 const RAPID_CARD_RADIUS = 36;
 const RAPID_INNER_PAD = 30;
 const RAPID_CROP_PAD = 14;                        // breathing room around card bbox
 
-export async function composeThumbnailRapidFireMG(srcPath: string, cardBbox: BBox): Promise<string> {
+export async function composeThumbnailRapidFireMG(srcPath: string, cardBbox: BBox, opts: { canvas?: MgCanvas; cardW?: number } = {}): Promise<string> {
   // 1. Crop the single card from the videos_tab capture. The bbox is from
   //    YT's yt-lockup-view-model — already covers thumb + title + meta.
   const cropX = Math.max(0, cardBbox.x - RAPID_CROP_PAD);
@@ -393,17 +425,18 @@ export async function composeThumbnailRapidFireMG(srcPath: string, cardBbox: BBo
 
   // 2. Build the dark rounded card. Adapt card height to maintain the
   //    crop aspect (so the title row sits naturally below the thumbnail).
+  const cardWidth = opts.cardW ?? RAPID_CARD_W;
   const cropAspect = safeW / safeH;
-  const cardH = Math.round(RAPID_CARD_W / cropAspect);
-  const cardSvg = `<svg width="${RAPID_CARD_W}" height="${cardH}">
-    <rect x="0" y="0" width="${RAPID_CARD_W}" height="${cardH}"
+  const cardH = Math.round(cardWidth / cropAspect);
+  const cardSvg = `<svg width="${cardWidth}" height="${cardH}">
+    <rect x="0" y="0" width="${cardWidth}" height="${cardH}"
           rx="${RAPID_CARD_RADIUS}" ry="${RAPID_CARD_RADIUS}"
           fill="rgb(${RAPID_CARD_BG.r},${RAPID_CARD_BG.g},${RAPID_CARD_BG.b})"/>
   </svg>`;
   const cardBase = await sharp(Buffer.from(cardSvg)).png().toBuffer();
 
   // 3. Fit the cropped card inside the inner padded area.
-  const innerW = RAPID_CARD_W - 2 * RAPID_INNER_PAD;
+  const innerW = cardWidth - 2 * RAPID_INNER_PAD;
   const innerH = cardH - 2 * RAPID_INNER_PAD;
   const fitted = await sharp(cropped)
     .resize(innerW, innerH, { fit: 'contain', background: RAPID_CARD_BG })
@@ -414,14 +447,102 @@ export async function composeThumbnailRapidFireMG(srcPath: string, cardBbox: BBo
     .png()
     .toBuffer();
 
-  // 4. Place card centered on dark canvas.
-  const cardX = Math.round((CANVAS_W - RAPID_CARD_W) / 2);
+  // 4. Place card centered on the canvas (measured MG colors).
+  const canvasBg = MG_CANVAS_RGB[opts.canvas ?? 'dark_gray'];
+  const cardX = Math.round((CANVAS_W - cardWidth) / 2);
   const cardY = Math.round((CANVAS_H - cardH) / 2);
   const outPath = path.join(os.tmpdir(), `mg-rapid-fire-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
   await sharp({
-    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: RAPID_OUTER_BG },
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: { ...canvasBg, alpha: 1 } },
   })
     .composite([{ input: cardWithContent, left: cardX, top: cardY }])
+    .png()
+    .toFile(outPath);
+  return outPath;
+}
+
+/**
+ * Compose an MG-style "grid wall" — a header-less videos grid as a wide
+ * rounded card on the dark canvas. Reference: saturation Form B
+ * (transcript-aligned frame study 2026-06-12, MG niche_4 Valaritas wall
+ * at "That consistency shows the real potential here."): 3 rows x 4 cols,
+ * NO channel header, top row CLIPPED mid-thumbnail at the card edge,
+ * every card showing title + views + age — the view-count consistency
+ * proof. Card ~81% of frame width.
+ */
+const WALL_CONTENT_W = 1560;
+const WALL_MAX_CARD_H = 980;
+
+export async function composeGridWallMG(srcPath: string, cardBboxes: BBox[], opts: { canvas?: MgCanvas } = {}): Promise<string> {
+  if (cardBboxes.length < 4) throw new Error('composeGridWallMG: need >= 4 card bboxes');
+  let cards = cardBboxes.slice(0, 12);
+  // Pre-shrink: if the union (minus the top clip) would overflow the max
+  // card height once scaled, drop the LAST ROW of cards rather than
+  // pixel-trimming through a row's title/meta (reference walls always end
+  // on a complete row of metadata).
+  for (;;) {
+    const minY0 = Math.min(...cards.map(c => c.y));
+    const maxY0 = Math.max(...cards.map(c => c.y + c.h));
+    const minX0 = Math.min(...cards.map(c => c.x));
+    const maxX0 = Math.max(...cards.map(c => c.x + c.w));
+    const h0 = (maxY0 + 10) - (minY0 + Math.round(cards[0].h * 0.25));
+    const w0 = (maxX0 + 8) - (minX0 - 8);
+    if (cards.length <= 4 || Math.round(WALL_CONTENT_W * h0 / w0) <= WALL_MAX_CARD_H - 48) break;
+    cards = cards.slice(0, cards.length - 4);
+  }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const b of cards) {
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.w > maxX) maxX = b.x + b.w;
+    if (b.y + b.h > maxY) maxY = b.y + b.h;
+  }
+  // Top edge cuts INTO the first row's thumbnails (reference-canon clip).
+  const cropX = Math.max(0, minX - 8);
+  const cropY = Math.max(0, minY + Math.round(cards[0].h * 0.25));
+  const cropW = (maxX + 8) - cropX;
+  let cropH = (maxY + 10) - cropY;
+
+  const meta = await sharp(srcPath).metadata();
+  const srcW = meta.width ?? 1700;
+  const srcH = meta.height ?? 2500;
+  const safeW = Math.min(cropW, srcW - cropX);
+  cropH = Math.min(cropH, srcH - cropY);
+
+  // Scale to reference width; the card wraps tightly; trim the source
+  // bottom if the card would exceed the frame.
+  const fitW = WALL_CONTENT_W;
+  const pad = 24;
+  let fitH = Math.round(fitW * cropH / safeW);
+  const maxFitH = WALL_MAX_CARD_H - 2 * pad;
+  if (fitH > maxFitH) {
+    cropH = Math.round(maxFitH * safeW / fitW);
+    fitH = maxFitH;
+  }
+  const cropped = await sharp(srcPath)
+    .extract({ left: cropX, top: cropY, width: safeW, height: cropH })
+    .png()
+    .toBuffer();
+  const fitted = await sharp(cropped).resize(fitW, fitH).png().toBuffer();
+
+  const cardW = fitW + 2 * pad;
+  const cardH = fitH + 2 * pad;
+  const cardSvg = `<svg width="${cardW}" height="${cardH}">
+    <rect x="0" y="0" width="${cardW}" height="${cardH}" rx="36" ry="36"
+          fill="rgb(${CPAGE_CARD_BG.r},${CPAGE_CARD_BG.g},${CPAGE_CARD_BG.b})"/>
+  </svg>`;
+  const cardWithContent = await sharp(Buffer.from(cardSvg)).png().toBuffer()
+    .then(base => sharp(base)
+      .composite([{ input: fitted, left: pad, top: pad }])
+      .png()
+      .toBuffer());
+
+  const canvasBg = MG_CANVAS_RGB[opts.canvas ?? 'dark_gray'];
+  const outPath = path.join(os.tmpdir(), `mg-grid-wall-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  await sharp({
+    create: { width: CANVAS_W, height: CANVAS_H, channels: 4, background: { ...canvasBg, alpha: 1 } },
+  })
+    .composite([{ input: cardWithContent, left: Math.round((CANVAS_W - cardW) / 2), top: Math.round((CANVAS_H - cardH) / 2) }])
     .png()
     .toFile(outPath);
   return outPath;

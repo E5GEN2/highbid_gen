@@ -193,21 +193,23 @@ Recipe summary: ${summary ?? '—'}`;
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.4, maxOutputTokens: 600, thinkingConfig: { thinkingBudget: 0 } },
   });
-  // DIRECT first (works from local dev — the key is the auth); proxy
-  // fallback for Railway where egress IP diversity matters.
+  // PROXY first: Google keys free-tier quota per (project, caller-IP
+  // region); this machine's direct route lands in a region with
+  // quota_limit_value=0 (hard 429 on every key — probed 2026-06-11).
+  // Direct is a last resort for when no healthy proxy exists.
   let res: { ok: boolean; status: number; json(): Promise<unknown> } | null = null;
   try {
-    const rr = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(60_000) });
-    res = { ok: rr.ok, status: rr.status, json: () => rr.json() };
-  } catch { /* direct egress blocked — try proxy */ }
+    const { getRandomHealthyProxy } = await import('../xgodo-proxy');
+    const { fetchViaProxy } = await import('../proxy-dispatcher');
+    const proxy = await getRandomHealthyProxy().catch(() => null);
+    if (proxy?.url) {
+      res = await fetchViaProxy(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeoutMs: 60_000 }, proxy.url);
+    }
+  } catch { /* proxy path failed — try direct */ }
   if (!res || !res.ok) {
     try {
-      const { getRandomHealthyProxy } = await import('../xgodo-proxy');
-      const { fetchViaProxy } = await import('../proxy-dispatcher');
-      const proxy = await getRandomHealthyProxy().catch(() => null);
-      if (proxy?.url) {
-        res = await fetchViaProxy(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeoutMs: 60_000 }, proxy.url);
-      }
+      const rr = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(60_000) });
+      res = { ok: rr.ok, status: rr.status, json: () => rr.json() };
     } catch { /* both paths failed */ }
   }
   if (!res || !res.ok) { console.warn(`[recipe-line] gemini HTTP ${res?.status ?? 'ERR'} for ${channelId}`); return null; }

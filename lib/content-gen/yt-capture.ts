@@ -28,6 +28,7 @@ const VIEWPORT = { width: 1440, height: 900 };  // generous card framing; YT loo
  *  viewport so multiple rows fit for the MG-style scroll-down pan. */
 const VIEWPORT_BY_KIND: Partial<Record<ScreenKind, { width: number; height: number }>> = {
   videos_tab: { width: 1700, height: 2500 },
+  videos_tab_popular: { width: 1700, height: 2500 },
 };
 const NAV_TIMEOUT_MS = 45_000;
 const NETIDLE_MS = 3_000;
@@ -45,7 +46,7 @@ const SCREENSHOT_TIMEOUT_MS = 15_000;
 // producer continues to the next slot.
 const CAPTURE_HARD_TIMEOUT_MS = 90_000;
 
-export type ScreenKind = 'channel_page' | 'about_page' | 'videos_tab' | 'watch_page';
+export type ScreenKind = 'channel_page' | 'about_page' | 'videos_tab' | 'videos_tab_popular' | 'watch_page';
 export type CaptureMode = 'static' | 'scroll_record';
 export type AssetKind = 'image' | 'video';
 
@@ -326,6 +327,18 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
     { name: 'video_count',      regex: '^\\s*[\\d.,]+\\s*[KMB]?\\s*videos?\\s*$',
       hint: 'ytd-c4-tabbed-header-renderer, yt-page-header-renderer, #meta, #channel-header-container',
       min_w: 30, max_w: 200, min_h: 14, max_h: 30 },
+    // Subscribe button text — the chip composer crops its bottom edge just
+    // below this button (the MG reference chip ends at the button row,
+    // never showing the tabs row beneath it).
+    { name: 'subscribe_btn',    regex: '^\\s*Subscribe\\s*$',
+      hint: 'yt-subscribe-button-view-model, ytd-subscribe-button-renderer, #subscribe-button',
+      min_w: 50, max_w: 220, min_h: 16, max_h: 48 },
+    // "Videos" tab label — backstop bottom anchor for the chip crop when
+    // the subscribe_btn match is junk (job 158: it returned the subs-line
+    // rect). Chip bottom = tabs_row.y - 12.
+    { name: 'tabs_row',         regex: '^\\s*Videos\\s*$',
+      hint: 'yt-tab-shape, tp-yt-paper-tab, ytd-c4-tabbed-header-renderer, #tabs',
+      min_w: 30, max_w: 120, min_h: 14, max_h: 40, min_y: 360 },
   ],
   about_page: [
     // about_page: the channel header is visible BEHIND the about modal/dialog,
@@ -380,7 +393,11 @@ const BBOX_RULES: Record<ScreenKind, BBoxRule[]> = {
       hint: 'ytd-video-owner-renderer, #owner, #owner-sub-count',
       min_w: 60, max_w: 220, min_h: 14, max_h: 30 },
   ],
+  // Same grid as videos_tab, sorted by the Popular chip — rules assigned
+  // below (a literal can't self-reference).
+  videos_tab_popular: [],
 };
+BBOX_RULES.videos_tab_popular = BBOX_RULES.videos_tab;
 
 function urlFor(kind: ScreenKind, handle: string | null, channelId: string, watchVideoId?: string | null): string {
   const h = handle ? (handle.startsWith('@') ? handle : `@${handle}`) : null;
@@ -395,6 +412,9 @@ function urlFor(kind: ScreenKind, handle: string | null, channelId: string, watc
     case 'channel_page': return h ? `https://www.youtube.com/${h}/videos` : `https://www.youtube.com/channel/${channelId}/videos`;
     case 'about_page':   return h ? `https://www.youtube.com/${h}/about` : `https://www.youtube.com/channel/${channelId}/about`;
     case 'videos_tab':   return h ? `https://www.youtube.com/${h}/videos` : `https://www.youtube.com/channel/${channelId}/videos`;
+    // Same URL as videos_tab — the Popular sort is applied by clicking the
+    // chip after load (YT ignores the legacy ?sort=p param on the new layout).
+    case 'videos_tab_popular': return h ? `https://www.youtube.com/${h}/videos` : `https://www.youtube.com/channel/${channelId}/videos`;
     case 'watch_page':   if (!watchVideoId) throw new Error('watch_page needs watchVideoId'); return `https://www.youtube.com/watch?v=${watchVideoId}`;
   }
 }
@@ -622,7 +642,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // For videos_tab in STATIC mode: wait for grid thumbnails to actually
     // render. scroll_record has its own wait downstream; static needs this
     // here so the per-card bbox extraction sees real cards with thumbs.
-    if (kind === 'videos_tab' && captureMode === 'static') {
+    if ((kind === 'videos_tab' || kind === 'videos_tab_popular') && captureMode === 'static') {
       await page.waitForFunction(() => {
         const imgs = Array.from(document.querySelectorAll(
           'ytd-rich-item-renderer img, ytd-grid-video-renderer img, ytd-rich-grid-renderer img'
@@ -631,6 +651,29 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         return loaded.length >= 4;
       }, undefined, { timeout: 12_000 }).catch(() => { /* proceed anyway */ });
       await page.waitForTimeout(500);
+    }
+
+    // videos_tab_popular: click the "Popular" sort chip and let the grid
+    // re-sort. Popular puts the channel's top video at card_0, so the
+    // channel_b amplifier can speak views_texts[0] over that exact card
+    // (spec rule: spoken figure must match the on-screen card).
+    if (kind === 'videos_tab_popular') {
+      const clicked = await page.evaluate(() => {
+        const chips = Array.from(document.querySelectorAll(
+          'yt-chip-cloud-chip-renderer, ytd-feed-filter-chip-bar-renderer [role="tab"], [class*="ytChipShapeChip"]'
+        )) as HTMLElement[];
+        const pop = chips.find(c => /^\s*Popular\s*$/i.test(c.innerText || ''));
+        if (!pop) return false;
+        pop.click();
+        return true;
+      }).catch(() => false);
+      if (clicked) {
+        // The re-sorted grid swaps in place — no reliable DOM signal, so a
+        // fixed settle (thumbs were already loaded by the wait above).
+        await page.waitForTimeout(2_200);
+      } else {
+        console.warn(`[yt-capture] Popular chip not found for ${channelId} — grid stays Latest-sorted`);
+      }
     }
 
     // For channel_page: the "Popular videos" / featured shelf lazy-loads
@@ -647,6 +690,37 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         return loaded.length >= 2;
       }, undefined, { timeout: 9_000 }).catch(() => { /* proceed anyway */ });
       await page.waitForTimeout(400);
+    }
+
+    // Normalize COMPACT lockup metadata to the full classic format BEFORE
+    // extraction + screenshot. Some channels' grids render "611K" + "4mo
+    // ago" (yt-lockup compact); MG reference cards always show
+    // "611K views • 4 months ago". Rewriting the DOM here fixes both the
+    // rendered pixels and the views-text extraction in one place.
+    if (kind === 'videos_tab' || kind === 'videos_tab_popular' || kind === 'channel_page') {
+      await page.evaluate(() => {
+        const compactNum = /^\s*([\d.,]+\s*[KMB]?)\s*$/i;
+        const compactAge = /^\s*(\d+)\s*(s|min|m|h|d|w|mo|y)\s+ago\s*$/i;
+        const UNIT: Record<string, string> = { s: 'second', min: 'minute', m: 'minute', h: 'hour', d: 'day', w: 'week', mo: 'month', y: 'year' };
+        const spans = Array.from(document.querySelectorAll('span, yt-formatted-string'));
+        for (const sp of spans) {
+          const ownNodes = Array.from(sp.childNodes).filter(n => n.nodeType === 3);
+          const own = ownNodes.map(n => n.textContent ?? '').join('').trim();
+          const parentTxt = sp.parentElement?.textContent ?? '';
+          if (!/\bago\b/i.test(parentTxt)) continue;   // only meta rows
+          const mN = own.match(compactNum);
+          if (mN && ownNodes.length) {
+            ownNodes[0].textContent = `${mN[1].trim()} views`;
+            continue;
+          }
+          const mA = own.match(compactAge);
+          if (mA && ownNodes.length) {
+            const n = parseInt(mA[1], 10);
+            const unit = UNIT[mA[2].toLowerCase()] ?? mA[2];
+            ownNodes[0].textContent = `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+          }
+        }
+      }).catch(() => { /* cosmetic — extraction still works on raw text */ });
     }
 
     // Extract element bboxes for the renderer's annotation overlays. Done
@@ -872,7 +946,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     //   video_title_0, video_title_1, ...  — title text rect
     //
     // The renderer reads these to build per-card crops + per-card annotations.
-    if (kind === 'videos_tab' || kind === 'channel_page') {
+    if (kind === 'videos_tab' || kind === 'videos_tab_popular' || kind === 'channel_page') {
       try {
         const result = await page.evaluate((vpW: number) => {
           // The video card renderers used by YT. Order matters: prefer the
