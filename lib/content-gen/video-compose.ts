@@ -264,20 +264,44 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             : 5; // views
           const r = rows[rowIdx];
           if (r) {
-            // TEXT_X = canvas x where "1" of "107K subscribers" / "40,084,120
-            // views" begins (right after the icon column). Measured locally
-            // 2026-06-10 on phantomized composed PNG — text starts at x≈625-640
-            // depending on row; 625 picks up the leftmost stroke reliably.
-            // PRIOR BUG: TEXT_X=637 + TEXT_X_OFFSET=24 in highlight builder put
-            // startX=661 — past the "1", so highlight visibly began at "7K" not
-            // "107K". Reduced to 625 here AND set TEXT_X_OFFSET=0 in the
-            // drawbox builder below so the math composes cleanly: startX = 625.
-            const TEXT_X = 625;       // canvas x at the "1" of "107K subscribers"
+            // Scan the row band HORIZONTALLY for the text's actual extent.
+            // A hardcoded TEXT_X (625, measured 2026-06-10) broke whenever
+            // the composer geometry changed (2026-06-12: the tightened
+            // about-panel crop rescaled content and the highlight started
+            // past the "1" of "107K subscribers" — user report). Scanning
+            // the rendered pixels survives geometry changes and sizes the
+            // bar to the row's real width instead of a worst-case 300px.
+            //
+            // Two-step: (1) find the CARD's horizontal bounds on a quiet
+            // line just above the row — the card is near-black (<50) while
+            // the canvas is white 253 or gray 60, so the contiguous dark
+            // run containing the frame center IS the card. Scanning the
+            // raw band without this read the white canvas as "text" and
+            // stretched the bar across the whole card.
+            const quietY = Math.max(0, r.top - 12);
+            const darkAt = (x: number) => {
+              const off = (quietY * info.width + x) * info.channels;
+              return (data[off] + data[off + 1] + data[off + 2]) / 3 < 50;
+            };
+            let cardX0 = Math.floor(info.width / 2), cardX1 = cardX0;
+            while (cardX0 > 0 && darkAt(cardX0 - 1)) cardX0--;
+            while (cardX1 < info.width - 1 && darkAt(cardX1 + 1)) cardX1++;
+            // (2) text extent inside the card (white text on near-black).
+            let x0 = -1, x1 = -1;
+            for (let x = cardX0 + 12; x < cardX1 - 12; x++) {
+              let bright = 0;
+              for (let y = r.top; y < r.top + r.h; y++) {
+                const off = (y * info.width + x) * info.channels;
+                bright += (data[off] + data[off + 1] + data[off + 2]) / 3;
+              }
+              bright /= Math.max(1, r.h);
+              if (bright > 110) { if (x0 < 0) x0 = x; x1 = x; }
+            }
             const PAD = 8;            // small vertical padding around row
             layer.highlight_canvas = {
-              x: TEXT_X,
+              x: x0 >= 0 ? x0 - 6 : 625,
               y: r.top - PAD,
-              w: 300,                  // covers worst-case row text width (incl. "40,084,120 views")
+              w: x0 >= 0 ? (x1 - x0) + 14 : 300,
               h: r.h + 2 * PAD,
             };
           }
