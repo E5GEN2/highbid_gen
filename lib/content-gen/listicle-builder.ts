@@ -1077,7 +1077,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       channelId: cid, recipe_formula_simplified: null, recipe_summary: null,
       recipe_beats: [], rpm_typical: null, rpm_low: null, rpm_high: null,
       geo_guess: null, age_phrase: null, median_views_phrase: null,
-      uploads_per_month: null, concept_word: null,
+      uploads_per_month: null, concept_word: null, concept_insight: null,
     }));
     const niche_index = acceptedCount + 1;
 
@@ -1216,10 +1216,16 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       withInjects.push(...rapidFireSlots);
       if (panoSlot) withInjects.push(panoSlot);
     }
-    // concept_tag — only when a concept word was derived for this channel.
-    const conceptLine = vars.concept_word
-      ? banks.pick('concept_tag', niche_index)?.replace('{WORD}', vars.concept_word.toLowerCase()) ?? null
-      : null;
+    // concept_tag — the niche-ESSENCE beat (user direction 2026-06-11:
+    // go deeper into what the niche is about, like MG's "Absurd Ranking"
+    // chalkboard). Narration = the Gemini insight sentence (what the
+    // niche is really about at its core); chalkboard = the 1-3 word
+    // essence phrase. Bank line remains the fallback when only the
+    // word exists (pre-insight cache rows).
+    const conceptLine = vars.concept_insight
+      ?? (vars.concept_word
+        ? banks.pick('concept_tag', niche_index)?.replace('{WORD}', vars.concept_word.toLowerCase()) ?? null
+        : null);
     const conceptSlot = vars.concept_word && conceptLine
       ? buildConceptSlot(niche_index, vars.concept_word, conceptLine)
       : null;

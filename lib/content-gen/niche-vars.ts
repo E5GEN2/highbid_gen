@@ -38,9 +38,12 @@ export interface NicheVars {
   /** "hundreds of thousands of views per upload" — median view class. */
   median_views_phrase: string | null;
   uploads_per_month: number | null;
-  /** Single concept word for the chalkboard concept_tag beat (skeleton
-   *  beat 11) — e.g. "CONSISTENCY" / "ATMOSPHERE". Null → beat skipped. */
+  /** Short niche-essence phrase for the chalkboard (concept_tag beat) —
+   *  e.g. "SCALE SHOCK" / "ABSURD RANKING". Null → beat skipped. */
   concept_word: string | null;
+  /** One-sentence insight: what this niche is REALLY about at its core
+   *  (the concept_tag narration). */
+  concept_insight: string | null;
 }
 
 /** Spoken-friendly view counts: "29 million", "8.8 million", "107 thousand".
@@ -130,7 +133,7 @@ async function generateRecipeLine(
   nicheLabel: string | null,
   formula: string | null,
   summary: string | null,
-): Promise<{ line: string; concept: string | null } | null> {
+): Promise<{ line: string; concept: string | null; insight: string | null } | null> {
   if (!formula && !summary) return null;
   const pool = await getPool();
   // Same key+proxy stack as recipe-showcase (PapaiAPI is unreachable from
@@ -162,11 +165,19 @@ Rules for "line":
 - No visual details like colors, backgrounds, or silhouettes
 - Plain conversational words, no flowery adjectives
 
-Also pick "concept": the SINGLE most important success factor for this
-niche, ONE word, uppercase — e.g. CONSISTENCY, STORYTELLING, TIMING,
-SIMPLICITY, ATMOSPHERE, CURIOSITY.
+Also produce the niche-concept pair (for a chalkboard "here's what this
+niche is really about" beat):
+- "concept": the niche's CORE CONCEPT as a punchy 1-3 word phrase,
+  uppercase — what the niche is fundamentally about, NOT a generic
+  virtue. Examples: "ABSURD RANKING", "SCALE SHOCK", "LORE DECODING",
+  "FEAR BY NUMBERS". Never words like CONSISTENCY/QUALITY/PASSION.
+- "insight": ONE spoken sentence (12-18 words) explaining what the
+  niche is really about at its core — the psychological hook, why
+  viewers can't look away. Plain conversational words. Example: "At its
+  core, this niche is about scale — making unimaginable sizes feel real
+  next to things you know."
 
-Output ONLY JSON: {"line": "...", "concept": "..."}
+Output ONLY JSON: {"line": "...", "concept": "...", "insight": "..."}
 
 Channel data:
 Video description: ${formula ?? '—'}
@@ -199,11 +210,16 @@ Recipe summary: ${summary ?? '—'}`;
   const raw = data?.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('').trim() ?? '';
   let line = '';
   let concept: string | null = null;
+  let insight: string | null = null;
   try {
-    const j = JSON.parse(raw.replace(/^```(json)?/m, '').replace(/```$/m, '').trim()) as { line?: string; concept?: string };
+    const j = JSON.parse(raw.replace(/^```(json)?/m, '').replace(/```$/m, '').trim()) as { line?: string; concept?: string; insight?: string };
     line = (j.line ?? '').trim();
-    concept = (j.concept ?? '').trim().toUpperCase().replace(/[^A-Z-]/g, '') || null;
-    if (concept && (concept.length < 4 || concept.length > 16)) concept = null;
+    concept = (j.concept ?? '').trim().toUpperCase().replace(/[^A-Z0-9 -]/g, '').replace(/\s+/g, ' ') || null;
+    const cw = concept ? concept.split(' ').length : 0;
+    if (concept && (concept.length < 4 || concept.length > 24 || cw > 3)) concept = null;
+    insight = (j.insight ?? '').trim().replace(/^["']|["']$/g, '') || null;
+    const iw = insight ? insight.split(/\s+/).length : 0;
+    if (insight && (iw < 8 || iw > 22)) insight = null;
   } catch { line = raw; }
   line = line.replace(/^["']|["'.]+$/g, '').trim();
   // Validation per template spec: 5-13 words, single verb start (reject
@@ -219,17 +235,21 @@ Recipe summary: ${summary ?? '—'}`;
   if (!line || wc < 5 || wc > 13 || doubleVerb || overlap >= 0.8) return null;
   line = line.charAt(0).toLowerCase() + line.slice(1);
   await pool.query(
-    `UPDATE content_gen_channel_analysis SET recipe_formula_simple = $2, concept_word = COALESCE($3, concept_word) WHERE channel_id = $1`,
-    [channelId, line, concept]).catch(() => {});
-  return { line, concept };
+    `UPDATE content_gen_channel_analysis
+        SET recipe_formula_simple = $2,
+            concept_word = COALESCE($3, concept_word),
+            concept_insight = COALESCE($4, concept_insight)
+      WHERE channel_id = $1`,
+    [channelId, line, concept, insight]).catch(() => {});
+  return { line, concept, insight };
 }
 
 export async function loadNicheVars(channelId: string): Promise<NicheVars> {
   const pool = await getPool();
 
   const [analysis, showcase, rpm, stats] = await Promise.all([
-    pool.query<{ recipe_formula: string | null; recipe_formula_simple: string | null; niche_label: string | null; concept_word: string | null }>(
-      `SELECT recipe_formula, recipe_formula_simple, niche_label, concept_word FROM content_gen_channel_analysis WHERE channel_id = $1`, [channelId]),
+    pool.query<{ recipe_formula: string | null; recipe_formula_simple: string | null; niche_label: string | null; concept_word: string | null; concept_insight: string | null }>(
+      `SELECT recipe_formula, recipe_formula_simple, niche_label, concept_word, concept_insight FROM content_gen_channel_analysis WHERE channel_id = $1`, [channelId]),
     pool.query<{ recipe_summary: string | null; beats_jsonb: ShowcaseBeat[] }>(
       `SELECT recipe_summary, beats_jsonb FROM content_gen_recipe_showcase WHERE channel_id = $1`, [channelId]),
     pool.query<{ rpm_typical: number | null; rpm_low: number | null; rpm_high: number | null; geo_guess: string | null }>(
@@ -252,6 +272,10 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
   const ana = analysis.rows[0];
   let recipeLine = ana?.recipe_formula_simple ?? null;
   let conceptWord = ana?.concept_word ?? null;
+  let conceptInsight = ana?.concept_insight ?? null;
+  // Regenerate when the insight is missing (rows cached before the
+  // concept-deepening of 2026-06-11 carry only line+word).
+  if (!conceptInsight) recipeLine = null;
   if (!recipeLine && (ana?.recipe_formula || showcase.rows[0]?.recipe_summary)) {
     // Up to 3 attempts — validation (word count / double-verb / niche-name
     // parroting) rejects bad generations; retries absorb 429s.
@@ -261,7 +285,11 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
         channelId, ana?.niche_label ?? null, ana?.recipe_formula ?? null,
         showcase.rows[0]?.recipe_summary ?? null,
       ).catch(() => null);
-      if (gen) { recipeLine = gen.line; conceptWord = conceptWord ?? gen.concept; }
+      if (gen) {
+        recipeLine = gen.line;
+        conceptWord = gen.concept ?? conceptWord;
+        conceptInsight = gen.insight ?? conceptInsight;
+      }
     }
   }
   if (!recipeLine) recipeLine = simplifyRecipeFormula(ana?.recipe_formula);
@@ -279,5 +307,6 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
     median_views_phrase: medianViewsPhrase(stats.rows[0]?.median_views ?? null),
     uploads_per_month: months && videoCount ? Math.round(videoCount / months) : null,
     concept_word: conceptWord,
+    concept_insight: conceptInsight,
   };
 }
