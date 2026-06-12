@@ -28,8 +28,7 @@ TTS with word timecodes.
 | 17 | `mm_lump_sum` | THE money shot — the payoff number of the whole niche | giant green $ figure, ding | computed: top views × RPM |
 | 18 | `mm_closer` | Caps the claim ("from ads.") — implies it's only part of the revenue | white text card | fixed template |
 | 19-21 | `recipe_demo_0..2` | The actionability beat — HOW the videos are made; feeds "could I do this?" | the channel's REAL footage in the rounded mini-player (58%, watermark, lighter canvas), playing forward from the transcript-matched moment | transcript-grounded narration from `recipe_showcase.beats_jsonb` |
-| 22 | `concept_tag` | The distilled essence — what the niche is fundamentally about; teacher-authority moment | essence phrase as big bold black text on white ("IMAGINARY SCALE") | Gemini insight sentence ("At its core, this niche is about…", 12-18 words) |
-| 23 | `transition` | Breathing room before the next item; resets pacing | blank dark card, 0.5s | silent (80%) / bank `transition_optional` vocal (20%) |
+| 22 | `transition` | Breathing room before the next item; resets pacing | blank dark card, 0.5s | silent (80%) / bank `transition_optional` vocal (20%) |
 
 ## Video-level beats
 
@@ -54,6 +53,9 @@ TTS with word timecodes.
 
 ## Removed / not emitted
 
+- `concept_tag` — BENCHED 2026-06-11 (commented out in
+  buildListicleScript; the essence/insight data still generates and
+  caches — uncomment to re-enable).
 - `mascot_mosaic` — removed 2026-06-11 (off-reference; user veto).
 - `channel_intro` (chip) — removed; the recipe line plays over the full
   channel page per MG's pacing.

@@ -1182,19 +1182,19 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       if (panoSlot) withInjects.push(panoSlot);
       withInjects.push(...rapidFireSlots);
     }
-    // concept_tag — the niche-ESSENCE beat (user direction 2026-06-11:
-    // go deeper into what the niche is about, like MG's "Absurd Ranking"
-    // chalkboard). Narration = the Gemini insight sentence (what the
-    // niche is really about at its core); chalkboard = the 1-3 word
-    // essence phrase. Bank line remains the fallback when only the
-    // word exists (pre-insight cache rows).
-    const conceptLine = vars.concept_insight
-      ?? (vars.concept_word
-        ? banks.pick('concept_tag', niche_index)?.replace('{WORD}', vars.concept_word.toLowerCase()) ?? null
-        : null);
-    const conceptSlot = vars.concept_word && conceptLine
-      ? buildConceptSlot(niche_index, vars.concept_word, conceptLine)
-      : null;
+    // concept_tag — BENCHED (user request 2026-06-11): commented out of
+    // the render sequence for now. The essence/insight data still
+    // generates and caches (concept_word + concept_insight in
+    // content_gen_channel_analysis); to re-enable, uncomment this block
+    // and the nicheGroup line below.
+    // const conceptLine = vars.concept_insight
+    //   ?? (vars.concept_word
+    //     ? banks.pick('concept_tag', niche_index)?.replace('{WORD}', vars.concept_word.toLowerCase()) ?? null
+    //     : null);
+    // const conceptSlot = vars.concept_word && conceptLine
+    //   ? buildConceptSlot(niche_index, vars.concept_word, conceptLine)
+    //   : null;
+    const conceptSlot: Slot | null = null;
     // transition — vocal 20% of the time, silent breather otherwise.
     const transitionSlot = buildTransitionSlot(
       niche_index, banks.pick('transition_optional', niche_index, { skipProbability: 0.8 }));
