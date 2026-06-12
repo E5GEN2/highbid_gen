@@ -19,6 +19,7 @@ import { getPool } from '../db';
 import { ttsWithTimestamps, DEFAULT_VOICE_ID, type WordTiming } from './voice';
 import { loadNicheVars, spokenNumber, type NicheVars } from './niche-vars';
 import { BankSession, numberWord } from './phrase-banks';
+import { findSimilarChannels } from './similar-channels';
 
 export type ChannelEvent = {
   channelId: string;
@@ -1231,6 +1232,77 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       if (panoSlot) withInjects.push(panoSlot);
       withInjects.push(...rapidFireSlots);
     }
+    // channel_b_proof + saturation_callout (worked-example BEAT 4 reprise;
+    // MG t=728-734: "Another channel started posting just one month ago
+    // and is already performing well."). Channel B comes from embedding
+    // similarity over the WHOLE rofe library (hero top video KNN on the
+    // pgvector DB — user design 2026-06-11); saturation fires when >= 20
+    // channels clear the looser similarity bar.
+    let channelBSlots: Slot[] = [];
+    let saturationSlot: Slot | null = null;
+    try {
+      const sim = await findSimilarChannels(cid, channels);
+      const b = sim.channels[0];
+      if (b) {
+        const chB = await loadChannel(b.channel_id);
+        if (chB?.subscriber_count) {
+          const bVars = await loadNicheVars(b.channel_id).catch(() => null);
+          const opener = banks.pick('second_channel_opener', niche_index) ?? "And there's another channel";
+          const agePart = bVars?.age_phrase ? ` that started posting ${bVars.age_phrase}` : ' doing the exact same format';
+          const bLine1 = opener === 'Look at this one.'
+            ? `Look at this one. It started posting ${bVars?.age_phrase ?? 'recently'},`
+            : `${opener}${agePart},`;
+          const bLine2 = `and it already has ${humanizeNumber(chB.subscriber_count)} subscribers${chB.total_views ? ` with ${humanizeNumber(chB.total_views)} total views` : ''}.`;
+          channelBSlots = [{
+            slot_id: `niche_${niche_index}_channel_b_proof`,
+            beat_id: 'channel_b_proof',
+            narration: `${bLine1} ${bLine2}`,
+            gems: [
+              { id: 'narr', tool: 'tts', args: { text: `${bLine1} ${bLine2}`, voice: 'money_groot' } },
+              { id: 'main', tool: 'yt_capture', args: { channelId: b.channel_id, kind: 'channel_page', mode: 'static' } },
+              { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+            ],
+            compose: {
+              bg: 'white',
+              hold_s: '{{narr.duration_s}}',
+              layers: [
+                { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: 'channel_chip' },
+                { from: 'narr', channel: 'voice' },
+                { from: 'sfx', channel: 'fx' },
+              ],
+            },
+          }];
+        }
+      }
+      if (sim.saturated && sim.montagePool.length >= 4) {
+        const satLine = `And when you look around, you'll see many channels doing this and performing well with the same format.`;
+        saturationSlot = {
+          slot_id: `niche_${niche_index}_saturation_callout`,
+          beat_id: 'saturation_callout',
+          narration: satLine,
+          gems: [
+            { id: 'narr', tool: 'tts', args: { text: satLine, voice: 'money_groot' } },
+            { id: 'main', tool: 'logos_montage', args: { channelIds: sim.montagePool } },
+            { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+          ],
+          compose: {
+            bg: 'white',
+            hold_s: '{{narr.duration_s}}',
+            layers: [
+              { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_out_8pct' },
+              { from: 'narr', channel: 'voice' },
+              { from: 'sfx', channel: 'fx' },
+            ],
+          },
+        };
+      }
+      if (channelBSlots.length || saturationSlot) {
+        console.log(`[similar] niche ${niche_index}: B=${sim.channels[0]?.channel_name ?? '-'} (${sim.channels[0]?.similarity ?? '-'}), pool=${sim.saturationCount}`);
+      }
+    } catch (e) {
+      console.warn(`[similar] lookup failed for ${cid}: ${(e as Error).message.slice(0, 120)}`);
+    }
+
     // concept_tag — BENCHED (user request 2026-06-11): commented out of
     // the render sequence for now. The essence/insight data still
     // generates and caches (concept_word + concept_insight in
@@ -1257,6 +1329,8 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       ...withInjects,
       ...moneyMath,
       ...recipeSlots,
+      ...channelBSlots,
+      ...(saturationSlot ? [saturationSlot] : []),
       ...(conceptSlot ? [conceptSlot] : []),
       transitionSlot,
     ];

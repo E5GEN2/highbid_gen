@@ -56,8 +56,11 @@ if (process.argv.includes('--labels')) {
 // --local → run against the mirrored local Postgres (hbgen_local) instead of
 // Railway. Populate it first with scripts/local/pull-local.mts.
 if (process.argv.includes('--local')) {
+  // Keep the Railway URL reachable for services the local mirror can't
+  // serve (embedding lookups for similar-channel discovery).
+  process.env.HB_RAILWAY_DB_URL = process.env.DATABASE_URL;
   process.env.DATABASE_URL = 'postgresql://localhost:5432/hbgen_local';
-  console.log('[db] LOCAL hbgen_local');
+  console.log('[db] LOCAL hbgen_local (Railway kept for embeddings)');
 } else {
   console.log('[db] RAILWAY');
 }

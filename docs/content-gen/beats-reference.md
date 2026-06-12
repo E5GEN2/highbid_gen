@@ -28,7 +28,9 @@ TTS with word timecodes.
 | 17 | `mm_lump_sum` | THE money shot — the payoff number of the whole niche | giant green $ figure, ding | computed: top views × RPM |
 | 18 | `mm_closer` | Caps the claim ("from ads.") — implies it's only part of the revenue | white text card | fixed template |
 | 19-21 | `recipe_demo_0..2` | The actionability beat — HOW the videos are made; feeds "could I do this?" | the channel's REAL footage in the rounded mini-player (58%, watermark, lighter canvas), playing forward from the transcript-matched moment | transcript-grounded narration from `recipe_showcase.beats_jsonb` |
-| 22 | `transition` | Breathing room before the next item; resets pacing | blank dark card, 0.5s | silent (80%) / bank `transition_optional` vocal (20%) |
+| 22 | `channel_b_proof` | Pattern proof — a SECOND channel succeeding with the same format ("not a fluke") | channel B's chip, live-captured | bank `second_channel_opener` + started-posting age + subs/views; channel B found via embedding KNN (hero top video → pgvector, sim ≥ 0.78) |
+| 23 | `saturation_callout` | Opportunity-scale proof — "many channels are doing this" | logos montage of the 10 nearest lookalikes, zoom-out | worked-example line; fires when ≥ 20 channels clear sim 0.55 |
+| 24 | `transition` | Breathing room before the next item; resets pacing | blank dark card, 0.5s | silent (80%) / bank `transition_optional` vocal (20%) |
 
 ## Video-level beats
 
@@ -76,6 +78,7 @@ TTS with word timecodes.
 
 ## Anchor-only beats (exist in MG, not yet in our sequence)
 
-`channel_b_proof` (second-channel reprise) · `saturation_callout` ·
 `appreciation` (banked, planned p=0.3) · `tool_plug` · `personal_demo` ·
 `tips` — see `clips/mg-beats/<beat>/` for MG's executions of each.
+(`channel_b_proof` + `saturation_callout` built 2026-06-11 via embedding
+similarity — lib/content-gen/similar-channels.ts.)
