@@ -50,6 +50,12 @@ TTS with word timecodes.
 - **Word reveal**: text cards ≥4 words whose card text equals the
   narration pop word-by-word at the VO's timestamps.
 - **Technical mode** (`--labels`): every slot stamped with its slot_id.
+- **≤6 printed words per text screen** (MG rule): word-reveal cards PAGE —
+  sentences longer than 6 words break onto fresh cards at punctuation
+  boundaries, timed by the word timestamps.
+- **Icons get dedicated screens** (MG rule): icon cards render the icon
+  alone — no text. Sole sanctioned combo: the RPM-assumption card
+  (shrug + "$3 RPM").
 
 ## Removed / not emitted
 

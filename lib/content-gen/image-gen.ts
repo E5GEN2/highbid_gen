@@ -53,7 +53,7 @@ const MAX_TEXT_LEN = 80;
 /** Hash the args → cache key. */
 // Renderer version — salts the PNG disk cache so restyled compositions
 // regenerate (args alone missed the 2026-06-11 chalkboard restyle).
-const RENDERER_VERSION = 'r2';
+const RENDERER_VERSION = 'r3'; // r3: reveal paging (<=6 words/screen) + icon-only screens
 
 function cacheKey(args: ImageGenArgs, width: number, height: number): string {
   const key = JSON.stringify({ v: RENDERER_VERSION, ...args, width, height });
@@ -144,24 +144,63 @@ function renderTextCard(args: ImageGenArgs, width: number, height: number): stri
  *  each word pops in as it's spoken). LAYOUT STABILITY: every variant
  *  renders the FULL text (identical wrap/centering); words beyond k are
  *  painted with fill-opacity 0. k=0 → blank card, k=wordCount → full. */
+const MAX_WORDS_PER_SCREEN = 6;  // MG never prints more than 6 words per text screen
+
+/** Split words into pages of <= MAX_WORDS_PER_SCREEN, preferring to break
+ *  right after punctuation (, . — ;) like MG does ("are probably" /
+ *  "from the US."). Returns the page index of each word. */
+function pageOfWords(words: string[]): number[] {
+  const pages: number[] = [];
+  let page = 0, count = 0, lastPunct = -1;
+  for (let i = 0; i < words.length; i++) {
+    pages[i] = page; count++;
+    if (/[,.;:—–!?]$/.test(words[i])) lastPunct = i;
+    if (count >= MAX_WORDS_PER_SCREEN && i < words.length - 1) {
+      // If a recent punctuation break exists inside this page, retro-split
+      // there so the page ends on a natural boundary.
+      if (lastPunct > i - count && lastPunct < i) {
+        for (let j = lastPunct + 1; j <= i; j++) pages[j] = page + 1;
+        count = i - lastPunct;
+      } else {
+        count = 0;
+      }
+      page++;
+      lastPunct = -1;
+    }
+  }
+  return pages;
+}
+
 function renderTextCardRevealVariant(args: ImageGenArgs, width: number, height: number, revealCount: number): string {
   const text = String(args.text ?? '').slice(0, MAX_TEXT_LEN);
   const bg = (args.bg_mode === 'dark_gray') ? 'dark_gray' : 'white';
   const ct = (args.color_treatment ?? 'neutral') as ColorTreatment;
   const colors = COLOR_HEX[ct] ?? COLOR_HEX.neutral;
-  const baseFont = fitFontSize(text, width, height, 3);
-  const lines = wrap(text, Math.max(6, Math.floor((width * 0.85) / (baseFont * 0.55))), 3);
-  const lineHeight = baseFont * 1.18;
-  const totalH = lines.length * lineHeight;
-  const startY = height / 2 - totalH / 2 + baseFont * 0.85;
   const fontWeight = ct === 'money_shot_green' ? 900 : 800;
   const fg = colors.fg;
 
-  let wordIdx = 0;
+  // PAGING (MG rule, user-verified 2026-06-11): only the CURRENT page's
+  // words are on screen; earlier pages clear. Variant k shows the page
+  // containing word k-1, revealed up to k.
+  const allWords = text.split(/\s+/).filter(Boolean);
+  const pages = pageOfWords(allWords);
+  const curPage = revealCount > 0 ? pages[Math.min(revealCount, allWords.length) - 1] : 0;
+  const pageWordIdx: number[] = [];
+  for (let i = 0; i < allWords.length; i++) if (pages[i] === curPage) pageWordIdx.push(i);
+  const pageText = pageWordIdx.map(i => allWords[i]).join(' ');
+
+  const baseFont = fitFontSize(pageText || ' ', width, height, 3);
+  const lines = wrap(pageText, Math.max(6, Math.floor((width * 0.85) / (baseFont * 0.55))), 3);
+  const lineHeight = baseFont * 1.18;
+  const totalH = lines.length * lineHeight;
+  const startY = height / 2 - totalH / 2 + baseFont * 0.85;
+
+  let cursor = 0;
   const texts = lines.map((ln, i) => {
-    const tspans = ln.split(/\s+/).map((w, wi) => {
-      const visible = wordIdx < revealCount;
-      wordIdx++;
+    const tspans = ln.split(/\s+/).filter(Boolean).map((w, wi) => {
+      const globalIdx = pageWordIdx[cursor];
+      cursor++;
+      const visible = globalIdx < revealCount;
       const lead = wi > 0 ? ' ' : '';
       return `<tspan fill-opacity="${visible ? 1 : 0}">${lead}${esc(w)}</tspan>`;
     }).join('');
@@ -237,6 +276,19 @@ function renderIconCard(args: ImageGenArgs, width: number, height: number): stri
   const iconAccent = (ct === 'money_shot_green' || ct === 'inline_green')
     ? '#22C55E'
     : (ct === 'inline_red' ? '#EF4444' : '#22C55E');
+  // MG rule (user-verified 2026-06-11): icons get a DEDICATED screen —
+  // no text alongside (reference: lone warning triangle on white). The
+  // one sanctioned combo is the RPM-assumption card (shrug + "$3 RPM"),
+  // which passes text explicitly.
+  if (!text.trim()) {
+    const iconSize = Math.round(Math.min(width, height) * 0.42); // bigger when alone
+    const iconSvg = iconSvgAt(icon, width / 2, Math.round(height * 0.5), iconSize, iconStroke, iconAccent);
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="${width}" height="${height}" fill="${BG_HEX[bg]}"/>
+  ${iconSvg}
+</svg>`;
+  }
   // Push the icon above center, text below — so they don't overlap on
   // longer text strings. Icon size scales with canvas (300px on a 1080p canvas).
   const textFont = fitFontSize(text, width, height, 2);

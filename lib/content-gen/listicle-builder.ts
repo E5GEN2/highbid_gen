@@ -402,14 +402,16 @@ export function buildCtaSlots(niche_count: number, opts: CtaOpts = {}): Slot[] {
     makeFramingSlot('cta_card_1', 'video_cta', closer,
       { composition: 'text_card', text: closer, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
+    // Icon screens are TEXT-FREE per the MG rule (icons always get a
+    // dedicated screen; only the RPM-assumption combo may mix).
     makeFramingSlot('cta_card_2', 'video_cta', valueLine,
-      { composition: 'icon_card', text: `Huge potential.`, bg_mode: 'white', icon: 'checkmark_green_circle', color_treatment: 'money_shot_green' },
+      { composition: 'icon_card', text: ``, bg_mode: 'white', icon: 'checkmark_green_circle', color_treatment: 'money_shot_green' },
       ['whoosh', 'ding']),
     makeFramingSlot('cta_card_3', 'video_cta', `If you want to discover more faceless niches like these,`,
-      { composition: 'icon_card', text: `Discover more.`, bg_mode: 'white', icon: 'pointing_hand', color_treatment: 'neutral' },
+      { composition: 'icon_card', text: ``, bg_mode: 'white', icon: 'pointing_hand', color_treatment: 'neutral' },
       ['whoosh']),
     makeFramingSlot('cta_card_4', 'video_cta', actionLine,
-      { composition: 'icon_card', text: `Check out this video.`, bg_mode: 'dark_gray', icon: 'cat_thumbs_up', color_treatment: 'neutral' },
+      { composition: 'icon_card', text: ``, bg_mode: 'dark_gray', icon: 'cat_thumbs_up', color_treatment: 'neutral' },
       ['ascending_electronic_sting'],
       'dark_gray'),
   ];
