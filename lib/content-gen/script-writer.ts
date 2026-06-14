@@ -354,12 +354,16 @@ function extractJson(text: string): string {
  *  what was causing 504 timeouts. */
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const PER_ATTEMPT_TIMEOUT_MS = 60_000;
-// Bumped from 3 → 6 because the google_ai_studio key pool has several
-// dead-service-account keys that return 401 ACCOUNT_STATE_INVALID. Each
-// 401 marks that key invalid (fire-and-forget) and rotates — 6 retries
-// means we can chew through up to 6 bad keys before failing the call.
-// Once those are pruned, attempts in practice settle to 1.
-const MAX_ATTEMPTS = 6;
+// Per-key 429s are NORMAL churn, not an outage: the pool has thousands of
+// google_ai_studio keys and 30+ rotating proxies, so the right move is to
+// cool down the offending key and rotate FAST to a fresh one — not to back
+// off and wait (user 2026-06-14, [[feedback-dont-complain-about-infra]]).
+// 24 attempts lets us walk through a churn spike of bad keys; each 429
+// rotates near-instantly (no long sleep), so the worst case is ~tens of
+// seconds, and a healthy combo is found almost immediately in practice.
+const MAX_ATTEMPTS = 24;
+// How long a 429'd key sits out before pickHealthyAiKey serves it again.
+const KEY_COOLDOWN_MS = 5 * 60_000;
 
 /** Pull a random active Google AI key from the xgodo_api_keys pool. */
 async function pickHealthyAiKey(): Promise<{ id: number; key: string } | null> {
@@ -389,6 +393,25 @@ function invalidateKey(keyId: number, reason: string): Promise<void> {
         [keyId],
       );
       console.log(`[script-writer] invalidated google_ai_studio key id=${keyId} (${reason})`);
+    } catch { /* ignore */ }
+  })();
+}
+
+/** TEMPORARILY bench a key (429 / rate-limit) by setting banned_until — the
+ *  key stays 'active' and comes back after the cooldown, unlike invalidate.
+ *  pickHealthyAiKey filters on banned_until, so the next pick rotates to a
+ *  different key immediately. Fire-and-forget. */
+function coolDownKey(keyId: number, ms: number, reason: string): Promise<void> {
+  return (async () => {
+    try {
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE xgodo_api_keys
+            SET banned_until = NOW() + ($2 || ' milliseconds')::interval
+          WHERE id=$1`,
+        [keyId, String(ms)],
+      );
+      console.log(`[script-writer] cooled down google_ai_studio key id=${keyId} for ${Math.round(ms / 1000)}s (${reason})`);
     } catch { /* ignore */ }
   })();
 }
@@ -461,10 +484,19 @@ export async function writeScript(input: ScriptWriterInput): Promise<ScriptWrite
         }
         // 400 = prompt / schema issue. Don't retry — that's our bug.
         if (res.status === 400) break;
-        // 5xx / 429 → backoff + rotate. Overload windows (503 "high
-        // demand") outlast a few seconds — back off long enough to land
-        // outside one (~10/20/30/40/50s; a build is minutes anyway).
-        if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 10_000 * attempt));
+        // 429 = this key's region quota is exhausted / rate-limited. NORMAL
+        // churn with a thousands-key pool — cool the key down (so the pool
+        // stops re-handing it) and rotate FAST to a fresh key. No long sleep:
+        // a different key works right now. (feedback-dont-complain-about-infra)
+        if (res.status === 429) {
+          await coolDownKey(keyRow.id, KEY_COOLDOWN_MS, '429 region quota');
+          if (attempt < MAX_ATTEMPTS) { await new Promise(r => setTimeout(r, 250)); continue; }
+          break;
+        }
+        // 5xx → genuine server overload. The "high demand" window outlasts a
+        // few seconds, so back off longer before rotating (cap the sleep so
+        // 24 attempts can't stall the whole build).
+        if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, Math.min(20_000, 4_000 * attempt)));
         continue;
       }
 
