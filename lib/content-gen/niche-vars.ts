@@ -110,7 +110,11 @@ const MONTH_WORDS = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 
 function agePhrase(startedAt: string | null): string | null {
   if (!startedAt) return null;
   const months = Math.max(1, Math.round((Date.now() - new Date(startedAt).getTime()) / (30.44 * 24 * 3600 * 1000)));
-  if (months === 1) return 'just a month ago';
+  // MG language (OG transcript): "just one month ago" / "only two
+  // months ago" / "only three to four months ago" — no "about" hedge for
+  // the impressive ≤4mo range; that's where the age card fires.
+  if (months === 1) return 'just one month ago';
+  if (months <= 4) return `only ${MONTH_WORDS[months]} months ago`;
   if (months < 12) return `only about ${MONTH_WORDS[months]} months ago`;
   if (months < 18) return 'just over a year ago';
   if (months < 24) return 'about a year and a half ago';

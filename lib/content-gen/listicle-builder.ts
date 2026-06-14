@@ -1316,12 +1316,14 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     // channel reveal (n6 "only 2 months ago", n11 "only one month ago")
     // — NOT folded into the proof_2 panel. Word-revealed, white-locked.
     // Older channels get no age mention at all (MG never ages >4 months).
-    // MG's age cards are punchy single-screen fragments ("only 2 months
-    // ago", "just one month ago"), not a full sentence — so the card text
-    // IS the age_phrase, capitalized. age_phrase already carries the
-    // minimizer ("only about four months ago" / "just a month ago").
+    // MG always embeds the age in a CONTEXTUAL sentence — "This channel
+    // started posting only two months ago…" (n6/n10/n11) — never a bare
+    // "only X ago" with no subject (the viewer wouldn't know what the
+    // time refers to). Card text == narration so it word-reveals; pages
+    // ≤6 words like MG. age_phrase carries the MG minimizer ("only four
+    // months ago" / "just one month ago").
     const ageCardText = vars.age_phrase
-      ? vars.age_phrase.charAt(0).toUpperCase() + vars.age_phrase.slice(1) + '.'
+      ? `This channel started posting ${vars.age_phrase}.`
       : null;
     const ageCardSlot = (vars.age_months != null && vars.age_months <= 4 && ageCardText)
       ? makeFramingSlot(`niche_${niche_index}_channel_age_card`, 'channel_age_card',

@@ -194,3 +194,12 @@ Gaps vs MG, to absorb (see `beats-reference.md` for slot wiring):
 Threshold note: the ≤~12-videos / ≤4-months / ≥10k-subs edges are the
 empirical bounds of the 11-niche OG sample — widen only with more
 reference data.
+
+
+### G3 correction (2026-06-14)
+The age card must be a CONTEXTUAL sentence, never a bare fragment. A
+first cut rendered "Only about four months ago." cold — no subject, and
+"about" is not MG language. Fixed to the OG template **"This channel
+started posting {age_phrase}."** (word-revealed) with MG phrasing
+(niche-vars: "just one month ago" / "only {N} months ago", no "about"
+for ≤4mo). The viewer always hears the subject + what happened.
