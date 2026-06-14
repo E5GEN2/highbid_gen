@@ -68,6 +68,24 @@ if (process.argv.includes('--local')) {
 const t0 = Date.now();
 const log = (...a: unknown[]) => console.log(`[+${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a);
 
+// Operator beat flags from the CLI: per-beat --<beat> on|off, threshold
+// overrides --callout-mult/--pano-floor/--age-max/--video-box-max, and
+// --summary-only (print the beat plan, skip the render).
+function parseBeatFlags(argv: string[]): import('../../lib/content-gen/beat-plan').BeatFlags {
+  const val = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+  const tog = (name: string) => { const v = val(name); return (v === 'on' || v === 'off' || v === 'auto') ? v : undefined; };
+  const num = (name: string) => { const v = val(name); const n = v != null ? Number(v) : NaN; return Number.isFinite(n) ? n : undefined; };
+  return {
+    rapid: tog('--rapid'), callout: tog('--callout'), pano: tog('--pano'),
+    ageCard: tog('--age'), videoCountBox: tog('--video-box'),
+    channelB: tog('--channel-b'), saturation: tog('--saturation'),
+    moneyMath: tog('--money'), recipe: tog('--recipe'), emphasis: tog('--emphasis'),
+    calloutOutlierMult: num('--callout-mult'), panoMinViews: num('--pano-floor'),
+    ageMaxMonths: num('--age-max'), videoBoxMaxVideos: num('--video-box-max'),
+    summaryOnly: argv.includes('--summary-only'),
+  };
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const positional = argv.filter(a => !a.startsWith('--'));
@@ -96,8 +114,13 @@ async function main() {
       : undefined;
     log(`building fresh listicle: ${channels.length} channel(s), beat=${arg2}` +
         (intro_logos_channels ? `, intro logos=${intro_logos_channels.length}` : ''));
+    const flags = parseBeatFlags(argv);
     const { buildListicleScript } = await import('../../lib/content-gen/listicle-builder');
-    const built = await buildListicleScript({ channels, beat_id: arg2, intro_logos_channels });
+    const built = await buildListicleScript({ channels, beat_id: arg2, intro_logos_channels, flags });
+    // Pre-render beat plan: which channels get which conditional beats.
+    const { formatBeatPlan } = await import('../../lib/content-gen/beat-plan');
+    console.log(formatBeatPlan(built.beatPlan));
+    if (flags.summaryOnly) { log('--summary-only: skipping render'); process.exit(0); }
     if (!built.script) {
       console.error('listicle build failed:', built.error, built.failures);
       process.exit(1);
@@ -107,6 +130,9 @@ async function main() {
   } else {
     console.error('usage: render.mts from-job <jobId> [--local] [--labels]');
     console.error('       render.mts from-channels <UC..,UC..> <beat_id> [--logos UC..,UC..] [--local] [--labels]');
+    console.error('         beat flags: --<rapid|callout|pano|age|video-box|channel-b|saturation|money|recipe|emphasis> on|off');
+    console.error('         thresholds: --callout-mult N  --pano-floor N  --age-max N  --video-box-max N');
+    console.error('         --summary-only  (print the beat plan, skip the render)');
     process.exit(1);
   }
   log(`script ready: ${script.slots.length} slots, ${script.slots.reduce((a, s) => a + s.gems.length, 0)} gems`);
