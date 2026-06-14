@@ -506,6 +506,30 @@ export function ytJoinedFormat(iso: string | undefined): string {
   return `Joined ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
+/** Parse a YouTube view-count string ("1.2M views", "264K views") → number. */
+function parseViewsNum(t: string | null | undefined): number | null {
+  const m = (t ?? '').match(/^\s*([\d.,]+)\s*([KMB])?\s*views?/i);
+  if (!m) return null;
+  const n = parseFloat(m[1].replace(/,/g, ''));
+  if (!Number.isFinite(n)) return null;
+  const u = (m[2] ?? '').toUpperCase();
+  const mult = u === 'B' ? 1e9 : u === 'M' ? 1e6 : u === 'K' ? 1e3 : 1;
+  return n * mult;
+}
+
+/** View counts of the channel's recent VISIBLE uploads (videos_tab "Latest"),
+ *  read from the day-cached capture's __meta.views_texts. Unbiased + free —
+ *  the showcase gates (callout outlier, pano floor) use this distribution. */
+async function recentViewNums(channelId: string): Promise<number[]> {
+  try {
+    const { captureYtScreen } = await import('./yt-capture');
+    const cap = await captureYtScreen(channelId, { kind: 'videos_tab', mode: 'static' });
+    const vt = (cap.bboxes as { __meta?: { views_texts?: Array<string | null> } })?.__meta?.views_texts;
+    if (!Array.isArray(vt)) return [];
+    return vt.map(parseViewsNum).filter((n): n is number => n != null && n >= 0);
+  } catch { return []; }
+}
+
 /** Build 3 thumbnail-rapid-fire slots — MG BEAT 7 "TOP-3 VIEWS RAPID
  *  SEQUENCE". Each slot shows ONE video card (cropped from the
  *  videos_tab capture using video_card_N bbox). Narrations are generic
@@ -530,6 +554,7 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
   //      resolve the exact card index per slot here (shared with the
   //      compositor via resolveVideoCardIndices) and read THAT card's count.
   let viewsTexts: Array<string | null> = [];
+  let titlesTexts: Array<string | null> = [];
   let cardIdx: number[] = [];      // slot → video_card_N index actually shown
   let pinId: number | null = null;
   try {
@@ -537,15 +562,17 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
     const { resolveVideoCardIndices } = await import('./video-compose');
     const sharp = (await import('sharp')).default;
     const readMeta = (cap: { bboxes: unknown }) =>
-      (cap.bboxes as Record<string, { views_texts?: Array<string | null> }>).__meta?.views_texts ?? [];
+      ((cap.bboxes as Record<string, { views_texts?: Array<string | null>; titles_texts?: Array<string | null> }>).__meta) ?? {};
     let cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static' });
-    viewsTexts = readMeta(cap);
-    if (viewsTexts.filter(Boolean).length < 3) {
-      // Day-cached capture predates the views-text extractor (v1.1.0) —
-      // force ONE fresh capture; subsequent builds hit the refreshed cache.
+    let meta = readMeta(cap);
+    if ((meta.views_texts ?? []).filter(Boolean).length < 3 || (meta.titles_texts ?? []).filter(Boolean).length < 1) {
+      // Day-cached capture predates the views/titles-text extractor — force
+      // ONE fresh capture; subsequent builds hit the refreshed cache.
       cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static', force: true });
-      viewsTexts = readMeta(cap);
+      meta = readMeta(cap);
     }
+    viewsTexts = meta.views_texts ?? [];
+    titlesTexts = meta.titles_texts ?? [];
     pinId = cap.id;
     const imgH = (await sharp(cap.local_path).metadata()).height ?? Infinity;
     cardIdx = resolveVideoCardIndices(
@@ -560,26 +587,42 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
     const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
     return Number.isFinite(n) ? spokenNumber(n * mult) : null;
   };
-  // Spoken count for each slot = the view count of the EXACT card that slot
-  // will display (cardIdx[slot]), read from the SAME pinned snapshot.
+  // TITLE-NAMING form (MG BEAT 7; user 2026-06-14): name the titles of the
+  // shown cards to paint the channel's niche/format — "They make videos like
+  // X, Y, and Z." (OG n3 named titles: "Top 10 numbers to live in, or Top 10
+  // letters to use as a chair"). Titles come from the SAME pinned capture's
+  // cards (titles_texts[cardIdx]), so every spoken title matches its card.
+  const cleanTitle = (t: string | null): string | null => {
+    const s = (t ?? '').replace(/\s+/g, ' ').trim();
+    return s.length >= 3 ? s : null;
+  };
+  const titles = cardIdx.map(ci => cleanTitle(titlesTexts[ci] ?? null));
+  // Leading run of titled cards — keeps slot↔title alignment exact (slot i
+  // shows cardIdx[i] and speaks titles[i]; stop at the first untitled card).
+  let kTitled = 0;
+  while (kTitled < Math.min(3, titles.length) && titles[kTitled]) kTitled++;
+  // View-count fallback, used only when titles weren't captured.
   const spoken = cardIdx.map(ci => spokenFromCard(viewsTexts[ci] ?? null));
   const nCards = spoken.filter(s => s != null).length;
-  // ADAPT to the catalog: a 2-video channel has no third card; emit only as
-  // many rapid slots as usable cards (jobs 174-176, niche_8).
-  const NARRATIONS = nCards >= 3
-    ? [
-        `They have videos with ${spoken[0]} views,`,
-        `${spoken[1]} views,`,
-        `and ${spoken[2]} views,`,
-      ]
-    : nCards === 2
-      ? [
-          `They have videos with ${spoken[0]} views,`,
-          `and ${spoken[1]} views,`,
-        ]
-      : nCards === 1
-        ? [`They have videos with ${spoken[0]} views,`]
-        : ['Look at this one.', 'And this one.'];
+
+  let NARRATIONS: string[];
+  if (kTitled >= 1) {
+    NARRATIONS = [];
+    for (let i = 0; i < kTitled; i++) {
+      const lead = i === 0 ? 'They make videos like ' : '';
+      const conj = (i === kTitled - 1 && kTitled > 1) ? 'and ' : '';
+      const end  = i === kTitled - 1 ? '.' : ',';
+      NARRATIONS.push(`${lead}${conj}${titles[i]}${end}`);
+    }
+  } else if (nCards >= 1) {
+    NARRATIONS = nCards >= 3
+      ? [`They have videos with ${spoken[0]} views,`, `${spoken[1]} views,`, `and ${spoken[2]} views,`]
+      : nCards === 2
+        ? [`They have videos with ${spoken[0]} views,`, `and ${spoken[1]} views,`]
+        : [`They have videos with ${spoken[0]} views,`];
+  } else {
+    NARRATIONS = ['Look at this one.', 'And this one.'];
+  }
   const base = `niche_${niche_index}`;
   return NARRATIONS.map((narration, idx) => {
     // Crop the EXACT card whose count we just spoke; fall back to the slot
@@ -1320,9 +1363,33 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       }));
     const proofSwapped = forceProofKind(result.script.slots, { videoCountHook });
     const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
+    // Showcase-beat gates (user 2026-06-14; video-performance-beat-rules.md).
+    // Distribution from the channel's recent VISIBLE uploads (videos_tab
+    // "Latest"), which is unbiased + free (day-cached). The two beats key on
+    // DIFFERENT criteria:
+    //   • top_video_callout — a genuine BREAKOUT: the top video ≫ the
+    //     channel's median upload (one standout worth isolating, e.g. OG n1's
+    //     29M-view video over a ~hundreds-of-thousands median).
+    //   • top_videos_pano — the whole recent catalog OVER-PERFORMS: ≈ every
+    //     video clears a per-video floor (OG n1: "almost every single upload
+    //     pulls in hundreds of thousands of views").
+    // top_views_rapid is NOT gated — it stays on every channel (title-naming
+    // form) to paint the niche.
+    const recentViews = await recentViewNums(ch.channelId);
+    const sortedViews = [...recentViews].sort((a, b) => a - b);
+    const medianViews = sortedViews.length ? sortedViews[Math.floor(sortedViews.length / 2)] : 0;
+    const p10Views = sortedViews.length ? sortedViews[Math.floor(sortedViews.length * 0.1)] : 0; // ≈ "almost all" floor
+    const topViews = ch.top_video_view_count ?? (sortedViews.length ? sortedViews[sortedViews.length - 1] : 0);
+    const CALLOUT_OUTLIER_MULT = 8;  // top ≥ 8× median = a real standout
+    const PANO_MIN_VIEWS = 50_000;   // per-video floor ("xxk each") — tunable
+    const calloutWorthy = medianViews > 0 && topViews >= CALLOUT_OUTLIER_MULT * medianViews;
+    const panoWorthy = sortedViews.length >= 6 && p10Views >= PANO_MIN_VIEWS;
+    const calloutGated = calloutWorthy
+      ? callouttSwapped
+      : callouttSwapped.filter(s => s.beat_id !== 'top_video_callout');
     // DO NOT call swapChannelProof — task #65's animated highlight needs
     // the about_page screenshot crop path.
-    const writerSlotsTransformed = injectCropTargets(callouttSwapped);
+    const writerSlotsTransformed = injectCropTargets(calloutGated);
 
     // MG transcript t=3.8-6: the recipe line plays over the FULL channel
     // page — there is no separate chip beat at the niche open. The
@@ -1374,7 +1441,11 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           ['whoosh'])
       : null;
     const rapidFireSlots = await buildTopViewsRapidFireSlots(niche_index, ch);
-    const panoSlot = await buildTopVideosPanoSlot(niche_index, ch, vars.median_views_phrase, consistencyLine);
+    // pano = catalog-wide over-performance grid, gated on panoWorthy (≈ every
+    // recent video clears the per-video floor; see gates above).
+    const panoSlot = panoWorthy
+      ? await buildTopVideosPanoSlot(niche_index, ch, vars.median_views_phrase, consistencyLine)
+      : null;
 
     const withInjects: Slot[] = [];
     let revealInserted = false;

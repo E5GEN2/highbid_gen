@@ -1057,7 +1057,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
             else if (r.left + r.width < 0 || r.left > vpW + 8) reason = 'off-x';
             rejectDbg.push({ tag: el.tagName.toLowerCase(), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), reason });
           }
-          const out: Array<{ card: { x: number; y: number; w: number; h: number }; thumb?: { x: number; y: number; w: number; h: number }; views?: { x: number; y: number; w: number; h: number }; viewsText?: string; title?: { x: number; y: number; w: number; h: number } }> = [];
+          const out: Array<{ card: { x: number; y: number; w: number; h: number }; thumb?: { x: number; y: number; w: number; h: number }; views?: { x: number; y: number; w: number; h: number }; viewsText?: string; title?: { x: number; y: number; w: number; h: number }; titleText?: string }> = [];
           for (const el of els) {
             const r = (el as HTMLElement).getBoundingClientRect();
             // Skip off-viewport-right and very-small (collapsed/loading) cards.
@@ -1088,13 +1088,18 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
               break;
             }
             // Find title: prefer #video-title, then h3 a (modern), then h3.
+            // Capture the TEXT too (titles_rapid beat names them — the spoken
+            // title must match the card on screen). The `title` attr carries
+            // the FULL untruncated title; textContent can be ellipsised.
             let title: { x: number; y: number; w: number; h: number } | undefined;
+            let titleText: string | undefined;
             const titleEl = (el.querySelector('#video-title, a#video-title, h3 a, h3') as HTMLElement | null);
             if (titleEl) {
               const tr = titleEl.getBoundingClientRect();
               if (tr.width > 60 && tr.height > 12) title = { x: Math.round(tr.left), y: Math.round(tr.top), w: Math.round(tr.width), h: Math.round(tr.height) };
+              titleText = (titleEl.getAttribute('title') || titleEl.textContent || '').trim() || undefined;
             }
-            out.push({ card, thumb, views, viewsText, title });
+            out.push({ card, thumb, views, viewsText, title, titleText });
             if (out.length >= 24) break;  // sane cap; 4-col grid x 6 rows is plenty
           }
           // FALLBACK extractor: structured selectors found zero. Instead of
@@ -1159,9 +1164,11 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
                 }
               }
               const t = cardEl.querySelector('#video-title, a#video-title, h3 a, h3') as HTMLElement | null;
+              let titleTextFb: string | undefined;
               if (t) {
                 const tr = t.getBoundingClientRect();
                 if (tr.width > 60 && tr.height > 12) titleBox = { x: Math.round(tr.left), y: Math.round(tr.top), w: Math.round(tr.width), h: Math.round(tr.height) };
+                titleTextFb = (t.getAttribute('title') || t.textContent || '').trim() || undefined;
               }
               out.push({
                 card: { x: Math.round(cr.left), y: Math.round(cr.top), w: Math.round(cr.width), h: Math.round(cr.height) },
@@ -1169,6 +1176,7 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
                 views: viewsBox,
                 viewsText: viewsTextFb,
                 title: titleBox,
+                titleText: titleTextFb,
               });
               if (out.length >= 24) break;
             }
@@ -1203,8 +1211,10 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         }, effectiveViewport.width);
         const cards = result.cards;
         const viewsTexts: Array<string | null> = [];
+        const titlesTexts: Array<string | null> = [];
         cards.forEach((c, i) => {
           viewsTexts[i] = (c as { viewsText?: string }).viewsText ?? null;
+          titlesTexts[i] = (c as { titleText?: string }).titleText ?? null;
           bboxes[`video_card_${i}`] = c.card;
           if (c.thumb) bboxes[`video_thumb_${i}`] = c.thumb;
           if (c.views) bboxes[`video_views_${i}`] = c.views;
@@ -1219,6 +1229,13 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         if (viewsTexts.some(t => t)) {
           const holder = (bboxes as unknown as Record<string, unknown>);
           holder.__meta = { ...(holder.__meta as Record<string, unknown> | undefined), views_texts: viewsTexts };
+        }
+        // Per-card displayed TITLE strings — narration source of truth for the
+        // titles_rapid beat (spoken title must match the card on screen, same
+        // discipline as views_texts).
+        if (titlesTexts.some(t => t)) {
+          const holder = (bboxes as unknown as Record<string, unknown>);
+          holder.__meta = { ...(holder.__meta as Record<string, unknown> | undefined), titles_texts: titlesTexts };
         }
         (bboxDebug as Record<string, unknown>).video_card_fallback_used = result.fallbackUsed;
         (bboxDebug as Record<string, unknown>).video_card_first_chain = result.firstAncestorChain;
