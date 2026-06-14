@@ -514,32 +514,42 @@ export function ytJoinedFormat(iso: string | undefined): string {
  *  meta line. Insert between channel_proof_2 and top_videos_pano in
  *  the niche flow. */
 export async function buildTopViewsRapidFireSlots(niche_index: number, ch: ChannelData): Promise<Slot[]> {
-  // 3 rapid-fire slots, each showing video_card_0/1/2 from the latest
-  // videos_tab capture. Template beat 7: the view counts are SPOKEN —
-  // "They have videos with {v0} views, {v1} views, and {v2} views,"
-  // (worked-example :53-57). The cards crop the LATEST-3 videos on the
-  // tab, so we speak the latest-3 counts (posted_at order) to match what
-  // is on screen — top-by-views numbers over different cards would
-  // visibly contradict the meta line. Falls back to the old generic
-  // connectives when the DB has no counts.
-  // SOURCE OF TRUTH: the captured videos_tab itself. niche_spy_videos only
-  // holds SIGHTED videos (a subset of the channel catalog), so DB counts
-  // routinely contradict the cards on screen (user report 2026-06-11).
-  // captureYtScreen is day-cached — the rapid-fire gems will reuse this
-  // exact capture, so spoken counts always match the rendered cards.
-  let texts: Array<string | null> = [];
+  // Template beat 7: the view counts are SPOKEN — "They have videos with
+  // {v0} views, {v1} views, and {v2} views," (worked-example :53-57).
+  //
+  // SOURCE OF TRUTH: the captured videos_tab itself (niche_spy_videos only
+  // holds SIGHTED videos, so DB counts contradict the cards — user report
+  // 2026-06-11). Two failure modes we now close:
+  //   1. CAPTURE DRIFT — the row is day-bucketed and OVERWRITTEN across calls,
+  //      so a re-capture by the compose gem read a DIFFERENT snapshot than the
+  //      builder spoke from (card showed 5.2K while VO said 1.1K — user report
+  //      2026-06-14). We capture ONCE here and PIN capture_id on every gem so
+  //      the cards render from this exact snapshot.
+  //   2. INDEX SHIFT — the compositor's per-card fallback could display a
+  //      DIFFERENT card index than the slot ordinal the narration used. We
+  //      resolve the exact card index per slot here (shared with the
+  //      compositor via resolveVideoCardIndices) and read THAT card's count.
+  let viewsTexts: Array<string | null> = [];
+  let cardIdx: number[] = [];      // slot → video_card_N index actually shown
+  let pinId: number | null = null;
   try {
     const { captureYtScreen } = await import('./yt-capture');
+    const { resolveVideoCardIndices } = await import('./video-compose');
+    const sharp = (await import('sharp')).default;
     const readMeta = (cap: { bboxes: unknown }) =>
       (cap.bboxes as Record<string, { views_texts?: Array<string | null> }>).__meta?.views_texts ?? [];
     let cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static' });
-    texts = readMeta(cap);
-    if (texts.filter(Boolean).length < 3) {
+    viewsTexts = readMeta(cap);
+    if (viewsTexts.filter(Boolean).length < 3) {
       // Day-cached capture predates the views-text extractor (v1.1.0) —
       // force ONE fresh capture; subsequent builds hit the refreshed cache.
       cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static', force: true });
-      texts = readMeta(cap);
+      viewsTexts = readMeta(cap);
     }
+    pinId = cap.id;
+    const imgH = (await sharp(cap.local_path).metadata()).height ?? Infinity;
+    cardIdx = resolveVideoCardIndices(
+      cap.bboxes as Record<string, { x: number; y: number; w: number; h: number } | undefined>, imgH, 3);
   } catch (e) {
     console.warn(`[rapid-fire] capture readout failed for ${ch.channelId}: ${(e as Error).message.slice(0, 120)}`);
   }
@@ -550,11 +560,12 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
     const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
     return Number.isFinite(n) ? spokenNumber(n * mult) : null;
   };
-  const spoken = [0, 1, 2].map(i => spokenFromCard(texts[i] ?? null));
+  // Spoken count for each slot = the view count of the EXACT card that slot
+  // will display (cardIdx[slot]), read from the SAME pinned snapshot.
+  const spoken = cardIdx.map(ci => spokenFromCard(viewsTexts[ci] ?? null));
   const nCards = spoken.filter(s => s != null).length;
-  // ADAPT to the catalog: a 2-video channel has no third card and the old
-  // fixed-3 fallback promised "And another." over a page-card fallback
-  // (jobs 174-176, niche_8). Emit only as many rapid slots as cards.
+  // ADAPT to the catalog: a 2-video channel has no third card; emit only as
+  // many rapid slots as usable cards (jobs 174-176, niche_8).
   const NARRATIONS = nCards >= 3
     ? [
         `They have videos with ${spoken[0]} views,`,
@@ -571,17 +582,18 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
         : ['Look at this one.', 'And this one.'];
   const base = `niche_${niche_index}`;
   return NARRATIONS.map((narration, idx) => {
+    // Crop the EXACT card whose count we just spoke; fall back to the slot
+    // ordinal only when selection produced nothing (generic-copy path).
+    const ci = cardIdx[idx] ?? idx;
+    const mainArgs: Record<string, unknown> = { channelId: ch.channelId, kind: 'videos_tab', mode: 'static' };
+    if (pinId != null) mainArgs.capture_id = pinId;   // PIN: gems reuse the readout's exact snapshot
     return {
       slot_id: `${base}_top_views_rapid_${idx}`,
       beat_id: 'top_views_rapid',
       narration,
       gems: [
         { id: 'narr', tool: 'tts', args: { text: narration, voice: 'money_groot' } },
-        { id: 'main', tool: 'yt_capture', args: {
-          channelId: ch.channelId,
-          kind: 'videos_tab',
-          mode: 'static',
-        }},
+        { id: 'main', tool: 'yt_capture', args: mainArgs },
         { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
       ],
       compose: {
@@ -589,8 +601,9 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
         hold_s: '{{narr.duration_s}}',
         layers: [
           // crop_target=thumbnail_rapid_fire:N → composeThumbnailRapidFireMG
-          // renders the single card on a dark canvas.
-          { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: `thumbnail_rapid_fire:${idx}` },
+          // renders the single card on a dark canvas. N = the resolved card
+          // index (not the slot ordinal) so the shown card matches the VO.
+          { from: 'main', channel: 'video', fit: 'contain', ken_burns: 'zoom_in_8pct', crop_target: `thumbnail_rapid_fire:${ci}` },
           { from: 'narr', channel: 'voice' },
           { from: 'sfx',  channel: 'fx' },
         ],

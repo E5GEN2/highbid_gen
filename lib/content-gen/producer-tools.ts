@@ -237,6 +237,31 @@ async function runLogosMontage(args: Record<string, unknown>): Promise<ToolOutpu
 // ───────────────────────────────────────────────────────────────────
 
 async function runYtCapture(args: Record<string, unknown>): Promise<ToolOutput> {
+  // PINNED capture: when the builder already captured this screen and needs
+  // every gem to reference the EXACT same snapshot (so spoken view counts
+  // match the rendered cards), it passes capture_id. The DB row is unique on
+  // (channel_id, kind, date_bucket) and gets OVERWRITTEN across calls — so a
+  // re-capture here would drift the data out from under the narration the
+  // builder already wrote (rapid-fire mismatch, user report 2026-06-14).
+  // Load the pinned row directly instead of re-capturing.
+  const pinnedId = args.capture_id != null ? Number(args.capture_id) : null;
+  if (pinnedId != null && Number.isFinite(pinnedId)) {
+    const { loadBBoxes, loadLocalPath } = await import('./yt-crop');
+    const [bboxes, local_path] = await Promise.all([loadBBoxes(pinnedId), loadLocalPath(pinnedId)]);
+    if (local_path) {
+      return {
+        file_url: `/api/admin/content-gen/yt-capture/file?id=${pinnedId}`,
+        local_path,
+        asset_kind: 'image',
+        duration_s: null,
+        bboxes,
+        page_width: 1440,
+        page_height: 900,
+      };
+    }
+    // pinned row vanished — fall through to a fresh capture
+  }
+
   const channelId = String(args.channelId ?? '');
   if (!channelId) throw new Error('yt_capture: channelId required');
   const kind = (args.kind as ScreenKind) ?? 'channel_page';

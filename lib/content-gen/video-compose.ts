@@ -166,6 +166,40 @@ async function renderStubImage(url: string, width: number, height: number, bg: '
   return tmpPath;
 }
 
+/** Pick which `video_card_N` indices back `count` rapid-fire slots, given a
+ *  capture's bboxes + screenshot height. SINGLE SOURCE OF TRUTH shared by the
+ *  builder (which reads each chosen card's view count for the spoken line) and
+ *  the compositor (which crops that exact card) — so the spoken number ALWAYS
+ *  matches the card on screen (rapid-fire mismatch, user report 2026-06-14).
+ *
+ *  Per slot: prefer the same-ordinal card, else the next-higher usable card,
+ *  else a lower one — but never REUSE a card already taken by an earlier slot
+ *  (a duplicate would show the same video twice under different spoken counts).
+ *  `cardFits` mirrors the compositor: a bbox whose bottom falls below the real
+ *  screenshot is MISSING (it squashes to a pill), not clampable. */
+export function resolveVideoCardIndices(
+  bboxes: Record<string, { x: number; y: number; w: number; h: number } | undefined>,
+  imgH: number,
+  count: number,
+): number[] {
+  const fits = (i: number): boolean => {
+    const b = bboxes[`video_card_${i}`];
+    return !!b && b.y + Math.min(b.h, 80) <= imgH;
+  };
+  const used = new Set<number>();
+  const out: number[] = [];
+  for (let slot = 0; slot < count; slot++) {
+    let chosen = -1;
+    if (!used.has(slot) && fits(slot)) chosen = slot;
+    if (chosen < 0) for (let i = slot + 1; i < 24; i++) { if (!used.has(i) && fits(i)) { chosen = i; break; } }
+    if (chosen < 0) for (let i = slot - 1; i >= 0; i--) { if (!used.has(i) && fits(i)) { chosen = i; break; } }
+    if (chosen < 0) break;  // no more usable cards — emit fewer slots
+    used.add(chosen);
+    out.push(chosen);
+  }
+  return out;
+}
+
 /** Resolve any layer.url to a local file path. Returns null when the layer
  *  is a stub we don't know how to render (audio stubs for now). Handles
  *  crop_target — when set on a yt_capture layer, looks up the bbox by name
