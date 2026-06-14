@@ -1312,24 +1312,41 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     const channelPageFullSlot = buildChannelPageFullSlot(niche_index, ch, recipeLine ?? `Take a look at this channel.`);
     // channel_age_card (about-highlight-age-rules.md A3/G3): for a YOUNG
     // hero (posting start ≤ 4 months, first_upload-based via niche-vars),
-    // MG floats a standalone WHITE card stating the age right at the
-    // channel reveal (n6 "only 2 months ago", n11 "only one month ago")
-    // — NOT folded into the proof_2 panel. Word-revealed, white-locked.
-    // Older channels get no age mention at all (MG never ages >4 months).
-    // MG always embeds the age in a CONTEXTUAL sentence — "This channel
-    // started posting only two months ago…" (n6/n10/n11) — never a bare
-    // "only X ago" with no subject (the viewer wouldn't know what the
-    // time refers to). Card text == narration so it word-reveals; pages
-    // ≤6 words like MG. age_phrase carries the MG minimizer ("only four
-    // months ago" / "just one month ago").
-    const ageCardText = vars.age_phrase
-      ? `This channel started posting ${vars.age_phrase}.`
+    // Age card (about-highlight-age-rules.md A3; frame-decoded 2026-06-14
+    // on OG n6 Quizetta). MG's model: the VOICEOVER is the full contextual
+    // sentence ("...started posting quiz-style videos only two months ago
+    // and has already gained..."), while the CARD shows only the SHORT
+    // LOWERCASE FRAGMENT spoken at that instant ("only 2 months ago") in a
+    // MODEST font. So narration ≠ card text here:
+    //   narration = contextual sentence (VO has subject + verb)
+    //   card text = the bare age fragment (what's on screen)
+    // Because text ≠ narration, the word-reveal stays OFF (pop-on, static),
+    // matching MG (the fragment holds for ~0.8s). Fires only for ≤4-month
+    // channels; older channels get no age mention.
+    const ageNarration = vars.age_phrase
+      ? `And they started posting ${vars.age_phrase}.`
       : null;
-    const ageCardSlot = (vars.age_months != null && vars.age_months <= 4 && ageCardText)
-      ? makeFramingSlot(`niche_${niche_index}_channel_age_card`, 'channel_age_card',
-          ageCardText,
-          { composition: 'text_card', text: ageCardText, bg_mode: 'white', color_treatment: 'neutral' },
-          ['whoosh'])
+    const ageFragment = vars.age_phrase ?? null;  // lowercase, MG-style "only four months ago"
+    const ageCardSlot = (vars.age_months != null && vars.age_months <= 4 && ageNarration && ageFragment)
+      ? {
+          slot_id: `niche_${niche_index}_channel_age_card`,
+          beat_id: 'channel_age_card',
+          narration: ageNarration,
+          gems: [
+            { id: 'narr', tool: 'tts', args: { text: ageNarration, voice: 'money_groot' } },
+            { id: 'main', tool: 'image_gen', args: { composition: 'text_card', text: ageFragment, bg_mode: 'white', color_treatment: 'neutral' } },
+            { id: 'sfx', tool: 'sfx_render', args: { tokens: ['whoosh'] } },
+          ],
+          compose: {
+            bg: 'white' as const,
+            hold_s: '{{narr.duration_s}}',
+            layers: [
+              { from: 'main', channel: 'video' as const, fit: 'contain' as const, ken_burns: 'none' as const },
+              { from: 'narr', channel: 'voice' as const },
+              { from: 'sfx', channel: 'fx' as const },
+            ],
+          },
+        } as Slot
       : null;
     const emphasisSlot = emphasisLine
       ? makeFramingSlot(`niche_${niche_index}_emphasis_card`, 'emphasis_card', emphasisLine,

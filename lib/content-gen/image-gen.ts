@@ -54,7 +54,7 @@ const MAX_TEXT_LEN = 80;
 /** Hash the args → cache key. */
 // Renderer version — salts the PNG disk cache so restyled compositions
 // regenerate (args alone missed the 2026-06-11 chalkboard restyle).
-const RENDERER_VERSION = 'r5'; // r5: white fg on dark cards (r4: MG dark #3C3C3C + italic builds)
+const RENDERER_VERSION = 'r7'; // r5: white fg on dark cards (r4: MG dark #3C3C3C + italic builds)
 
 function cacheKey(args: ImageGenArgs, width: number, height: number): string {
   const key = JSON.stringify({ v: RENDERER_VERSION, ...args, width, height });
@@ -70,15 +70,25 @@ function esc(s: string): string {
 /** Estimate font size that fits the text within the canvas without wrapping
  *  more than 4 lines. Heuristic: ~0.55em average char width at sans-serif. */
 function fitFontSize(text: string, width: number, height: number, maxLines = 3): number {
-  const targetWidth = width * 0.85;
-  const targetHeight = height * 0.55;
-  // First pass: pick font size by width (one line fits).
-  let fontSize = Math.floor(targetWidth / (Math.max(1, text.length) * 0.55));
-  // Cap by height (4 lines max).
-  const heightCap = Math.floor(targetHeight / maxLines);
-  fontSize = Math.min(fontSize, heightCap);
-  // Floor / ceiling: 48-200px.
-  return Math.max(48, Math.min(200, fontSize));
+  // MG text cards render at a MODEST, near-fixed size — measured 2026-06-14
+  // on the OG: cap-height ~6-8% of frame for EVERY card type (niche name,
+  // money figure, age fragment). They are NOT scaled up to fill the width;
+  // a short phrase like "only 2 months ago" sits at ~38% width, ~7% cap.
+  // Our old scale-to-fill ballooned short phrases to ~175px (≈56% cap) —
+  // the #1 reason our cards didn't match (user 2026-06-14). Start from an
+  // MG-calibrated base (~9.5% of height ≈ 7% cap-height) and shrink only
+  // if the text can't fit maxLines at the target width.
+  const base = Math.round(height * 0.082);   // ~89px on 1080 → ~7% cap-height (MG)
+  const targetWidth = width * 0.82;
+  const len = Math.max(1, text.replace(/\s+/g, ' ').trim().length);
+  let fontSize = base;
+  while (fontSize > 44) {
+    const charsPerLine = Math.max(1, Math.floor(targetWidth / (fontSize * 0.55)));
+    const lines = Math.ceil(len / charsPerLine);
+    if (lines <= maxLines) break;
+    fontSize -= 4;
+  }
+  return fontSize;
 }
 
 /** Soft word wrap — splits text into <= maxLines lines of ~maxCharsPerLine

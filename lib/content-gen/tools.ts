@@ -405,7 +405,7 @@ export const TOOL_REGISTRY: ToolSpec[] = [
     output_fields: ['file_url', 'width', 'height'],
     // v1.1.0: chalkboard = board GRAPHIC on dark canvas; thumb_mosaic =
     // gapped tiles on white (matched to decode refs, 2026-06-11).
-    version: 'v1.3.3',  // callout dark canvas #3C3C3C (v1.3.2: forward italic)
+    version: 'v1.3.4',  // MG-modest text-card font (was scale-to-fill)
   },
   {
     name: 'logos_montage',
