@@ -80,16 +80,63 @@ is delivered two ways, together:
    - n11 channel_intro: spoken "only one month ago" + **"with just 6
      long videos"** card
 
-### When does the age card fire?
+### A1 — Age = POSTING START, not the "Joined" date (the deepest rule)
 
-**Only when the channel is YOUNG and the recency is impressive** — every
-age treatment in the OG is **≤ 4 months** ("one/two/three-to-four months",
-"just a month"). Older channels get NO age mention at all:
-- NOT mentioned: n5 (Joined 2017), n9 (2014 / 2022), n7 (May 2025 but
-  53 videos — age not the hook), n3-B Norway (Dec 2024).
-- The age claim also pairs with an **interpreting kicker** when ≤9 mo
-  ("…and these are usually good numbers for such a short span of time"),
-  which we already encode in `proof2Text` + the `age_kicker` bank.
+MG's spoken age routinely **contradicts the visible "Joined" row**, and
+that is intentional — it speaks when the channel started *posting*, not
+when the account was created:
+
+| Niche | About-panel "Joined" | MG says | Gap |
+|---|---|---|---|
+| n10 Horizon | **Joined 6 Jun 2024** | "started posting only three to four months ago" | account ~1.5 yr, posting ~3 mo |
+| n11 Mr. Science | **Joined 18 Mar 2022** | "started posting only one month ago" | account ~3 yr, posting ~1 mo |
+
+This is **why the Joined row is never highlighted** (R-rule above): boxing
+it would put a 2022 date on screen next to a spoken "one month ago." The
+two coexist only because (a) the eye is never drawn to Joined, and (b) the
+wording is always "started **posting**" / "started **uploading**" —
+never "joined." → Our `age_phrase` must come from `first_upload_at`
+(falling back to `channel_created_at`), and the narration verb must be
+"started posting," never "joined." Keep the Joined row un-highlighted.
+
+### A2 — The age card is ONE of two interchangeable "smallness" hooks
+
+MG frames every fast-growing small channel as **"[big result] from a
+[small input]"** — and the small input is EITHER recency (age) OR catalog
+size (video count). It picks whichever number is more striking, sometimes
+both. This is the unifying rule that ties the age card to the video-count
+box (R2):
+
+| Channel shape | Hook chosen | Example |
+|---|---|---|
+| Very small catalog (≤ ~12 videos) + big result | **VIDEO COUNT** (box) | n4 "only 10 videos → 1M views"; n8 "only 20 videos" |
+| Moderate catalog (≈25–55) **but** posting ≤ ~4 mo | **AGE** (card) | n6 (51 vids / 2 mo); n10 (29 vids / 3–4 mo) |
+| BOTH tiny (≤ ~8 videos AND ≤ ~1 mo posting) | **AGE + VIDEO COUNT** | n11 "one month ago with just 6 long videos" |
+| Account OLD (years) but catalog small + result big | VIDEO COUNT only (age N/A) | n8 Minimunch (joined 2022, "only 20 videos") |
+| Recent **but** high output (≈50+ videos, big result) | **NEITHER** — no "small input" exists | n7 (53 vids, May join) → just "look at this channel" |
+| Old account + large catalog | NEITHER (state totals only) | n5 (2017/1,542), n9 (2014/515) |
+
+So the age card's necessary conditions are **all** of:
+1. posting start (first upload) is recent: **≤ ~4 months** (observed: 1,
+   2, 3, 3–4 mo — never older);
+2. the result is impressive for that span (real subs/views — the "blew up
+   fast" story, not a dead channel);
+3. the catalog is NOT itself tiny-enough to make video count the better
+   hook (else MG uses the box instead, or both when both are extreme).
+
+### A3 — Three positions + wording (the card is always a standalone WHITE
+card, black bold text, age fragment only, word-revealed — even inside a
+dark visual run, because it is a statement break)
+
+| Position | When | Spoken sentence (card shows the **bold** fragment) | Refs |
+|---|---|---|---|
+| **Hero channel intro / page reveal** | young HERO, age is the opening frame | "This channel started posting **only {N} months ago**, and has already gained {result}." | n6, n11 |
+| **Hero proof_2** (after the totals) | young HERO, age as the growth-speed frame + interpreting **kicker** | "Keep in mind, the channel started posting **only {N} months ago**, and these are usually good numbers for such a short span of time." | n10 |
+| **channel_b fragment** | the SECOND channel is young | "{opener}… **just {N} month(s) ago**, and is already performing well [even in such a short time]." | n1-B, n10-B |
+
+The interpreting **kicker** (`age_kicker` bank) attaches when age ≤ ~9 mo
+("…and these are usually good numbers for such a short span"); we already
+encode this in `proof2Text`.
 
 ---
 
@@ -113,11 +160,30 @@ Gaps vs MG, to absorb (see `beats-reference.md` for slot wiring):
   into two micro-highlights timed to each spoken number, or let
   `highlight_row` accept an array; the marker-bake pass already finds the
   row by text, so two rows = two baked sweeps.
-- **G3 — Age as a dedicated card in the HERO proof (not just
-  channel_b).** MG floats a white "only 2 months ago" card during the
-  hero proof for young channels (n6, n11). We currently fold age into the
-  proof_2 views-card narration; a dedicated young-channel age card would
-  match MG. Gate: `age_months ≤ 4` (the observed ceiling).
+- **G3 — Age as a standalone WHITE card (A3), not folded into a stats
+  card.** Today we *speak* the age over the proof_2 views card
+  (`proof2Text`) and over the channel_b page — neither emits a dedicated
+  white age card with word-reveal. MG always pops a separate white card
+  ("only 2 months ago") on the age words, in one of three positions (A3).
+  To absorb: emit a white `text_card` whose text is the age fragment,
+  word-revealed, white-locked even inside a dark run; place it at the
+  hero intro (young hero) or proof_2 (+kicker), and as the channel_b
+  fragment. Verb is "started posting," gate `age_months ≤ 4`.
+- **G4 — One "smallness picker" shared by G1 and G3 (A2).** Don't decide
+  the video-count box and the age card independently — they are the same
+  hook in two forms. Per channel, compute: `recent = age_months ≤ 4`,
+  `tinyCatalog = video_count ≤ ~12`, `strong = (subs ≥ 10k OR views ≥
+  100k)`. Then:
+  - `tinyCatalog && strong` → VIDEO-COUNT box + "with just {N} videos."
+  - `recent && strong && !tinyCatalog` → AGE card.
+  - `recent && tinyCatalog && strong` → BOTH (n11).
+  - else → neither (state totals only — old channels, high-output recent
+    channels like n7).
+- **G5 — first_upload over Joined (A1).** `age_phrase` must derive from
+  `first_upload_at` (we already do `first_upload_at ?? channel_created_at`
+  in niche-vars) and the visible Joined row must stay un-highlighted, so a
+  2022 "Joined" can sit under a spoken "one month ago" without conflict.
 
-Threshold note: the ≤~25-videos / ≤4-months numbers are the empirical
-edges of the 11-niche OG sample — widen only with more reference data.
+Threshold note: the ≤~12-videos / ≤4-months / ≥10k-subs edges are the
+empirical bounds of the 11-niche OG sample — widen only with more
+reference data.
