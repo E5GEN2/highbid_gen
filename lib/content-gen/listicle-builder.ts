@@ -537,22 +537,26 @@ async function recentViewNums(channelId: string): Promise<number[]> {
  *  the rendered card already shows the view count + age in its own
  *  meta line. Insert between channel_proof_2 and top_videos_pano in
  *  the niche flow. */
-export async function buildTopViewsRapidFireSlots(niche_index: number, ch: ChannelData): Promise<Slot[]> {
-  // Template beat 7: the view counts are SPOKEN — "They have videos with
-  // {v0} views, {v1} views, and {v2} views," (worked-example :53-57).
+export async function buildTopViewsRapidFireSlots(
+  niche_index: number,
+  ch: ChannelData,
+  opts: { calloutFires?: boolean; calloutVideoTitle?: string | null } = {},
+): Promise<Slot[]> {
+  // Template beat 7: names the channel's TOP videos to paint the niche.
   //
-  // SOURCE OF TRUTH: the captured videos_tab itself (niche_spy_videos only
-  // holds SIGHTED videos, so DB counts contradict the cards — user report
-  // 2026-06-11). Two failure modes we now close:
+  // SOURCE: the videos_tab_POPULAR capture (sorted most-viewed first), so the
+  // cards shown ARE the channel's top videos (user 2026-06-14). card[0] = the
+  // #1 video. niche_spy_videos only holds SIGHTED videos, so we read off the
+  // capture, not the DB. Failure modes we close:
   //   1. CAPTURE DRIFT — the row is day-bucketed and OVERWRITTEN across calls,
   //      so a re-capture by the compose gem read a DIFFERENT snapshot than the
-  //      builder spoke from (card showed 5.2K while VO said 1.1K — user report
-  //      2026-06-14). We capture ONCE here and PIN capture_id on every gem so
-  //      the cards render from this exact snapshot.
-  //   2. INDEX SHIFT — the compositor's per-card fallback could display a
-  //      DIFFERENT card index than the slot ordinal the narration used. We
-  //      resolve the exact card index per slot here (shared with the
-  //      compositor via resolveVideoCardIndices) and read THAT card's count.
+  //      builder spoke from. We capture ONCE here and PIN capture_id on every
+  //      gem so the cards render from this exact snapshot.
+  //   2. INDEX SHIFT — resolve the exact card index per slot here (shared with
+  //      the compositor via resolveVideoCardIndices) and read THAT card's text.
+  //   3. DEDUP — when top_video_callout fires it shows the #1 video, so rapid
+  //      DROPS that video (by title match, else the top card) and shows the
+  //      next-best, so the same video is never named twice.
   let viewsTexts: Array<string | null> = [];
   let titlesTexts: Array<string | null> = [];
   let cardIdx: number[] = [];      // slot → video_card_N index actually shown
@@ -561,22 +565,33 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
     const { captureYtScreen } = await import('./yt-capture');
     const { resolveVideoCardIndices } = await import('./video-compose');
     const sharp = (await import('sharp')).default;
+    const KIND = 'videos_tab_popular' as const;   // top-viewed order
     const readMeta = (cap: { bboxes: unknown }) =>
       ((cap.bboxes as Record<string, { views_texts?: Array<string | null>; titles_texts?: Array<string | null> }>).__meta) ?? {};
-    let cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static' });
+    let cap = await captureYtScreen(ch.channelId, { kind: KIND, mode: 'static' });
     let meta = readMeta(cap);
     if ((meta.views_texts ?? []).filter(Boolean).length < 3 || (meta.titles_texts ?? []).filter(Boolean).length < 1) {
       // Day-cached capture predates the views/titles-text extractor — force
       // ONE fresh capture; subsequent builds hit the refreshed cache.
-      cap = await captureYtScreen(ch.channelId, { kind: 'videos_tab', mode: 'static', force: true });
+      cap = await captureYtScreen(ch.channelId, { kind: KIND, mode: 'static', force: true });
       meta = readMeta(cap);
     }
     viewsTexts = meta.views_texts ?? [];
     titlesTexts = meta.titles_texts ?? [];
     pinId = cap.id;
     const imgH = (await sharp(cap.local_path).metadata()).height ?? Infinity;
-    cardIdx = resolveVideoCardIndices(
-      cap.bboxes as Record<string, { x: number; y: number; w: number; h: number } | undefined>, imgH, 3);
+    // Resolve up to 4 candidate top cards; drop the callout's #1 video so it
+    // isn't named twice (dedup), then keep the top 3 remaining.
+    let cand = resolveVideoCardIndices(
+      cap.bboxes as Record<string, { x: number; y: number; w: number; h: number } | undefined>, imgH, 4);
+    if (opts.calloutFires && cand.length > 0) {
+      const norm = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const ct = norm(opts.calloutVideoTitle);
+      const matchIdx = ct ? cand.find(i => norm(titlesTexts[i]) === ct) : undefined;
+      const dropIdx = matchIdx !== undefined ? matchIdx : cand[0];   // title match, else the top card
+      cand = cand.filter(i => i !== dropIdx);
+    }
+    cardIdx = cand.slice(0, 3);
   } catch (e) {
     console.warn(`[rapid-fire] capture readout failed for ${ch.channelId}: ${(e as Error).message.slice(0, 120)}`);
   }
@@ -628,7 +643,7 @@ export async function buildTopViewsRapidFireSlots(niche_index: number, ch: Chann
     // Crop the EXACT card whose count we just spoke; fall back to the slot
     // ordinal only when selection produced nothing (generic-copy path).
     const ci = cardIdx[idx] ?? idx;
-    const mainArgs: Record<string, unknown> = { channelId: ch.channelId, kind: 'videos_tab', mode: 'static' };
+    const mainArgs: Record<string, unknown> = { channelId: ch.channelId, kind: 'videos_tab_popular', mode: 'static' };
     if (pinId != null) mainArgs.capture_id = pinId;   // PIN: gems reuse the readout's exact snapshot
     return {
       slot_id: `${base}_top_views_rapid_${idx}`,
@@ -1387,6 +1402,9 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     const calloutGated = calloutWorthy
       ? callouttSwapped
       : callouttSwapped.filter(s => s.beat_id !== 'top_video_callout');
+    // Will a callout actually render? (gated AND the writer emitted one AND we
+    // have the top-video id). Rapid uses this to dedup the #1 video out.
+    const calloutFires = calloutGated.some(s => s.beat_id === 'top_video_callout') && !!ch.top_video_id;
     // DO NOT call swapChannelProof — task #65's animated highlight needs
     // the about_page screenshot crop path.
     const writerSlotsTransformed = injectCropTargets(calloutGated);
@@ -1440,7 +1458,9 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           { composition: 'text_card', text: emphasisLine, bg_mode: 'white', color_treatment: 'neutral' },
           ['whoosh'])
       : null;
-    const rapidFireSlots = await buildTopViewsRapidFireSlots(niche_index, ch);
+    const rapidFireSlots = await buildTopViewsRapidFireSlots(niche_index, ch, {
+      calloutFires, calloutVideoTitle: ch.top_video_title ?? null,
+    });
     // pano = catalog-wide over-performance grid, gated on panoWorthy (≈ every
     // recent video clears the per-video floor; see gates above).
     const panoSlot = panoWorthy
