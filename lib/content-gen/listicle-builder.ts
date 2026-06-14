@@ -14,7 +14,7 @@
  */
 
 import { writeScript, type ScriptWriterInput, type ChannelData, type NarrationBeat } from './script-writer';
-import { type ConcreteScript } from './concrete-script';
+import { type ConcreteScript, type HighlightRow } from './concrete-script';
 import { getPool } from '../db';
 import { ttsWithTimestamps, DEFAULT_VOICE_ID, type WordTiming } from './voice';
 import { loadNicheVars, spokenNumber, type NicheVars } from './niche-vars';
@@ -842,15 +842,17 @@ export function injectCropTargets(slots: Slot[]): Slot[] {
  *  about_page so the about_panel crop lands on the modal stats. */
 export function forceProofKind(slots: Slot[], opts: { videoCountHook?: boolean } = {}): Slot[] {
   return slots.map(slot => {
-    // channel_proof_1 → about_page + highlight subscribers row
-    //   (videoCountHook: box the VIDEOS row instead — small-catalog hook,
-    //    proof_1 narration speaks "only N videos"; about-highlight-age
-    //    rules R2/G1. Single-row this pass; dual-row box is G2/deferred.)
-    // channel_proof_2 → about_page + highlight views row
+    // channel_proof_1 → about_page + highlight subscribers row.
+    //   videoCountHook (small-catalog hook, about-highlight-age rules
+    //   R1/R2/G1+G2): proof_1 narration speaks BOTH stats — "posted just N
+    //   videos, and already has more than {subs} subscribers" — so MG boxes
+    //   BOTH rows in spoken order (videos first, then subscribers). G2
+    //   dual-row: emit an array; video-compose sweeps them sequentially.
+    // channel_proof_2 → about_page + highlight views row.
     if (slot.beat_id !== 'channel_proof_1' && slot.beat_id !== 'channel_proof_2') return slot;
-    const highlightRow: 'subscribers' | 'views' | 'videos' =
+    const highlightRow: HighlightRow | HighlightRow[] =
       slot.beat_id === 'channel_proof_2' ? 'views'
-      : opts.videoCountHook ? 'videos'
+      : opts.videoCountHook ? ['videos', 'subscribers']
       : 'subscribers';
     return {
       ...slot,
@@ -868,8 +870,13 @@ export function forceProofKind(slots: Slot[], opts: { videoCountHook?: boolean }
         // and annotate_shape (the writer's gem output sets these to
         // composite/sharpie_circle; if we just spread ...g.args they
         // bleed through, so explicit destructure-and-drop is required).
-        const element = highlightRow === 'subscribers' ? 'subscriber_count'
-          : highlightRow === 'videos' ? 'video_count'
+        // annotate_element only scopes the about-modal bbox walker (so it
+        // returns the stats rows, not just joined_date); the animated bake
+        // scans the composed PNG for rows, so for a dual-row box the FIRST
+        // target is a fine scoping anchor.
+        const primaryRow = Array.isArray(highlightRow) ? highlightRow[0] : highlightRow;
+        const element = primaryRow === 'subscribers' ? 'subscriber_count'
+          : primaryRow === 'videos' ? 'video_count'
           : 'total_views';
         const {
           annotate_kind: _annKind,

@@ -155,11 +155,24 @@ Gaps vs MG, to absorb (see `beats-reference.md` for slot wiring):
   request `highlight_row: 'videos'`. Plumbing exists; only the trigger +
   narration template are missing. Builder owns the decision (it has
   `video_count`, `subscriber_count`, `total_views` on `ChannelData`).
-- **G2 — Dual-row highlight (R1).** When one sentence cites two stats,
-  box both. Today each proof slot highlights a single row. Either split
-  into two micro-highlights timed to each spoken number, or let
-  `highlight_row` accept an array; the marker-bake pass already finds the
-  row by text, so two rows = two baked sweeps.
+- **G2 — DONE (2026-06-14, commit pending).** Dual-row highlight (R1):
+  when proof_1's small-catalog hook fires, the narration speaks both stats
+  ("posted just {N} videos, and already has more than {subs} subscribers")
+  and the about-panel now boxes BOTH rows. `highlight_row` accepts an
+  array (`['videos','subscribers']`, spoken order); the marker-bake
+  (`video-compose.ts`) resolves each row independently (own containment
+  index + own text-extent scan) and bakes a SINGLE progressive frame set
+  with sequential sweeps — band 0 sweeps [0,0.6s], holds through a ~1.2s
+  gap, band 1 sweeps [1.8,2.4s] — never a second overlay layer (that was
+  the old flicker source). Single-row behaviour is byte-identical
+  (14 frames / 13 word_times). Frame-verified on caps 1030/1034: phase 1
+  boxes videos only, final boxes both, each marker hugging its own text.
+  `forceProofKind` emits the array; wired off `videoCountHook` (G4).
+  <strike>When one sentence cites two stats, box both. Today each proof
+  slot highlights a single row. Either split into two micro-highlights
+  timed to each spoken number, or let `highlight_row` accept an array; the
+  marker-bake pass already finds the row by text, so two rows = two baked
+  sweeps.</strike>
 - **G3 — DONE (2026-06-14, commit pending).** Age now renders as a
   standalone WHITE `channel_age_card` (age_phrase capitalized, word-
   revealed, white-locked) inserted right after the channel reveal

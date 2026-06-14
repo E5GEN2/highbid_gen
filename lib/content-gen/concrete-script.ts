@@ -57,6 +57,9 @@ export interface Compose {
   layers: ComposeLayer[];
 }
 
+/** A single about-modal stats row that can carry the MG yellow highlight. */
+export type HighlightRow = 'subscribers' | 'videos' | 'views';
+
 export interface ComposeLayer {
   /** "main" | "narr" | "sfx" — referencing a gem id in this slot OR a cross-
    *  slot ref like `other_slot.main`. */
@@ -93,10 +96,12 @@ export interface ComposeLayer {
   /** Channel-name watermark over the mini-player (large translucent
    *  top-left + small bottom-center, per the MG reference). */
   watermark_text?: string;
-  /** Which row of the about-modal to MG-highlight (yellow rectangle that
+  /** Which row(s) of the about-modal to MG-highlight (yellow rectangle that
    *  animates L→R covering the row text). Used with crop_target='about_panel'.
-   *  Looked up against bboxes (subscriber_count / video_count / total_views). */
-  highlight_row?: 'subscribers' | 'videos' | 'views';
+   *  Looked up against bboxes (subscriber_count / video_count / total_views).
+   *  An ARRAY boxes multiple rows sequentially in spoken order (G2 dual-row:
+   *  "just N videos … {subs} subscribers" → ['videos','subscribers']). */
+  highlight_row?: HighlightRow | HighlightRow[];
 }
 
 export interface Slot {

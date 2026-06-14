@@ -60,8 +60,10 @@ interface ComposeLayer {
   watermark_text?: string;
   /** Mix the clip's own audio at ~-15dB under narration. */
   diegetic?: boolean;
-  /** Highlight a stats row in about_panel — MG-style L→R yellow animation. */
-  highlight_row?: 'subscribers' | 'videos' | 'views';
+  /** Highlight a stats row in about_panel — MG-style L→R yellow animation.
+   *  An ARRAY boxes multiple rows sequentially in spoken order (G2 dual-row:
+   *  e.g. ['videos','subscribers'] for "just N videos … {subs} subscribers").*/
+  highlight_row?: 'subscribers' | 'videos' | 'views' | Array<'subscribers' | 'videos' | 'views'>;
   url: string | null;
   duration_s: number | null;
   /** When the upstream tool returned an on-disk path, the producer surfaces
@@ -279,17 +281,27 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
           const joinedCenter = joinedCanvasY + (anchorBbox.h * panelMap.scale) / 2;
           const jIdx = rows.findIndex(rr => joinedCenter >= rr.top - 4 && joinedCenter <= rr.top + rr.h + 6);
           const below = jIdx >= 0 ? rows.slice(jIdx + 1) : rows.filter(rr => rr.top > joinedCenter);
-          const belowIdx =
-            layer.highlight_row === 'subscribers' ? 0
-            : layer.highlight_row === 'videos'    ? 1
-            : 2; // views
-          // Legacy absolute index, used only as a desperation fallback.
-          const rowIdx =
-            layer.highlight_row === 'subscribers' ? 3
-            : layer.highlight_row === 'videos'    ? 4
-            : 5;
-          let r: { top: number; h: number } | undefined = below[belowIdx] ?? rows[rowIdx];
-          if (r) {
+          // G2 dual-row: highlight_row may be a single row OR an array
+          // (box two stats in spoken order, e.g. ['videos','subscribers']
+          // for "just N videos … {subs} subscribers"). Resolve EACH row
+          // independently — own containment index + own horizontal text
+          // scan — so a second row can never inherit the first row's
+          // off-by-one or text extent. Bake ALL bands into ONE progressive
+          // frame set, swept sequentially; never a second word_reveal layer
+          // (separate overlays re-introduced the old alpha-stack flicker).
+          const targets = (Array.isArray(layer.highlight_row) ? layer.highlight_row : [layer.highlight_row])
+            .filter((t): t is 'subscribers' | 'videos' | 'views' => !!t);
+
+          type Band = { X: number; Y: number; W: number; H: number };
+          // Resolve one stat row to a baked-marker rectangle, or null if its
+          // text can't be found (junk bbox / absent row → skip that band,
+          // never abort the whole bake).
+          const resolveBand = (target: 'subscribers' | 'videos' | 'views'): Band | null => {
+            const belowIdx = target === 'subscribers' ? 0 : target === 'videos' ? 1 : 2;
+            // Legacy absolute index, used only as a desperation fallback.
+            const rowIdx   = target === 'subscribers' ? 3 : target === 'videos' ? 4 : 5;
+            let r: { top: number; h: number } | undefined = below[belowIdx] ?? rows[rowIdx];
+            if (!r) return null;
             // Scan the row band HORIZONTALLY for the text's actual extent.
             // A hardcoded TEXT_X (625, measured 2026-06-10) broke whenever
             // the composer geometry changed (2026-06-12: the tightened
@@ -313,7 +325,7 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             while (cardX0 > 0 && darkAt(cardX0 - 1)) cardX0--;
             while (cardX1 < info.width - 1 && darkAt(cardX1 + 1)) cardX1++;
             // (2) text extent inside the card (white text on near-black).
-    const scanX = (band: { top: number; h: number }) => {
+            const scanX = (band: { top: number; h: number }) => {
               let sx0 = -1, sx1 = -1;
               for (let x = cardX0 + 12; x < cardX1 - 12; x++) {
                 let bright = 0;
@@ -333,7 +345,16 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
               r = rows[rowIdx];
               [x0, x1] = scanX(r);
             }
-            // BAKE the highlight into progressive stills (MG treatment,
+            if (x0 < 0) return null;
+            const PAD = 6;
+            // -10/+18 (were -6/+14): the leading digit's anti-aliased
+            // left edge poked out of the bar on one row (job 178).
+            return { X: x0 - 10, Y: Math.max(0, r.top - PAD), W: (x1 - x0) + 18, H: r.h + 2 * PAD };
+          };
+
+          const bands = targets.map(resolveBand).filter((b): b is Band => !!b);
+          if (bands.length > 0) {
+            // BAKE the highlight(s) into progressive stills (MG treatment,
             // verified on the OG niche_8 proof beat 2026-06-12): an OPAQUE
             // #E7F61A marker bar that hugs the text, with the covered text
             // flipped to DARK; the bar sweeps L->R over ~0.6s. The old
@@ -342,40 +363,54 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             // boundaries, stacking alpha into a visible flicker (user
             // report). Baking frames + the word_reveal concat path has
             // neither problem.
-            if (x0 >= 0) {
-              const PAD = 6;
-              // -10/+18 (were -6/+14): the leading digit's anti-aliased
-              // left edge poked out of the bar on one row (job 178).
-              const X = x0 - 10, Y = Math.max(0, r.top - PAD);
-              const W = (x1 - x0) + 18, H = r.h + 2 * PAD;
-              const K = 13, RAMP_S = 0.6;
-              const MARKER = { r: 231, g: 246, b: 26 };   // sampled from the OG bar
-              const DARK = 30;                             // covered-text tone
-              const variants: string[] = [composed];
-              for (let k = 1; k <= K; k++) {
-                const wk = Math.max(2, Math.round(W * k / K));
-                const buf = Buffer.from(data);
-                for (let y = Y; y < Math.min(info.height, Y + H); y++) {
-                  for (let x = X; x < Math.min(info.width, X + wk); x++) {
-                    const off = (y * info.width + x) * info.channels;
-                    const bright = (buf[off] + buf[off + 1] + buf[off + 2]) / 3;
-                    // Soft mix keeps the glyph anti-aliasing: fully dark text
-                    // strokes, marker yellow background, blended edges.
-                    const a = Math.max(0, Math.min(1, (bright - 60) / 120));
-                    buf[off] = Math.round(MARKER.r * (1 - a) + DARK * a);
-                    buf[off + 1] = Math.round(MARKER.g * (1 - a) + DARK * a);
-                    buf[off + 2] = Math.round(MARKER.b * (1 - a) + DARK * a);
-                  }
+            const K = 13, RAMP_S = 0.6;
+            // Inter-sweep gap: an already-boxed row HOLDS while we wait for
+            // the next number to be spoken, then the next row sweeps. Synthetic
+            // timing (like the single-row ramp) — the slot is short enough that
+            // the concat path clamps to hold_s if narration runs tight.
+            const GAP_S = 1.2;
+            const MARKER = { r: 231, g: 246, b: 26 };   // sampled from the OG bar
+            const DARK = 30;                             // covered-text tone
+            // Fill one band's marker rect up to width wk into buf (soft-mix
+            // keeps glyph anti-aliasing: dark strokes, yellow ground, blended edges).
+            const fillBand = (buf: Buffer, b: Band, wk: number) => {
+              const wEff = Math.min(b.W, Math.max(0, wk));
+              for (let y = b.Y; y < Math.min(info.height, b.Y + b.H); y++) {
+                for (let x = b.X; x < Math.min(info.width, b.X + wEff); x++) {
+                  const off = (y * info.width + x) * info.channels;
+                  const bright = (buf[off] + buf[off + 1] + buf[off + 2]) / 3;
+                  const a = Math.max(0, Math.min(1, (bright - 60) / 120));
+                  buf[off]     = Math.round(MARKER.r * (1 - a) + DARK * a);
+                  buf[off + 1] = Math.round(MARKER.g * (1 - a) + DARK * a);
+                  buf[off + 2] = Math.round(MARKER.b * (1 - a) + DARK * a);
                 }
-                const vPath = path.join(os.tmpdir(), `mg-hl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-k${k}.png`);
+              }
+            };
+            const variants: string[] = [composed];
+            const wordTimes: number[] = [];
+            let phaseStart = 0;
+            for (let bi = 0; bi < bands.length; bi++) {
+              for (let k = 1; k <= K; k++) {
+                const buf = Buffer.from(data);
+                // Earlier bands stay FULLY boxed, the current band sweeps,
+                // later bands are still empty — all baked into this one frame.
+                for (let pj = 0; pj < bands.length; pj++) {
+                  const wk = pj < bi ? bands[pj].W
+                    : pj > bi ? 0
+                    : Math.max(2, Math.round(bands[pj].W * k / K));
+                  if (wk > 0) fillBand(buf, bands[pj], wk);
+                }
+                const vPath = path.join(os.tmpdir(), `mg-hl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-b${bi}k${k}.png`);
                 await sharp(buf, { raw: { width: info.width, height: info.height, channels: info.channels as 3 | 4 } })
                   .png().toFile(vPath);
                 variants.push(vPath);
+                wordTimes.push(phaseStart + k * RAMP_S / K);
               }
-              layer.local_paths = variants;
-              layer.word_times = Array.from({ length: K }, (_, i) => (i + 1) * RAMP_S / K);
-              layer.ken_burns = 'word_reveal';
+              phaseStart += RAMP_S + GAP_S;   // hold this band through the gap, then sweep the next
             }
+            layer.local_paths = variants;     // length = bands.length*K + 1
+            layer.word_times = wordTimes;     // length = bands.length*K = variants.length - 1 (concat invariant)
+            layer.ken_burns = 'word_reveal';
           }
         }
 
