@@ -160,8 +160,15 @@ Gaps vs MG, to absorb (see `beats-reference.md` for slot wiring):
   into two micro-highlights timed to each spoken number, or let
   `highlight_row` accept an array; the marker-bake pass already finds the
   row by text, so two rows = two baked sweeps.
-- **G3 — Age as a standalone WHITE card (A3), not folded into a stats
-  card.** Today we *speak* the age over the proof_2 views card
+- **G3 — DONE (2026-06-14, commit pending).** Age now renders as a
+  standalone WHITE `channel_age_card` (age_phrase capitalized, word-
+  revealed, white-locked) inserted right after the channel reveal
+  (n6/n11 position), gated `age_months ≤ 4`; `proof2Text` stripped of
+  age. Verified: "Only about four months ago." on NoFL (4mo). Position-
+  2 (proof_2 +kicker) and channel_b age fragment remain as future
+  variants.
+  <strike>**G3 — Age as a standalone WHITE card (A3), not folded into a stats
+  card.**</strike> Today we *speak* the age over the proof_2 views card
   (`proof2Text`) and over the channel_b page — neither emits a dedicated
   white age card with word-reveal. MG always pops a separate white card
   ("only 2 months ago") on the age words, in one of three positions (A3).

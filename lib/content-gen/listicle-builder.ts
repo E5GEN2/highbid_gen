@@ -103,26 +103,15 @@ export async function loadChannel(channelId: string): Promise<ChannelData | null
   };
 }
 
-/** Template beat 5 (proof_2): consistency opener + total views + age.
- *  "And the views back it up. Over 40 million total views in just about
- *  13 months." — worked-example BEAT 4 + SR beat 5 (age + total_views). */
-function proof2Text(tv: string, extras?: StubExtras): string {
-  // Age framing per MG transcript t=717-722: "Keep in mind, the channel
-  // started posting only three to four months ago, and these are usually
-  // good numbers for such a short span of time." — "started posting X
-  // ago" phrasing + an INTERPRETING kicker, and ONLY when the age is
-  // actually impressive (young channel). Older channels get plain stats.
-  const stats = `Over ${tv} total views.`;
-  const months = extras?.ageMonths ?? null;
-  if (extras?.agePhrase && months != null && months <= 9 && extras?.ageKicker) {
-    return `${stats} Keep in mind, this channel started posting ${extras.agePhrase}, ${extras.ageKicker}`;
-  }
-  if (extras?.agePhrase && months != null && months <= 18) {
-    // agePhrase already carries its own minimizer ("only about ten
-    // months ago" / "just over a year ago") — no extra "only" here.
-    return `${stats} And this channel started posting ${extras.agePhrase}.`;
-  }
-  return stats;
+/** Template beat 5 (proof_2): total views only.
+ *  Age was previously folded in here; per the frame study (about-
+ *  highlight-age-rules.md A3/G3) MG delivers age as a STANDALONE white
+ *  card, not over the views panel, and ONLY for ≤4-month channels — so
+ *  age now lives in the dedicated `channel_age_card` beat and proof_2
+ *  is just the totals. (extras kept for signature compatibility.) */
+function proof2Text(tv: string, _extras?: StubExtras): string {
+  void _extras;
+  return `Over ${tv} total views.`;
 }
 
 export interface StubExtras {
@@ -1075,7 +1064,7 @@ export function buildTransitionSlot(niche_index: number, vocalLine: string | nul
 /** Beats whose text/icon cards are ALWAYS white (statement breaks). */
 const WHITE_LOCKED_BEATS = new Set([
   'intro_card', 'niche_name_card', 'emphasis_card', 'money_math',
-  'video_cta', 'concept_tag',
+  'video_cta', 'concept_tag', 'channel_age_card',
 ]);
 /** Beats whose cards are ALWAYS dark. */
 const DARK_LOCKED_BEATS = new Set(['transition']);
@@ -1321,6 +1310,25 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     // craziest" card), and the sentence completes over the about-panel
     // stats (proof_1) — continuous narration carries it across.
     const channelPageFullSlot = buildChannelPageFullSlot(niche_index, ch, recipeLine ?? `Take a look at this channel.`);
+    // channel_age_card (about-highlight-age-rules.md A3/G3): for a YOUNG
+    // hero (posting start ≤ 4 months, first_upload-based via niche-vars),
+    // MG floats a standalone WHITE card stating the age right at the
+    // channel reveal (n6 "only 2 months ago", n11 "only one month ago")
+    // — NOT folded into the proof_2 panel. Word-revealed, white-locked.
+    // Older channels get no age mention at all (MG never ages >4 months).
+    // MG's age cards are punchy single-screen fragments ("only 2 months
+    // ago", "just one month ago"), not a full sentence — so the card text
+    // IS the age_phrase, capitalized. age_phrase already carries the
+    // minimizer ("only about four months ago" / "just a month ago").
+    const ageCardText = vars.age_phrase
+      ? vars.age_phrase.charAt(0).toUpperCase() + vars.age_phrase.slice(1) + '.'
+      : null;
+    const ageCardSlot = (vars.age_months != null && vars.age_months <= 4 && ageCardText)
+      ? makeFramingSlot(`niche_${niche_index}_channel_age_card`, 'channel_age_card',
+          ageCardText,
+          { composition: 'text_card', text: ageCardText, bg_mode: 'white', color_treatment: 'neutral' },
+          ['whoosh'])
+      : null;
     const emphasisSlot = emphasisLine
       ? makeFramingSlot(`niche_${niche_index}_emphasis_card`, 'emphasis_card', emphasisLine,
           { composition: 'text_card', text: emphasisLine, bg_mode: 'white', color_treatment: 'neutral' },
@@ -1335,6 +1343,8 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     for (const slot of writerSlotsTransformed) {
       if (!revealInserted && slot.beat_id === 'channel_proof_1') {
         withInjects.push(channelPageFullSlot);
+        // Age card right after the channel reveal (n6/n11 position).
+        if (ageCardSlot) withInjects.push(ageCardSlot);
         if (emphasisSlot) withInjects.push(emphasisSlot);
         revealInserted = true;
       }
@@ -1348,7 +1358,10 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       }
     }
     if (!revealInserted) {
-      withInjects.unshift(...(emphasisSlot ? [channelPageFullSlot, emphasisSlot] : [channelPageFullSlot]));
+      const lead: Slot[] = [channelPageFullSlot];
+      if (ageCardSlot) lead.push(ageCardSlot);
+      if (emphasisSlot) lead.push(emphasisSlot);
+      withInjects.unshift(...lead);
     }
     if (!proof1Seen) {
       if (panoSlot) withInjects.push(panoSlot);
