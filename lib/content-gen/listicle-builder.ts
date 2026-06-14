@@ -130,6 +130,22 @@ export interface StubExtras {
   agePhrase?: string | null;
   ageMonths?: number | null;
   ageKicker?: string | null;
+  /** Small-catalog hook (about-highlight-age-rules.md A2/G1): when the
+   *  picker decides video count is the striking "small input", proof_1
+   *  speaks "only {N} videos … {subs}" and the about-panel box lands on
+   *  the videos row instead of subscribers. */
+  videoCount?: number | null;
+  videoCountHook?: boolean;
+}
+
+/** proof_1 narration. Default = the subscribers line. Small-catalog hook
+ *  = MG's "only {N} videos and already gained {subs}" (n8) — the video
+ *  count is spoken so the yellow box can land on it (R2). */
+function proof1Text(sub: string, extras?: StubExtras): string {
+  if (extras?.videoCountHook && extras.videoCount != null) {
+    return `This channel has posted just ${extras.videoCount} videos, and already has more than ${sub} subscribers.`;
+  }
+  return `This channel already has more than ${sub} subscribers.`;
 }
 
 export function stubNarration(beat_id: string, ch: ChannelData, extras?: StubExtras): NarrationBeat[] {
@@ -138,7 +154,7 @@ export function stubNarration(beat_id: string, ch: ChannelData, extras?: StubExt
   const tv = ch.total_views != null ? floorHumanizeNumber(ch.total_views) : 'millions of';
   const vv = ch.top_video_view_count != null ? floorHumanizeNumber(ch.top_video_view_count) : 'a million';
   switch (beat_id) {
-    case 'channel_proof_1': return [{ beat_id, text: `This channel already has more than ${sub} subscribers.`, hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } }];
+    case 'channel_proof_1': return [{ beat_id, text: proof1Text(sub, extras), hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'channel_proof_2': return [{ beat_id, text: proof2Text(tv, extras), hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'top_video_callout': return [{ beat_id, text: `Their most popular video has more than ${vv} views.`, hold_s: 2.0, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'niche_segment_3':
@@ -146,7 +162,7 @@ export function stubNarration(beat_id: string, ch: ChannelData, extras?: StubExt
       // expands this into 3 slots: subs reveal → total views reveal →
       // top video callout. Producer composes all 3 into one mp4.
       return [
-        { beat_id: 'channel_proof_1',   text: `This channel already has more than ${sub} subscribers.`, hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } },
+        { beat_id: 'channel_proof_1',   text: proof1Text(sub, extras), hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } },
         { beat_id: 'channel_proof_2',   text: proof2Text(tv, extras),  hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } },
         { beat_id: 'top_video_callout', text: `Their most popular video has more than ${vv} views.`,     hold_s: 2.0, audio_cue: { sfx: ['whoosh', 'ding'] } },
       ];
@@ -835,13 +851,18 @@ export function injectCropTargets(slots: Slot[]): Slot[] {
  *  this beat, and Gemini sometimes picks channel_page which shows the
  *  banner backdrop instead of the clean stats column. Override to
  *  about_page so the about_panel crop lands on the modal stats. */
-export function forceProofKind(slots: Slot[]): Slot[] {
+export function forceProofKind(slots: Slot[], opts: { videoCountHook?: boolean } = {}): Slot[] {
   return slots.map(slot => {
     // channel_proof_1 → about_page + highlight subscribers row
+    //   (videoCountHook: box the VIDEOS row instead — small-catalog hook,
+    //    proof_1 narration speaks "only N videos"; about-highlight-age
+    //    rules R2/G1. Single-row this pass; dual-row box is G2/deferred.)
     // channel_proof_2 → about_page + highlight views row
     if (slot.beat_id !== 'channel_proof_1' && slot.beat_id !== 'channel_proof_2') return slot;
-    const highlightRow: 'subscribers' | 'views' =
-      slot.beat_id === 'channel_proof_1' ? 'subscribers' : 'views';
+    const highlightRow: 'subscribers' | 'views' | 'videos' =
+      slot.beat_id === 'channel_proof_2' ? 'views'
+      : opts.videoCountHook ? 'videos'
+      : 'subscribers';
     return {
       ...slot,
       gems: slot.gems.map(g => {
@@ -858,7 +879,9 @@ export function forceProofKind(slots: Slot[]): Slot[] {
         // and annotate_shape (the writer's gem output sets these to
         // composite/sharpie_circle; if we just spread ...g.args they
         // bleed through, so explicit destructure-and-drop is required).
-        const element = highlightRow === 'subscribers' ? 'subscriber_count' : 'total_views';
+        const element = highlightRow === 'subscribers' ? 'subscriber_count'
+          : highlightRow === 'videos' ? 'video_count'
+          : 'total_views';
         const {
           annotate_kind: _annKind,
           annotate_shape: _annShape,
@@ -1186,10 +1209,25 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     } catch (e) {
       console.warn(`[about-truth] capture readout failed for ${cid}: ${(e as Error).message.slice(0, 100)}`);
     }
+    // SMALLNESS PICKER (about-highlight-age-rules.md A2/G4): MG frames a
+    // fast-growing small channel as "[big result] from a [small input]",
+    // where the small input is the catalog size (video count) or recency
+    // (age). This pass implements the VIDEO-COUNT branch (G1): when the
+    // catalog is tiny AND the result is strong, proof_1 speaks "only N
+    // videos" and the about-panel box lands on the videos row. The age
+    // branch stays in proof_2 narration (proof2Text) for now — G3 later.
+    const strong = (ch.subscriber_count ?? 0) >= 10_000 || (ch.total_views ?? 0) >= 100_000;
+    const tinyCatalog = ch.video_count != null && ch.video_count > 0 && ch.video_count <= 12;
+    const videoCountHook = !!(tinyCatalog && strong);
+    if (videoCountHook) {
+      console.log(`[smallness] niche ${niche_index}: video-count hook (${ch.video_count} videos, subs=${ch.subscriber_count ?? '?'}, views=${ch.total_views ?? '?'})`);
+    }
     const beats = stubNarration(beat_id, ch, {
       agePhrase: vars.age_phrase,
       ageMonths: vars.age_months,
       ageKicker,
+      videoCount: ch.video_count ?? null,
+      videoCountHook,
     });
     if (beats.length === 0) { failures.push({ channelId: cid, reason: `no stub narration for ${beat_id}` }); continue; }
 
@@ -1271,7 +1309,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           ],
         },
       }));
-    const proofSwapped = forceProofKind(result.script.slots);
+    const proofSwapped = forceProofKind(result.script.slots, { videoCountHook });
     const callouttSwapped = await swapMostPopularCallout(proofSwapped, ch);
     // DO NOT call swapChannelProof — task #65's animated highlight needs
     // the about_page screenshot crop path.
