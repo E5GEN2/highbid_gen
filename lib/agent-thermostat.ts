@@ -19,6 +19,7 @@ import { getPool } from './db';
 import {
   fetchRunningTasks,
   fetchPlannedTasks,
+  fetchTasksByStatus,
   deletePlannedTasks,
   countInFlight,
   type RunningTaskInfo,
@@ -28,6 +29,7 @@ import {
   deployBatch,
   sweepZombiePins,
 } from './agent-deploy';
+import { snapshotTaskProofs } from './agent-task-proof';
 
 const NICHE_SPY_JOB_ID = '69a58c4277cb8e2b9f1dddc4';
 const INTERVAL_MS = 30_000;  // Check every 30s
@@ -91,6 +93,20 @@ async function runCheck() {
       UPDATE agent_task_log SET status = 'completed'
       WHERE status = 'running' AND last_seen_at < NOW() - INTERVAL '90 seconds'
     `).catch(() => {});
+
+    // Continuously snapshot each running task's job_proof crawl trace (watch
+    // path + scored candidates). The proof is ephemeral — it only lives on the
+    // task while it's in the applicants list — so capturing it every tick is
+    // what makes per-task history durable regardless of whether anyone has the
+    // Agents tab open. Best-effort: a separate proof-bearing fetch (the
+    // thermostat's own `running` list omits job_proof for speed), fully
+    // isolated so a failure never affects deploy decisions.
+    try {
+      const withProof = await fetchTasksByStatus(token, NICHE_SPY_JOB_ID, 'running', 100);
+      await snapshotTaskProofs(withProof);
+    } catch (err) {
+      console.error('[thermostat] proof snapshot skipped:', (err as Error).message);
+    }
 
     // Count in-flight per keyword
     const inflight = countInFlight(running, planned);

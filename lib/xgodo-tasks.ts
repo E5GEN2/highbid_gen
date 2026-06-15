@@ -77,6 +77,189 @@ function extractWorkUnit(raw: unknown): WorkUnit {
 }
 
 /**
+ * A single video record extracted from a task's job_proof — the durable
+ * crawl-trace unit. A record is either:
+ *   - WATCHED: the bot actually watched it (orderNumber set, watched=true) —
+ *     this is the crawl PATH, in sequence.
+ *   - SCORED:  a suggested candidate it embedded + scored but skipped
+ *     (similarity set, watched=false).
+ */
+export interface ProofVideo {
+  url: string;
+  videoId: string | null;
+  title: string | null;
+  orderNumber: number | null;   // watch order; null = not watched
+  watched: boolean;
+  similarity: number | null;    // xgodo-side cosine when present in proof
+  channelName: string | null;
+  viewCount: string | null;     // raw label, e.g. "363K views"
+  duration: string | null;      // raw label, e.g. "50:29"
+  source: string | null;        // 'suggested' | 'search' | ...
+  seenStatus: string | null;    // 'already_seen' | 'new'
+  isNew: boolean | null;
+}
+
+const YT_ID_RE = /(?:v=|\/shorts\/|youtu\.be\/|\/watch\?v=)([A-Za-z0-9_-]{11})/;
+
+function ytId(url: unknown): string | null {
+  if (typeof url !== 'string') return null;
+  const m = url.match(YT_ID_RE);
+  return m ? m[1] : null;
+}
+
+function asNum(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+function asStr(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** Does this object look like a video record in a job_proof blob? */
+function looksLikeVideo(o: Record<string, unknown>): boolean {
+  const url = o.url ?? o.link ?? o.videoUrl;
+  if (typeof url !== 'string') return false;
+  if (!/youtu|watch\?v=/i.test(url)) return false;
+  return (
+    'title' in o || 'orderNumber' in o || 'similarity' in o ||
+    'watched' in o || 'seenStatus' in o || 'channelName' in o
+  );
+}
+
+function normalizeProofVideo(o: Record<string, unknown>): ProofVideo {
+  const url = (o.url ?? o.link ?? o.videoUrl) as string;
+  return {
+    url,
+    videoId: ytId(url),
+    title: asStr(o.title),
+    orderNumber: asNum(o.orderNumber),
+    watched: o.watched === true || o.watched === 'true',
+    similarity: asNum(o.similarity),
+    channelName: asStr(o.channelName ?? o.channel),
+    viewCount: asStr(o.viewCount ?? o.views),
+    duration: asStr(o.duration),
+    source: asStr(o.source),
+    seenStatus: asStr(o.seenStatus),
+    isNew: typeof o.isNew === 'boolean' ? o.isNew : (o.isNew === 'true' ? true : o.isNew === 'false' ? false : null),
+  };
+}
+
+/**
+ * Extract the crawl trace (watched path + scored candidates) from a task's
+ * job_proof. Robust to shape: job_proof arrives as a string (JSON) or object,
+ * and the video list may sit at the top level, under {videos|suggested|
+ * watched|results}, or nested deeper. We walk the whole structure, collect
+ * every video-shaped object, dedup by video id (merging the richest fields —
+ * a watched sighting wins over a scored-only one), and return them sorted:
+ * watched first (by orderNumber), then scored (by similarity desc).
+ */
+export function parseJobProofVideos(raw: unknown): ProofVideo[] {
+  let root: unknown = raw;
+  if (typeof root === 'string') {
+    try { root = JSON.parse(root); } catch { return []; }
+  }
+  if (!root || typeof root !== 'object') return [];
+
+  const found: ProofVideo[] = [];
+  const seen = new Set<unknown>();
+  const walk = (node: unknown, depth: number) => {
+    if (!node || typeof node !== 'object' || depth > 6) return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const el of node) walk(el, depth + 1);
+      return;
+    }
+    const o = node as Record<string, unknown>;
+    if (looksLikeVideo(o)) found.push(normalizeProofVideo(o));
+    for (const k of Object.keys(o)) walk(o[k], depth + 1);
+  };
+  walk(root, 0);
+
+  // Dedup by video id (fall back to url). Merge so the watched sighting and
+  // its scored sighting collapse into one rich record.
+  const byKey = new Map<string, ProofVideo>();
+  for (const v of found) {
+    const key = v.videoId ?? v.url;
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, v); continue; }
+    byKey.set(key, {
+      ...prev,
+      title: prev.title ?? v.title,
+      orderNumber: prev.orderNumber ?? v.orderNumber,
+      watched: prev.watched || v.watched,
+      similarity: prev.similarity ?? v.similarity,
+      channelName: prev.channelName ?? v.channelName,
+      viewCount: prev.viewCount ?? v.viewCount,
+      duration: prev.duration ?? v.duration,
+      source: prev.source ?? v.source,
+      seenStatus: prev.seenStatus ?? v.seenStatus,
+      isNew: prev.isNew ?? v.isNew,
+    });
+  }
+
+  return [...byKey.values()].sort((a, b) => {
+    if (a.watched && b.watched) return (a.orderNumber ?? 1e9) - (b.orderNumber ?? 1e9);
+    if (a.watched !== b.watched) return a.watched ? -1 : 1;
+    return (b.similarity ?? -1) - (a.similarity ?? -1);
+  });
+}
+
+/** A task fetched from the applicants list, carrying its raw job_proof. */
+export interface TaskWithProof {
+  taskId: string;
+  keyword: string;
+  kind: WorkUnit['kind'];
+  seedUrl: string | null;
+  status: string | null;
+  workerName: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  proof: ProofVideo[];
+}
+
+/**
+ * Fetch tasks of a given status from the applicants list WITH their parsed
+ * job_proof crawl trace. Used by the history endpoint to snapshot the
+ * ephemeral watch-order before it ages out of xgodo.
+ */
+export async function fetchTasksByStatus(
+  token: string,
+  jobId: string,
+  status: string,
+  limit = 100,
+): Promise<TaskWithProof[]> {
+  const res = await fetch(`${XGODO_API}/jobs/applicants`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_id: jobId, status, limit }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`xgodo ${status} fetch failed: ${res.status} ${text.slice(0, 200)}`);
+  }
+  const data = await res.json() as { job_tasks?: Array<Record<string, unknown>> };
+  const tasks = data.job_tasks || [];
+  return tasks.map(t => {
+    const fromPlanned = extractWorkUnit(t.planned_task);
+    const wu = fromPlanned.kind !== 'unknown' ? fromPlanned : extractWorkUnit(t.job_proof);
+    return {
+      taskId: String(t._id || t.job_task_id || ''),
+      keyword: wu.key,
+      kind: wu.kind,
+      seedUrl: wu.seedUrl,
+      status: (t.status as string) || status,
+      workerName: (t.worker_name || null) as string | null,
+      startedAt: (t.created_at || t.started_at || t.added || null) as string | null,
+      finishedAt: (t.finished || t.updated_at || null) as string | null,
+      proof: parseJobProofVideos(t.job_proof),
+    };
+  });
+}
+
+/**
  * List running tasks for a job. Returns only tasks with status='running'.
  */
 export async function fetchRunningTasks(token: string, jobId: string): Promise<RunningTaskInfo[]> {

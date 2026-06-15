@@ -1290,6 +1290,35 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_atl_keyword ON agent_task_log(keyword)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_atl_status ON agent_task_log(status)`).catch(() => {});
 
+    // Per-task CRAWL TRACE snapshot — the bot's actual watch path + scored
+    // candidates, parsed from the ephemeral xgodo job_proof. job_proof only
+    // lives while the task is in the applicants list, so we snapshot it here
+    // to make per-task history durable. One row per (task, video):
+    //   - watched=true + order_number=N  → a video the bot actually watched
+    //     (the crawl PATH, in order)
+    //   - watched=false + similarity     → a candidate it scored but skipped
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_task_proof (
+        task_id TEXT NOT NULL,
+        video_url TEXT NOT NULL,
+        order_number INTEGER,            -- watch order; NULL = scored-but-not-watched
+        watched BOOLEAN NOT NULL DEFAULT FALSE,
+        title TEXT,
+        channel_name TEXT,
+        view_count TEXT,                 -- raw label e.g. "363K views"
+        duration TEXT,                   -- raw label e.g. "50:29"
+        similarity DOUBLE PRECISION,     -- xgodo-side similarity when present
+        source TEXT,                     -- 'suggested' | 'search' | ...
+        seen_status TEXT,                -- 'already_seen' | 'new'
+        is_new BOOLEAN,
+        first_snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (task_id, video_url)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_atp_task_order ON agent_task_proof(task_id, order_number)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_atp_watched ON agent_task_proof(task_id, watched)`).catch(() => {});
+
     // Agent thread targets for the thermostat
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_thread_targets (

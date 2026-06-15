@@ -8310,14 +8310,28 @@ function ThreadTargets() {
 }
 
 /** Browsable task history log */
+interface HistTask {
+  id: string; keyword: string; kind: 'keyword' | 'seed'; label: string; seedUrl: string | null;
+  status: string; workerName: string; firstSeen: string; lastSeen: string; duration: number;
+  watchedCount: number; scoredCount: number;
+}
+interface TraceVideo {
+  videoId: string | null; url: string; title: string | null; orderNumber: number | null;
+  watched: boolean; proofSimilarity: number | null; rofeSimilarity: number | null; rank: number | null;
+  channelName: string | null; viewCount: string | null; duration: string | null;
+  thumbnail: string | null; seenStatus: string | null; detectedAt: string | null;
+}
+
 function AgentLog() {
   const [logData, setLogData] = useState<{
-    tasks: Array<{ id: string; keyword: string; status: string; workerName: string; firstSeen: string; lastSeen: string; duration: number }>;
+    tasks: HistTask[];
     total: number; page: number; totalPages: number;
     stats: { running: number; completed: number; total: number; avgDuration: number; maxDuration: number; minDuration: number };
   } | null>(null);
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [traces, setTraces] = useState<Record<string, { videos: TraceVideo[]; watchedCount: number; scoredCount: number } | 'loading'>>({});
 
   const fetchLog = useCallback(() => {
     const params = new URLSearchParams({ page: String(page), limit: '30' });
@@ -8333,6 +8347,17 @@ function AgentLog() {
     return () => clearInterval(interval);
   }, [fetchLog]);
 
+  const toggleExpand = (taskId: string) => {
+    if (expanded === taskId) { setExpanded(null); return; }
+    setExpanded(taskId);
+    // Always refetch the trace on open (it grows while a task runs).
+    setTraces(prev => ({ ...prev, [taskId]: 'loading' }));
+    fetch(`/api/admin/agents/history?taskId=${encodeURIComponent(taskId)}`)
+      .then(r => r.json())
+      .then(d => setTraces(prev => ({ ...prev, [taskId]: { videos: d.videos || [], watchedCount: d.watchedCount || 0, scoredCount: d.scoredCount || 0 } })))
+      .catch(() => setTraces(prev => ({ ...prev, [taskId]: { videos: [], watchedCount: 0, scoredCount: 0 } })));
+  };
+
   const fmtDur = (s: number) => {
     if (s < 60) return `${s}s`;
     if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -8346,13 +8371,14 @@ function AgentLog() {
     if (diffH < 24) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
+  const fmtSim = (s: number | null) => s == null ? '—' : s.toFixed(3);
 
   if (!logData) return null;
 
   return (
     <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-bold text-white">Task History</h3>
+        <h3 className="text-sm font-bold text-white">Task History <span className="text-gray-500 font-normal">· click a row for its crawl trace</span></h3>
         <div className="flex items-center gap-3 text-xs">
           {logData.stats.total > 0 && (
             <div className="flex items-center gap-3 text-gray-500">
@@ -8378,8 +8404,9 @@ function AgentLog() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-gray-700 text-left">
-              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Task ID</th>
-              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Keyword</th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase w-6"></th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Seed / Keyword</th>
+              <th className="px-3 py-2 text-xs text-gray-500 uppercase">Collected</th>
               <th className="px-3 py-2 text-xs text-gray-500 uppercase">Status</th>
               <th className="px-3 py-2 text-xs text-gray-500 uppercase">Duration</th>
               <th className="px-3 py-2 text-xs text-gray-500 uppercase">Started</th>
@@ -8387,22 +8414,61 @@ function AgentLog() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700/50">
-            {logData.tasks.map(t => (
-              <tr key={t.id} className="hover:bg-gray-700/20">
-                <td className="px-3 py-2 text-gray-400 font-mono text-xs">{t.id.slice(-8)}</td>
-                <td className="px-3 py-2 text-white text-xs">{t.keyword}</td>
-                <td className="px-3 py-2">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${t.status === 'running' ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-400'}`}>
-                    {t.status}
-                  </span>
-                </td>
-                <td className="px-3 py-2 font-mono text-xs">
-                  <span className={t.status === 'running' ? 'text-green-400' : 'text-gray-300'}>{fmtDur(t.duration)}</span>
-                </td>
-                <td className="px-3 py-2 text-gray-500 text-xs">{fmtTime(t.firstSeen)}</td>
-                <td className="px-3 py-2 text-gray-500 text-xs">{t.status === 'completed' ? fmtTime(t.lastSeen) : '—'}</td>
-              </tr>
-            ))}
+            {logData.tasks.map(t => {
+              const isOpen = expanded === t.id;
+              const trace = traces[t.id];
+              return (
+                <React.Fragment key={t.id}>
+                  <tr className="hover:bg-gray-700/20 cursor-pointer" onClick={() => toggleExpand(t.id)}>
+                    <td className="px-3 py-2 text-gray-500 text-xs">{isOpen ? '▾' : '▸'}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        {t.kind === 'seed'
+                          ? <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">SEED</span>
+                          : <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">KW</span>}
+                        <span className="text-white text-xs font-medium truncate max-w-[220px]" title={t.label}>{t.label}</span>
+                      </div>
+                      {t.kind === 'seed' && t.seedUrl && (
+                        <a href={t.seedUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                          className="text-[10px] text-gray-500 hover:text-amber-400 font-mono">{t.seedUrl.replace(/^https?:\/\/(m\.)?(www\.)?/, '')}</a>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap">
+                      <span className="text-green-400" title="videos the bot watched">▶ {t.watchedCount}</span>
+                      <span className="text-gray-600 mx-1">·</span>
+                      <span className="text-gray-400" title="candidates scored">{t.scoredCount} scored</span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${t.status === 'running' ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-400'}`}>
+                        {t.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      <span className={t.status === 'running' ? 'text-green-400' : 'text-gray-300'}>{fmtDur(t.duration)}</span>
+                    </td>
+                    <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap">{fmtTime(t.firstSeen)}</td>
+                    <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap">{t.status === 'completed' ? fmtTime(t.lastSeen) : '—'}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={7} className="px-3 pb-4 pt-1 bg-gray-900/40">
+                        <div className="flex items-center gap-3 mb-2 text-[10px] text-gray-500">
+                          <span className="font-mono">task {t.id.slice(-10)}</span>
+                          {t.workerName && <span>worker {t.workerName}</span>}
+                        </div>
+                        {trace === 'loading' || !trace ? (
+                          <div className="text-xs text-gray-500 py-3">Loading crawl trace…</div>
+                        ) : trace.videos.length === 0 ? (
+                          <div className="text-xs text-gray-500 py-3">No crawl trace captured yet. The watch-order is snapshotted from the bot&apos;s live job_proof — it fills in once the task has been polled while running.</div>
+                        ) : (
+                          <TaskTrace videos={trace.videos} fmtSim={fmtSim} />
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -8417,6 +8483,58 @@ function AgentLog() {
             <button onClick={() => setPage(p => Math.min(logData.totalPages, p + 1))} disabled={page >= logData.totalPages}
               className="px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded text-xs">Next</button>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The per-task crawl trace: watch path (orderNumber) + scored candidates. */
+function TaskTrace({ videos, fmtSim }: { videos: TraceVideo[]; fmtSim: (s: number | null) => string }) {
+  const watched = videos.filter(v => v.watched);
+  const scored = videos.filter(v => !v.watched);
+
+  const Row = ({ v }: { v: TraceVideo }) => (
+    <a href={v.url} target="_blank" rel="noopener noreferrer"
+      className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-white/5 group">
+      <div className="w-6 flex-shrink-0 text-center">
+        {v.watched
+          ? <span className="text-[11px] font-bold text-green-400">{v.orderNumber != null ? `#${v.orderNumber}` : '▶'}</span>
+          : <span className="text-[11px] text-gray-600">·</span>}
+      </div>
+      {v.thumbnail
+        ? <img src={v.thumbnail} alt="" className="w-16 h-9 object-cover rounded flex-shrink-0 bg-gray-800" />
+        : <div className="w-16 h-9 rounded flex-shrink-0 bg-gray-800 flex items-center justify-center text-[8px] text-gray-600">no thumb</div>}
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-gray-200 group-hover:text-white truncate">{v.title || v.url}</div>
+        <div className="text-[10px] text-gray-500 truncate">
+          {v.channelName && <span>{v.channelName}</span>}
+          {v.viewCount && <span> · {v.viewCount}</span>}
+          {v.duration && <span> · {v.duration}</span>}
+          {v.seenStatus && <span> · {v.seenStatus}</span>}
+        </div>
+      </div>
+      <div className="flex-shrink-0 text-right text-[10px] font-mono">
+        {v.rofeSimilarity != null && <div className="text-indigo-300" title="rofe combined_v2 cosine to seed">sim {fmtSim(v.rofeSimilarity)}</div>}
+        {v.proofSimilarity != null && v.rofeSimilarity == null && <div className="text-gray-400" title="xgodo-side similarity from job_proof">sim {fmtSim(v.proofSimilarity)}</div>}
+        {v.rank != null && <div className="text-gray-600">rank {v.rank}</div>}
+      </div>
+    </a>
+  );
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-[10px] uppercase tracking-wide text-green-500/70 mb-1 px-2">Watch path ({watched.length}) — the videos the bot actually watched, in order</div>
+        {watched.length === 0
+          ? <div className="text-[11px] text-gray-600 px-2 py-1">No watched videos captured for this task yet.</div>
+          : <div className="divide-y divide-gray-800/50">{watched.map(v => <Row key={v.url} v={v} />)}</div>}
+      </div>
+      {scored.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1 px-2">Scored candidates ({scored.length}) — suggested + embedded, ranked by similarity, not watched</div>
+          <div className="divide-y divide-gray-800/50">{scored.slice(0, 50).map(v => <Row key={v.url} v={v} />)}</div>
+          {scored.length > 50 && <div className="text-[10px] text-gray-600 px-2 pt-1">+ {scored.length - 50} more scored candidates</div>}
         </div>
       )}
     </div>

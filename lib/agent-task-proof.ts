@@ -1,0 +1,292 @@
+/**
+ * Task crawl-trace history — the durable record of what each xgodo niche-spy
+ * task actually did:
+ *
+ *   1. SNAPSHOT (write): xgodo's job_proof carries the bot's watch path
+ *      (orderNumber) + every suggested candidate it scored (similarity). That
+ *      blob only lives while the task is in the applicants list, so we parse
+ *      and persist it into `agent_task_proof`. snapshotTaskProofs() is called
+ *      from the history endpoint each load (running + recently-completed),
+ *      capturing the trace before it ages out.
+ *
+ *   2. LIST (read): listTaskHistory() returns the last N tasks from
+ *      `agent_task_log` (the lifecycle ledger) enriched with seed/label +
+ *      per-task watched/scored counts.
+ *
+ *   3. TRACE (read): getTaskTrace() merges two durable sources for one task —
+ *      the watch path from `agent_task_proof` and the rofe-scored candidates
+ *      from `niche_seed_expansions` (which also carries thumbnails + our own
+ *      combined_v2 similarity) — into one ordered list the UI can render.
+ */
+
+import { getPool } from './db';
+import type { ProofVideo } from './xgodo-tasks';
+
+const YT_ID_RE = /(?:v=|\/shorts\/|youtu\.be\/|\/watch\?v=)([A-Za-z0-9_-]{11})/;
+function ytId(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const m = url.match(YT_ID_RE);
+  return m ? m[1] : null;
+}
+
+/**
+ * Persist the parsed crawl trace for a batch of tasks. Upsert merges so a
+ * later snapshot of a still-running task fills in newly-watched videos and
+ * never downgrades a watched row back to scored-only.
+ */
+export async function snapshotTaskProofs(
+  tasks: Array<{ taskId: string; proof: ProofVideo[] }>,
+): Promise<{ tasksWritten: number; rowsWritten: number }> {
+  const pool = await getPool();
+  let tasksWritten = 0;
+  let rowsWritten = 0;
+
+  for (const t of tasks) {
+    if (!t.taskId || t.proof.length === 0) continue;
+    // Build a multi-row VALUES insert per task (proof lists are small — a few
+    // dozen videos at most).
+    const values: unknown[] = [];
+    const tuples: string[] = [];
+    let i = 1;
+    for (const v of t.proof) {
+      if (!v.url) continue;
+      tuples.push(
+        `($${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++})`,
+      );
+      values.push(
+        t.taskId, v.url, v.orderNumber, v.watched, v.title, v.channelName,
+        v.viewCount, v.duration, v.similarity, v.source, v.seenStatus, v.isNew,
+      );
+    }
+    if (tuples.length === 0) continue;
+    await pool.query(
+      `INSERT INTO agent_task_proof
+         (task_id, video_url, order_number, watched, title, channel_name,
+          view_count, duration, similarity, source, seen_status, is_new)
+       VALUES ${tuples.join(', ')}
+       ON CONFLICT (task_id, video_url) DO UPDATE SET
+         order_number = COALESCE(EXCLUDED.order_number, agent_task_proof.order_number),
+         watched      = agent_task_proof.watched OR EXCLUDED.watched,
+         title        = COALESCE(EXCLUDED.title, agent_task_proof.title),
+         channel_name = COALESCE(EXCLUDED.channel_name, agent_task_proof.channel_name),
+         view_count   = COALESCE(EXCLUDED.view_count, agent_task_proof.view_count),
+         duration     = COALESCE(EXCLUDED.duration, agent_task_proof.duration),
+         similarity   = COALESCE(EXCLUDED.similarity, agent_task_proof.similarity),
+         source       = COALESCE(EXCLUDED.source, agent_task_proof.source),
+         seen_status  = COALESCE(EXCLUDED.seen_status, agent_task_proof.seen_status),
+         is_new       = COALESCE(EXCLUDED.is_new, agent_task_proof.is_new),
+         last_snapshot_at = NOW()`,
+      values,
+    ).catch((e) => { console.error('[task-proof] snapshot upsert failed', t.taskId, (e as Error).message); });
+    tasksWritten++;
+    rowsWritten += tuples.length;
+  }
+  return { tasksWritten, rowsWritten };
+}
+
+export interface TaskHistoryRow {
+  taskId: string;
+  key: string;                 // work-unit key (keyword OR nicheId)
+  kind: 'keyword' | 'seed';
+  label: string;               // human display name
+  seedUrl: string | null;      // for seed tasks, the video it crawled from
+  status: string;
+  workerName: string | null;
+  firstSeen: string;
+  lastSeen: string;
+  durationSec: number | null;
+  watchedCount: number;        // videos the bot actually watched (proof)
+  scoredCount: number;         // candidates scored (niche_seed_expansions)
+}
+
+/**
+ * List recent tasks (running + completed) from the lifecycle ledger, enriched
+ * with seed/label + per-task counts.
+ */
+export async function listTaskHistory(opts: {
+  limit?: number;
+  kind?: 'keyword' | 'seed' | 'all';
+  status?: string;             // 'all' | 'running' | 'completed' | ...
+} = {}): Promise<TaskHistoryRow[]> {
+  const pool = await getPool();
+  const limit = Math.min(Math.max(opts.limit ?? 60, 1), 200);
+  const kind = opts.kind ?? 'all';
+  const status = opts.status ?? 'all';
+
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (status !== 'all') { params.push(status); where.push(`l.status = $${params.length}`); }
+  // Seed tasks have a nicheId key (nd_…); keyword tasks don't.
+  if (kind === 'seed') where.push(`(l.kind = 'seed' OR l.keyword LIKE 'nd\\_%')`);
+  else if (kind === 'keyword') where.push(`(COALESCE(l.kind,'keyword') <> 'seed' AND l.keyword NOT LIKE 'nd\\_%')`);
+
+  params.push(limit);
+  const limitParam = `$${params.length}`;
+
+  const res = await pool.query<{
+    task_id: string; keyword: string; kind: string | null; seed_url: string | null;
+    status: string; worker_name: string | null; first_seen_at: string; last_seen_at: string;
+    duration_sec: number | null; niche_label: string | null; niche_seeds: string[] | null;
+    watched_count: string; scored_count: string;
+  }>(
+    `SELECT l.task_id, l.keyword, l.kind, l.seed_url, l.status, l.worker_name,
+            l.first_seen_at, l.last_seen_at,
+            EXTRACT(EPOCH FROM (l.last_seen_at - l.first_seen_at))::integer AS duration_sec,
+            n.label AS niche_label, n.seed_urls AS niche_seeds,
+            COALESCE(p.watched_count, 0) AS watched_count,
+            COALESCE(e.scored_count, 0)  AS scored_count
+       FROM agent_task_log l
+       LEFT JOIN agent_niches n ON n.niche_id = l.keyword
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) FILTER (WHERE watched) AS watched_count
+           FROM agent_task_proof WHERE task_id = l.task_id
+       ) p ON true
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) AS scored_count
+           FROM niche_seed_expansions WHERE task_id = l.task_id
+       ) e ON true
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY l.last_seen_at DESC
+       LIMIT ${limitParam}`,
+    params,
+  );
+
+  return res.rows.map(r => {
+    const isSeed = r.kind === 'seed' || /^nd_/.test(r.keyword);
+    return {
+      taskId: r.task_id,
+      key: r.keyword,
+      kind: isSeed ? 'seed' : 'keyword',
+      label: r.niche_label ?? r.keyword,
+      seedUrl: r.seed_url ?? (r.niche_seeds && r.niche_seeds.length ? r.niche_seeds[0] : null),
+      status: r.status,
+      workerName: r.worker_name,
+      firstSeen: r.first_seen_at,
+      lastSeen: r.last_seen_at,
+      durationSec: r.duration_sec,
+      watchedCount: parseInt(r.watched_count) || 0,
+      scoredCount: parseInt(r.scored_count) || 0,
+    };
+  });
+}
+
+export interface TraceVideo {
+  videoId: string | null;
+  url: string;
+  title: string | null;
+  orderNumber: number | null;   // watch order (null = scored-only)
+  watched: boolean;
+  proofSimilarity: number | null;   // xgodo-side cosine from job_proof
+  rofeSimilarity: number | null;    // our combined_v2 cosine to the seed
+  rank: number | null;              // rofe rank within the candidate batch
+  channelName: string | null;
+  viewCount: string | null;
+  duration: string | null;
+  thumbnail: string | null;
+  seenStatus: string | null;
+  detectedAt: string | null;        // when rofe scored it
+}
+
+/**
+ * Full crawl trace for one task: the watch path (from agent_task_proof) merged
+ * with the rofe-scored candidates (from niche_seed_expansions, which adds
+ * thumbnails + our own similarity). Sorted watched-first (by orderNumber),
+ * then scored candidates by best available similarity.
+ */
+export async function getTaskTrace(taskId: string): Promise<{
+  taskId: string;
+  videos: TraceVideo[];
+  watchedCount: number;
+  scoredCount: number;
+}> {
+  const pool = await getPool();
+
+  const [proofRes, nseRes] = await Promise.all([
+    pool.query<{
+      video_url: string; order_number: number | null; watched: boolean; title: string | null;
+      channel_name: string | null; view_count: string | null; duration: string | null;
+      similarity: number | null; seen_status: string | null;
+    }>(
+      `SELECT video_url, order_number, watched, title, channel_name, view_count,
+              duration, similarity, seen_status
+         FROM agent_task_proof WHERE task_id = $1`,
+      [taskId],
+    ),
+    pool.query<{
+      candidate_url: string; candidate_title: string | null; candidate_thumbnail: string | null;
+      similarity: number | null; rank_in_batch: number | null; detected_at: string | null;
+    }>(
+      `SELECT candidate_url, candidate_title, candidate_thumbnail, similarity,
+              rank_in_batch, detected_at
+         FROM niche_seed_expansions WHERE task_id = $1`,
+      [taskId],
+    ),
+  ]);
+
+  const byKey = new Map<string, TraceVideo>();
+  const keyOf = (url: string) => ytId(url) ?? url;
+
+  for (const r of proofRes.rows) {
+    const k = keyOf(r.video_url);
+    byKey.set(k, {
+      videoId: ytId(r.video_url),
+      url: r.video_url,
+      title: r.title,
+      orderNumber: r.order_number,
+      watched: r.watched,
+      proofSimilarity: r.similarity,
+      rofeSimilarity: null,
+      rank: null,
+      channelName: r.channel_name,
+      viewCount: r.view_count,
+      duration: r.duration,
+      thumbnail: null,
+      seenStatus: r.seen_status,
+      detectedAt: null,
+    });
+  }
+
+  for (const r of nseRes.rows) {
+    const k = keyOf(r.candidate_url);
+    const prev = byKey.get(k);
+    if (prev) {
+      prev.title = prev.title ?? r.candidate_title;
+      prev.thumbnail = prev.thumbnail ?? r.candidate_thumbnail;
+      prev.rofeSimilarity = r.similarity;
+      prev.rank = r.rank_in_batch;
+      prev.detectedAt = r.detected_at;
+    } else {
+      byKey.set(k, {
+        videoId: ytId(r.candidate_url),
+        url: r.candidate_url,
+        title: r.candidate_title,
+        orderNumber: null,
+        watched: false,
+        proofSimilarity: null,
+        rofeSimilarity: r.similarity,
+        rank: r.rank_in_batch,
+        channelName: null,
+        viewCount: null,
+        duration: null,
+        thumbnail: r.candidate_thumbnail,
+        seenStatus: null,
+        detectedAt: r.detected_at,
+      });
+    }
+  }
+
+  const videos = [...byKey.values()].sort((a, b) => {
+    if (a.watched && b.watched) return (a.orderNumber ?? 1e9) - (b.orderNumber ?? 1e9);
+    if (a.watched !== b.watched) return a.watched ? -1 : 1;
+    const sa = a.rofeSimilarity ?? a.proofSimilarity ?? -1;
+    const sb = b.rofeSimilarity ?? b.proofSimilarity ?? -1;
+    return sb - sa;
+  });
+
+  return {
+    taskId,
+    videos,
+    watchedCount: videos.filter(v => v.watched).length,
+    scoredCount: videos.filter(v => !v.watched).length,
+  };
+}
