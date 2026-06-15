@@ -79,24 +79,42 @@ function extractWorkUnit(raw: unknown): WorkUnit {
 /**
  * A single video record extracted from a task's job_proof — the durable
  * crawl-trace unit. A record is either:
- *   - WATCHED: the bot actually watched it (orderNumber set, watched=true) —
- *     this is the crawl PATH, in sequence.
- *   - SCORED:  a suggested candidate it embedded + scored but skipped
- *     (similarity set, watched=false).
+ *   - WATCHED: the bot actually watched it (it's in exploreProgress.
+ *     exploredChain / is the current enterVideo). orderNumber = its position
+ *     in the watch path (1-based), hop = 0-based depth. This is the crawl
+ *     PATH, in sequence.
+ *   - DISCOVERED: a candidate the bot found (allDiscoveredVideos) but hasn't
+ *     watched. watched=false.
+ *
+ * The real niche-spy bot job_proof (stage='Explore') looks like:
+ *   { stage, action, seedUrl,
+ *     enterVideo:{url,title,score,format,source},      // current video
+ *     bestVideo:{url,title,score,...},                  // next-best pick
+ *     allDiscoveredVideos:[{title,url,viewCount,subscriberCount,likeCount,
+ *                           seenStatus,postedDate,format,source}],
+ *     exploreProgress:{currentDepth,loopNumber,exploredChain:[…],reason} }
+ * The watch order lives in exploreProgress.exploredChain (index = hop).
+ * We also keep a generic fallback for the older flat list-of-videos shape.
  */
 export interface ProofVideo {
   url: string;
   videoId: string | null;
   title: string | null;
-  orderNumber: number | null;   // watch order; null = not watched
+  orderNumber: number | null;   // 1-based watch order; null = not watched
+  hop: number | null;           // 0-based depth in the crawl chain
   watched: boolean;
-  similarity: number | null;    // xgodo-side cosine when present in proof
+  score: number | null;         // bot's pick score (enterVideo/bestVideo.score)
+  similarity: number | null;    // legacy flat-form cosine (rare)
   channelName: string | null;
-  viewCount: string | null;     // raw label, e.g. "363K views"
+  subscriberCount: string | null; // raw label, e.g. "115K subscribers"
+  viewCount: string | null;     // raw label, e.g. "662,583 views"
+  likeCount: string | null;     // raw label, e.g. "25266"
   duration: string | null;      // raw label, e.g. "50:29"
-  source: string | null;        // 'suggested' | 'search' | ...
-  seenStatus: string | null;    // 'already_seen' | 'new'
+  postedDate: string | null;    // ISO or label
+  source: string | null;        // 'search' | 'suggested' | ...
+  seenStatus: string | null;    // 'new' | 'already_seen'
   isNew: boolean | null;
+  raw: Record<string, unknown> | null; // original entry, for future-proofing
 }
 
 const YT_ID_RE = /(?:v=|\/shorts\/|youtu\.be\/|\/watch\?v=)([A-Za-z0-9_-]{11})/;
@@ -114,96 +132,179 @@ function asNum(v: unknown): number | null {
 }
 
 function asStr(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null;
+  if (typeof v === 'string' && v.length > 0) return v;
+  if (typeof v === 'number') return String(v);
+  return null;
 }
 
-/** Does this object look like a video record in a job_proof blob? */
-function looksLikeVideo(o: Record<string, unknown>): boolean {
-  const url = o.url ?? o.link ?? o.videoUrl;
-  if (typeof url !== 'string') return false;
-  if (!/youtu|watch\?v=/i.test(url)) return false;
-  return (
-    'title' in o || 'orderNumber' in o || 'similarity' in o ||
-    'watched' in o || 'seenStatus' in o || 'channelName' in o
-  );
-}
-
-function normalizeProofVideo(o: Record<string, unknown>): ProofVideo {
-  const url = (o.url ?? o.link ?? o.videoUrl) as string;
+/**
+ * Normalize one video-shaped object (from exploredChain, allDiscoveredVideos,
+ * enterVideo, bestVideo, or a legacy flat record) into a ProofVideo. Handles a
+ * string entry (bare url) too. Field aliases cover both the real Explore shape
+ * and the older flat shape.
+ */
+function normalizeProofVideo(entry: unknown): ProofVideo | null {
+  let o: Record<string, unknown>;
+  if (typeof entry === 'string') {
+    o = { url: entry };
+  } else if (entry && typeof entry === 'object') {
+    o = entry as Record<string, unknown>;
+  } else {
+    return null;
+  }
+  const url = (o.url ?? o.link ?? o.videoUrl ?? o.videoURL) as unknown;
+  if (typeof url !== 'string' || !/youtu|watch\?v=/i.test(url)) return null;
   return {
     url,
     videoId: ytId(url),
     title: asStr(o.title),
     orderNumber: asNum(o.orderNumber),
+    hop: asNum(o.hop ?? o.depth),
     watched: o.watched === true || o.watched === 'true',
+    score: asNum(o.score),
     similarity: asNum(o.similarity),
-    channelName: asStr(o.channelName ?? o.channel),
+    channelName: asStr(o.channelName ?? o.channel ?? o.channelTitle),
+    subscriberCount: asStr(o.subscriberCount ?? o.subscribers ?? o.subs),
     viewCount: asStr(o.viewCount ?? o.views),
+    likeCount: asStr(o.likeCount ?? o.likes),
     duration: asStr(o.duration),
+    postedDate: asStr(o.postedDate ?? o.posted_at ?? o.publishedAt),
     source: asStr(o.source),
-    seenStatus: asStr(o.seenStatus),
+    seenStatus: asStr(o.seenStatus ?? o.seen_status),
     isNew: typeof o.isNew === 'boolean' ? o.isNew : (o.isNew === 'true' ? true : o.isNew === 'false' ? false : null),
+    raw: typeof entry === 'object' ? (entry as Record<string, unknown>) : null,
+  };
+}
+
+/** Merge two records for the same video, keeping the richest field from each. */
+function mergeProof(prev: ProofVideo, v: ProofVideo): ProofVideo {
+  return {
+    ...prev,
+    title: prev.title ?? v.title,
+    orderNumber: prev.orderNumber ?? v.orderNumber,
+    hop: prev.hop ?? v.hop,
+    watched: prev.watched || v.watched,
+    score: prev.score ?? v.score,
+    similarity: prev.similarity ?? v.similarity,
+    channelName: prev.channelName ?? v.channelName,
+    subscriberCount: prev.subscriberCount ?? v.subscriberCount,
+    viewCount: prev.viewCount ?? v.viewCount,
+    likeCount: prev.likeCount ?? v.likeCount,
+    duration: prev.duration ?? v.duration,
+    postedDate: prev.postedDate ?? v.postedDate,
+    source: prev.source ?? v.source,
+    seenStatus: prev.seenStatus ?? v.seenStatus,
+    isNew: prev.isNew ?? v.isNew,
+    raw: prev.raw ?? v.raw,
   };
 }
 
 /**
- * Extract the crawl trace (watched path + scored candidates) from a task's
- * job_proof. Robust to shape: job_proof arrives as a string (JSON) or object,
- * and the video list may sit at the top level, under {videos|suggested|
- * watched|results}, or nested deeper. We walk the whole structure, collect
- * every video-shaped object, dedup by video id (merging the richest fields —
- * a watched sighting wins over a scored-only one), and return them sorted:
- * watched first (by orderNumber), then scored (by similarity desc).
+ * Extract the crawl trace from a task's job_proof.
+ *
+ * Primary path = the real niche-spy Explore shape: the WATCH PATH is
+ * exploreProgress.exploredChain (ordered, index = hop), the CANDIDATE POOL is
+ * allDiscoveredVideos, and the CURRENT video is enterVideo. Watched videos are
+ * enriched with metadata from allDiscoveredVideos (matched by id) since the
+ * chain entries can be sparse. Falls back to a generic recursive walk for the
+ * older flat list-of-videos shape. Returns watched-first (by orderNumber),
+ * then discovered candidates.
  */
 export function parseJobProofVideos(raw: unknown): ProofVideo[] {
   let root: unknown = raw;
   if (typeof root === 'string') {
     try { root = JSON.parse(root); } catch { return []; }
   }
-  if (!root || typeof root !== 'object') return [];
+  if (!root || typeof root !== 'object' || Array.isArray(root)) {
+    // An array at the top is the legacy flat shape — handle via walk below.
+    if (!Array.isArray(root)) return [];
+  }
 
-  const found: ProofVideo[] = [];
-  const seen = new Set<unknown>();
-  const walk = (node: unknown, depth: number) => {
-    if (!node || typeof node !== 'object' || depth > 6) return;
-    if (seen.has(node)) return;
-    seen.add(node);
-    if (Array.isArray(node)) {
-      for (const el of node) walk(el, depth + 1);
-      return;
-    }
-    const o = node as Record<string, unknown>;
-    if (looksLikeVideo(o)) found.push(normalizeProofVideo(o));
-    for (const k of Object.keys(o)) walk(o[k], depth + 1);
-  };
-  walk(root, 0);
+  const obj = root as Record<string, unknown>;
+  const ep = obj.exploreProgress as Record<string, unknown> | undefined;
+  const hasExploreShape = !!ep || Array.isArray(obj.allDiscoveredVideos) || !!obj.enterVideo;
 
-  // Dedup by video id (fall back to url). Merge so the watched sighting and
-  // its scored sighting collapse into one rich record.
   const byKey = new Map<string, ProofVideo>();
-  for (const v of found) {
+  const put = (v: ProofVideo | null) => {
+    if (!v) return;
     const key = v.videoId ?? v.url;
     const prev = byKey.get(key);
-    if (!prev) { byKey.set(key, v); continue; }
-    byKey.set(key, {
-      ...prev,
-      title: prev.title ?? v.title,
-      orderNumber: prev.orderNumber ?? v.orderNumber,
-      watched: prev.watched || v.watched,
-      similarity: prev.similarity ?? v.similarity,
-      channelName: prev.channelName ?? v.channelName,
-      viewCount: prev.viewCount ?? v.viewCount,
-      duration: prev.duration ?? v.duration,
-      source: prev.source ?? v.source,
-      seenStatus: prev.seenStatus ?? v.seenStatus,
-      isNew: prev.isNew ?? v.isNew,
+    byKey.set(key, prev ? mergeProof(prev, v) : v);
+  };
+
+  if (hasExploreShape) {
+    // 1. Candidate pool — metadata-rich, used both as discovered candidates
+    //    and to enrich the watched path.
+    const discovered = Array.isArray(obj.allDiscoveredVideos) ? obj.allDiscoveredVideos : [];
+    const metaById = new Map<string, ProofVideo>();
+    for (const d of discovered) {
+      const v = normalizeProofVideo(d);
+      if (v) metaById.set(v.videoId ?? v.url, v);
+    }
+
+    // 2. Watch path (the crawl chain, in order). Each entry → watched, with
+    //    its 1-based orderNumber + 0-based hop, enriched from the pool.
+    const chain = Array.isArray(ep?.exploredChain) ? ep!.exploredChain as unknown[] : [];
+    const watchedKeys = new Set<string>();
+    chain.forEach((e, i) => {
+      const v = normalizeProofVideo(e);
+      if (!v) return;
+      const key = v.videoId ?? v.url;
+      const meta = metaById.get(key);
+      const merged = meta ? mergeProof(meta, v) : v;
+      merged.watched = true;
+      merged.orderNumber = i + 1;
+      merged.hop = i;
+      watchedKeys.add(key);
+      put(merged);
     });
+
+    // 3. Current video being entered (enterVideo) — the in-progress hop, if
+    //    not already counted in the chain. bestVideo carries the next pick's
+    //    score; attach it as discovered.
+    const enter = normalizeProofVideo(obj.enterVideo);
+    if (enter) {
+      const key = enter.videoId ?? enter.url;
+      if (!watchedKeys.has(key)) {
+        const meta = metaById.get(key);
+        const merged = meta ? mergeProof(meta, enter) : enter;
+        merged.watched = true;
+        merged.orderNumber = chain.length + 1;
+        merged.hop = (asNum(ep?.currentDepth) ?? chain.length);
+        watchedKeys.add(key);
+        put(merged);
+      }
+    }
+    const best = normalizeProofVideo(obj.bestVideo);
+    if (best && !watchedKeys.has(best.videoId ?? best.url)) put(best);
+
+    // 4. Remaining discovered candidates (not watched).
+    for (const [key, v] of metaById) {
+      if (!watchedKeys.has(key)) put(v);
+    }
+  } else {
+    // Legacy flat shape — walk the whole structure for video-shaped objects.
+    const seen = new Set<unknown>();
+    const walk = (node: unknown, depth: number) => {
+      if (!node || typeof node !== 'object' || depth > 6) return;
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (Array.isArray(node)) { for (const el of node) walk(el, depth + 1); return; }
+      const o = node as Record<string, unknown>;
+      const v = normalizeProofVideo(o);
+      if (v && ('title' in o || 'orderNumber' in o || 'similarity' in o || 'watched' in o || 'seenStatus' in o)) put(v);
+      for (const k of Object.keys(o)) walk(o[k], depth + 1);
+    };
+    walk(root, 0);
   }
 
   return [...byKey.values()].sort((a, b) => {
     if (a.watched && b.watched) return (a.orderNumber ?? 1e9) - (b.orderNumber ?? 1e9);
     if (a.watched !== b.watched) return a.watched ? -1 : 1;
-    return (b.similarity ?? -1) - (a.similarity ?? -1);
+    // Discovered: rank by similarity (legacy) then score, then by 'new' first.
+    const sa = a.similarity ?? a.score ?? -1;
+    const sb = b.similarity ?? b.score ?? -1;
+    return sb - sa;
   });
 }
 

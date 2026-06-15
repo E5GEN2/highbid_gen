@@ -8316,9 +8316,10 @@ interface HistTask {
   watchedCount: number; scoredCount: number;
 }
 interface TraceVideo {
-  videoId: string | null; url: string; title: string | null; orderNumber: number | null;
-  watched: boolean; proofSimilarity: number | null; rofeSimilarity: number | null; rank: number | null;
-  channelName: string | null; viewCount: string | null; duration: string | null;
+  videoId: string | null; url: string; title: string | null; orderNumber: number | null; hop: number | null;
+  watched: boolean; score: number | null; proofSimilarity: number | null; rofeSimilarity: number | null; rank: number | null;
+  channelName: string | null; subscriberCount: string | null; viewCount: string | null; likeCount: string | null;
+  duration: string | null; postedDate: string | null;
   thumbnail: string | null; seenStatus: string | null; detectedAt: string | null;
 }
 
@@ -8508,16 +8509,20 @@ function TaskTrace({ videos, fmtSim }: { videos: TraceVideo[]; fmtSim: (s: numbe
       <div className="min-w-0 flex-1">
         <div className="text-xs text-gray-200 group-hover:text-white truncate">{v.title || v.url}</div>
         <div className="text-[10px] text-gray-500 truncate">
-          {v.channelName && <span>{v.channelName}</span>}
-          {v.viewCount && <span> · {v.viewCount}</span>}
+          {v.channelName && <span>{v.channelName} · </span>}
+          {v.subscriberCount && <span>{v.subscriberCount} · </span>}
+          {v.viewCount && <span>{v.viewCount}</span>}
+          {v.likeCount && <span> · ♥ {v.likeCount}</span>}
           {v.duration && <span> · {v.duration}</span>}
-          {v.seenStatus && <span> · {v.seenStatus}</span>}
+          {v.seenStatus && <span> · <span className={v.seenStatus === 'new' ? 'text-emerald-500/80' : ''}>{v.seenStatus}</span></span>}
         </div>
       </div>
       <div className="flex-shrink-0 text-right text-[10px] font-mono">
         {v.rofeSimilarity != null && <div className="text-indigo-300" title="rofe combined_v2 cosine to seed">sim {fmtSim(v.rofeSimilarity)}</div>}
         {v.proofSimilarity != null && v.rofeSimilarity == null && <div className="text-gray-400" title="xgodo-side similarity from job_proof">sim {fmtSim(v.proofSimilarity)}</div>}
+        {v.score != null && <div className="text-amber-400/70" title="bot pick score">score {v.score}</div>}
         {v.rank != null && <div className="text-gray-600">rank {v.rank}</div>}
+        {v.hop != null && <div className="text-gray-600">hop {v.hop}</div>}
       </div>
     </a>
   );
@@ -8532,9 +8537,9 @@ function TaskTrace({ videos, fmtSim }: { videos: TraceVideo[]; fmtSim: (s: numbe
       </div>
       {scored.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1 px-2">Scored candidates ({scored.length}) — suggested + embedded, ranked by similarity, not watched</div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1 px-2">Discovered candidates ({scored.length}) — videos the bot found (suggested/search) but did not watch; rofe similarity shown where it scored them</div>
           <div className="divide-y divide-gray-800/50">{scored.slice(0, 50).map(v => <Row key={v.url} v={v} />)}</div>
-          {scored.length > 50 && <div className="text-[10px] text-gray-600 px-2 pt-1">+ {scored.length - 50} more scored candidates</div>}
+          {scored.length > 50 && <div className="text-[10px] text-gray-600 px-2 pt-1">+ {scored.length - 50} more discovered candidates</div>}
         </div>
       )}
     </div>

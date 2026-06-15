@@ -1318,6 +1318,15 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_atp_task_order ON agent_task_proof(task_id, order_number)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_atp_watched ON agent_task_proof(task_id, watched)`).catch(() => {});
+    // Additive columns for the real niche-spy Explore job_proof schema: the
+    // bot reports subscriberCount/likeCount/postedDate/score per video, hop =
+    // 0-based crawl depth, raw_json keeps the original entry for future fields.
+    await client.query(`ALTER TABLE agent_task_proof ADD COLUMN IF NOT EXISTS hop INTEGER`).catch(() => {});
+    await client.query(`ALTER TABLE agent_task_proof ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION`).catch(() => {});
+    await client.query(`ALTER TABLE agent_task_proof ADD COLUMN IF NOT EXISTS subscriber_count TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE agent_task_proof ADD COLUMN IF NOT EXISTS like_count TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE agent_task_proof ADD COLUMN IF NOT EXISTS posted_date TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE agent_task_proof ADD COLUMN IF NOT EXISTS raw_json JSONB`).catch(() => {});
 
     // Agent thread targets for the thermostat
     await client.query(`

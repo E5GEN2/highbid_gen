@@ -50,19 +50,21 @@ export async function snapshotTaskProofs(
     let i = 1;
     for (const v of t.proof) {
       if (!v.url) continue;
-      tuples.push(
-        `($${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++})`,
-      );
+      const cols = 18;
+      tuples.push('(' + Array.from({ length: cols }, () => `$${i++}`).join(', ') + ')');
       values.push(
         t.taskId, v.url, v.orderNumber, v.watched, v.title, v.channelName,
         v.viewCount, v.duration, v.similarity, v.source, v.seenStatus, v.isNew,
+        v.hop, v.score, v.subscriberCount, v.likeCount, v.postedDate,
+        v.raw ? JSON.stringify(v.raw) : null,
       );
     }
     if (tuples.length === 0) continue;
     await pool.query(
       `INSERT INTO agent_task_proof
          (task_id, video_url, order_number, watched, title, channel_name,
-          view_count, duration, similarity, source, seen_status, is_new)
+          view_count, duration, similarity, source, seen_status, is_new,
+          hop, score, subscriber_count, like_count, posted_date, raw_json)
        VALUES ${tuples.join(', ')}
        ON CONFLICT (task_id, video_url) DO UPDATE SET
          order_number = COALESCE(EXCLUDED.order_number, agent_task_proof.order_number),
@@ -75,6 +77,12 @@ export async function snapshotTaskProofs(
          source       = COALESCE(EXCLUDED.source, agent_task_proof.source),
          seen_status  = COALESCE(EXCLUDED.seen_status, agent_task_proof.seen_status),
          is_new       = COALESCE(EXCLUDED.is_new, agent_task_proof.is_new),
+         hop          = COALESCE(EXCLUDED.hop, agent_task_proof.hop),
+         score        = COALESCE(EXCLUDED.score, agent_task_proof.score),
+         subscriber_count = COALESCE(EXCLUDED.subscriber_count, agent_task_proof.subscriber_count),
+         like_count   = COALESCE(EXCLUDED.like_count, agent_task_proof.like_count),
+         posted_date  = COALESCE(EXCLUDED.posted_date, agent_task_proof.posted_date),
+         raw_json     = COALESCE(EXCLUDED.raw_json, agent_task_proof.raw_json),
          last_snapshot_at = NOW()`,
       values,
     ).catch((e) => { console.error('[task-proof] snapshot upsert failed', t.taskId, (e as Error).message); });
@@ -175,13 +183,18 @@ export interface TraceVideo {
   url: string;
   title: string | null;
   orderNumber: number | null;   // watch order (null = scored-only)
+  hop: number | null;           // 0-based crawl depth
   watched: boolean;
-  proofSimilarity: number | null;   // xgodo-side cosine from job_proof
+  score: number | null;             // bot's pick score from job_proof
+  proofSimilarity: number | null;   // xgodo-side cosine from job_proof (legacy)
   rofeSimilarity: number | null;    // our combined_v2 cosine to the seed
   rank: number | null;              // rofe rank within the candidate batch
   channelName: string | null;
+  subscriberCount: string | null;
   viewCount: string | null;
+  likeCount: string | null;
   duration: string | null;
+  postedDate: string | null;
   thumbnail: string | null;
   seenStatus: string | null;
   detectedAt: string | null;        // when rofe scored it
@@ -203,12 +216,13 @@ export async function getTaskTrace(taskId: string): Promise<{
 
   const [proofRes, nseRes] = await Promise.all([
     pool.query<{
-      video_url: string; order_number: number | null; watched: boolean; title: string | null;
-      channel_name: string | null; view_count: string | null; duration: string | null;
-      similarity: number | null; seen_status: string | null;
+      video_url: string; order_number: number | null; hop: number | null; watched: boolean; title: string | null;
+      channel_name: string | null; subscriber_count: string | null; view_count: string | null;
+      like_count: string | null; duration: string | null; posted_date: string | null;
+      similarity: number | null; score: number | null; seen_status: string | null;
     }>(
-      `SELECT video_url, order_number, watched, title, channel_name, view_count,
-              duration, similarity, seen_status
+      `SELECT video_url, order_number, hop, watched, title, channel_name, subscriber_count,
+              view_count, like_count, duration, posted_date, similarity, score, seen_status
          FROM agent_task_proof WHERE task_id = $1`,
       [taskId],
     ),
@@ -233,13 +247,18 @@ export async function getTaskTrace(taskId: string): Promise<{
       url: r.video_url,
       title: r.title,
       orderNumber: r.order_number,
+      hop: r.hop,
       watched: r.watched,
+      score: r.score,
       proofSimilarity: r.similarity,
       rofeSimilarity: null,
       rank: null,
       channelName: r.channel_name,
+      subscriberCount: r.subscriber_count,
       viewCount: r.view_count,
+      likeCount: r.like_count,
       duration: r.duration,
+      postedDate: r.posted_date,
       thumbnail: null,
       seenStatus: r.seen_status,
       detectedAt: null,
@@ -261,13 +280,18 @@ export async function getTaskTrace(taskId: string): Promise<{
         url: r.candidate_url,
         title: r.candidate_title,
         orderNumber: null,
+        hop: null,
         watched: false,
+        score: null,
         proofSimilarity: null,
         rofeSimilarity: r.similarity,
         rank: r.rank_in_batch,
         channelName: null,
+        subscriberCount: null,
         viewCount: null,
+        likeCount: null,
         duration: null,
+        postedDate: null,
         thumbnail: r.candidate_thumbnail,
         seenStatus: null,
         detectedAt: r.detected_at,
