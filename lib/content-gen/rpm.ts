@@ -25,6 +25,10 @@ export interface RpmEstimate {
   rpm_typical: number;
   rpm_high: number;
   reasoning: string;
+  /** Short MG-style voiceover clause justifying the rpm ("because the topic
+   *  is business and most viewers are from the US"), nested into the money-
+   *  math sentence. May be '' for legacy rows not yet re-analyzed. */
+  spoken_reason?: string;
 }
 
 export interface CachedRpm extends RpmEstimate {
@@ -175,7 +179,22 @@ function looseParseRpm(text: string): Partial<RpmEstimate & { geo_guess: string 
   if (lo == null && ty == null && hi == null) return null;
   const geoM = text.match(/"geo_guess"\s*:\s*"([^"]*)"/);
   const reasM = text.match(/"reasoning"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  return { rpm_low: lo, rpm_typical: ty, rpm_high: hi, geo_guess: geoM?.[1], reasoning: reasM?.[1] };
+  const sreasM = text.match(/"spoken_reason"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  return { rpm_low: lo, rpm_typical: ty, rpm_high: hi, geo_guess: geoM?.[1], reasoning: reasM?.[1], spoken_reason: sreasM?.[1] };
+}
+
+/** Normalize the spoken RPM reason into a mid-sentence clause: collapse
+ *  whitespace, ensure it leads with "because"/"since", lowercase the first
+ *  word, drop trailing punctuation (the builder adds the comma), cap length.
+ *  Returns '' when there's nothing usable. */
+function normalizeSpokenReason(raw: string | undefined | null): string {
+  let s = String(raw ?? '').replace(/\s+/g, ' ').trim().replace(/[.,;:\s]+$/, '');
+  if (!s) return '';
+  if (!/^(because|since)\b/i.test(s)) s = `because ${s}`;
+  s = s.charAt(0).toLowerCase() + s.slice(1);
+  const words = s.split(' ');
+  if (words.length > 18) s = words.slice(0, 18).join(' ');
+  return s;
 }
 
 /**
@@ -251,7 +270,8 @@ Respond with ONLY a JSON object:
   "rpm_typical": number,  // most likely NET RPM USD
   "rpm_high": number,     // optimistic NET RPM USD
   "geo_guess": string,    // inferred dominant audience geo, e.g. "US/UK", "India", "global-mixed"
-  "reasoning": string     // 1 sentence: CPM tier + geo + (if watched) what the video showed
+  "reasoning": string,    // 1 sentence: CPM tier + geo + (if watched) what the video showed
+  "spoken_reason": string // SHORT voiceover clause, MAX 14 words, that justifies THIS rpm. Start lowercase with "because" or "since", name the 1-2 STRONGEST drivers for this channel (content category/topic, video length, spoken language, audience geography) — vary it per channel, never generic. It MUST read naturally mid-sentence: "...a $4 RPM, {spoken_reason}, that translates to...". Examples: "because the topic is business and most viewers are from the US", "since these are long explainer videos in English"
 }`;
 
   // Try video-grounded first (watch first 3 min of the top video). On a
@@ -319,17 +339,18 @@ Respond with ONLY a JSON object:
         niche_label: niche, geo_guess: String(p.geo_guess ?? '').trim() || 'unknown',
         rpm_low: Math.round(low * 100) / 100, rpm_typical: Math.round(typ * 100) / 100, rpm_high: Math.round(high * 100) / 100,
         reasoning: String(p.reasoning ?? '').trim(),
+        spoken_reason: normalizeSpokenReason((p as { spoken_reason?: string }).spoken_reason),
         grounded_on: mode, url_fetched: mode === 'video', cached: false,
       };
       await pool.query(
-        `INSERT INTO content_gen_channel_rpm (channel_id, channel_url, video_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, grounded_on, url_fetched, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+        `INSERT INTO content_gen_channel_rpm (channel_id, channel_url, video_url, niche_label, geo_guess, rpm_low, rpm_typical, rpm_high, reasoning, spoken_reason, grounded_on, url_fetched, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
          ON CONFLICT (channel_id) DO UPDATE SET
            channel_url = EXCLUDED.channel_url, video_url = EXCLUDED.video_url, niche_label = EXCLUDED.niche_label,
            geo_guess = EXCLUDED.geo_guess, rpm_low = EXCLUDED.rpm_low, rpm_typical = EXCLUDED.rpm_typical,
-           rpm_high = EXCLUDED.rpm_high, reasoning = EXCLUDED.reasoning, grounded_on = EXCLUDED.grounded_on,
-           url_fetched = EXCLUDED.url_fetched, updated_at = NOW()`,
-        [channelId, channelUrl, result.video_url, niche, result.geo_guess, result.rpm_low, result.rpm_typical, result.rpm_high, result.reasoning, mode, result.url_fetched],
+           rpm_high = EXCLUDED.rpm_high, reasoning = EXCLUDED.reasoning, spoken_reason = EXCLUDED.spoken_reason,
+           grounded_on = EXCLUDED.grounded_on, url_fetched = EXCLUDED.url_fetched, updated_at = NOW()`,
+        [channelId, channelUrl, result.video_url, niche, result.geo_guess, result.rpm_low, result.rpm_typical, result.rpm_high, result.reasoning, result.spoken_reason ?? '', mode, result.url_fetched],
       );
       return result;
     }

@@ -1678,6 +1678,8 @@ export async function initSchema(): Promise<void> {
     // watched video.
     await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS video_url TEXT`).catch(() => {});
     await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS grounded_on TEXT`).catch(() => {});
+    // Short MG-style voiceover clause justifying the rpm, nested into money-math.
+    await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS spoken_reason TEXT`).catch(() => {});
 
     // Stage D output — the generated, timestamped beat-by-beat narration
     // script for a GROUP of channels. Keyed by a stable group_key (sorted

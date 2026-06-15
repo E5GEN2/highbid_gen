@@ -33,6 +33,10 @@ export interface NicheVars {
   rpm_low: number | null;
   rpm_high: number | null;
   geo_guess: string | null;
+  /** Short MG-style clause justifying the rpm, nested into money-math
+   *  ("because the topic is business and viewers are US-based"). Null until
+   *  the channel's RPM has been (re)analyzed with the spoken_reason field. */
+  rpm_reason: string | null;
   /** MG-style "started posting" age: "only about three months ago" /
    *  "just over a year ago" — from first_upload_at ?? channel_created_at
    *  (MG transcript t=717: "started posting only three to four months ago"). */
@@ -263,8 +267,8 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
       `SELECT recipe_formula, recipe_formula_simple, niche_label, concept_word, concept_insight FROM content_gen_channel_analysis WHERE channel_id = $1`, [channelId]),
     pool.query<{ recipe_summary: string | null; beats_jsonb: ShowcaseBeat[] }>(
       `SELECT recipe_summary, beats_jsonb FROM content_gen_recipe_showcase WHERE channel_id = $1`, [channelId]),
-    pool.query<{ rpm_typical: number | null; rpm_low: number | null; rpm_high: number | null; geo_guess: string | null }>(
-      `SELECT rpm_typical, rpm_low, rpm_high, geo_guess FROM content_gen_channel_rpm WHERE channel_id = $1`, [channelId]),
+    pool.query<{ rpm_typical: number | null; rpm_low: number | null; rpm_high: number | null; geo_guess: string | null; spoken_reason: string | null }>(
+      `SELECT rpm_typical, rpm_low, rpm_high, geo_guess, spoken_reason FROM content_gen_channel_rpm WHERE channel_id = $1`, [channelId]),
     pool.query<{ channel_created_at: string | null; first_upload_at: string | null; video_count: number | null; median_views: number | null }>(
       `SELECT c.channel_created_at, c.first_upload_at, c.video_count,
               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v.view_count)
@@ -315,6 +319,7 @@ export async function loadNicheVars(channelId: string): Promise<NicheVars> {
     rpm_low: rpm.rows[0]?.rpm_low ?? null,
     rpm_high: rpm.rows[0]?.rpm_high ?? null,
     geo_guess: rpm.rows[0]?.geo_guess ?? null,
+    rpm_reason: (rpm.rows[0]?.spoken_reason ?? '').trim() || null,
     age_phrase: agePhrase(startedAt),
     age_months: months != null ? Math.round(months) : null,
     median_views_phrase: medianViewsPhrase(stats.rows[0]?.median_views ?? null),

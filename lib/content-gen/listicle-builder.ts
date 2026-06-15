@@ -328,6 +328,11 @@ export interface MoneyMathOpts {
   /** geo context card (30% when rpm > $5): "because the videos are ...,
    *  most viewers likely are from US and UK." */
   geoLine?: string | null;
+  /** Per-channel RPM reason (niche-vars rpm_reason, video-grounded). When
+   *  present it is NESTED into the RPM card sentence ("a $4 RPM, because the
+   *  topic is business and viewers are US-based, that translates to…") and
+   *  REPLACES the generic geoLine. MG-style per-channel justification. */
+  rpmReason?: string | null;
 }
 
 export function buildMoneyMathSlots(niche_index: number, ch: ChannelData, opts: MoneyMathOpts = {}): Slot[] {
@@ -353,7 +358,13 @@ export function buildMoneyMathSlots(niche_index: number, ch: ChannelData, opts: 
   // Per skeleton rpm_modifier_rule:
   //   low RPM ($1-$3) → use "just a" / "Even if we assume" minimizer
   //   higher RPM ($6+) → drop the minimizer ("if we assume")
-  const rpmNarration = rpm <= 3 ? `just a $${rpm} RPM,` : `a $${rpm} RPM,`;
+  // NEST the per-channel RPM reason into the RPM card's spoken line so it
+  // flows as one MG sentence: "…a $4 RPM, because the topic is business and
+  // viewers are US-based, that translates to…". When present it replaces the
+  // generic geoLine card; absent → the old geoLine behavior is kept.
+  const rpmReason = (opts.rpmReason ?? '').trim();
+  const rpmBase = rpm <= 3 ? `just a $${rpm} RPM` : `a $${rpm} RPM`;
+  const rpmNarration = rpmReason ? `${rpmBase}, ${rpmReason},` : `${rpmBase},`;
   const assumptionPhrase = opts.assumption
     ?? (rpm <= 3 ? 'Even if we assume' : 'If we assume');
   const connectorPhrase = opts.connector ?? 'that one video alone has probably made around';
@@ -384,8 +395,9 @@ export function buildMoneyMathSlots(niche_index: number, ch: ChannelData, opts: 
       ['whoosh']),
   ]);
   // Optional geo context (spec: 30% when rpm > $5): inserted right after
-  // the RPM card.
-  if (opts.geoLine) {
+  // the RPM card. Skipped when a per-channel rpmReason already nested the
+  // justification into the RPM card above (avoids saying it twice).
+  if (opts.geoLine && !rpmReason) {
     const idx = slots.findIndex(s => s.slot_id.endsWith('_mm_rpm'));
     const geoSlot = makeFramingSlot(`${base}_mm_geo`, 'money_math', opts.geoLine,
       { composition: 'text_card', text: opts.geoLine, bg_mode: 'white', color_treatment: 'neutral' },
@@ -1241,7 +1253,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     const vars: NicheVars = await loadNicheVars(cid).catch(() => ({
       channelId: cid, recipe_formula_simplified: null, recipe_summary: null,
       recipe_beats: [], rpm_typical: null, rpm_low: null, rpm_high: null,
-      geo_guess: null, age_phrase: null, age_months: null, median_views_phrase: null,
+      geo_guess: null, rpm_reason: null, age_phrase: null, age_months: null, median_views_phrase: null,
       uploads_per_month: null, concept_word: null, concept_insight: null,
     }));
     const niche_index = acceptedCount + 1;
@@ -1348,6 +1360,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           assumption: assumptionPick,
           connector: connectorPick,
           geoLine,
+          rpmReason: vars.rpm_reason,
         })
       : [];
 
