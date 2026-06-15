@@ -1358,6 +1358,60 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE agent_thread_targets ADD COLUMN IF NOT EXISTS kind     TEXT DEFAULT 'keyword'`).catch(() => {});
     await client.query(`ALTER TABLE agent_thread_targets ADD COLUMN IF NOT EXISTS seed_url TEXT`).catch(() => {});
 
+    // agent_niches lifecycle columns for the auto-seed scheduler.
+    //   status:            active | crawling | exhausted
+    //   origin_cluster_id: the niche_tree cluster this niche was seeded
+    //                      from (L2 preferred, else L1; NULL for orphan /
+    //                      manual). Used to reuse one nicheId per cluster
+    //                      and to apply the "region crawling" lock.
+    //   last_seeded_at:    last time we dispatched a seed for this niche.
+    await client.query(`ALTER TABLE agent_niches ADD COLUMN IF NOT EXISTS status            TEXT DEFAULT 'active'`).catch(() => {});
+    await client.query(`ALTER TABLE agent_niches ADD COLUMN IF NOT EXISTS origin_cluster_id INTEGER`).catch(() => {});
+    await client.query(`ALTER TABLE agent_niches ADD COLUMN IF NOT EXISTS last_seeded_at    TIMESTAMPTZ`).catch(() => {});
+
+    // ── Seed-dispatch ledger (auto-seed scheduler) ────────────────────
+    // The source of truth for "which videos have we already used as
+    // seeds". One row per dispatched seed video. Permanent video-level
+    // exclusion: a video with status in ('pending','crawling','done') is
+    // never re-seeded; only status='failed' rows are re-eligible. The
+    // region-level lock lives on agent_niches.status='crawling' keyed by
+    // origin_cluster_id; once a crawl batch lands and we re-score the
+    // region (scoped mode=all), the lock releases and decayed videos drop
+    // out of candidacy naturally.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_discovery_seeds (
+        seed_video_id    INTEGER PRIMARY KEY,    -- niche_spy_videos.id of the seed
+        seed_url         TEXT NOT NULL,
+        niche_id         TEXT NOT NULL,          -- agent_niches.niche_id it was dispatched under
+        origin_cluster_id INTEGER,               -- cluster the seed belonged to (region lock key)
+        status           TEXT NOT NULL DEFAULT 'pending', -- pending | crawling | done | failed
+        task_ids         TEXT[] DEFAULT '{}',    -- xgodo task ids spawned for this seed
+        novelty_at_dispatch DOUBLE PRECISION,    -- the seed's novelty when we picked it
+        discovered_count INTEGER DEFAULT 0,      -- videos this seed's crawl surfaced (backfilled)
+        dispatched_at    TIMESTAMPTZ DEFAULT NOW(),
+        completed_at     TIMESTAMPTZ,
+        rescored_at      TIMESTAMPTZ              -- when we ran the scoped post-crawl re-score
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_status   ON niche_discovery_seeds(status)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_niche    ON niche_discovery_seeds(niche_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_cluster  ON niche_discovery_seeds(origin_cluster_id)`).catch(() => {});
+
+    // Auto-seed scheduler config defaults (admin_config rows). Ships OFF.
+    await client.query(`
+      INSERT INTO admin_config (key, value) VALUES
+        ('auto_seed_enabled', 'false'),
+        ('auto_seed_min_novelty_pct', '80'),
+        ('auto_seed_max_threads', '10'),
+        ('auto_seed_threads_per_seed', '1'),
+        ('auto_seed_max_seeds_per_tick', '5'),
+        ('auto_seed_loop_number', '14'),
+        ('auto_seed_interval_minutes', '30'),
+        ('novelty_auto_recompute_enabled', 'false'),
+        ('novelty_recompute_interval_minutes', '15')
+      ON CONFLICT (key) DO NOTHING
+    `).catch(() => {});
+
     // Semantic search query log — every text query that hits the
     // /api/niche-spy/search-semantic endpoint gets stored here with its
     // embedding. Two purposes:

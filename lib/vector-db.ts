@@ -582,7 +582,22 @@ export async function computeCombinedV2Novelty(
  * concurrent KNN queries fine via HNSW.
  */
 export async function recomputeAllNovelty(
-  options?: { k?: number; limit?: number; mode?: 'missing' | 'all'; threads?: number },
+  options?: {
+    k?: number; limit?: number; mode?: 'missing' | 'all'; threads?: number;
+    /**
+     * Scoped re-score: when provided, ignore `mode` and re-score EXACTLY
+     * these video_ids plus (optionally) each one's K nearest neighbours.
+     * Used by the seed-scheduler after a crawl batch lands — it re-scores
+     * just the crawled region so a previously-isolated seed's novelty
+     * decays honestly now that we ingested its neighbourhood. Fast (~30s
+     * for a few thousand) vs a full 12-15 min recompute. Without this the
+     * mode='missing' path never re-scores already-scored videos, so decay
+     * silently never happens.
+     */
+    videoIds?: number[];
+    /** When videoIds is given, also re-score each one's K neighbours. Default true. */
+    includeNeighbors?: boolean;
+  },
 ): Promise<{ scored: number; total: number; mode: string; durationMs: number }> {
   const started = Date.now();
   const k = Math.max(1, Math.min(50, options?.k ?? 10));
@@ -595,23 +610,63 @@ export async function recomputeAllNovelty(
 
   const mainPool = await getPool();
 
-  // Pull the target list from the MAIN db: videos with combined_v2
-  // embedded, optionally filtered to those without a novelty_score yet.
-  // Using the main db because the vector db doesn't know which videos
-  // already have novelty written.
-  const targetRes = await mainPool.query<{ id: number }>(
-    mode === 'missing'
-      ? `SELECT id FROM niche_spy_videos
-          WHERE combined_embedded_v2_at IS NOT NULL
-            AND novelty_score IS NULL
-          ORDER BY id
-          LIMIT $1`
-      : `SELECT id FROM niche_spy_videos
-          WHERE combined_embedded_v2_at IS NOT NULL
-          ORDER BY id
-          LIMIT $1`,
-    [limit],
-  );
+  let targetRes: { rows: Array<{ id: number }> };
+
+  if (options?.videoIds && options.videoIds.length > 0) {
+    // ── SCOPED RE-SCORE ────────────────────────────────────────────────
+    // Start from the given ids; optionally expand to each one's K nearest
+    // neighbours in the combined_v2 space (those are the videos whose
+    // local density just changed). Dedup, then keep only embedded ones.
+    const seedIds = Array.from(new Set(options.videoIds));
+    let regionIds = seedIds;
+    if (options.includeNeighbors !== false) {
+      const neighborSet = new Set<number>(seedIds);
+      // Pull neighbours per seed from the vector DB. Cap fan-out so a huge
+      // batch can't explode the region (e.g. 2000 seeds × 10 = 20K).
+      for (const vid of seedIds.slice(0, 4000)) {
+        try {
+          const src = await vectorPool.query(
+            `SELECT embedding FROM niche_video_vectors_combined_v2 WHERE video_id = $1`,
+            [vid],
+          );
+          if (src.rows.length === 0) continue;
+          const nbr = await vectorPool.query<{ video_id: number }>(
+            `SELECT video_id FROM niche_video_vectors_combined_v2
+              WHERE video_id != $2
+              ORDER BY (embedding::halfvec(3072)) <=> ($1::halfvec(3072))
+              LIMIT $3`,
+            [src.rows[0].embedding, vid, k],
+          );
+          for (const r of nbr.rows) neighborSet.add(Number(r.video_id));
+        } catch { /* skip on failure */ }
+      }
+      regionIds = Array.from(neighborSet);
+    }
+    // Only re-score videos that are actually embedded (have a vector).
+    const embeddedRes = await mainPool.query<{ id: number }>(
+      `SELECT id FROM niche_spy_videos
+        WHERE id = ANY($1::int[]) AND combined_embedded_v2_at IS NOT NULL`,
+      [regionIds],
+    );
+    targetRes = { rows: embeddedRes.rows };
+  } else {
+    // ── FULL / MISSING RECOMPUTE (unchanged) ──────────────────────────
+    // Pull the target list from the MAIN db: videos with combined_v2
+    // embedded, optionally filtered to those without a novelty_score yet.
+    targetRes = await mainPool.query<{ id: number }>(
+      mode === 'missing'
+        ? `SELECT id FROM niche_spy_videos
+            WHERE combined_embedded_v2_at IS NOT NULL
+              AND novelty_score IS NULL
+            ORDER BY id
+            LIMIT $1`
+        : `SELECT id FROM niche_spy_videos
+            WHERE combined_embedded_v2_at IS NOT NULL
+            ORDER BY id
+            LIMIT $1`,
+      [limit],
+    );
+  }
 
   const total = targetRes.rows.length;
   if (total === 0) return { scored: 0, total: 0, mode, durationMs: Date.now() - started };

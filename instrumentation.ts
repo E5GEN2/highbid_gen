@@ -181,6 +181,96 @@ export async function register() {
       }
     }
 
+    // ── Niche-discovery flywheel: two perpetual loops ──────────────────
+    // Loop 1: novelty recompute. mode=missing scores newly-collected
+    // (bot-embedded) videos so fresh seed candidates keep surfacing;
+    // a nightly mode=all sweep is the decay safety net. Both gated by
+    // config + interval. Fire-and-forget (heavy) with an in-process guard
+    // so ticks can't overlap.
+    let noveltyRecomputeRunning = false;
+    async function runNoveltyRecomputeTick() {
+      try {
+        const pool = await getPool();
+        const config = await getConfig(pool);
+        if (config.novelty_auto_recompute_enabled !== 'true') return;
+        if (noveltyRecomputeRunning) return;
+
+        const intervalMin = parseInt(config.novelty_recompute_interval_minutes) || 15;
+        const now = Date.now();
+        const lastMissing = config.last_novelty_recompute_at ? new Date(config.last_novelty_recompute_at).getTime() : 0;
+        const lastFull = config.last_novelty_full_recompute_at ? new Date(config.last_novelty_full_recompute_at).getTime() : 0;
+
+        // Nightly full sweep: if >20h since the last mode=all, run one.
+        const dueFull = now - lastFull > 20 * 60 * 60 * 1000;
+        const dueMissing = now - lastMissing > intervalMin * 60 * 1000;
+        if (!dueFull && !dueMissing) return;
+
+        const { recomputeAllNovelty } = await import('./lib/vector-db');
+        noveltyRecomputeRunning = true;
+        const mode: 'all' | 'missing' = dueFull ? 'all' : 'missing';
+        const stampKey = dueFull ? 'last_novelty_full_recompute_at' : 'last_novelty_recompute_at';
+        // Stamp BEFORE running so a long full-sweep doesn't re-trigger.
+        await pool.query(
+          `INSERT INTO admin_config (key, value) VALUES ($1, NOW()::text)
+             ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
+          [stampKey],
+        ).catch(() => {});
+        // Detached — heavy. Clear the guard when done.
+        recomputeAllNovelty({ mode, threads: 10 })
+          .then(r => { if (r.scored > 0) console.log(`[novelty-recompute] mode=${mode} scored=${r.scored}/${r.total} in ${(r.durationMs/1000).toFixed(0)}s`); })
+          .catch(err => console.error('[novelty-recompute] error:', err instanceof Error ? err.message : err))
+          .finally(() => { noveltyRecomputeRunning = false; });
+      } catch (err) {
+        console.error('[novelty-recompute] tick error:', err instanceof Error ? err.message : err);
+        noveltyRecomputeRunning = false;
+      }
+    }
+
+    // Loop 2: auto-seed scheduler + reaper. The scheduler dispatches seeds
+    // from un-seeded novelty candidates (advisory-locked, fleet-budgeted,
+    // ships OFF). The reaper detects finished crawls, scoped-rescores the
+    // crawled region (so decay happens), and releases the region lock.
+    async function runSeedSchedulerLoop() {
+      try {
+        const pool = await getPool();
+        const config = await getConfig(pool);
+        // Reaper runs whenever EITHER loop is on (it's the post-crawl
+        // re-score that serves both).
+        const seedOn = config.auto_seed_enabled === 'true';
+        const recomputeOn = config.novelty_auto_recompute_enabled === 'true';
+        if (!seedOn && !recomputeOn) return;
+
+        const { runSeedReaperTick, runSeedSchedulerTick } = await import('./lib/content-gen/seed-scheduler');
+
+        // Reaper every ~5 min (idle-safe: only works when a crawl finished).
+        const lastReaper = config.last_seed_reaper_at ? new Date(config.last_seed_reaper_at).getTime() : 0;
+        if (Date.now() - lastReaper > 5 * 60 * 1000) {
+          await pool.query(
+            `INSERT INTO admin_config (key, value) VALUES ('last_seed_reaper_at', NOW()::text)
+               ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
+          ).catch(() => {});
+          const rr = await runSeedReaperTick();
+          if (rr.finished_niches > 0) console.log(`[seed-reaper] finished=${rr.finished_niches} rescored=${rr.videos_rescored} released=${rr.clusters_released}`);
+        }
+
+        // Scheduler on its own interval (default 30 min).
+        if (!seedOn) return;
+        const intervalMin = parseInt(config.auto_seed_interval_minutes) || 30;
+        const lastSched = config.last_seed_schedule_at ? new Date(config.last_seed_schedule_at).getTime() : 0;
+        if (Date.now() - lastSched < intervalMin * 60 * 1000) return;
+        await pool.query(
+          `INSERT INTO admin_config (key, value) VALUES ('last_seed_schedule_at', NOW()::text)
+             ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
+        ).catch(() => {});
+        const sr = await runSeedSchedulerTick();
+        if (sr.ran && (sr.seeds_dispatched > 0 || sr.starvation_adjustment)) {
+          console.log(`[seed-scheduler] dispatched ${sr.seeds_dispatched} seeds / ${sr.niches_dispatched} niches / ${sr.threads_dispatched} threads (pct=${sr.min_novelty_pct_used}${sr.starvation_adjustment ? '; ' + sr.starvation_adjustment : ''})`);
+        }
+      } catch (err) {
+        console.error('[seed-scheduler] loop error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAll() {
       await runAutoSync();
       await runAutoSchedule();
@@ -194,6 +284,10 @@ export async function register() {
       // returns drained=0 when the queue is empty so cost stays at one
       // SELECT FOR UPDATE SKIP LOCKED + one xgodo fetch per tick.
       await runXgVidDownloadTick();
+      // Niche-discovery flywheel. Both gated by config flags (ship OFF)
+      // + interval, so they're cheap no-ops until enabled.
+      await runNoveltyRecomputeTick();
+      await runSeedSchedulerLoop();
     }
 
     // Check every 60 seconds whether a sync/schedule is due

@@ -639,6 +639,74 @@ export default function AdminPage() {
     void fetchSeedCandidates();
   }, [adminSection, fetchSeedCandidates]);
 
+  // ── Auto-seed scheduler control + status ────────────────────────────
+  interface AutoSeedState {
+    config: {
+      auto_seed_enabled: boolean;
+      auto_seed_min_novelty_pct: number;
+      auto_seed_max_threads: number;
+      auto_seed_max_seeds_per_tick: number;
+      auto_seed_interval_minutes: number;
+      novelty_auto_recompute_enabled: boolean;
+      novelty_recompute_interval_minutes: number;
+    };
+    stamps: Record<string, string | null>;
+    ledger: Record<string, number>;
+    niches: Record<string, number>;
+    recent_dispatches: Array<{
+      seed_video_id: number; seed_url: string; seed_title: string | null;
+      niche_id: string; niche_label: string | null; status: string;
+      origin_cluster_id: number | null; discovered_count: number;
+      dispatched_at: string; completed_at: string | null;
+    }>;
+  }
+  const [autoSeed, setAutoSeed] = useState<AutoSeedState | null>(null);
+  const [autoSeedBusy, setAutoSeedBusy] = useState(false);
+  const [autoSeedMsg, setAutoSeedMsg] = useState<string | null>(null);
+
+  const fetchAutoSeed = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/content-gen/auto-seed').then(r => r.json());
+      if (r.ok) setAutoSeed(r);
+    } catch { /* ok */ }
+  }, []);
+
+  useEffect(() => {
+    if (adminSection !== 'novelty') return;
+    void fetchAutoSeed();
+    const t = setInterval(() => { if (adminSection === 'novelty') void fetchAutoSeed(); }, 15000);
+    return () => clearInterval(t);
+  }, [adminSection, fetchAutoSeed]);
+
+  const setAutoSeedFlag = async (key: string, value: string | number | boolean) => {
+    setAutoSeedBusy(true);
+    setAutoSeedMsg(null);
+    try {
+      const r = await fetch('/api/admin/content-gen/auto-seed', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: { [key]: String(value) } }),
+      }).then(r => r.json());
+      if (!r.ok) throw new Error(r.error || 'failed');
+      await fetchAutoSeed();
+    } catch (e) { setAutoSeedMsg((e as Error).message); }
+    finally { setAutoSeedBusy(false); }
+  };
+
+  const runAutoSeedTick = async (action: 'run_scheduler' | 'run_reaper') => {
+    setAutoSeedBusy(true);
+    setAutoSeedMsg(null);
+    try {
+      const r = await fetch('/api/admin/content-gen/auto-seed', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      }).then(r => r.json());
+      if (!r.ok) throw new Error(r.error || 'failed');
+      setAutoSeedMsg(`${action}: ${JSON.stringify(r.tickResult)}`);
+      await fetchAutoSeed();
+    } catch (e) { setAutoSeedMsg((e as Error).message); }
+    finally { setAutoSeedBusy(false); }
+  };
+
   // Debounce the text search
   useEffect(() => {
     const h = setTimeout(() => setNoveltyQ(noveltyQInput.trim()), 300);
@@ -4666,6 +4734,99 @@ export default function AdminPage() {
             signal is worth exposing to users. */}
         <div style={{ display: adminSection === 'novelty' ? 'block' : 'none' }}>
           <div className="space-y-6">
+            {/* ── Auto-seed scheduler (the flywheel control) ───────────── */}
+            {autoSeed && (
+              <div className={`rounded-2xl border p-5 ${autoSeed.config.auto_seed_enabled ? 'bg-emerald-900/20 border-emerald-500/40' : 'bg-gray-800/50 border-gray-700'}`}>
+                <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+                  <div>
+                    <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                      Auto-seed scheduler
+                      <span className={`text-[10px] px-2 py-0.5 rounded uppercase font-bold tracking-wider ${autoSeed.config.auto_seed_enabled ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/50' : 'bg-gray-700 text-gray-400 border border-gray-600'}`}>
+                        {autoSeed.config.auto_seed_enabled ? 'running' : 'off'}
+                      </span>
+                    </h2>
+                    <p className="text-xs text-gray-500 mt-1 max-w-2xl">
+                      Picks un-seeded novelty candidates, dedups against the ledger + crawling regions, groups by cluster into niches, and dispatches up to the fleet budget. The reaper rescopes novelty after each crawl so the same territory isn&apos;t re-collected.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {/* Recompute toggle */}
+                    <button
+                      disabled={autoSeedBusy}
+                      onClick={() => setAutoSeedFlag('novelty_auto_recompute_enabled', !autoSeed.config.novelty_auto_recompute_enabled)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition disabled:opacity-50 ${autoSeed.config.novelty_auto_recompute_enabled ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-gray-900 text-gray-400 border-gray-700'}`}
+                      title="Perpetual novelty recompute (mode=missing every N min + nightly full sweep)"
+                    >Recompute {autoSeed.config.novelty_auto_recompute_enabled ? 'ON' : 'OFF'}</button>
+                    {/* Scheduler toggle */}
+                    <button
+                      disabled={autoSeedBusy}
+                      onClick={() => setAutoSeedFlag('auto_seed_enabled', !autoSeed.config.auto_seed_enabled)}
+                      className={`px-4 py-1.5 rounded-lg text-xs font-bold border transition disabled:opacity-50 ${autoSeed.config.auto_seed_enabled ? 'bg-emerald-600 text-white border-emerald-500 hover:bg-emerald-500' : 'bg-gray-900 text-gray-300 border-gray-600 hover:border-emerald-500'}`}
+                    >{autoSeed.config.auto_seed_enabled ? 'Disable scheduler' : 'Enable scheduler'}</button>
+                  </div>
+                </div>
+
+                {/* Status row */}
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
+                  <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+                    <div className="text-sm font-bold text-emerald-300 tabular-nums">{autoSeed.ledger.crawling || 0}</div>
+                    <div className="text-[9px] text-gray-500 uppercase">crawling</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+                    <div className="text-sm font-bold text-white tabular-nums">{autoSeed.ledger.done || 0}</div>
+                    <div className="text-[9px] text-gray-500 uppercase">done</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+                    <div className="text-sm font-bold text-gray-300 tabular-nums">{autoSeed.ledger.failed || 0}</div>
+                    <div className="text-[9px] text-gray-500 uppercase">failed</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+                    <div className="text-sm font-bold text-white tabular-nums">{autoSeed.niches.crawling || 0}</div>
+                    <div className="text-[9px] text-gray-500 uppercase">niches live</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+                    <div className="text-sm font-bold text-white tabular-nums">{autoSeed.config.auto_seed_max_threads}</div>
+                    <div className="text-[9px] text-gray-500 uppercase">max threads</div>
+                  </div>
+                  <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+                    <div className="text-sm font-bold text-amber-300 tabular-nums">top {(100 - autoSeed.config.auto_seed_min_novelty_pct).toFixed(0)}%</div>
+                    <div className="text-[9px] text-gray-500 uppercase">novelty floor</div>
+                  </div>
+                </div>
+
+                {/* Manual triggers + last-run */}
+                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  <button disabled={autoSeedBusy} onClick={() => runAutoSeedTick('run_scheduler')}
+                    className="px-3 py-1 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50">Run scheduler now</button>
+                  <button disabled={autoSeedBusy} onClick={() => runAutoSeedTick('run_reaper')}
+                    className="px-3 py-1 rounded border border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-50">Run reaper now</button>
+                  <span className="text-gray-600 ml-2">
+                    last schedule: {autoSeed.stamps.last_seed_schedule_at ? new Date(autoSeed.stamps.last_seed_schedule_at).toLocaleTimeString() : 'never'} ·
+                    last recompute: {autoSeed.stamps.last_novelty_recompute_at ? new Date(autoSeed.stamps.last_novelty_recompute_at).toLocaleTimeString() : 'never'}
+                  </span>
+                </div>
+                {autoSeedMsg && <div className="mt-2 text-[11px] text-gray-400 font-mono break-all">{autoSeedMsg}</div>}
+
+                {/* Recent dispatches */}
+                {autoSeed.recent_dispatches.length > 0 && (
+                  <div className="mt-3 border-t border-gray-700/60 pt-2">
+                    <div className="text-[10px] uppercase text-gray-500 mb-1">Recent dispatches</div>
+                    <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                      {autoSeed.recent_dispatches.map(d => (
+                        <div key={d.seed_video_id} className="flex items-center gap-2 text-[11px] text-gray-400">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${d.status === 'crawling' ? 'bg-emerald-400' : d.status === 'done' ? 'bg-gray-400' : 'bg-red-400'}`} />
+                          <a href={d.seed_url} target="_blank" rel="noopener noreferrer" className="text-amber-400/80 hover:text-amber-300 truncate max-w-[280px]">{d.seed_title || d.niche_label || d.niche_id}</a>
+                          <span className="text-gray-600">{d.status}</span>
+                          {d.discovered_count > 0 && <span className="text-emerald-400/70">+{d.discovered_count} found</span>}
+                          {d.origin_cluster_id != null && <span className="text-gray-600">cl {d.origin_cluster_id}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* ── Niche-discovery seed candidates ───────────────────────
                 Videos passing BOTH the novelty cutoff AND the content-gen
                 channel-quality rules. These are the ones we'd seed xgodo
