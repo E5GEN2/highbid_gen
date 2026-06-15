@@ -202,6 +202,7 @@ export interface SeedCandidate {
   thumbnail: string | null;
   similarity: number | null;       // cosine in combined_v2 vs seed; null on failure
   rank: number;                    // rank by similarity descending (1 = best)
+  wasNew: boolean | null;          // true if THIS call discovered the candidate; false if we already had it; null on resolve failure
   error?: string;
 }
 
@@ -348,6 +349,7 @@ interface ResolvedVideo {
   title: string | null;
   thumbnail: string | null;
   hadCombinedV2: boolean;          // whether the row already had a vector
+  wasNew: boolean;                 // true if this resolve created the niche_spy_videos row
 }
 
 /**
@@ -379,10 +381,15 @@ async function resolveBatch(
       validIds.map(id => `[?&]v=${id}\\b|/${id}\\b`),
     ],
   );
-  const byYtId = new Map<string, { id: number; title: string | null; thumbnail: string | null; has_v2: boolean }>();
+  // wasNew tracks whether this resolve is the one that created the
+  // niche_spy_videos row: false for anything found in step 1, true for
+  // any row we INSERT in step 2. The admin Video Seed feed surfaces
+  // this so the operator can spot fresh discoveries from already-known
+  // candidates at a glance.
+  const byYtId = new Map<string, { id: number; title: string | null; thumbnail: string | null; has_v2: boolean; wasNew: boolean }>();
   for (const row of existRes.rows) {
     const yid = extractYtVideoId(row.url);
-    if (yid) byYtId.set(yid, { id: row.id, title: row.title, thumbnail: row.thumbnail, has_v2: row.has_v2 });
+    if (yid) byYtId.set(yid, { id: row.id, title: row.title, thumbnail: row.thumbnail, has_v2: row.has_v2, wasNew: false });
   }
 
   // 2) Any YT ids we DON'T have rows for — fetch metadata via YT Data API
@@ -427,7 +434,7 @@ async function resolveBatch(
           keyword ?? 'video-seed',
         ],
       );
-      byYtId.set(ytId, { id: ins.rows[0].id, title, thumbnail: thumb, has_v2: false });
+      byYtId.set(ytId, { id: ins.rows[0].id, title, thumbnail: thumb, has_v2: false, wasNew: true });
     }
   }
 
@@ -444,6 +451,7 @@ async function resolveBatch(
       title: row.title,
       thumbnail: row.thumbnail,
       hadCombinedV2: row.has_v2,
+      wasNew: row.wasNew,
     };
   });
 }
@@ -660,6 +668,7 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
         videoId: null, ytId: extractYtVideoId(c.url) ?? '',
         url: c.url, title: null, thumbnail: null,
         similarity: null, rank: 0,
+        wasNew: null,                // resolve failed — we don't know
         error: 'metadata fetch failed',
       };
     }
@@ -682,6 +691,7 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
       url: c.url, title: c.row.title, thumbnail: c.row.thumbnail,
       similarity: sim,
       rank: 0,                       // assigned below
+      wasNew: c.row.wasNew,
       error,
     };
   });
@@ -705,19 +715,20 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
     const args: (number | string | boolean | null)[] = [];
     let p = 1;
     for (const c of candidates) {
-      rows.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
+      rows.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
       args.push(
         seedRow.videoId, seedRow.url,
         c.videoId, c.url, c.title, c.thumbnail,
         c.similarity, false /* matched — deprecated, always false */, null /* threshold */,
         c.rank, opts.taskId ?? null, opts.keyword ?? null,
         c.error ?? null,
+        c.wasNew,
       );
     }
     await pool.query(
       `INSERT INTO niche_seed_expansions
          (seed_video_id, seed_url, candidate_video_id, candidate_url, candidate_title, candidate_thumbnail,
-          similarity, matched, threshold, rank_in_batch, task_id, keyword, error_message)
+          similarity, matched, threshold, rank_in_batch, task_id, keyword, error_message, candidate_was_new)
        VALUES ${rows.join(', ')}`,
       args,
     );

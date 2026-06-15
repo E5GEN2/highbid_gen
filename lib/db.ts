@@ -963,6 +963,30 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_seed ON niche_seed_expansions(seed_video_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_matched ON niche_seed_expansions(matched, detected_at DESC)`).catch(() => {});
 
+    // candidate_was_new — true if this candidate row was created BY the
+    // expand call that logged this expansion; false if it was already in
+    // niche_spy_videos. Lets the admin feed flag "fresh discovery" vs
+    // "already known to us" without joining at query time.
+    await client.query(`
+      ALTER TABLE niche_seed_expansions ADD COLUMN IF NOT EXISTS candidate_was_new BOOLEAN
+    `).catch(() => {});
+
+    // One-shot backfill for pre-existing rows: a candidate was new at
+    // expansion time iff the video's synced_at (row creation stamp)
+    // sits at or after the expansion's detected_at minus a small grace
+    // window. Idempotent — only touches rows where the column is still
+    // NULL. Bounded to recent history so the very first run after
+    // shipping this doesn't churn millions of stale rows; the
+    // operator-facing feed only renders the last few days anyway.
+    await client.query(`
+      UPDATE niche_seed_expansions e
+         SET candidate_was_new = (v.synced_at >= e.detected_at - INTERVAL '5 seconds')
+        FROM niche_spy_videos v
+       WHERE e.candidate_was_new IS NULL
+         AND e.candidate_video_id = v.id
+         AND e.detected_at > NOW() - INTERVAL '14 days'
+    `).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_tree_assignments (
         id SERIAL PRIMARY KEY,

@@ -7375,6 +7375,10 @@ interface SeedFeedRow {
   taskId: string | null;
   keyword: string | null;
   errorMessage: string | null;
+  // true if the candidate row was created BY this expand call; false if
+  // already in niche_spy_videos; null for pre-backfill historical rows
+  // or for events where metadata resolution failed.
+  candidateWasNew: boolean | null;
   detectedAt: string | null;
 }
 
@@ -7555,12 +7559,13 @@ function VideoSeedTab({ active }: { active: boolean }) {
         </div>
       ) : (
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden">
-          <div className="grid grid-cols-[140px_2fr_20px_2fr_80px_200px_120px_80px] gap-2 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
+          <div className="grid grid-cols-[140px_2fr_20px_2fr_80px_60px_200px_120px_80px] gap-2 px-3 py-2 border-b border-[#1f1f1f] text-[10px] uppercase tracking-wider text-[#666]">
             <div>Time</div>
             <div>Seed</div>
             <div></div>
             <div>Candidate</div>
             <div className="text-right">Similarity</div>
+            <div className="text-center" title="Was this candidate already in our DB before this expand call, or did this call discover it?">Source</div>
             <div>Error</div>
             <div>Task</div>
             <div>Keyword</div>
@@ -7570,7 +7575,7 @@ function VideoSeedTab({ active }: { active: boolean }) {
               const simPct = r.similarity != null ? (r.similarity * 100).toFixed(1) : null;
               const ts = r.detectedAt ? new Date(r.detectedAt) : null;
               return (
-                <div key={r.id} className="grid grid-cols-[140px_2fr_20px_2fr_80px_200px_120px_80px] gap-2 px-3 py-2 items-center hover:bg-[#181818] transition">
+                <div key={r.id} className="grid grid-cols-[140px_2fr_20px_2fr_80px_60px_200px_120px_80px] gap-2 px-3 py-2 items-center hover:bg-[#181818] transition">
                   <div className="text-[11px] text-[#888] font-mono">
                     {ts ? `${ts.toLocaleTimeString()}.${String(ts.getMilliseconds()).padStart(3,'0')}` : '—'}
                   </div>
@@ -7608,6 +7613,24 @@ function VideoSeedTab({ active }: { active: boolean }) {
                                            'text-[#888]'
                   }`}>
                     {simPct != null ? `${simPct}%` : '—'}
+                  </div>
+                  {/* Source column — "new" if this expand call inserted the
+                      candidate row into niche_spy_videos, "seen" if it was
+                      already there, "—" if we couldn't resolve metadata or
+                      this is a pre-backfill historical row. Helps the
+                      operator spot fresh discoveries at a glance. */}
+                  <div className="text-center">
+                    {r.candidateWasNew === true ? (
+                      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30" title="This expand call inserted this candidate into niche_spy_videos">
+                        new
+                      </span>
+                    ) : r.candidateWasNew === false ? (
+                      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-500/10 text-zinc-400 border border-zinc-500/20" title="Candidate was already in niche_spy_videos">
+                        seen
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-[#444]" title="Not recorded (older event or metadata resolve failed)">—</span>
+                    )}
                   </div>
                   {/* Error column — category badge + full message tooltip so
                       operator can see at-a-glance whether the bottleneck is

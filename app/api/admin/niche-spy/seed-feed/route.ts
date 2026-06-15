@@ -70,13 +70,14 @@ export async function GET(req: NextRequest) {
     task_id: string | null;
     keyword: string | null;
     error_message: string | null;
+    candidate_was_new: boolean | null;
     detected_at: Date;
   }>(
     `SELECT e.id, e.seed_video_id, e.seed_url,
             sv.title AS seed_title, sv.thumbnail AS seed_thumbnail,
             e.candidate_video_id, e.candidate_url, e.candidate_title, e.candidate_thumbnail,
             e.similarity, e.matched, e.threshold, e.rank_in_batch,
-            e.task_id, e.keyword, e.error_message, e.detected_at
+            e.task_id, e.keyword, e.error_message, e.candidate_was_new, e.detected_at
        FROM niche_seed_expansions e
        LEFT JOIN niche_spy_videos sv ON sv.id = e.seed_video_id
        ${where}
@@ -123,6 +124,7 @@ export async function GET(req: NextRequest) {
       taskId: r.task_id,
       keyword: r.keyword,
       errorMessage: r.error_message,
+      candidateWasNew: r.candidate_was_new,
       detectedAt: r.detected_at?.toISOString() ?? null,
     })),
     stats: {
