@@ -1,20 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
 import { isAdmin } from '@/lib/admin-auth';
-import { fetchTasksByStatus } from '@/lib/xgodo-tasks';
-import { snapshotTaskProofs } from '@/lib/agent-task-proof';
-
-const NICHE_SPY_JOB_ID = '69a58c4277cb8e2b9f1dddc4';
 
 /**
  * GET /api/admin/agents/log?page=1&limit=50&keyword=X&status=completed
  * Paginated task history with durations, enriched with seed/label + the
  * per-task crawl-trace counts (videos watched / candidates scored).
  *
- * Side effect: snapshots the job_proof of every running + recently-completed
- * task into agent_task_proof before reading, so the ephemeral watch-order is
- * captured continuously while this panel polls. Best-effort — never blocks the
- * list on xgodo.
+ * Pure reader — the agent_task_proof watch-order is captured continuously by
+ * the thermostat (every 30s), so this endpoint never touches xgodo and stays
+ * fast. (An earlier version snapshotted on page load, which made the panel
+ * hang while it fetched + upserted thousands of job_proof rows.)
  */
 export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
@@ -25,31 +21,6 @@ export async function GET(req: NextRequest) {
   const keyword = req.nextUrl.searchParams.get('keyword') || '';
   const status = req.nextUrl.searchParams.get('status') || '';
   const offset = (page - 1) * limit;
-
-  // Snapshot live proofs first (best-effort). Only worth doing on page 1 of an
-  // unfiltered/most-recent view — that's where live tasks surface.
-  if (page === 1 && !keyword) {
-    try {
-      const cfgRes = await pool.query('SELECT key, value FROM admin_config WHERE key = ANY($1)', [[
-        'xgodo_niche_spy_token', 'xgodo_api_token',
-      ]]);
-      const cfg: Record<string, string> = {};
-      for (const r of cfgRes.rows) cfg[r.key] = r.value;
-      const token = cfg.xgodo_niche_spy_token || cfg.xgodo_api_token
-        || process.env.XGODO_NICHE_SPY_TOKEN || process.env.XGODO_API_TOKEN || '';
-      if (token) {
-        // Niche-spy tasks are 'running' in xgodo until they finish, then drop
-        // off the list — there is no 'completed' status. The job_proof
-        // watch-path grows on the running task, so snapshotting 'running'
-        // captures it. (The thermostat also snapshots every tick, so the path
-        // is captured even when this panel isn't open.)
-        const running = await fetchTasksByStatus(token, NICHE_SPY_JOB_ID, 'running', 100).catch(() => []);
-        await snapshotTaskProofs(running);
-      }
-    } catch (err) {
-      console.error('[agents/log] proof snapshot skipped:', (err as Error).message);
-    }
-  }
 
   const conditions: string[] = [];
   const params: unknown[] = [];
