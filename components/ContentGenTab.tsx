@@ -225,13 +225,26 @@ export default function ContentGenTab({ active }: { active: boolean }) {
     }
   };
 
-  // Silently refresh spy-completion badges while drafts are shown.
+  // Silently refresh spy-completion badges while drafts are shown — ledger-only
+  // read (no discovery re-run, so the cards don't shift under the user).
   useEffect(() => {
     if (subTab !== 'niches' || drafts.length === 0) return;
-    const i = setInterval(() => loadDrafts({ silent: true }), 30000);
+    const refresh = async () => {
+      try {
+        const groups = drafts.map(d => ({
+          draft_id: d.id,
+          channels: d.items.map(i => ({ channel_id: i.candidate.channel_id, top_video_id: i.candidate.top_video_id })),
+        }));
+        const r = await fetch('/api/admin/content-gen/spy-status', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ groups }),
+        }).then(r => r.json());
+        if (r.spy_status) setSpyStatus(r.spy_status);
+      } catch { /* keep last status on transient errors */ }
+    };
+    const i = setInterval(refresh, 20000);
     return () => clearInterval(i);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subTab, drafts.length, channelsPerDraft]);
+  }, [subTab, drafts]);
 
   // Mark a group "used" → its channels are excluded → a fresh group replaces it.
   const markGroupUsed = async (draft: ListicleDraft) => {

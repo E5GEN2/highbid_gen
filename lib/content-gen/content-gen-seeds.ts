@@ -138,6 +138,41 @@ export async function getDraftSpyStatuses(drafts: ListicleDraft[]): Promise<Reco
   return out;
 }
 
+/**
+ * Lightweight spy-status for already-rendered groups — no discovery re-run.
+ * The client passes the channels it's displaying; we just re-read the ledger.
+ * Used by the GUI's live badge refresh so it doesn't re-run discoverChannels
+ * (which is slow + would shift the cards) every poll.
+ */
+export async function spyStatusForGroups(
+  groups: Array<{ draft_id: string; channels: Array<{ channel_id: string; top_video_id: number }> }>,
+): Promise<Record<string, DraftSpyStatus>> {
+  const allIds = groups.flatMap(g => g.channels.map(c => c.top_video_id)).filter(Boolean);
+  const status = await getSpyStatusByVideoId(allIds);
+  const out: Record<string, DraftSpyStatus> = {};
+  for (const g of groups) {
+    let spied = 0, inprog = 0, none = 0;
+    const per: Record<string, SpyState> = {};
+    for (const c of g.channels) {
+      const s = normState(status.get(c.top_video_id));
+      per[c.channel_id] = s;
+      if (s === 'done') spied++;
+      else if (s === 'crawling' || s === 'pending') inprog++;
+      else none++;
+    }
+    out[g.draft_id] = {
+      draft_id: g.draft_id,
+      total: g.channels.length,
+      spied,
+      in_progress: inprog,
+      not_started: none,
+      fully_spied: g.channels.length > 0 && spied === g.channels.length,
+      per_channel: per,
+    };
+  }
+  return out;
+}
+
 /** Mark a draft's channels as "used" (consumed into a produced video). */
 export async function markGroupUsed(
   draftId: string, draftTitle: string, channelIds: string[], note?: string,
