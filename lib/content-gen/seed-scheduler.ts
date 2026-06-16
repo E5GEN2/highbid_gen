@@ -337,6 +337,10 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
       [...running, ...planned].filter(t => t.kind === 'seed').map(t => t.keyword),
     );
 
+    // Revert an on-demand burst's thread-budget bump once its tasks finish.
+    // Done here (not gated on finished crawls) so it runs every reaper tick.
+    await maybeRevertBurst(liveNicheIds).catch(() => {});
+
     const crawlingRes = await pool.query<{ niche_id: string; origin_cluster_id: number | null }>(
       `SELECT niche_id, origin_cluster_id FROM agent_niches WHERE status = 'crawling'`,
     );
@@ -404,4 +408,74 @@ async function isRecomputeEnabled(): Promise<boolean> {
     `SELECT value FROM admin_config WHERE key = 'novelty_auto_recompute_enabled'`,
   );
   return r.rows[0]?.value === 'true';
+}
+
+// ── On-demand burst budget bump + auto-revert ───────────────────────────────
+// A burst (POST /api/admin/agents/burst with additive:true) raises
+// auto_seed_max_threads by its thread count so the extra seed crawls run ON TOP
+// of the auto loop. State lives in admin_config; this reverts the bump once the
+// burst's niches have no live task, or the TTL backstop fires.
+
+export interface BurstState {
+  active: boolean;
+  revertTo: number;        // the pre-burst auto_seed_max_threads
+  niches: string[];        // burst nicheIds to watch for completion
+  expiresAt: number | null; // epoch ms TTL backstop
+}
+
+export async function getBurstState(): Promise<BurstState> {
+  const pool = await getPool();
+  const r = await pool.query<{ key: string; value: string }>(
+    `SELECT key, value FROM admin_config WHERE key = ANY($1::text[])`,
+    [['auto_seed_burst_active', 'auto_seed_burst_revert_to', 'auto_seed_burst_niches', 'auto_seed_burst_expires_at']],
+  );
+  const c: Record<string, string> = {};
+  for (const row of r.rows) c[row.key] = row.value;
+  let niches: string[] = [];
+  try { niches = JSON.parse(c.auto_seed_burst_niches || '[]'); } catch { niches = []; }
+  return {
+    active: c.auto_seed_burst_active === 'true',
+    revertTo: parseInt(c.auto_seed_burst_revert_to) || 10,
+    niches,
+    expiresAt: c.auto_seed_burst_expires_at ? parseInt(c.auto_seed_burst_expires_at) : null,
+  };
+}
+
+/**
+ * Revert the burst budget bump if every burst niche has finished (no live
+ * seed task) or the TTL backstop has passed. Idempotent + safe to call often.
+ * Pass the reaper's already-computed live nicheIds to avoid a duplicate fetch.
+ */
+export async function maybeRevertBurst(
+  liveNicheIds?: Set<string>,
+): Promise<{ reverted: boolean; reason?: string; maxThreadsNow?: number }> {
+  const state = await getBurstState();
+  if (!state.active) return { reverted: false };
+
+  let live = liveNicheIds;
+  if (!live) {
+    const cfg = await loadConfig();
+    if (!cfg.token) return { reverted: false, reason: 'no_token' };
+    const [running, planned] = await Promise.all([
+      fetchRunningTasks(cfg.token, NICHE_SPY_JOB_ID),
+      fetchPlannedTasks(cfg.token, NICHE_SPY_JOB_ID),
+    ]);
+    live = new Set([...running, ...planned].filter(t => t.kind === 'seed').map(t => t.keyword));
+  }
+
+  const anyLive = state.niches.some(n => live!.has(n));
+  const expired = state.expiresAt != null && Date.now() > state.expiresAt;
+  if (anyLive && !expired) return { reverted: false };
+
+  const pool = await getPool();
+  const set = async (k: string, v: string) =>
+    pool.query(`INSERT INTO admin_config (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2`, [k, v]);
+  // Only lower the budget back; never clobber a higher value an operator set
+  // manually in the meantime.
+  const curRes = await pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='auto_seed_max_threads'`);
+  const cur = parseInt(curRes.rows[0]?.value || '10') || 10;
+  if (cur > state.revertTo) await set('auto_seed_max_threads', String(state.revertTo));
+  await set('auto_seed_burst_active', 'false');
+  await set('auto_seed_burst_niches', '[]');
+  return { reverted: true, reason: expired ? 'ttl' : 'tasks_done', maxThreadsNow: state.revertTo };
 }

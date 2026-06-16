@@ -8164,6 +8164,9 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
         )}
       </div>
 
+      {/* On-demand seed-mode burst */}
+      <BurstSeeds />
+
       {/* Thread Targets (Thermostat) */}
       <ThreadTargets />
 
@@ -8202,6 +8205,85 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
 
       {/* Task History Log */}
       <AgentLog />
+    </div>
+  );
+}
+
+/** On-demand seed-mode burst — fire N extra crawls matching the loop's vars */
+function BurstSeeds() {
+  const [urls, setUrls] = useState('');
+  const [threadsPerSeed, setThreadsPerSeed] = useState(1);
+  const [loopNumber, setLoopNumber] = useState(14);
+  const [maxSuggested, setMaxSuggested] = useState(50);
+  const [additive, setAdditive] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [burst, setBurst] = useState<{ active: boolean; revertTo: number; niches: string[]; expiresAt: number | null } | null>(null);
+
+  const fetchState = useCallback(() => {
+    fetch('/api/admin/agents/burst').then(r => r.json()).then(d => setBurst(d.burst || null)).catch(() => {});
+  }, []);
+  useEffect(() => { fetchState(); }, [fetchState]);
+  useEffect(() => { const i = setInterval(fetchState, 15000); return () => clearInterval(i); }, [fetchState]);
+
+  const fire = async () => {
+    const seedUrls = urls.split(/[\s,]+/).map(s => s.trim()).filter(s => /youtu/.test(s));
+    if (seedUrls.length === 0) { setMsg('Error: paste at least one YouTube URL'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const res = await fetch('/api/admin/agents/burst', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seedUrls, threadsPerSeed, loopNumber, maxSuggested, additive }),
+      });
+      const d = await res.json();
+      if (!res.ok) { setMsg(`Error: ${d.error || res.status}`); }
+      else {
+        setMsg(`Deployed ${d.totalThreads} thread(s) across ${d.deployed.length} seed(s). ${d.note}`);
+        setUrls('');
+        fetchState();
+      }
+    } catch (e) { setMsg(`Error: ${(e as Error).message}`); }
+    finally { setBusy(false); }
+  };
+
+  const nSeeds = urls.split(/[\s,]+/).map(s => s.trim()).filter(s => /youtu/.test(s)).length;
+
+  return (
+    <div className="bg-gray-800/50 rounded-2xl border border-amber-500/30 p-6">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-sm font-bold text-white">⚡ Burst seed crawls <span className="text-amber-400/70 font-normal">— on-demand, outside the scheduler</span></h3>
+        {burst?.active && (
+          <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
+            budget bumped → reverts to {burst.revertTo} when {burst.niches.length} burst niche(s) finish
+          </span>
+        )}
+      </div>
+      <p className="text-xs text-gray-500 mb-3">Fires extra video-seed crawls now, matching the auto loop&apos;s job vars. Additive mode bumps the thread budget so they run on top of the loop, then auto-reverts.</p>
+
+      <textarea value={urls} onChange={e => setUrls(e.target.value)} rows={2}
+        placeholder="Paste 1+ YouTube seed URLs (newline or comma separated)…"
+        className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-amber-500 mb-3" />
+
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="text-xs text-gray-400">threads/seed
+          <input type="number" min={1} max={5} value={threadsPerSeed} onChange={e => setThreadsPerSeed(parseInt(e.target.value) || 1)}
+            className="block w-16 mt-1 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-white text-sm text-center" /></label>
+        <label className="text-xs text-gray-400" title="crawl depth (hops). Loop uses 14.">loopNumber
+          <input type="number" min={1} max={60} value={loopNumber} onChange={e => setLoopNumber(parseInt(e.target.value) || 14)}
+            className="block w-16 mt-1 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-white text-sm text-center" /></label>
+        <label className="text-xs text-gray-400" title="candidates considered per hop">maxSuggested
+          <input type="number" min={1} max={100} value={maxSuggested} onChange={e => setMaxSuggested(parseInt(e.target.value) || 50)}
+            className="block w-16 mt-1 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-white text-sm text-center" /></label>
+        <label className="text-xs text-gray-400 flex items-center gap-1.5 pb-1.5">
+          <input type="checkbox" checked={additive} onChange={e => setAdditive(e.target.checked)} className="accent-amber-500" />
+          additive (bump budget +{nSeeds * threadsPerSeed || threadsPerSeed})
+        </label>
+        <button onClick={fire} disabled={busy || nSeeds === 0}
+          className="ml-auto px-5 py-2 rounded-lg text-sm font-medium bg-amber-500 hover:bg-amber-400 text-black disabled:opacity-40 transition">
+          {busy ? 'Firing…' : `Burst ${nSeeds || ''} seed${nSeeds === 1 ? '' : 's'} → ${nSeeds * threadsPerSeed || 0} thread(s)`}
+        </button>
+      </div>
+      {msg && <div className={`mt-3 text-xs ${msg.startsWith('Error') ? 'text-red-400' : 'text-amber-300'}`}>{msg}</div>}
     </div>
   );
 }
