@@ -78,12 +78,32 @@ export async function getSpyStatusByVideoId(videoIds: number[]): Promise<Map<num
   return out;
 }
 
+// In-process cache for the content-gen seed CHANNELS. discoverChannels() is
+// heavy (562K-row aggregation + live thumbnail revalidation), so we must not
+// run it on every scheduler tick (the loop now runs every ~60s to maintain the
+// thread count). The channel set only shifts as the corpus grows / groups are
+// marked used, so a few-minutes-stale list is fine. The spy-status filter
+// (cheap ledger lookup) is always re-checked fresh, so newly-spied channels
+// drop out immediately without recomputing the channel set.
+let cgSeedCache: { at: number; seeds: ContentGenSeed[] } | null = null;
+const CG_SEED_TTL_MS = 5 * 60 * 1000;
+
+export function invalidateContentGenSeedCache(): void { cgSeedCache = null; }
+
 /**
  * Un-spied content-gen seeds: top video not yet in the ledger (or last attempt
  * failed → retry). These are what the scheduler dispatches, priority-first.
+ * Cheap to call frequently — the heavy channel discovery is cached (5 min).
  */
 export async function getUnspiedContentGenSeeds(n = N_PER_DRAFT, topK = TOPK): Promise<ContentGenSeed[]> {
-  const { seeds } = await getContentGenSeedChannels(n, topK);
+  let seeds: ContentGenSeed[];
+  if (cgSeedCache && Date.now() - cgSeedCache.at < CG_SEED_TTL_MS) {
+    seeds = cgSeedCache.seeds;
+  } else {
+    seeds = (await getContentGenSeedChannels(n, topK)).seeds;
+    cgSeedCache = { at: Date.now(), seeds };
+  }
+  if (seeds.length === 0) return [];
   const status = await getSpyStatusByVideoId(seeds.map(s => s.top_video_id));
   return seeds.filter(s => {
     const st = status.get(s.top_video_id);
@@ -190,5 +210,6 @@ export async function markGroupUsed(
     ).catch(() => {});
     written++;
   }
+  invalidateContentGenSeedCache(); // used channels drop out of the next tick
   return written;
 }

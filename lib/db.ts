@@ -18,6 +18,18 @@ const pool = new Pool({
   connectionTimeoutMillis: 30000,
 });
 
+// Graceful shutdown: close the pool on SIGTERM/SIGINT so a redeploy/restart
+// releases its ~50 DB connections cleanly instead of orphaning them on the
+// server. Orphaned connections linger until TCP keepalive reaps them, and
+// across many deploys they accumulated to the connection limit and starved
+// the whole service ("sorry, too many clients already"). Best-effort: we
+// don't force-exit, so Next.js's own graceful HTTP shutdown still runs.
+if (typeof process !== 'undefined' && typeof process.once === 'function') {
+  for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(sig, () => { pool.end().catch(() => {}); });
+  }
+}
+
 let schemaInitialized = false;
 
 export async function initSchema(): Promise<void> {

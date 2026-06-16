@@ -253,11 +253,14 @@ export async function register() {
           if (rr.finished_niches > 0) console.log(`[seed-reaper] finished=${rr.finished_niches} rescored=${rr.videos_rescored} released=${rr.clusters_released}`);
         }
 
-        // Scheduler on its own interval (default 30 min).
+        // Maintain the thread count CONTINUOUSLY — like the keyword thermostat.
+        // The scheduler runs every runAll cycle (~60s) and tops the fleet back
+        // up to the budget the moment a crawl finishes, instead of dispatching
+        // in bursts on a long interval. The tick is cheap (content-gen
+        // discovery is cached, the candidate pull is ~2s) and advisory-locked,
+        // so overlapping cycles serialize and it only dispatches when the fleet
+        // is below target.
         if (!seedOn) return;
-        const intervalMin = parseInt(config.auto_seed_interval_minutes) || 30;
-        const lastSched = config.last_seed_schedule_at ? new Date(config.last_seed_schedule_at).getTime() : 0;
-        if (Date.now() - lastSched < intervalMin * 60 * 1000) return;
         await pool.query(
           `INSERT INTO admin_config (key, value) VALUES ('last_seed_schedule_at', NOW()::text)
              ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
