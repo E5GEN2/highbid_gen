@@ -71,6 +71,13 @@ export interface SeedDiscoveryOptions {
   topVideoOnly?: boolean;
   /** Optionally restrict to long-form only (skip /shorts/ URLs). Default false (any). */
   longFormOnly?: boolean;
+  /**
+   * If true, exclude videos already in the niche_discovery_seeds ledger
+   * (status <> 'failed'). The scheduler MUST set this — otherwise the stable
+   * top-K by score saturates with already-seeded videos and the loop starves
+   * even though 100K+ fresh candidates exist below them.
+   */
+  excludeSeeded?: boolean;
 }
 
 function ageTier(ageDays: number): SeedCandidate['channel']['age_tier'] {
@@ -127,6 +134,14 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
          WHERE x.channel_id = v.channel_id AND x.view_count IS NOT NULL
        )`
     : '';
+  // Exclude already-seeded videos so the top-K surfaces FRESH candidates
+  // instead of saturating with the ones we already crawled.
+  const excludeSeededClause = opts.excludeSeeded
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM niche_discovery_seeds s
+         WHERE s.seed_video_id = v.id AND s.status <> 'failed'
+       )`
+    : '';
 
   const rowsRes = await pool.query(
     `WITH candidate_videos AS (
@@ -139,6 +154,7 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
          AND v.view_count IS NOT NULL
          ${longFormClause}
          ${topVideoOnlyClause}
+         ${excludeSeededClause}
      ),
      per_channel AS (
        SELECT

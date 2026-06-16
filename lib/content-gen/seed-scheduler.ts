@@ -251,8 +251,11 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
     if (freeThreads <= 0) return { ...empty, ran: true, reason: 'fleet_full', min_novelty_pct_used: cfg.minNoveltyPct };
 
     // ── 2. Candidate pull (+ starvation auto-lower) ─────────────────────
+    // excludeSeeded:true is CRITICAL — without it the top-K saturates with
+    // already-crawled videos and the loop starves even with 100K+ fresh
+    // candidates below them.
     let pct = cfg.minNoveltyPct;
-    let candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct });
+    let candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true });
     let starvationNote: string | undefined;
 
     // Already-seeded video_ids (permanent unless failed).
@@ -280,7 +283,7 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
         `UPDATE admin_config SET value = $1 WHERE key = 'auto_seed_min_novelty_pct'`,
         [String(pct)],
       ).catch(() => {});
-      candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct });
+      candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true });
       afterVideoDedup = candidates.filter(c => !seededVideos.has(c.video_id));
     }
 
