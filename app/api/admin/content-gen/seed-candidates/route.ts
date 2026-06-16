@@ -44,6 +44,10 @@ export async function GET(req: NextRequest) {
   const maxSubs       = parseInt(sp.get('maxSubs') ?? '5000000') || 5_000_000;
   const topVideoOnly  = sp.get('topVideoOnly') === 'true';
   const longFormOnly  = sp.get('longFormOnly') === 'true';
+  // The panel shows what CAN still be seeded — exclude videos already in the
+  // ledger by default (matches what the scheduler actually picks). Pass
+  // ?includeSeeded=true to see the raw ranking including already-used ones.
+  const includeSeeded = sp.get('includeSeeded') === 'true';
 
   const t0 = Date.now();
 
@@ -71,6 +75,7 @@ export async function GET(req: NextRequest) {
 
   const seeds = await findSeedCandidates({
     topK, minNoveltyPct, minSubs, maxSubs, topVideoOnly, longFormOnly,
+    excludeSeeded: !includeSeeded,
   });
 
   return NextResponse.json({
