@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAdmin } from '@/lib/admin-auth';
 import { discoverChannels } from '@/lib/content-gen/discovery';
 import { assembleMixedDrafts, assembleThemedDrafts, auditDrafts } from '@/lib/content-gen/assembler';
+import { getDraftSpyStatuses } from '@/lib/content-gen/content-gen-seeds';
 import { getPool } from '@/lib/db';
 
 /**
@@ -64,6 +65,10 @@ export async function GET(req: NextRequest) {
   const mixed  = mode !== 'themed' ? assembleMixedDrafts(candidates, n) : [];
   const themed = mode !== 'mixed'  ? assembleThemedDrafts(candidates, n, l1Labels) : [];
 
+  // Per-group niche-spy completion (which channels' top videos have been
+  // crawled) so the GUI can badge each group "fully spied".
+  const spyStatus = await getDraftSpyStatuses([...mixed, ...themed]).catch(() => ({}));
+
   const elapsedMs = Date.now() - t0;
 
   return NextResponse.json({
@@ -73,6 +78,7 @@ export async function GET(req: NextRequest) {
     candidate_pool_size: candidates.length,
     mixed_drafts:  mixed,
     themed_drafts: themed,
+    spy_status: spyStatus,
     ...(audit ? { audit: auditDrafts([...mixed, ...themed]) } : {}),
   });
 }

@@ -1434,6 +1434,25 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_status   ON niche_discovery_seeds(status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_niche    ON niche_discovery_seeds(niche_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_cluster  ON niche_discovery_seeds(origin_cluster_id)`).catch(() => {});
+    // Source of the seed: 'novelty' (the auto blue-ocean loop) or 'content_gen'
+    // (a channel shown in a Content Gen draft card — these get PRIORITY).
+    await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'novelty'`).catch(() => {});
+    await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS channel_id TEXT`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_source ON niche_discovery_seeds(source, status)`).catch(() => {});
+
+    // Content Gen "used" channels — a channel marked as already consumed into a
+    // produced video. discoverChannels() excludes these so the used group
+    // disappears and a fresh group takes its place (keeps the seed pipeline
+    // flowing). Keyed by channel_id; draft_id/title kept for audit.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_used_channels (
+        channel_id   TEXT PRIMARY KEY,
+        used_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        draft_id     TEXT,
+        draft_title  TEXT,
+        note         TEXT
+      )
+    `).catch(() => {});
 
     // Auto-seed scheduler config defaults (admin_config rows). Ships OFF.
     await client.query(`

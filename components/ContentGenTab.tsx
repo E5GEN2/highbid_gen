@@ -3,6 +3,17 @@
 import { useEffect, useState } from 'react';
 import type { ListicleDraft, ListicleDraftItem } from '@/lib/content-gen/assembler';
 
+type SpyState = 'done' | 'crawling' | 'pending' | 'none';
+interface DraftSpyStatus {
+  draft_id: string;
+  total: number;
+  spied: number;
+  in_progress: number;
+  not_started: number;
+  fully_spied: boolean;
+  per_channel: Record<string, SpyState>;
+}
+
 /**
  * Admin → Content Gen tab.
  *
@@ -169,6 +180,7 @@ export default function ContentGenTab({ active }: { active: boolean }) {
   const [selectedChannels, setSelectedChannels] = useState<Set<string>>(new Set());
   const [drafts, setDrafts] = useState<ListicleDraft[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
+  const [spyStatus, setSpyStatus] = useState<Record<string, DraftSpyStatus>>({});
 
   // Channel explorer state
   const [probeInput, setProbeInput] = useState('');
@@ -199,16 +211,39 @@ export default function ContentGenTab({ active }: { active: boolean }) {
   // niches listicle suggestion; the niche label per item is L2 when
   // available (more representative) else L1 fallback. Quality channels
   // are picked regardless of which level their niche definition lives at.
-  const loadDrafts = async () => {
-    setDraftsLoading(true);
+  const loadDrafts = async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setDraftsLoading(true);
     try {
       const r = await fetch(`/api/admin/content-gen/drafts?mode=mixed&n=${channelsPerDraft}&topK=300`).then(r => r.json());
       if (!r.ok) throw new Error(r.error || 'drafts failed');
       setDrafts(r.mixed_drafts || []);
+      setSpyStatus(r.spy_status || {});
+    } catch (e) {
+      if (!opts?.silent) setError((e as Error).message);
+    } finally {
+      if (!opts?.silent) setDraftsLoading(false);
+    }
+  };
+
+  // Silently refresh spy-completion badges while drafts are shown.
+  useEffect(() => {
+    if (subTab !== 'niches' || drafts.length === 0) return;
+    const i = setInterval(() => loadDrafts({ silent: true }), 30000);
+    return () => clearInterval(i);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subTab, drafts.length, channelsPerDraft]);
+
+  // Mark a group "used" → its channels are excluded → a fresh group replaces it.
+  const markGroupUsed = async (draft: ListicleDraft) => {
+    const channelIds = draft.items.map(i => i.candidate.channel_id);
+    try {
+      await fetch('/api/admin/content-gen/use-group', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draftId: draft.id, draftTitle: draft.title, channelIds }),
+      });
+      await loadDrafts();
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setDraftsLoading(false);
     }
   };
 
@@ -383,6 +418,8 @@ export default function ContentGenTab({ active }: { active: boolean }) {
                 <ListicleDraftCard
                   key={d.id}
                   draft={d}
+                  spy={spyStatus[d.id]}
+                  onMarkUsed={() => markGroupUsed(d)}
                   selectedChannels={selectedChannels}
                   onToggleChannel={(channelId) => {
                     const next = new Set(selectedChannels);
@@ -562,10 +599,14 @@ function Stat({
 
 function ListicleDraftCard({
   draft,
+  spy,
+  onMarkUsed,
   selectedChannels,
   onToggleChannel,
 }: {
   draft: ListicleDraft;
+  spy?: DraftSpyStatus;
+  onMarkUsed: () => void;
   selectedChannels: Set<string>;
   onToggleChannel: (channelId: string) => void;
 }) {
@@ -574,8 +615,14 @@ function ListicleDraftCard({
   const l2Count = draft.items.filter(i => i.niche_level === 2).length;
   const l1Count = draft.items.filter(i => i.niche_level === 1).length;
 
+  const spied = spy?.spied ?? 0;
+  const inProg = spy?.in_progress ?? 0;
+  const total = spy?.total ?? draft.items.length;
+  const fully = spy?.fully_spied ?? false;
+  const [confirming, setConfirming] = useState(false);
+
   return (
-    <div className="rounded-lg bg-[#161616] border border-[#2f2f2f] overflow-hidden">
+    <div className={`rounded-lg bg-[#161616] border overflow-hidden ${fully ? 'border-emerald-500/40' : 'border-[#2f2f2f]'}`}>
       {/* Header */}
       <div className="px-5 py-4 border-b border-[#262626] bg-gradient-to-r from-amber-500/5 to-transparent">
         <div className="flex items-start justify-between gap-3">
@@ -595,14 +642,43 @@ function ListicleDraftCard({
             </h3>
             <p className="text-sm text-[#aaa] mt-1">{draft.framing}</p>
           </div>
-          <div className="flex flex-col items-end shrink-0">
+          <div className="flex flex-col items-end shrink-0 gap-1">
             <div className="flex items-center gap-1">
               {draft.scale_mix.small > 0 && <ScaleChip label="S" count={draft.scale_mix.small} color="emerald" />}
               {draft.scale_mix.mid > 0   && <ScaleChip label="M" count={draft.scale_mix.mid} color="amber" />}
               {draft.scale_mix.big > 0   && <ScaleChip label="L" count={draft.scale_mix.big} color="rose" />}
             </div>
-            <span className="text-[10px] text-[#777] mt-1 uppercase">scale mix</span>
+            <span className="text-[10px] text-[#777] uppercase">scale mix</span>
           </div>
+        </div>
+
+        {/* Spy-prep status + mark-used */}
+        <div className="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-[#222]">
+          <div className="flex items-center gap-2 text-xs">
+            {fully ? (
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-semibold">✓ Spy-researched · ready</span>
+            ) : inProg > 0 ? (
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 font-medium">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse mr-1 align-middle" />
+                spying {spied}/{total} done · {inProg} crawling
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded-full bg-[#222] text-[#888]">{spied}/{total} spied · queued for priority crawl</span>
+            )}
+          </div>
+          {confirming ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-[#aaa]">Mark used & replace?</span>
+              <button onClick={onMarkUsed} className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-medium">Yes</button>
+              <button onClick={() => setConfirming(false)} className="px-2 py-1 rounded bg-[#333] hover:bg-[#444] text-[#ccc] text-[11px]">No</button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirming(true)}
+              title="Mark this group as used in a video — hides it and surfaces a fresh group"
+              className="px-2.5 py-1 rounded bg-[#2a2a2a] hover:bg-[#383838] text-[#bbb] hover:text-white text-[11px] font-medium transition">
+              Mark used →
+            </button>
+          )}
         </div>
       </div>
 
@@ -611,6 +687,11 @@ function ListicleDraftCard({
         {draft.items.map((item, idx) => {
           const c = item.candidate;
           const isSel = selectedChannels.has(c.channel_id);
+          const cState: SpyState = spy?.per_channel?.[c.channel_id] ?? 'none';
+          const dot = cState === 'done' ? { cls: 'bg-emerald-400', t: 'spy crawl done' }
+            : cState === 'crawling' ? { cls: 'bg-amber-400 animate-pulse', t: 'spy crawling now' }
+            : cState === 'pending' ? { cls: 'bg-amber-400/50', t: 'spy queued' }
+            : { cls: 'bg-[#444]', t: 'not yet spied' };
           return (
             <button
               key={c.channel_id}
@@ -620,11 +701,12 @@ function ListicleDraftCard({
                 isSel ? 'bg-amber-400/10' : 'hover:bg-[#1c1c1c]'
               }`}
             >
-              {/* Index number */}
-              <div className={`w-8 text-center shrink-0 text-xl font-bold tabular-nums ${
+              {/* Index number + spy-state dot */}
+              <div className={`w-8 text-center shrink-0 text-xl font-bold tabular-nums relative ${
                 isSel ? 'text-amber-300' : 'text-[#666]'
               }`}>
                 {idx + 1}
+                <span className={`absolute -top-0.5 -right-0 w-2 h-2 rounded-full ${dot.cls}`} title={dot.t} />
               </div>
               {/* Checkbox */}
               <input

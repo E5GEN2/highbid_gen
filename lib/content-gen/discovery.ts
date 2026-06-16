@@ -250,6 +250,7 @@ export async function discoverChannels(
       EXTRACT(EPOCH FROM (NOW() - e.effective_created_at)) / 86400 AS channel_age_days
     FROM enriched e
     WHERE e.subscriber_count BETWEEN $1 AND $2
+      AND e.channel_id NOT IN (SELECT channel_id FROM content_gen_used_channels)
       AND e.top_video_views > 0
       AND e.top_video_views::float / NULLIF(e.subscriber_count, 0) >= 5
       AND e.top_video_views >= (

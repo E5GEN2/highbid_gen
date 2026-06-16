@@ -27,6 +27,7 @@ import { buildFleetSnapshot, deployBatch } from '../agent-deploy';
 import { fetchRunningTasks, fetchPlannedTasks } from '../xgodo-tasks';
 import { createNiche, addSeedUrlToNiche, deriveLabel } from '../agent-niche';
 import { recomputeAllNovelty } from '../vector-db';
+import { getUnspiedContentGenSeeds, type ContentGenSeed } from './content-gen-seeds';
 
 const NICHE_SPY_JOB_ID = '69a58c4277cb8e2b9f1dddc4';
 // Arbitrary fixed advisory-lock key so overlapping ticks serialize.
@@ -134,6 +135,75 @@ export interface SchedulerTickResult {
   threads_dispatched: number;
   min_novelty_pct_used: number;
   starvation_adjustment?: string;
+  source?: 'content_gen' | 'novelty';
+}
+
+/**
+ * Dispatch Content-Gen priority seeds (one niche per channel, seeded from its
+ * top video). Simpler than the novelty path — no cluster grouping or region
+ * locks, just fill the free budget with un-spied channels, tagging the ledger
+ * rows source='content_gen' so the GUI can show per-group spy completion.
+ */
+async function dispatchContentGenSeeds(
+  cgSeeds: ContentGenSeed[],
+  freeThreads: number,
+  cfg: SchedulerConfig,
+): Promise<SchedulerTickResult> {
+  const pool = await getPool();
+  const snapshot = await buildFleetSnapshot(cfg.token, NICHE_SPY_JOB_ID);
+  const threadsPerSeed = Math.max(1, cfg.threadsPerSeed);
+  let threadsLeft = freeThreads;
+  let nichesDispatched = 0, seedsDispatched = 0, threadsDispatched = 0;
+
+  for (const s of cgSeeds) {
+    if (threadsLeft < threadsPerSeed) break;
+    const label = s.channel_name || deriveLabel({ title: s.top_video_title, seedUrl: s.top_video_url });
+    const nicheId = await createNiche({ label, seedUrl: s.top_video_url, createdFrom: 'content_gen' });
+    await pool.query(`UPDATE agent_niches SET status='crawling', last_seeded_at=NOW() WHERE niche_id=$1`, [nicheId]).catch(() => {});
+
+    const taskInput = JSON.stringify({
+      seedUrl: s.top_video_url,
+      apiKey: cfg.apiKey,
+      loopNumber: cfg.loopNumber,
+      maxSuggestedResultsBeforeFallback: cfg.maxSuggested,
+      rofeAPIKey: cfg.rofeAPIKey,
+      nicheId,
+    });
+    const dep = await deployBatch(
+      cfg.token, NICHE_SPY_JOB_ID,
+      { keyword: nicheId, threads: threadsPerSeed, taskInput },
+      snapshot,
+    );
+    const deployed = dep.pinned + dep.unpinned;
+    if (deployed > 0) {
+      await pool.query(
+        `INSERT INTO niche_discovery_seeds
+           (seed_video_id, seed_url, niche_id, origin_cluster_id, status, source, channel_id)
+         VALUES ($1, $2, $3, NULL, 'crawling', 'content_gen', $4)
+         ON CONFLICT (seed_video_id) DO UPDATE
+           SET status='crawling', niche_id=EXCLUDED.niche_id, source='content_gen',
+               channel_id=EXCLUDED.channel_id, dispatched_at=NOW()`,
+        [s.top_video_id, s.top_video_url, nicheId, s.channel_id],
+      ).catch((e) => console.error('[scheduler] cg ledger write failed:', (e as Error).message));
+      await addSeedUrlToNiche(nicheId, s.top_video_url).catch(() => {});
+      nichesDispatched++; seedsDispatched++; threadsDispatched += deployed; threadsLeft -= deployed;
+    } else {
+      await pool.query(`UPDATE agent_niches SET status='active' WHERE niche_id=$1`, [nicheId]).catch(() => {});
+    }
+  }
+
+  return {
+    ran: true,
+    reason: 'content_gen_priority',
+    candidates_considered: cgSeeds.length,
+    after_video_dedup: cgSeeds.length,
+    after_region_lock: cgSeeds.length,
+    niches_dispatched: nichesDispatched,
+    seeds_dispatched: seedsDispatched,
+    threads_dispatched: threadsDispatched,
+    min_novelty_pct_used: 0,
+    source: 'content_gen',
+  };
 }
 
 /**
@@ -162,6 +232,22 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
     ]);
     const seedInFlight = [...running, ...planned].filter(t => t.kind === 'seed').length;
     const freeThreads = Math.max(0, cfg.maxThreads - seedInFlight);
+
+    // ── PRIORITY: Content-Gen seeds (exclusive) ─────────────────────────
+    // Channels shown in the Content Gen draft cards get researched first.
+    // While any of their top videos are un-spied, the scheduler dispatches
+    // ONLY those (no novelty seeding) until they're all crawled.
+    const cgSeeds = await getUnspiedContentGenSeeds().catch((e) => {
+      console.error('[scheduler] content-gen seed pull failed:', (e as Error).message);
+      return [] as Awaited<ReturnType<typeof getUnspiedContentGenSeeds>>;
+    });
+    if (cgSeeds.length > 0) {
+      if (freeThreads <= 0) {
+        return { ...empty, ran: true, reason: 'content_gen_pending_fleet_full', min_novelty_pct_used: cfg.minNoveltyPct };
+      }
+      return await dispatchContentGenSeeds(cgSeeds, freeThreads, cfg);
+    }
+
     if (freeThreads <= 0) return { ...empty, ran: true, reason: 'fleet_full', min_novelty_pct_used: cfg.minNoveltyPct };
 
     // ── 2. Candidate pull (+ starvation auto-lower) ─────────────────────
