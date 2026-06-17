@@ -52,11 +52,10 @@ async function runCheck() {
   try {
     const pool = await getPool();
 
-    // Get enabled targets
-    const targetsRes = await pool.query(
-      "SELECT * FROM agent_thread_targets WHERE enabled = true"
-    );
-    if (targetsRes.rows.length === 0) return;
+    // NOTE: we do NOT early-return on "no enabled keyword targets" here. The
+    // task-log bookkeeping + proof snapshot below must run every tick so that
+    // SEED crawls (which have no keyword targets) are recorded too. The
+    // keyword-target maintenance further down is what gates on targets.
 
     // Get xgodo token + task input defaults
     const configRes = await pool.query(
@@ -80,14 +79,19 @@ async function runCheck() {
       return;
     }
 
-    // Task-log bookkeeping: upsert running, mark stale ones completed
+    // Task-log bookkeeping: upsert running (keyword AND seed tasks), mark stale
+    // ones completed. Records kind + seed_url so the Task History panel can
+    // badge seed crawls and link their seed video.
     for (const r of running) {
       if (!r.taskId) continue;
       await pool.query(`
-        INSERT INTO agent_task_log (task_id, keyword, first_seen_at, last_seen_at, status, worker_name)
-        VALUES ($1, $2, NOW(), NOW(), 'running', $3)
-        ON CONFLICT (task_id) DO UPDATE SET last_seen_at = NOW(), status = 'running', worker_name = $3
-      `, [r.taskId, r.keyword, r.workerName || '']).catch(() => {});
+        INSERT INTO agent_task_log (task_id, keyword, kind, seed_url, first_seen_at, last_seen_at, status, worker_name)
+        VALUES ($1, $2, $3, $4, NOW(), NOW(), 'running', $5)
+        ON CONFLICT (task_id) DO UPDATE SET
+          last_seen_at = NOW(), status = 'running', worker_name = $5,
+          kind = COALESCE(EXCLUDED.kind, agent_task_log.kind),
+          seed_url = COALESCE(EXCLUDED.seed_url, agent_task_log.seed_url)
+      `, [r.taskId, r.keyword, r.kind, r.seedUrl, r.workerName || '']).catch(() => {});
     }
     await pool.query(`
       UPDATE agent_task_log SET status = 'completed'
@@ -107,6 +111,14 @@ async function runCheck() {
     } catch (err) {
       console.error('[thermostat] proof snapshot skipped:', (err as Error).message);
     }
+
+    // Keyword-target maintenance below only applies when targets exist — the
+    // task-log bookkeeping + proof snapshot above already ran for every task
+    // (including seed crawls). Skip the deploy logic if no keyword targets.
+    const targetsRes = await pool.query(
+      "SELECT * FROM agent_thread_targets WHERE enabled = true"
+    );
+    if (targetsRes.rows.length === 0) return;
 
     // Count in-flight per keyword
     const inflight = countInFlight(running, planned);
