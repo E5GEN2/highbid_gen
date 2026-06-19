@@ -146,7 +146,11 @@ export async function listTaskHistory(opts: {
        FROM agent_task_log l
        LEFT JOIN agent_niches n ON n.niche_id = l.keyword
        LEFT JOIN LATERAL (
-         SELECT COUNT(*) FILTER (WHERE watched) AS watched_count
+         -- DISTINCT order_number, not COUNT(*): a crawl restart can leave a stale
+         -- "ghost" row sharing an order_number with the current chain (different
+         -- video_url => no upsert conflict, so it persists). Counting distinct
+         -- order slots gives the true watch-path length.
+         SELECT COUNT(DISTINCT order_number) FILTER (WHERE watched) AS watched_count
            FROM agent_task_proof WHERE task_id = l.task_id
        ) p ON true
        LEFT JOIN LATERAL (
@@ -220,9 +224,11 @@ export async function getTaskTrace(taskId: string): Promise<{
       channel_name: string | null; subscriber_count: string | null; view_count: string | null;
       like_count: string | null; duration: string | null; posted_date: string | null;
       similarity: number | null; score: number | null; seen_status: string | null;
+      last_snapshot_at: string | null;
     }>(
       `SELECT video_url, order_number, hop, watched, title, channel_name, subscriber_count,
-              view_count, like_count, duration, posted_date, similarity, score, seen_status
+              view_count, like_count, duration, posted_date, similarity, score, seen_status,
+              last_snapshot_at
          FROM agent_task_proof WHERE task_id = $1`,
       [taskId],
     ),
@@ -238,10 +244,12 @@ export async function getTaskTrace(taskId: string): Promise<{
   ]);
 
   const byKey = new Map<string, TraceVideo>();
+  const snapAtByKey = new Map<string, number>();   // last_snapshot_at (ms) per video, for ghost dedup
   const keyOf = (url: string) => ytId(url) ?? url;
 
   for (const r of proofRes.rows) {
     const k = keyOf(r.video_url);
+    snapAtByKey.set(k, r.last_snapshot_at ? new Date(r.last_snapshot_at).getTime() : 0);
     byKey.set(k, {
       videoId: ytId(r.video_url),
       url: r.video_url,
@@ -296,6 +304,28 @@ export async function getTaskTrace(taskId: string): Promise<{
         seenStatus: null,
         detectedAt: r.detected_at,
       });
+    }
+  }
+
+  // Dedup crawl-restart ghosts: when >1 watched video claims the same order_number
+  // (a different video_url took the slot after a restart), keep the one with the
+  // latest snapshot — that's the current chain, since the ghost stops being
+  // snapshotted at the restart. Demote the rest to scored-only so the watch path +
+  // counts reflect the real crawl. (Read-side only — the writer keeps accumulating,
+  // which stays robust to transient/partial proofs.)
+  const winnerByOrder = new Map<number, { key: string; snap: number }>();
+  for (const [k, v] of byKey) {
+    if (!v.watched || v.orderNumber == null) continue;
+    const snap = snapAtByKey.get(k) ?? 0;
+    const cur = winnerByOrder.get(v.orderNumber);
+    if (!cur || snap > cur.snap) winnerByOrder.set(v.orderNumber, { key: k, snap });
+  }
+  for (const [k, v] of byKey) {
+    if (!v.watched || v.orderNumber == null) continue;
+    if (winnerByOrder.get(v.orderNumber)!.key !== k) {
+      v.watched = false;
+      v.orderNumber = null;
+      v.hop = null;
     }
   }
 
