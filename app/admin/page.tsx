@@ -7551,6 +7551,132 @@ interface SeedFeedStats {
   distinctTasks: number;
 }
 
+interface ErrorCurveBucket { t: string; total: number; success: number; yt_key: number; ai_key: number; thumb: number; data: number; db: number; other: number }
+interface KeyPool { active: number; banned: number; invalid: number; total: number; pct_active: number }
+interface ErrorCurveData {
+  ok: boolean;
+  buckets: ErrorCurveBucket[];
+  keyPools: { ai: KeyPool; yt: KeyPool; other: KeyPool };
+  summary: { errorRate1h: number; errorRate6h: number; errors1h: number; total1h: number; errors6h: number; total6h: number; trend: string };
+}
+
+const ERR_CATS: { key: keyof ErrorCurveBucket; label: string; color: string }[] = [
+  { key: 'yt_key', label: 'YT key (metadata fetch)', color: '#fb923c' },
+  { key: 'ai_key', label: 'AI key (embed)',          color: '#f87171' },
+  { key: 'thumb',  label: 'Thumbnail fetch',         color: '#fbbf24' },
+  { key: 'data',   label: 'Missing title/thumb',     color: '#a1a1aa' },
+  { key: 'db',     label: 'DB persist',              color: '#e879f9' },
+  { key: 'other',  label: 'Other',                   color: '#71717a' },
+];
+
+/** Video-seed error/success curves + key-pool health — observability before scaling threads. */
+function VideoSeedErrorCurves({ active }: { active: boolean }) {
+  const [data, setData] = useState<ErrorCurveData | null>(null);
+  const [hours, setHours] = useState(6);
+
+  const fetchCurve = useCallback(() => {
+    fetch(`/api/admin/niche-spy/seed-error-curve?hours=${hours}&bucketMin=15`)
+      .then(r => r.json()).then(d => { if (d.ok) setData(d); }).catch(() => {});
+  }, [hours]);
+  useEffect(() => { if (active) fetchCurve(); }, [active, fetchCurve]);
+  useEffect(() => { if (!active) return; const t = setInterval(fetchCurve, 20000); return () => clearInterval(t); }, [active, fetchCurve]);
+
+  if (!data?.buckets || data.buckets.length === 0) return null;
+  const s = data.summary;
+  const maxErr = Math.max(1, ...data.buckets.map(b => b.total - b.success));
+  const trendColor = s.trend === 'growing' ? 'text-red-400 bg-red-500/15' : s.trend === 'improving' ? 'text-emerald-400 bg-emerald-500/15' : 'text-[#aaa] bg-[#222]';
+
+  const W = 720, H = 130, padL = 30, padB = 16, padT = 8;
+  const n = data.buckets.length;
+  const bw = Math.max(2, (W - padL - 6) / n - 2);
+
+  const KeyPoolBar = ({ label, p, warnPct }: { label: string; p: KeyPool; warnPct: number }) => {
+    const low = p.pct_active < warnPct;
+    return (
+      <div className={`bg-[#141414] border rounded-xl p-3 ${low ? 'border-red-500/40' : 'border-[#1f1f1f]'}`}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] uppercase tracking-wide text-[#888]">{label}</span>
+          <span className={`text-sm font-bold ${low ? 'text-red-400' : 'text-emerald-400'}`}>{p.pct_active}% active</span>
+        </div>
+        <div className="flex h-2 rounded overflow-hidden bg-[#0c0c0c] mb-1.5">
+          <div className="bg-emerald-500" style={{ width: `${(100 * p.active) / Math.max(1, p.total)}%` }} />
+          <div className="bg-orange-500" style={{ width: `${(100 * p.banned) / Math.max(1, p.total)}%` }} />
+          <div className="bg-[#444]" style={{ width: `${(100 * p.invalid) / Math.max(1, p.total)}%` }} />
+        </div>
+        <div className="flex gap-3 text-[10px] text-[#777]">
+          <span className="text-emerald-400">{p.active.toLocaleString()} active</span>
+          {p.banned > 0 && <span className="text-orange-400">{p.banned.toLocaleString()} banned</span>}
+          <span>{p.invalid.toLocaleString()} invalid</span>
+        </div>
+        {low && <div className="text-[10px] text-red-400 mt-1">⚠ pool heavily depleted — bottleneck risk if threads scale up</div>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="bg-[#101010] border border-[#222] rounded-2xl p-4 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="text-sm font-bold text-white">Error / success rate <span className="text-[#666] font-normal">— stability + source over time</span></h3>
+        <div className="flex items-center gap-1">
+          {[3, 6, 12, 24].map(h => (
+            <button key={h} onClick={() => setHours(h)} className={`px-2 py-0.5 rounded text-[10px] ${hours === h ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#aaa]'}`}>{h}h</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Summary tiles */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+          <div className={`text-lg font-bold ${s.errorRate1h > 0.05 ? 'text-red-400' : s.errorRate1h > 0.02 ? 'text-amber-400' : 'text-emerald-400'}`}>{(s.errorRate1h * 100).toFixed(1)}%</div>
+          <div className="text-[10px] text-[#666] uppercase">error rate (1h)</div>
+        </div>
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+          <div className="text-lg font-bold text-[#aaa]">{(s.errorRate6h * 100).toFixed(1)}%</div>
+          <div className="text-[10px] text-[#666] uppercase">error rate (6h)</div>
+        </div>
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+          <div className={`text-sm font-bold px-2 py-1 rounded inline-block ${trendColor}`}>{s.trend === 'growing' ? '↑ growing' : s.trend === 'improving' ? '↓ improving' : '→ stable'}</div>
+          <div className="text-[10px] text-[#666] uppercase mt-1">trend (1h vs 6h)</div>
+        </div>
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+          <div className="text-lg font-bold text-white">{s.errors1h.toLocaleString()}<span className="text-[#555] text-xs">/{s.total1h.toLocaleString()}</span></div>
+          <div className="text-[10px] text-[#666] uppercase">errors / total (1h)</div>
+        </div>
+      </div>
+
+      {/* Key pools */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <KeyPoolBar label="AI / embed keys (google_ai_studio)" p={data.keyPools.ai} warnPct={20} />
+        <KeyPoolBar label="YouTube data keys (youtube_data)" p={data.keyPools.yt} warnPct={25} />
+      </div>
+
+      {/* Stacked error-by-category bars over time */}
+      <div>
+        <div className="flex items-center gap-3 mb-1 flex-wrap text-[10px]">
+          {ERR_CATS.map(c => <span key={c.key} className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm inline-block" style={{ background: c.color }} />{c.label}</span>)}
+        </div>
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 130 }}>
+          <line x1={padL} y1={H - padB} x2={W} y2={H - padB} stroke="#2a2a2a" />
+          <text x={4} y={padT + 8} fill="#555" fontSize="9">{maxErr}</text>
+          <text x={4} y={H - padB} fill="#555" fontSize="9">0</text>
+          {data.buckets.map((b, i) => {
+            const x = padL + i * ((W - padL - 6) / n) + 1;
+            let yTop = H - padB;
+            const segs = ERR_CATS.map(c => {
+              const v = b[c.key] as number;
+              const h = (v / maxErr) * (H - padB - padT);
+              yTop -= h;
+              return v > 0 ? <rect key={c.key} x={x} y={yTop} width={bw} height={h} fill={c.color} /> : null;
+            });
+            return <g key={i}>{segs}</g>;
+          })}
+        </svg>
+        <div className="text-[10px] text-[#555] text-right">15-min buckets · errors only (success not shown) · last {hours}h</div>
+      </div>
+    </div>
+  );
+}
+
 function VideoSeedTab({ active }: { active: boolean }) {
   const [rows, setRows] = useState<SeedFeedRow[]>([]);
   const [stats, setStats] = useState<SeedFeedStats | null>(null);
@@ -7623,6 +7749,10 @@ function VideoSeedTab({ active }: { active: boolean }) {
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">{error}</div>
       )}
+
+      {/* Error/success curves + key-pool health — see if errors are stable or
+          growing and which pool (YT keys / AI keys) they come from. */}
+      <VideoSeedErrorCurves active={active} />
 
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
