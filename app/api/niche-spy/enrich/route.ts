@@ -580,19 +580,22 @@ async function runEnrichJob(
               console.warn('[yt-enrich] channel upsert failed:', (err as Error).message);
             });
 
-            // Mirror to videos too, so existing UIs keep working until they migrate to JOIN
+            // Mirror to videos too, so existing UIs keep working until they migrate to JOIN.
+            // Batched into ONE UPDATE (id = ANY) instead of a per-video loop: a hot channel
+            // can have 1,500+ videos, and the old loop held a pool connection for that many
+            // sequential round-trips. Under concurrent backfill that starved the pool and was
+            // the main driver of niche_spy_channels lock contention. One statement frees the
+            // connection far faster — the key win for scaling agent threads.
             const videoIds = channelIds.get(ch.id);
-            if (videoIds) {
-              for (const dbId of videoIds) {
-                await pool.query(
-                  `UPDATE niche_spy_videos SET
-                    subscriber_count   = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
-                    channel_created_at = COALESCE($2, channel_created_at),
-                    channel_avatar     = COALESCE(NULLIF($4, ''), channel_avatar)
-                  WHERE id = $3`,
-                  [subCount, channelCreatedAt, dbId, avatar]
-                );
-              }
+            if (videoIds && videoIds.size > 0) {
+              await pool.query(
+                `UPDATE niche_spy_videos SET
+                  subscriber_count   = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
+                  channel_created_at = COALESCE($2, channel_created_at),
+                  channel_avatar     = COALESCE(NULLIF($4, ''), channel_avatar)
+                WHERE id = ANY($3::int[])`,
+                [subCount, channelCreatedAt, Array.from(videoIds), avatar]
+              );
             }
             if (subCount > 0 || channelCreatedAt) enrichedChannels++;
           }
