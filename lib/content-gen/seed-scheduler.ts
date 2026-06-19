@@ -440,29 +440,31 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
     let clustersReleased = 0;
 
     for (const n of finished) {
-      // Videos this niche's crawl discovered (from the expansion log,
-      // joined to the seed rows under this niche). The expand endpoint
-      // tags rows with the niche label/keyword — but to be robust we pull
-      // candidates from niche_seed_expansions whose seed_url matches any
-      // seed dispatched under this niche.
-      const discRes = await pool.query<{ video_id: number }>(
-        `SELECT DISTINCT e.candidate_video_id AS video_id
-           FROM niche_seed_expansions e
-           JOIN niche_discovery_seeds s ON s.seed_url = e.seed_url
-          WHERE s.niche_id = $1 AND e.candidate_video_id IS NOT NULL`,
+      // Accurate discovered count: distinct videos this niche's crawls surfaced,
+      // taken from the crawl trace (agent_task_proof) attributed via
+      // agent_task_log (task_id → nicheId). The old seed_url join was broken —
+      // the bot reports the CURRENT video as the /expand seed_url, not the
+      // original seed — so discovered_count was always 0 and every niche got
+      // mislabeled 'exhausted'.
+      const discRes = await pool.query<{ disc: string }>(
+        `SELECT COUNT(DISTINCT atp.video_url) AS disc
+           FROM agent_task_proof atp
+           JOIN agent_task_log atl ON atl.task_id = atp.task_id
+          WHERE atl.keyword = $1`,
         [n.niche_id],
       );
-      const discoveredIds = discRes.rows.map(r => Number(r.video_id));
+      const discoveredCount = parseInt(discRes.rows[0]?.disc) || 0;
 
-      // Scoped re-score: the discovered videos + the seed itself + their
-      // neighbours. Decays the now-dense region honestly.
+      // Scoped decay re-score from the seed + its K-neighbours (which now
+      // include the freshly-crawled videos in this region, so the now-dense
+      // neighbourhood decays honestly).
       const seedIdsRes = await pool.query<{ seed_video_id: number }>(
         `SELECT seed_video_id FROM niche_discovery_seeds WHERE niche_id = $1`,
         [n.niche_id],
       );
-      const regionSeeds = [...discoveredIds, ...seedIdsRes.rows.map(r => Number(r.seed_video_id))];
-      if (regionSeeds.length > 0) {
-        const r = await recomputeAllNovelty({ videoIds: regionSeeds, includeNeighbors: true, threads: 8 });
+      const seedIds = seedIdsRes.rows.map(r => Number(r.seed_video_id));
+      if (seedIds.length > 0) {
+        const r = await recomputeAllNovelty({ videoIds: seedIds, includeNeighbors: true, threads: 8 });
         videosRescored += r.scored;
       }
 
@@ -472,12 +474,10 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
             SET status = 'done', completed_at = NOW(), rescored_at = NOW(),
                 discovered_count = $2
           WHERE niche_id = $1`,
-        [n.niche_id, discoveredIds.length],
+        [n.niche_id, discoveredCount],
       ).catch(() => {});
-      // Exhausted if it yielded almost nothing, else active (eligible to
-      // be re-seeded later only if genuinely re-novel — but the video-level
-      // ledger keeps the same seed out regardless).
-      const newStatus = discoveredIds.length < 3 ? 'exhausted' : 'active';
+      // Exhausted only if the crawl genuinely surfaced almost nothing.
+      const newStatus = discoveredCount < 3 ? 'exhausted' : 'active';
       await pool.query(
         `UPDATE agent_niches SET status = $2 WHERE niche_id = $1`,
         [n.niche_id, newStatus],
