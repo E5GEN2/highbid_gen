@@ -434,6 +434,27 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
       `SELECT niche_id, origin_cluster_id FROM agent_niches WHERE status = 'crawling'`,
     );
     const finished = crawlingRes.rows.filter(r => !liveNicheIds.has(r.niche_id));
+
+    // Self-heal discovered_count for recently-completed niches. The reap-time
+    // count can come up short if the final proof snapshot lands after the niche
+    // was reaped (the thermostat snapshots on a 30s cycle), so re-count from the
+    // now-complete crawl trace. Scoped to niches completed in the last few hours
+    // so it stays cheap, and only ever raises the count. Runs every tick (even
+    // when nothing finished) so the count converges to truth on its own.
+    await pool.query(
+      `UPDATE niche_discovery_seeds s SET discovered_count = sub.disc
+         FROM (
+           SELECT atl.keyword AS niche_id, COUNT(DISTINCT atp.video_url) AS disc
+             FROM agent_task_proof atp
+             JOIN agent_task_log atl ON atl.task_id = atp.task_id
+            WHERE atl.keyword IN (
+              SELECT niche_id FROM niche_discovery_seeds WHERE completed_at > NOW() - INTERVAL '3 hours'
+            )
+            GROUP BY atl.keyword
+         ) sub
+        WHERE s.niche_id = sub.niche_id AND s.discovered_count < sub.disc`,
+    ).catch((e) => console.error('[seed-reaper] discovered_count self-heal failed:', (e as Error).message));
+
     if (finished.length === 0) return { ...empty, ran: true };
 
     let videosRescored = 0;
