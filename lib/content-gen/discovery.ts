@@ -251,6 +251,21 @@ export async function discoverChannels(
     FROM enriched e
     WHERE e.subscriber_count BETWEEN $1 AND $2
       AND e.channel_id NOT IN (SELECT channel_id FROM content_gen_used_channels)
+      -- ENGLISH-ONLY hero/draft pool (user 2026-06-20 #5): drop channels whose
+      -- analysis says a non-English primary language. Channels with no analysis
+      -- or an English language ("en", "en-US", …) stay. Because drafts regen
+      -- from this pool, an existing group with a non-English member simply
+      -- refills that slot with the next English candidate — it is NOT deleted.
+      -- Non-English SIMILAR channels (channel_b / saturation) are unaffected:
+      -- this gate is only on the draft/hero pool.
+      AND NOT EXISTS (
+        SELECT 1 FROM channel_analysis ca
+        WHERE ca.channel_id = e.channel_id AND ca.language IS NOT NULL AND ca.language NOT ILIKE 'en%'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM content_gen_channel_analysis cga
+        WHERE cga.channel_id = e.channel_id AND cga.language IS NOT NULL AND cga.language NOT ILIKE 'en%'
+      )
       AND e.top_video_views > 0
       AND e.top_video_views::float / NULLIF(e.subscriber_count, 0) >= 5
       AND e.top_video_views >= (
