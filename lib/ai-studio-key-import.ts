@@ -301,6 +301,41 @@ export async function testKey(key: string, proxy?: { url: string; deviceId: stri
   return { verdict: 'error', reason: `inconclusive: ${errMsg.slice(0, 200)}`, latencyMs, proxyUsed };
 }
 
+/** Matches Google's "Quota exceeded ... Request limit per minute for a region"
+ *  (RESOURCE_EXHAUSTED / 429). */
+const RATE_LIMIT_RE = /\b429\b|RESOURCE_EXHAUSTED|Quota exceeded/i;
+
+/**
+ * Test a key with retry-on-429. A 429 is NOT a property of the key — it's the
+ * shared per-region per-minute rate limit, which also 429s known-good keys when
+ * the test out-runs the region budget (verified: good keys 200 in isolation,
+ * 429 under load; restricted keys 429 in BOTH). So a single 429 can't decide
+ * anything. We retry through fresh proxies, spaced, to give a good key a chance
+ * at an un-saturated window:
+ *   - any attempt valid/invalid  → decisive, return immediately
+ *   - non-rate-limit error       → return (don't hammer proxy/net failures)
+ *   - 429 on every attempt       → genuinely restricted (project quota throttled
+ *                                  to ~0, i.e. shadowbanned); labelled as such for
+ *                                  visibility but STILL left 'error'/inconclusive,
+ *                                  never declined — a definitive prune belongs in a
+ *                                  separate low-rate sweep, not under import load.
+ */
+async function testKeyResilient(key: string): Promise<Awaited<ReturnType<typeof testKey>>> {
+  const MAX_ATTEMPTS = 3;
+  const DELAY_MS = 5000;
+  let last: Awaited<ReturnType<typeof testKey>> | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const proxy = await getRandomProxy();
+    const test = await testKey(key, proxy ? { url: proxy.url, deviceId: proxy.deviceId } : undefined);
+    last = test;
+    if (test.verdict === 'valid' || test.verdict === 'invalid') return test;
+    if (!RATE_LIMIT_RE.test(test.reason)) return test;
+    if (attempt < MAX_ATTEMPTS - 1) await new Promise(r => setTimeout(r, DELAY_MS));
+  }
+  if (last) last.reason = `restricted (persistent 429 ×${MAX_ATTEMPTS}): ${last.reason.replace(/^inconclusive:\s*/, '').slice(0, 120)}`;
+  return last!;
+}
+
 /** Insert one validated key into our inventory. Idempotent via
  *  (service, key) unique constraint. Returns the row id, or null if it
  *  was already there. */
@@ -435,11 +470,10 @@ async function runImport(opts: RunImportOpts): Promise<void> {
           for (const key of keys) {
             evt.key = maskKey(key);
             evt.keyFull = key;
-            // Random proxy from the active pool — same selection strategy
-            // the niche-explorer embedding pipeline uses (bench: random
-            // outperforms round-robin on flaky-proxy success rate).
-            const proxy = await getRandomProxy();
-            const test = await testKey(key, proxy ? { url: proxy.url, deviceId: proxy.deviceId } : undefined);
+            // Random proxy per attempt, with retry-on-429 (a 429 is the shared
+            // region rate limit, not a bad key — retry recovers good keys lost to
+            // load and surfaces genuinely-restricted ones). See testKeyResilient.
+            const test = await testKeyResilient(key);
             evt.latencyMs = test.latencyMs;
             evt.proxyUsed = test.proxyUsed;
             lastReason = test.reason;
