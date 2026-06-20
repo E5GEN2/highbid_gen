@@ -857,6 +857,32 @@ export function swapChannelProof(slots: Slot[], ch: ChannelData): Slot[] {
   });
 }
 
+/** Best-effort YT Data API fetch (proxied) of a single video's publish date
+ *  + duration badge — completes the top_video_callout card (the OG shows a
+ *  "34:32" badge + "… • 7 months ago"). Returns nulls on any failure. */
+async function fetchTopVideoMeta(videoId: string): Promise<{ publishedAt: string | null; durationBadge: string | null }> {
+  try {
+    const { pickRandomActiveYtPair } = await import('../yt-keys');
+    const { ytFetchViaProxy } = await import('../yt-proxy-fetch');
+    const pair = await pickRandomActiveYtPair();
+    if (!pair) return { publishedAt: null, durationBadge: null };
+    const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${videoId}&key=${pair.key}`;
+    const res = await ytFetchViaProxy(url, pair);
+    if (!res.ok) return { publishedAt: null, durationBadge: null };
+    const item = (res.data as { items?: Array<{ snippet?: { publishedAt?: string }; contentDetails?: { duration?: string } }> })?.items?.[0];
+    if (!item) return { publishedAt: null, durationBadge: null };
+    const m = (item.contentDetails?.duration ?? '').match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+    let durationBadge: string | null = null;
+    if (m) {
+      const h = parseInt(m[1] || '0'), mn = parseInt(m[2] || '0'), s = parseInt(m[3] || '0');
+      durationBadge = h > 0
+        ? `${h}:${String(mn).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${mn}:${String(s).padStart(2, '0')}`;
+    }
+    return { publishedAt: item.snippet?.publishedAt ?? null, durationBadge };
+  } catch { return { publishedAt: null, durationBadge: null }; }
+}
+
 /** Swap the writer's top_video_callout slot to use the composed
  *  most_popular_callout card instead of a screenshot crop. Per the visual
  *  grammar (visual-packaging-class-b.json:83-95) and confirmed by frame
@@ -875,7 +901,11 @@ export async function swapMostPopularCallout(slots: Slot[], ch: ChannelData): Pr
     );
     posted_at = r.rows[0]?.posted_at ?? null;
   } catch { /* best-effort */ }
-  const age_phrase = relativeAge(posted_at);
+  // Fetch the top video's real publish date + duration (the sighted DB often
+  // lacks the all-time top video, so posted_at is null → no age, no badge).
+  const meta = await fetchTopVideoMeta(ch.top_video_id);
+  const age_phrase = relativeAge(meta.publishedAt ?? posted_at);
+  const duration_badge = meta.durationBadge ?? undefined;
   return slots.map(slot => {
     if (slot.beat_id !== 'top_video_callout') return slot;
     return {
@@ -891,6 +921,7 @@ export async function swapMostPopularCallout(slots: Slot[], ch: ChannelData): Pr
             video_id: ch.top_video_id,
             views: ch.top_video_view_count ?? 0,
             age_phrase,
+            duration_badge,
             channel_watermark: ch.channel_name,
             bg_mode: 'white',
           },
@@ -1196,12 +1227,14 @@ export function applyBgPolicy(slots: Slot[]): void {
     const args = mainGem?.args as Record<string, unknown> | undefined;
     const isCard = mainGem?.tool === 'image_gen' &&
       ['text_card', 'text_card_reveal', 'icon_card'].includes(String(args?.composition));
-    // most_popular_callout is ALWAYS dark (both OG references are dark
-    // cards on the dark canvas; the writer emitted white on some niches —
-    // job 173, niche_4 critical).
+    // most_popular_callout is ALWAYS WHITE — the OG MG renders this top-video
+    // callout as a YouTube-style card on a WHITE background (user 2026-06-20,
+    // frame-confirmed: VES STICK "Best Falls" card on white). Normalize here
+    // so the bg-continuity inheritance below can't flip it to the surrounding
+    // dark run. (Was forced dark on a wrong earlier read of the references.)
     if (mainGem?.tool === 'image_gen' && String(args?.composition) === 'most_popular_callout' && args) {
-      args.bg_mode = 'dark_gray';
-      s.compose.bg = 'dark_gray';
+      args.bg_mode = 'white';
+      s.compose.bg = 'white';
     }
     if (isCard) {
       const target: 'white' | 'dark_gray' | null =
