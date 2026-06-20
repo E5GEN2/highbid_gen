@@ -114,6 +114,39 @@ export interface DiscoveryCandidate {
   age_tier: 'mature' | 'mid_young' | 'young' | 'ultra_young';
 }
 
+/** Predominantly-non-Latin-script detector for the English-only pool gate.
+ *  Counts letters (\p{L}); true when ≥50% are non-Latin script (Cyrillic, CJK,
+ *  Tamil, Arabic, Devanagari, Thai, Hangul, …). Accented Latin (café), digits,
+ *  emoji and punctuation never trigger it, so genuine English channels are
+ *  never dropped. Latin-script non-English (es/pt/fr) is left to the
+ *  language-analysis gate, which catches them when analysis exists. */
+function looksNonEnglishByScript(text: string | null | undefined): boolean {
+  if (!text) return false;
+  let letters = 0, nonLatin = 0;
+  for (const ch of text) {
+    if (!/\p{L}/u.test(ch)) continue;
+    letters++;
+    if (!/\p{Script=Latin}/u.test(ch)) nonLatin++;
+  }
+  return letters > 0 && nonLatin / letters >= 0.5;
+}
+
+/** Explicit foreign-language labels that appear in otherwise-Latin channel
+ *  names ("… en Español", "ZuZoo en Español", "Crime Dynasty Español") — these
+ *  are Latin-script so the ratio check above misses them, but the label is an
+ *  unambiguous self-declaration of non-English content. High precision: each
+ *  token is a language endonym, matched as a whole word. */
+const FOREIGN_LANG_LABEL =
+  /\b(?:en\s+)?(?:espa[nñ]ol|portugu[eê]s|fran[cç]ais|italiano|deutsch|t[uü]rk[cç]e|bahasa|polski|nederlands|svenska|tagalog)\b/iu;
+
+/** The English-only pool decision used to filter draft/hero candidates that
+ *  the SQL language gate misses (no/empty analysis). */
+function isNonEnglishChannel(name: string | null | undefined, title: string | null | undefined): boolean {
+  return looksNonEnglishByScript(name)
+      || looksNonEnglishByScript(title)
+      || FOREIGN_LANG_LABEL.test(name ?? '');
+}
+
 function topVideoFloorForAge(ageDays: number): number {
   if (ageDays > 365) return 1_000_000;
   if (ageDays > 180) return   500_000;
@@ -407,7 +440,7 @@ export async function discoverChannels(
   }
 
   // ── Score + return ──────────────────────────────────────────────────
-  const scored: DiscoveryCandidate[] = rows.rows.map((r) => {
+  const scoredAll: DiscoveryCandidate[] = rows.rows.map((r) => {
     const ageDays = Number(r.channel_age_days) || 0;
     const subs    = Number(r.subscriber_count) || 0;
     const topV    = Number(r.top_video_views) || 0;
@@ -459,6 +492,17 @@ export async function discoverChannels(
       age_tier:        ageTier(ageDays),
     };
   });
+
+  // Non-Latin-script gate — strengthens the English-only pool filter (#5). The
+  // language gate in the SQL above only drops channels with a KNOWN non-English
+  // analysis; most foreign channels in the pool have NO analysis and slipped
+  // through (the Tamil "வானிமணி தமிழில்", Russian "Советский След", Chinese
+  // "星際考古隊", …). The channel NAME / top-video title is the strongest signal,
+  // so drop candidates that are predominantly non-Latin script. Accented Latin
+  // and emoji never trigger it, so English channels are untouched. Replace-not-
+  // delete still holds: drafts regen from this pool, so a dropped channel's
+  // slot refills with the next English candidate.
+  const scored = scoredAll.filter((c) => !isNonEnglishChannel(c.channel_name, c.top_video_title));
 
   scored.sort((a, b) => b.composite_score - a.composite_score);
 
