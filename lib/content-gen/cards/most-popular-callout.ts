@@ -39,9 +39,6 @@ export interface MostPopularCalloutArgs {
   bg?: 'white' | 'dark_gray';
 }
 
-// dark_gray re-measured 2026-06-12 on MG frames: canvas = 60,60,60.
-const BG_HEX = { white: '#FFFFFF', dark_gray: '#3C3C3C' } as const;
-
 function humanizeViews(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B views`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M views`;
@@ -92,61 +89,71 @@ async function fetchThumbnail(video_id: string): Promise<Buffer> {
   throw new Error(`failed to fetch thumbnail for ${video_id}`);
 }
 
-/** Build the SVG overlay that sits on top of the white canvas (title +
- *  metadata + 3-dot menu + optional duration badge + watermark). */
-function buildOverlaySvg(args: {
+/** SVG overlay for the dark callout card: the title + meta + 3-dot menu sit
+ *  INSIDE the card below the thumbnail (white text on the dark card); the
+ *  duration badge + channel watermark sit ON the thumbnail. Drawn as the top
+ *  layer, AFTER the card rect and the thumbnail. The OG MG renders this beat
+ *  as a near-black rounded card floating on a WHITE page (frame-measured
+ *  2026-06-20: page #FFF, card #0E0E0E). */
+function buildOverlaySvg(g: {
   width: number; height: number;
-  cardX: number; cardY: number; cardW: number; thumbH: number;
-  title: string; viewsAgeLine: string; durationBadge?: string;
-  channelWatermark?: string; fg: string; mutedFg: string;
+  cardX: number; cardY: number; cardW: number; pad: number;
+  thumbW: number; thumbH: number;
+  lines: string[]; viewsAgeLine: string;
+  titleFontSize: number; titleLH: number; metaFontSize: number; titleGap: number;
+  durationBadge?: string; channelWatermark?: string;
 }): string {
-  const { width, height, cardX, cardY, cardW, thumbH, title, viewsAgeLine, durationBadge, channelWatermark, fg, mutedFg } = args;
+  const { width, height, cardX, cardY, cardW, pad, thumbW, thumbH, lines,
+          viewsAgeLine, titleFontSize, titleLH, metaFontSize, titleGap, durationBadge, channelWatermark } = g;
+  const fg = '#F1F1F1', mutedFg = '#AAAAAA';
+  const FONT = `'Roboto','Segoe UI',system-ui,-apple-system,sans-serif`;
+  const thumbX = cardX + pad, thumbY = cardY + pad;
+  const textX = thumbX;  // title/meta align with the thumbnail's left edge
 
-  // Title area starts just below the thumbnail.
-  const titleY = cardY + thumbH + 60;
-  const titleFontSize = 56;
-  const titleLineHeight = titleFontSize * 1.18;
-  // Wrap title to fit cardW. Heuristic: ~0.5em average char width at this weight.
-  const maxCharsPerLine = Math.floor((cardW - 100) / (titleFontSize * 0.48));
-  const lines = wrapTitle(title, Math.max(20, maxCharsPerLine));
+  // Title — white, below the thumbnail, inside the card.
+  const titleTop = thumbY + thumbH + titleGap;
   const titleTspans = lines.map((ln, i) =>
-    `<text x="${cardX}" y="${titleY + i * titleLineHeight}"
-           font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-           font-size="${titleFontSize}" font-weight="700" fill="${fg}">${esc(ln)}</text>`
+    `<text x="${textX}" y="${titleTop + titleFontSize + i * titleLH}"
+           font-family="${FONT}" font-size="${titleFontSize}" font-weight="600"
+           fill="${fg}">${esc(ln)}</text>`
   ).join('');
 
-  // Metadata line (views • age) sits below the title.
-  const metaY = titleY + lines.length * titleLineHeight + 36;
-  const metaFontSize = 34;
-  const metaText = `<text x="${cardX}" y="${metaY}"
-                          font-family="system-ui, -apple-system, sans-serif"
-                          font-size="${metaFontSize}" font-weight="400" fill="${mutedFg}">${esc(viewsAgeLine)}</text>`;
+  // Metadata (views • age) — muted gray, below the title.
+  const metaY = titleTop + titleFontSize + lines.length * titleLH + 8;
+  const metaText = `<text x="${textX}" y="${metaY + metaFontSize}"
+      font-family="${FONT}" font-size="${metaFontSize}" font-weight="400"
+      fill="${mutedFg}">${esc(viewsAgeLine)}</text>`;
 
-  // 3-dot vertical menu — far right of the card.
-  const dotsX = cardX + cardW - 28;
-  const dotsY = titleY - titleFontSize + 12;
-  const dotsR = 6;
+  // 3-dot kebab menu — in the reserved right gutter, aligned with line 1. The
+  // title column is wrapped narrower (renderMostPopularCallout reserves
+  // kebabGutter) so the title can never collide with these dots.
+  const dr = Math.max(5, Math.round(cardW * 0.0085));
+  const dgap = Math.round(dr * 2.8);
+  const dotsX = thumbX + thumbW - dr;
+  const dotsY = titleTop + Math.round(titleFontSize * 0.30);
   const dots = `
-    <circle cx="${dotsX}" cy="${dotsY}"      r="${dotsR}" fill="${mutedFg}"/>
-    <circle cx="${dotsX}" cy="${dotsY + 22}" r="${dotsR}" fill="${mutedFg}"/>
-    <circle cx="${dotsX}" cy="${dotsY + 44}" r="${dotsR}" fill="${mutedFg}"/>
-  `;
+    <circle cx="${dotsX}" cy="${dotsY}"            r="${dr}" fill="${mutedFg}"/>
+    <circle cx="${dotsX}" cy="${dotsY + dgap}"     r="${dr}" fill="${mutedFg}"/>
+    <circle cx="${dotsX}" cy="${dotsY + dgap * 2}" r="${dr}" fill="${mutedFg}"/>`;
 
-  // Duration badge — sits inside the thumbnail, bottom-right.
+  // Duration badge — bottom-right corner of the thumbnail (scales with card).
+  const bw = Math.round(cardW * 0.112), bh = Math.round(cardW * 0.044), bm = Math.round(cardW * 0.017);
+  const badgeFont = Math.round(cardW * 0.030);
   const durBadge = durationBadge ? `
-    <rect x="${cardX + cardW - 130}" y="${cardY + thumbH - 50}" width="100" height="36" rx="4" fill="#000000" fill-opacity="0.78"/>
-    <text x="${cardX + cardW - 80}" y="${cardY + thumbH - 24}"
-          font-family="system-ui, sans-serif" font-size="22" font-weight="600"
-          fill="#FFFFFF" text-anchor="middle">${esc(durationBadge)}</text>
-  ` : '';
+    <rect x="${thumbX + thumbW - bw - bm}" y="${thumbY + thumbH - bh - bm}" width="${bw}" height="${bh}" rx="5" fill="#000000" fill-opacity="0.82"/>
+    <text x="${thumbX + thumbW - bm - bw / 2}" y="${thumbY + thumbH - bm - bh / 2 + badgeFont * 0.35}"
+          font-family="${FONT}" font-size="${badgeFont}" font-weight="500"
+          fill="#FFFFFF" text-anchor="middle">${esc(durationBadge)}</text>` : '';
 
-  // Channel watermark — bottom-left inside the thumbnail.
+  // Channel watermark — bottom-CENTER of the thumbnail, large, drop-shadowed
+  // (matches OG: "VES STICK" centered low on the thumbnail).
+  const wmFont = Math.round(cardW * 0.047);
+  const wmX = thumbX + thumbW / 2, wmY = thumbY + thumbH - Math.round(cardW * 0.042);
   const watermark = channelWatermark ? `
-    <text x="${cardX + 18}" y="${cardY + thumbH - 22}"
-          font-family="system-ui, sans-serif" font-size="20" font-weight="700"
-          fill="#FFFFFF" stroke="#000000" stroke-width="3" paint-order="stroke fill"
-          stroke-linejoin="round">${esc(channelWatermark)}</text>
-  ` : '';
+    <text x="${wmX + 2}" y="${wmY + 3}" text-anchor="middle" font-family="${FONT}"
+          font-size="${wmFont}" font-weight="700" fill="#000000" fill-opacity="0.5">${esc(channelWatermark)}</text>
+    <text x="${wmX}" y="${wmY}" text-anchor="middle" font-family="${FONT}"
+          font-size="${wmFont}" font-weight="700" fill="#FFFFFF">${esc(channelWatermark)}</text>` : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -173,52 +180,69 @@ export async function renderMostPopularCallout(
     }
   } catch { /* cache miss */ }
 
-  const bg = args.bg ?? 'white';
-  const bgHex = BG_HEX[bg];
-  const fg = bg === 'dark_gray' ? '#FFFFFF' : '#0F0F0F';
-  const mutedFg = bg === 'dark_gray' ? '#AAAAAA' : '#606060';
+  // The OG MG renders this beat as a near-black rounded CARD floating on a
+  // WHITE page (the `bg` arg is the PAGE bg — default white; the card is
+  // always dark with white text). frame-measured 2026-06-20.
+  const pageBg = args.bg === 'dark_gray' ? '#3C3C3C' : '#FFFFFF';
+  const CARD_HEX = '#0F0F0F';
 
-  // Card layout: thumbnail occupies ~52% of canvas width, centered. Title +
-  // metadata wrap under it. Total card height ≈ thumb_h + title + meta + pad.
-  const cardW = Math.round(width * 0.52);   // 1920 → ~1000px
-  const thumbAspect = 16 / 9;
-  const thumbH = Math.round(cardW / thumbAspect);  // 1000 → ~562px
-  const totalCardH = thumbH + 60 /*gap*/ + 56 * 1.18 * 2 /*title 2 lines*/ + 36 /*meta*/ + 34 /*meta height*/;
+  // Card geometry: a centered dark card. Thumbnail inset at the top with even
+  // padding; title (2 lines) + meta stacked below it inside the card. Sizing
+  // is OG-measured (2026-06-20): card ≈ 0.345 of frame width, aspect ≈ 1.16,
+  // thumbnail ≈ 0.61 of card height. Fonts scale with cardW so the card stays
+  // self-consistent.
+  const cardW = Math.round(width * 0.36);          // ~691px (OG 0.345, +slack for legibility)
+  const pad = Math.round(cardW * 0.032);           // thumbnail inset / card padding
+  const thumbW = cardW - 2 * pad;
+  const thumbH = Math.round(thumbW * 9 / 16);
+  const titleFontSize = Math.round(cardW * 0.052);
+  const titleLH = Math.round(titleFontSize * 1.18);
+  const metaFontSize = Math.round(cardW * 0.036);
+  const titleGap = Math.round(cardW * 0.035);
+  // Reserve a right-hand gutter for the 3-dot kebab so the title wraps before
+  // it and never collides (the OG keeps the title in a narrower column).
+  const kebabGutter = Math.round(titleFontSize * 1.5);
+  const lines = wrapTitle(args.title, Math.max(16, Math.floor((thumbW - kebabGutter) / (titleFontSize * 0.50))));
+  const cardH = pad + thumbH + titleGap + titleFontSize + lines.length * titleLH
+              + 8 + metaFontSize + Math.round(cardW * 0.040) /*bottom pad*/;
   const cardX = Math.round((width - cardW) / 2);
-  const cardY = Math.round((height - totalCardH) / 2);
+  const cardY = Math.round((height - cardH) / 2);
 
-  // 1. Render the white canvas.
-  const canvas = sharp({
-    create: { width, height, channels: 4, background: bgHex },
-  });
+  // 1. White page canvas.
+  const canvas = sharp({ create: { width, height, channels: 4, background: pageBg } });
 
-  // 2. Fetch + size the thumbnail to thumbW × thumbH with rounded-corner mask.
+  // 2. Dark rounded card.
+  const cardSvg = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+    `<rect x="${cardX}" y="${cardY}" width="${cardW}" height="${cardH}" rx="26" ry="26" fill="${CARD_HEX}"/></svg>`,
+  );
+
+  // 3. Thumbnail — inset at the top of the card, rounded corners.
   const thumbBuf = await fetchThumbnail(args.video_id);
-  const radius = 12;
-  // Create a rounded-rect mask
+  const radius = 14;
   const mask = Buffer.from(
-    `<svg width="${cardW}" height="${thumbH}"><rect x="0" y="0" width="${cardW}" height="${thumbH}" rx="${radius}" ry="${radius}" fill="white"/></svg>`,
+    `<svg width="${thumbW}" height="${thumbH}"><rect width="${thumbW}" height="${thumbH}" rx="${radius}" ry="${radius}" fill="white"/></svg>`,
   );
   const thumbRendered = await sharp(thumbBuf)
-    .resize(cardW, thumbH, { fit: 'cover', position: 'centre' })
+    .resize(thumbW, thumbH, { fit: 'cover', position: 'centre' })
     .composite([{ input: mask, blend: 'dest-in' }])
     .png()
     .toBuffer();
 
-  // 3. Build the SVG overlay (title + metadata + dots + badge + watermark).
+  // 4. Text + badge overlay (white title/meta inside the card).
   const overlaySvg = buildOverlaySvg({
-    width, height, cardX, cardY, cardW, thumbH,
-    title: args.title,
+    width, height, cardX, cardY, cardW, pad, thumbW, thumbH, lines,
     viewsAgeLine: args.age_phrase ? `${humanizeViews(args.views)} • ${args.age_phrase}` : humanizeViews(args.views),
+    titleFontSize, titleLH, metaFontSize, titleGap,
     durationBadge: args.duration_badge,
     channelWatermark: args.channel_watermark,
-    fg, mutedFg,
   });
 
-  // 4. Composite everything onto the canvas.
+  // 5. Composite: white page → dark card → thumbnail → text overlay.
   await canvas
     .composite([
-      { input: thumbRendered, left: cardX, top: cardY },
+      { input: cardSvg, left: 0, top: 0 },
+      { input: thumbRendered, left: cardX + pad, top: cardY + pad },
       { input: Buffer.from(overlaySvg), left: 0, top: 0 },
     ])
     .png()
