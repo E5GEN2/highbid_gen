@@ -720,6 +720,16 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         const loaded = imgs.filter(i => i.src && i.naturalWidth > 50);
         return loaded.length >= 2;
       }, undefined, { timeout: 9_000 }).catch(() => { /* proceed anyway */ });
+      // The channel AVATAR lazy-loads separately — without this it can be
+      // captured BEFORE the image decodes and renders fully BLACK in the chip
+      // composer (user 2026-06-14 #12, niche_6 channel_b_chip). Wait for the
+      // avatar img to actually have pixels. Proceeds anyway after the timeout.
+      await page.waitForFunction(() => {
+        const a = document.querySelector(
+          'yt-decorated-avatar-view-model img, #avatar img, ytd-c4-tabbed-header-renderer #avatar img, tp-yt-app-header-layout #avatar img, .yt-spec-avatar-shape__image'
+        ) as HTMLImageElement | null;
+        return !!a && !!a.src && a.naturalWidth > 0;
+      }, undefined, { timeout: 6_000 }).catch(() => { /* proceed anyway */ });
       await page.waitForTimeout(400);
     }
 

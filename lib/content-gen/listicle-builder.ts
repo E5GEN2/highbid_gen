@@ -620,8 +620,25 @@ export async function buildTopViewsRapidFireSlots(
   // X, Y, and Z." (OG n3 named titles: "Top 10 numbers to live in, or Top 10
   // letters to use as a chair"). Titles come from the SAME pinned capture's
   // cards (titles_texts[cardIdx]), so every spoken title matches its card.
+  // Sanitize a video title for the VOICEOVER: strip rudiments that sound like
+  // junk when narrated — "(Pt.1)", "(Part 3)", "[4K]", "(Official Video)",
+  // emoji, hashtags, and the " • / | " tag-spam tails meditation/music
+  // channels append — while KEEPING meaningful lead content like "432Hz +
+  // 528Hz" (it's not bracketed and sits before the first separator). User
+  // 2026-06-14 (#1/#7). Degrades gracefully: if sanitizing empties a title,
+  // that card falls back to the view-count form (kTitled shrinks below).
   const cleanTitle = (t: string | null): string | null => {
-    const s = (t ?? '').replace(/\s+/g, ' ').trim();
+    let s = (t ?? '').replace(/\s+/g, ' ').trim();
+    // decode the few HTML entities that show up in scraped titles
+    s = s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    // keep only the lead segment before bullet/pipe tag-spam tails
+    s = s.split(/\s+[•|]\s+/)[0].trim();
+    // drop trailing bracketed/parenthesised runs repeatedly: (Pt.1) [4K] (2026)
+    let prev: string;
+    do { prev = s; s = s.replace(/\s*[([][^()[\]]*[)\]]\s*$/, '').trim(); } while (s !== prev);
+    // strip emoji / pictographic runs and stray hashtags
+    s = s.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '').replace(/#\S+/g, '').replace(/\s+/g, ' ').trim();
+    s = s.replace(/[\s\-–—:|•]+$/, '').trim();   // tidy trailing separators/punctuation
     return s.length >= 3 ? s : null;
   };
   const titles = cardIdx.map(ci => cleanTitle(titlesTexts[ci] ?? null));
@@ -1665,9 +1682,14 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           //   chip:  "{opener} the same kind of videos —"
           //   page:  age claim if reliable, else performance claim
           //   card:  "their most popular video has more than {N} views."
+          // "already" implies youth — only say it for a young channel (≤1yr).
+          // Established/old (or age-unknown) channels just "perform well" with
+          // no "already" (user 2026-06-14 #2: don't say "already" for a >1yr
+          // channel). age_months derives from first_upload ?? channel_created.
+          const bYoung = bVars?.age_months != null && bVars.age_months <= 12;
           const midLine = ageReliable
             ? `it started posting ${bVars!.age_phrase}${topSpoken ? ',' : '.'}`
-            : `and it's already performing extremely well${topSpoken ? ' —' : '.'}`;
+            : `and it's ${bYoung ? 'already ' : ''}performing extremely well${topSpoken ? ' —' : '.'}`;
           const topLine = topSpoken
             ? `${ageReliable ? 'and ' : ''}their most popular video has more than ${topSpoken} views.`
             : null;
@@ -1801,10 +1823,14 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           // channel doesn't have any content" page in the montage (job
           // 173, niche_5). loadChannel refreshes stats (5-min cache).
           const others: string[] = [];
+          // Retain each kept channel's stats so the verdict line can scale its
+          // adjective to the real view magnitude (user 2026-06-14 #13: don't
+          // say "amazing" when avg views are low).
+          const satStatsById = new Map<string, Awaited<ReturnType<typeof loadChannel>> | null>();
           for (const cId of preGate) {
             if (others.length >= 3) break;
             const cStats = await loadChannel(cId).catch(() => null);
-            if (bMinStatsOk(cStats)) others.push(cId);
+            if (bMinStatsOk(cStats)) { others.push(cId); satStatsById.set(cId, cStats); }
             else console.warn(`[saturation] ${cId} fails min-stats gate — skipping page`);
           }
           if (others.length === 1) {
@@ -1813,6 +1839,17 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
             // (top row clipped mid-thumbnail; the view-count wall IS the
             // consistency proof).
             const satCh = others[0];
+            // View-scaled verdict adjective (user 2026-06-14 #13): "amazing"
+            // only when the typical video genuinely performs; calmer + honest
+            // wording for low-view channels.
+            const satStats = satStatsById.get(satCh) ?? null;
+            const satAvgViews = (satStats?.total_views != null && satStats?.video_count)
+              ? Number(satStats.total_views) / Number(satStats.video_count) : null;
+            const satVerdictLine = satAvgViews == null
+              ? 'and they post consistently in this same format.'
+              : satAvgViews >= 100_000 ? 'and their view consistency is amazing.'
+              : satAvgViews >= 20_000 ? 'and their views are consistently solid.'
+              : 'and they post steadily in this same format.';
             saturationSlots = [
               {
                 slot_id: `niche_${niche_index}_saturation_0`,
@@ -1835,8 +1872,8 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
               },
               (() => {
                 const s = makeFramingSlot(`niche_${niche_index}_saturation_verdict_0`, 'saturation_callout',
-                  'and their view consistency is amazing.',
-                  { composition: 'text_card', text: 'and their view consistency is amazing.', bg_mode: 'dark_gray', color_treatment: 'neutral' },
+                  satVerdictLine,
+                  { composition: 'text_card', text: satVerdictLine, bg_mode: 'dark_gray', color_treatment: 'neutral' },
                   ['whoosh'], 'dark_gray');
                 for (const l of s.compose.layers) if (l.channel === 'video') l.ken_burns = 'none';
                 return s;
