@@ -118,7 +118,7 @@ async function topTitles(channelId: string, n: number): Promise<string[]> {
 /** Bump to invalidate cached verdicts after a prompt change. v2: subject
  *  "same" sharpened to the specific topic domain (broad-genre matches
  *  mislabeled a true-crime channel as same-subject in a tornado niche). */
-const PROMPT_V = 2;
+const PROMPT_V = 3;  // v3: subject_match tightened — a BROADER-than-hero catalog is "different", not "same" (user #3)
 
 export interface HeroEvidence {
   channelId: string;
@@ -164,7 +164,7 @@ ${candTitles.map(t => `- ${t}`).join('\n')}
 
 Classify the candidate against the hero on two INDEPENDENT axes:
 - format_match: "same" if the candidate uses the same VIDEO FORMAT / production style (e.g. size-comparison lineups vs ranked explainer countdowns vs scene breakdowns are all DIFFERENT formats), else "different".
-- subject_match: "same" ONLY if the same SPECIFIC topic domain (e.g. tornado disaster documentaries vs true-crime disappearance stories are DIFFERENT subjects even though both are dark documentary genres; fictional monsters vs real animals are DIFFERENT). "narrower" if a sub-slice of the hero's subject (one franchise, one entity type). "different" otherwise. Sharing a broad genre or mood is NOT "same".
+- subject_match: "same" ONLY if the candidate covers the SAME SPECIFIC topic domain as the hero — not merely a shared broad genre/mood, and NOT a BROADER catalog that merely happens to include the hero's topic (e.g. tornado disaster documentaries vs true-crime disappearance stories are DIFFERENT subjects even though both are dark documentary genres; fictional monsters vs real animals are DIFFERENT; a hero about "internet mysteries" vs a candidate covering disturbing facts across space, the ocean and history is DIFFERENT because the candidate is BROADER, not the same niche). "narrower" if the candidate is a strict SUB-SLICE of the hero's subject (one franchise, one entity type). "different" otherwise. If the candidate's catalog is WIDER than the hero's niche, it is "different", never "same". Sharing a broad genre or mood is NOT "same".
 
 Also output:
 - subject_term: 2-4 plain lowercase words. When subject_match is "different" or "narrower", name the CANDIDATE's subject ("SCP entries", "Game of Thrones scenes"). When "same", name the SHARED subject ("fictional monsters").
