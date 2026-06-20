@@ -51,8 +51,12 @@ function esc(s: string): string {
           .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
+// Bump when the card LAYOUT changes so old cached PNGs are invalidated (the
+// cache key is args-only, so a layout change with identical args would
+// otherwise serve a stale render). v2: dark card on white page (2026-06-20).
+const COMPOSER_VERSION = 2;
 function hashArgs(args: MostPopularCalloutArgs, w: number, h: number): string {
-  return crypto.createHash('sha256').update(JSON.stringify({ ...args, w, h })).digest('hex').slice(0, 32);
+  return crypto.createHash('sha256').update(JSON.stringify({ ...args, w, h, v: COMPOSER_VERSION })).digest('hex').slice(0, 32);
 }
 
 /** Soft word wrap title into 2 lines. */
