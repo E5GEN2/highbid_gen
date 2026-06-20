@@ -268,13 +268,16 @@ export function buildNicheIntroSlots(
           bg: 'white',
           hold_s: '{{narr.duration_s}}',
           layers: [
-            // zoom_in_to_target + target_idx=niche_index-1 (1-indexed in
-            // narration, 0-indexed in grid). The montage PNG is identical
-            // across niches; only target_idx differs, so producer-tools'
-            // cache reuses the same file.
+            // pan_to_target (user #15): icons placed in niche order; the
+            // camera pans steadily L→R from the PREVIOUS niche's cell to this
+            // one, zooming only on the first reveal + at a row change. The
+            // montage PNG is identical across niches (cache reused); only
+            // target_idx/from_idx differ. from_idx derives directly from
+            // target order (prev cell = targetIdx-1; -1 for the first niche).
             { from: 'main', channel: 'video', fit: 'contain',
-              ken_burns: 'zoom_in_to_target',
-              target_idx: Math.max(0, Math.min(allChannelIds.length - 1, targetIdx)) },
+              ken_burns: 'pan_to_target',
+              target_idx: Math.max(0, Math.min(allChannelIds.length - 1, targetIdx)),
+              from_idx: targetIdx > 0 ? Math.min(allChannelIds.length - 1, targetIdx) - 1 : -1 },
             { from: 'narr', channel: 'voice' },
             { from: 'sfx',  channel: 'fx' },
           ],

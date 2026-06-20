@@ -69,7 +69,7 @@ export interface ComposeLayer {
   /** Visual fit when channel=video */
   fit?: 'contain' | 'cover' | 'fill';
   /** Camera move applied during the hold */
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target' | 'word_reveal';
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target' | 'pan_to_target' | 'word_reveal';
   /** ken_burns='word_reveal': word start times in seconds RELATIVE TO SLOT
    *  START (from the master-narration alignment). Progressive frame k of
    *  local_paths shows during [word_times[k-1], word_times[k]) — words pop
@@ -83,8 +83,10 @@ export interface ComposeLayer {
    *  supported targets. */
   crop_target?: string;
   /** Index of the target avatar in a channel_logos_montage (0–9) used by
-   *  ken_burns='zoom_in_to_target' to compute the zoompan center. */
+   *  ken_burns='zoom_in_to_target'/'pan_to_target' to compute the zoompan center. */
   target_idx?: number;
+  /** Previous avatar cell for ken_burns='pan_to_target' (-1 = first reveal). */
+  from_idx?: number;
   /** Render this video layer inside the MG mini-player frame: scaled to a
    *  centered player area on the dark canvas instead of full-bleed. Used by
    *  recipe_demo b-roll. */

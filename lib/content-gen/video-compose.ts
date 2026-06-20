@@ -42,10 +42,14 @@ interface ComposeLayer {
   from: string;
   channel?: 'video' | 'voice' | 'fx' | 'overlay';
   fit?: 'contain' | 'cover' | 'fill';
-  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target' | 'word_reveal';
-  /** Index of target avatar (0–9) for ken_burns='zoom_in_to_target' on a
-   *  2×5 channel_logos_montage. Maps to grid cell (col, row) and zoompan center. */
+  ken_burns?: 'none' | 'zoom_in_8pct' | 'zoom_out_8pct' | 'pan_left' | 'pan_right' | 'scroll_down' | 'zoom_in_to_target' | 'pan_to_target' | 'word_reveal';
+  /** Index of target avatar (0–9) for ken_burns='zoom_in_to_target'/'pan_to_target'
+   *  on a 2×5 channel_logos_montage. Maps to grid cell (col, row) and zoompan center. */
   target_idx?: number;
+  /** Previous avatar cell for ken_burns='pan_to_target' (-1 = first reveal).
+   *  Same row → steady L→R pan from this cell to target; -1 or row-change →
+   *  zoom-in ramp instead (MG: zoom only on first + row changes). */
+  from_idx?: number;
   /** ken_burns='word_reveal': word start times (seconds RELATIVE TO SLOT
    *  START) from the master-narration alignment. Frame k of local_paths
    *  shows during [word_times[k-1], word_times[k]). */
@@ -669,6 +673,34 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
       `zoompan=z='1+2*on/${Math.max(1, totalFrames - 1)}'` +
       `:x='${cx}-iw/(2*zoom)':y='${cy}-ih/(2*zoom)'` +
       `:d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+  }
+
+  // pan_to_target (MG niche-reveal camera, user 2026-06-14 #15): icons are
+  // placed in niche order; the camera pans STEADILY left→right at a constant
+  // close zoom from the previous cell to this niche's cell, and only ZOOMS in
+  // on the first reveal (from_idx=-1) and at a row change (different grid row)
+  // — exactly MG's motion. Additive: leaves zoom_in_to_target untouched.
+  if (kenBurns === 'pan_to_target' && typeof mainLayer.target_idx === 'number') {
+    const SS = 4;            // same anti-jitter supersample as zoom_in_to_target
+    const closeZ = 3;        // matches the established close-up zoom level
+    const N = Math.max(1, totalFrames - 1);
+    const cell = (i: number) => ({ cx: ((i % 5) * 384 + 192) * SS, cy: (Math.floor(i / 5) * 540 + 270) * SS });
+    const tIdx = mainLayer.target_idx;
+    const fIdx = typeof mainLayer.from_idx === 'number' ? mainLayer.from_idx : -1;
+    const T = cell(tIdx);
+    const sameRow = fIdx >= 0 && Math.floor(fIdx / 5) === Math.floor(tIdx / 5);
+    const pre = `scale=${width * SS}:${height * SS}:flags=lanczos,`;
+    const tail = `:d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+    if (sameRow) {
+      // steady horizontal pan at constant zoom: prev cell → target cell
+      const F = cell(fIdx);
+      const cxE = `(${F.cx}+(${T.cx - F.cx})*on/${N})`;
+      const cyE = `(${F.cy}+(${T.cy - F.cy})*on/${N})`;
+      zoomToTargetVf = pre + `zoompan=z='${closeZ}':x='${cxE}-iw/(2*zoom)':y='${cyE}-ih/(2*zoom)'` + tail;
+    } else {
+      // first reveal OR row change → zoom-in ramp 1→closeZ centered on target
+      zoomToTargetVf = pre + `zoompan=z='1+${closeZ - 1}*on/${N}':x='${T.cx}-iw/(2*zoom)':y='${T.cy}-ih/(2*zoom)'` + tail;
+    }
   }
 
   // zoom_out_8pct: start tight (1.08), settle to full frame — the MG
