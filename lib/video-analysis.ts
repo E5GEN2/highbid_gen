@@ -49,6 +49,12 @@ const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemi
 const MAX_CLIP_BYTES = 14 * 1024 * 1024;
 const CLIP_SECONDS = 60;
 const PER_CLIP_ATTEMPTS = 4;
+// Default transcription cap when a job has no explicit max_duration_s. Matches
+// the content-gen analyze default (30 min) so a NULL/manual job can't run a
+// 1-3h music/meditation video into 60-180 sequential clips (slow, gap-prone,
+// transcript never collapses → no recipe showcase; user 2026-06-14 #10).
+// Trim only fires when duration > cap, so short-video channels are unaffected.
+const DEFAULT_MAX_DURATION_S = 30 * 60;
 const BACKOFF_SECONDS = [0, 5, 10, 15];
 const PER_ATTEMPT_TIMEOUT_MS = 300_000;
 
@@ -130,7 +136,7 @@ export async function runAnalysisJob(jobId: number): Promise<void> {
     // partial run (idempotency hook).
     if (!fs.existsSync(sourcePath) || fs.statSync(sourcePath).size === 0) {
       await markJob(jobId, 'downloading', { source_mp4_path: sourcePath, clips_dir: clipsDir });
-      await downloadSource(jobId, job.youtube_url, sourcePath, job.max_duration_s);
+      await downloadSource(jobId, job.youtube_url, sourcePath, job.max_duration_s ?? DEFAULT_MAX_DURATION_S);
     } else {
       await markJob(jobId, 'downloading', { source_mp4_path: sourcePath, clips_dir: clipsDir });
     }
