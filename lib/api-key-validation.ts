@@ -31,6 +31,13 @@ const TERMINAL_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   // equally terminal — no way back without contacting Google.
   { pattern: /has been suspended/i,                     label: 'consumer suspended' },
 
+  // API key bound to a service account that's been deleted or disabled
+  // (Google 401, not 403). We don't own these harvested accounts, so it's
+  // permanently dead for us — same class as "consumer suspended". Without
+  // this it was misclassified as inconclusive and the dead key stayed in
+  // rotation, retrying forever.
+  { pattern: /service account is deleted or disabled/i, label: 'service account deleted' },
+
   // Gemini API not enabled on that GCP project. Could in principle be
   // fixed by the project owner, but we don't own these projects so
   // it's terminal for us.

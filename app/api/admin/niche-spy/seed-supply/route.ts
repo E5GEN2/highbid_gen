@@ -31,8 +31,8 @@ export async function GET(req: NextRequest) {
   // Mirrors lib/content-gen/seed-candidates.ts eligibility (A1–D2). candidate_videos
   // uses the most-inclusive floor (pct=50); the higher floors are FILTER counts.
   const poolRes = await pool.query<{
-    fresh_80: string; fresh_65: string; fresh_50: string;
-    total_50: string; inflow_24h: string; inflow_7d: string;
+    fresh_80: string; fresh_65: string; fresh_50: string; total_50: string;
+    inflow24_80: string; inflow24_65: string; inflow24_50: string; inflow_7d: string;
   }>(
     `WITH cutoffs AS (
        SELECT PERCENTILE_CONT(0.80) WITHIN GROUP (ORDER BY novelty_score) AS c80,
@@ -77,7 +77,9 @@ export async function GET(req: NextRequest) {
        COUNT(*) FILTER (WHERE fresh AND nov >= (SELECT c65 FROM cutoffs)) AS fresh_65,
        COUNT(*) FILTER (WHERE fresh) AS fresh_50,
        COUNT(*) AS total_50,
-       COUNT(*) FILTER (WHERE fresh AND emb > NOW()-INTERVAL '24 hours') AS inflow_24h,
+       COUNT(*) FILTER (WHERE fresh AND emb > NOW()-INTERVAL '24 hours' AND nov >= (SELECT c80 FROM cutoffs)) AS inflow24_80,
+       COUNT(*) FILTER (WHERE fresh AND emb > NOW()-INTERVAL '24 hours' AND nov >= (SELECT c65 FROM cutoffs)) AS inflow24_65,
+       COUNT(*) FILTER (WHERE fresh AND emb > NOW()-INTERVAL '24 hours') AS inflow24_50,
        COUNT(*) FILTER (WHERE fresh AND emb > NOW()-INTERVAL '7 days')  AS inflow_7d
      FROM eligible`,
   );
@@ -99,32 +101,55 @@ export async function GET(req: NextRequest) {
   const fresh80 = parseInt(p.fresh_80) || 0;
   const fresh65 = parseInt(p.fresh_65) || 0;
   const fresh50 = parseInt(p.fresh_50) || 0;
-  const inflow24h = parseInt(p.inflow_24h) || 0;
+  const inflow24_80 = parseInt(p.inflow24_80) || 0;
+  const inflow24_65 = parseInt(p.inflow24_65) || 0;
+  const inflow24_50 = parseInt(p.inflow24_50) || 0;
   const inflow7d = parseInt(p.inflow_7d) || 0;
   const dispatch24h = parseInt(dispRes.rows[0]?.d24h) || 0;
   const dispatch1h = parseInt(dispRes.rows[0]?.d1h) || 0;
   const floor = parseInt(floorRes.rows[0]?.value || '65') || 65;
   const avgTaskMin = Math.max(1, parseFloat(durRes.rows[0]?.avg_min || '43') || 43);
 
-  // ── Derived thread math ──────────────────────────────────────────────────
-  const inflowPerHr = inflow24h / 24;                       // replenishment, eligible/hr
+  // ── Derived thread math, PER novelty floor ───────────────────────────────
+  // Each floor has its own replenishment (stricter floor → far less inflow), so
+  // sustainable threads must be computed per floor, not once at the most-inclusive
+  // pct=50. The headline uses the CURRENT operating floor (honest), and pct=50 is
+  // the floor-pinned best case the scheduler falls back to under starvation.
   const perThreadPerHr = 60 / avgTaskMin;                   // seed dispatches per thread per hr
-  const sustainableThreads = Math.round(inflowPerHr / perThreadPerHr);  // steady-state, inflow-limited
-  const freshAtFloor = floor >= 80 ? fresh80 : floor >= 65 ? fresh65 : fresh50;
+  const r1 = (n: number) => Math.round(n * 10) / 10;
+  const mkFloor = (fresh: number, inflow24: number) => ({
+    fresh, inflowPerDay: inflow24, inflowPerHr: r1(inflow24 / 24),
+    sustains: Math.round((inflow24 / 24) / perThreadPerHr),
+  });
+  const byFloor = {
+    pct80: mkFloor(fresh80, inflow24_80),
+    pct65: mkFloor(fresh65, inflow24_65),
+    pct50: mkFloor(fresh50, inflow24_50),
+  };
+  const currentFloorKey = floor >= 80 ? 'pct80' : floor >= 65 ? 'pct65' : 'pct50';
+  const current = byFloor[currentFloorKey as keyof typeof byFloor];
+  const sustainableThreads = current.sustains;             // at the CURRENT floor (honest)
+  const inflowPerHr = current.inflowPerHr;
+  const freshAtFloor = current.fresh;
   const bufferHoursAt = (threads: number) => {
-    const net = threads * perThreadPerHr - inflowPerHr;
-    return net <= 0 ? null : Math.round(fresh50 / net);     // buffer drains the pct=50 ceiling
+    // Running this many threads pins the floor to pct=50, so the buffer is the
+    // pct=50 pool draining at (consumption − pct=50 inflow).
+    const net = threads * perThreadPerHr - byFloor.pct50.inflowPerHr;
+    return net <= 0 ? null : Math.round(fresh50 / net);
   };
 
   const data = {
     ok: true,
     pools: { fresh80, fresh65, fresh50, total50: parseInt(p.total_50) || 0 },
-    inflow: { per24h: inflow24h, per7d: inflow7d, perHr: Math.round(inflowPerHr * 10) / 10 },
+    byFloor,                                                // per-floor fresh + inflow + sustainable threads
+    currentFloorKey,
+    inflow: { per24h: inflow24_50, per7d: inflow7d, perHr: inflowPerHr },  // perHr = current floor's replenishment
     consumption: { dispatch1h, dispatch24h, perThreadPerHr: Math.round(perThreadPerHr * 100) / 100, avgTaskMin: Math.round(avgTaskMin * 10) / 10 },
     floor,
     freshAtFloor,
     derived: {
-      sustainableThreads,
+      sustainableThreads,                                  // at the CURRENT floor
+      sustainableAtFloor50: byFloor.pct50.sustains,        // best case (floor pinned to pct 50)
       bufferHoursAt20: bufferHoursAt(20),
       bufferHoursAt40: bufferHoursAt(40),
     },

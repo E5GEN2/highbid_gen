@@ -7680,13 +7680,16 @@ function VideoSeedErrorCurves({ active }: { active: boolean }) {
 interface SeedSupplyData {
   ok: boolean;
   pools: { fresh80: number; fresh65: number; fresh50: number; total50: number };
+  byFloor: { pct80: FloorStat; pct65: FloorStat; pct50: FloorStat };
+  currentFloorKey: 'pct80' | 'pct65' | 'pct50';
   inflow: { per24h: number; per7d: number; perHr: number };
   consumption: { dispatch1h: number; dispatch24h: number; perThreadPerHr: number; avgTaskMin: number };
   floor: number;
   freshAtFloor: number;
-  derived: { sustainableThreads: number; bufferHoursAt20: number | null; bufferHoursAt40: number | null };
+  derived: { sustainableThreads: number; sustainableAtFloor50: number; bufferHoursAt20: number | null; bufferHoursAt40: number | null };
   computedAt: string; cached: boolean; ageSec: number;
 }
+interface FloorStat { fresh: number; inflowPerDay: number; inflowPerHr: number; sustains: number; }
 
 /** Seed-supply gauge — eligible novelty pool vs consumption vs replenishment; answers "will supply hold N threads?". */
 function VideoSeedSupplyGauge({ active }: { active: boolean }) {
@@ -7701,11 +7704,11 @@ function VideoSeedSupplyGauge({ active }: { active: boolean }) {
   const sus = d.derived.sustainableThreads;
   const susColor = sus >= 40 ? 'text-emerald-400' : sus >= 20 ? 'text-amber-400' : 'text-red-400';
   const floors = [
-    { pct: 80, label: 'top 20%', fresh: d.pools.fresh80 },
-    { pct: 65, label: 'top 35%', fresh: d.pools.fresh65 },
-    { pct: 50, label: 'top 50% (floor)', fresh: d.pools.fresh50 },
+    { pct: 80, label: 'top 20%', stat: d.byFloor.pct80 },
+    { pct: 65, label: 'top 35%', stat: d.byFloor.pct65 },
+    { pct: 50, label: 'top 50% (floor)', stat: d.byFloor.pct50 },
   ];
-  const maxFresh = Math.max(1, d.pools.fresh50);
+  const maxFresh = Math.max(1, d.byFloor.pct50.fresh);
 
   return (
     <div className="bg-[#101010] border border-[#222] rounded-2xl p-4 space-y-4">
@@ -7718,11 +7721,11 @@ function VideoSeedSupplyGauge({ active }: { active: boolean }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
           <div className={`text-2xl font-bold ${susColor}`}>~{sus}</div>
-          <div className="text-[10px] text-[#666] uppercase">threads sustained (steady-state)</div>
+          <div className="text-[10px] text-[#666] uppercase">threads sustained · at floor pct {d.floor}</div>
         </div>
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
-          <div className="text-lg font-bold text-blue-400">{d.inflow.perHr}/hr<span className="text-[#555] text-xs"> · {d.inflow.per24h}/d</span></div>
-          <div className="text-[10px] text-[#666] uppercase">replenishment (new eligible)</div>
+          <div className="text-lg font-bold text-blue-400">{d.inflow.perHr}/hr<span className="text-[#555] text-xs"> · {d.byFloor[d.currentFloorKey].inflowPerDay}/d</span></div>
+          <div className="text-[10px] text-[#666] uppercase">replenishment @ pct {d.floor}</div>
         </div>
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
           <div className="text-lg font-bold text-[#ccc]">{Math.round(d.consumption.dispatch24h / 24 * 10) / 10}/hr<span className="text-[#555] text-xs"> · {d.consumption.dispatch24h}/d</span></div>
@@ -7736,7 +7739,7 @@ function VideoSeedSupplyGauge({ active }: { active: boolean }) {
 
       {/* Pool at each novelty floor */}
       <div>
-        <div className="text-[10px] text-[#666] uppercase tracking-wider mb-1.5">Fresh eligible pool by novelty floor (current floor: pct {d.floor})</div>
+        <div className="text-[10px] text-[#666] uppercase tracking-wider mb-1.5">Fresh pool · replenishment · threads sustained — by novelty floor (current: pct {d.floor})</div>
         <div className="space-y-1.5">
           {floors.map(f => {
             const isCurrent = (f.pct === 80 && d.floor >= 80) || (f.pct === 65 && d.floor >= 65 && d.floor < 80) || (f.pct === 50 && d.floor < 65);
@@ -7744,15 +7747,16 @@ function VideoSeedSupplyGauge({ active }: { active: boolean }) {
               <div key={f.pct} className="flex items-center gap-2">
                 <span className={`text-[11px] w-32 shrink-0 ${isCurrent ? 'text-white font-semibold' : 'text-[#888]'}`}>pct {f.pct} <span className="text-[#555]">{f.label}</span>{isCurrent ? ' ◄' : ''}</span>
                 <div className="flex-1 h-4 bg-[#0c0c0c] rounded overflow-hidden">
-                  <div className={`h-full ${isCurrent ? 'bg-emerald-500/70' : 'bg-[#3a3a3a]'}`} style={{ width: `${(f.fresh / maxFresh) * 100}%` }} />
+                  <div className={`h-full ${isCurrent ? 'bg-emerald-500/70' : 'bg-[#3a3a3a]'}`} style={{ width: `${(f.stat.fresh / maxFresh) * 100}%` }} />
                 </div>
-                <span className={`text-xs w-12 text-right ${isCurrent ? 'text-emerald-400 font-semibold' : 'text-[#999]'}`}>{f.fresh.toLocaleString()}</span>
+                <span className={`text-xs w-14 text-right ${isCurrent ? 'text-emerald-400 font-semibold' : 'text-[#999]'}`}>{f.stat.fresh.toLocaleString()}</span>
+                <span className={`text-[10px] w-28 text-right ${isCurrent ? 'text-amber-300' : 'text-[#666]'}`}>{f.stat.inflowPerDay}/d &rarr; ~{f.stat.sustains} thr</span>
               </div>
             );
           })}
         </div>
         <div className="text-[10px] text-[#555] mt-2">
-          Steady-state supply is replenishment-limited (~{d.inflow.perHr}/hr &rarr; ~{sus} threads). Above that, the {d.derived.bufferHoursAt40 ? `pct-50 pool buffers ~${d.derived.bufferHoursAt40}h at 40 threads, then ` : ''}scheduler pins the floor at pct 50 (less-novel seeds) to stay fed.
+          At the current floor (pct {d.floor}) replenishment (~{d.inflow.perHr}/hr) sustains <span className="text-[#999]">~{sus} threads</span>. Dropping to pct 50 (less-novel) sustains ~{d.derived.sustainableAtFloor50}; {d.derived.bufferHoursAt40 ? `the pct-50 pool then buffers ~${d.derived.bufferHoursAt40}h at 40 threads before the floor pins there.` : 'beyond that the floor pins at pct 50 to stay fed.'}
         </div>
       </div>
     </div>
