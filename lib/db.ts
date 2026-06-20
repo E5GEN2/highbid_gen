@@ -1831,6 +1831,18 @@ export async function initSchema(): Promise<void> {
     // Short MG-style voiceover clause justifying the rpm, nested into money-math.
     await client.query(`ALTER TABLE content_gen_channel_rpm ADD COLUMN IF NOT EXISTS spoken_reason TEXT`).catch(() => {});
 
+    // Per-channel Shorts profile — cached, computed lazily only for draft
+    // candidates (content-gen #14). Gates Shorts-focused channels out of the
+    // draft/hero pool (≥95% shorts OR no long video in 3 months).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_channel_shorts (
+        channel_id          TEXT PRIMARY KEY,
+        shorts_ratio        REAL,
+        last_long_upload_at  TIMESTAMPTZ,
+        sample_n            INTEGER,
+        computed_at         TIMESTAMPTZ DEFAULT NOW()
+      )`).catch(() => {});
+
     // Stage D output — the generated, timestamped beat-by-beat narration
     // script for a GROUP of channels. Keyed by a stable group_key (sorted
     // channel_ids joined) so re-generating a group upserts. script_jsonb

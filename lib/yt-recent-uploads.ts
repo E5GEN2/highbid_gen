@@ -35,6 +35,16 @@ export interface RecentUploadVideo {
   viewCount: number;
   likeCount: number;
   commentCount: number;
+  /** Video length in seconds (from contentDetails). null if unparseable.
+   *  ≤ 61s ⇒ a Short. Used by the shorts-profile gate (content-gen #14). */
+  durationSeconds: number | null;
+}
+
+/** Parse an ISO-8601 video duration ("PT1M30S") → seconds. */
+function parseIso8601Duration(d: string | null | undefined): number | null {
+  const m = (d ?? '').match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!m) return null;
+  return (parseInt(m[1] || '0') * 3600) + (parseInt(m[2] || '0') * 60) + parseInt(m[3] || '0');
 }
 
 interface PlaylistItem {
@@ -69,6 +79,7 @@ interface VideoItem {
     };
   };
   statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
+  contentDetails?: { duration?: string };
 }
 interface VideosPage {
   items?: VideoItem[];
@@ -112,7 +123,7 @@ export async function fetchChannelRecentUploads(
   // thumbnail to persist the videos to niche_spy_videos for the
   // channel-card thumb strip. Same one batch (capped at 50 above).
   const idsParam = videoIds.join(',');
-  const vUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${idsParam}&key=${pair.key}`;
+  const vUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${idsParam}&key=${pair.key}`;
   const vRes = await ytFetchViaProxy(vUrl, pair);
   if (!vRes.ok) {
     return {
@@ -142,6 +153,7 @@ export async function fetchChannelRecentUploads(
         viewCount: parseInt(stats.viewCount || '0') || 0,
         likeCount: parseInt(stats.likeCount || '0') || 0,
         commentCount: parseInt(stats.commentCount || '0') || 0,
+        durationSeconds: parseIso8601Duration(it.contentDetails?.duration),
       };
     });
 

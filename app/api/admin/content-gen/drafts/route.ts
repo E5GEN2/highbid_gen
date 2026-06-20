@@ -3,6 +3,7 @@ import { isAdmin } from '@/lib/admin-auth';
 import { discoverChannels } from '@/lib/content-gen/discovery';
 import { assembleMixedDrafts, assembleThemedDrafts, auditDrafts } from '@/lib/content-gen/assembler';
 import { getDraftSpyStatuses } from '@/lib/content-gen/content-gen-seeds';
+import { filterShortsFocusedCandidates } from '@/lib/content-gen/shorts-profile';
 import { getPool } from '@/lib/db';
 
 /**
@@ -44,7 +45,12 @@ export async function GET(req: NextRequest) {
   const audit = sp.get('audit') !== '0';
 
   const t0 = Date.now();
-  const candidates = await discoverChannels({ topK });
+  const rawCandidates = await discoverChannels({ topK });
+  // #14: drop Shorts-focused channels from the draft pool (≥95% shorts or no
+  // long video in 3 months). Profiles only the top candidates (cached); an
+  // excluded channel's niche slot refills with the next candidate.
+  const { kept: candidates, excluded: shortsExcluded } =
+    await filterShortsFocusedCandidates(rawCandidates).catch(() => ({ kept: rawCandidates, excluded: [] as string[] }));
 
   // Pull L1 labels for themed mode from the latest done global run.
   const pool = await getPool();
@@ -76,6 +82,7 @@ export async function GET(req: NextRequest) {
     elapsedMs,
     params: { mode, n, topK },
     candidate_pool_size: candidates.length,
+    shorts_excluded: shortsExcluded.length,
     mixed_drafts:  mixed,
     themed_drafts: themed,
     spy_status: spyStatus,
