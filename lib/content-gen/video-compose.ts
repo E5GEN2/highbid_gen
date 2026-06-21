@@ -34,6 +34,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import sharp from 'sharp';
 import { CLIPS_DIR } from '../clips-dir';
+import { createHash } from 'node:crypto';
 import type { BBox } from './yt-capture';
 
 const COMPOSE_DIR = path.join(CLIPS_DIR, 'producer_renders');
@@ -968,7 +969,35 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
   const clipPaths: string[] = new Array(slot_order.length);
   let totalDur = 0;
   const SLOT_CONC = Math.max(2, Math.min(8, os.cpus().length - 4));
-  await withToolCall(`compose:build_slots (${slot_order.length}, conc=${SLOT_CONC})`, async () => {
+
+  // W7 CHECKPOINT — content-addressed per-slot clip cache. A re-render reuses
+  // unchanged slots' clips and re-encodes only changed ones, so a 1-beat fix
+  // re-encodes ~1 of N clips instead of all N (the per-part progress the system
+  // needs). Key = SLOT_COMPOSE_VERSION + the slot's compose config + every
+  // referenced gem asset path + dims. Cached clips live OFF /tmp so they survive.
+  // Gated behind HB_SLOT_CACHE until validated by a known 1-beat-change re-render.
+  // IMPORTANT: bump SLOT_COMPOSE_VERSION on ANY change to buildSlotClip or the
+  // composers it calls — otherwise a stale clip would be reused after a code change.
+  const SLOT_CACHE_ON = process.env.HB_SLOT_CACHE === '1';
+  const SLOT_CACHE_DIR = path.join(CLIPS_DIR, 'slot_clips');
+  const SLOT_COMPOSE_VERSION = 'sc1';
+  if (SLOT_CACHE_ON) await fs.mkdir(SLOT_CACHE_DIR, { recursive: true }).catch(() => {});
+  const fileExists = async (p: string) => { try { await fs.access(p); return true; } catch { return false; } };
+  let slotCacheHits = 0;
+  const slotClipKey = (sid: string, compose: ResolvedCompose): string => {
+    const c = compose as unknown as { hold_s?: number; layers?: ComposeLayer[] };
+    const layers = (c.layers ?? []).map(layer => {
+      const g = (layer.from ? (bag[sid] as Record<string, { local_path?: string; local_paths?: string[] | null; url?: string; word_times?: number[]; duration_s?: number } | undefined>)?.[layer.from] : undefined);
+      return { cfg: layer, lp: g?.local_path, lps: g?.local_paths, url: g?.url, wt: g?.word_times, dur: g?.duration_s };
+    });
+    return createHash('sha256')
+      .update(SLOT_COMPOSE_VERSION).update('|')
+      .update(JSON.stringify({ hold: c.hold_s, layers }))
+      .update(`|${width}x${height}@${fps}`)
+      .digest('hex');
+  };
+
+  await withToolCall(`compose:build_slots (${slot_order.length}, conc=${SLOT_CONC}${SLOT_CACHE_ON ? ', cached' : ''})`, async () => {
     let next = 0;
     const worker = async () => {
       for (;;) {
@@ -977,14 +1006,21 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
         const sid = slot_order[i];
         const compose = bag[sid]?.__compose__ as unknown as ResolvedCompose | undefined;
         if (!compose) throw new Error(`slot ${sid}: missing resolved compose`);
-        const clipPath = path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
-        await buildSlotClip(sid, compose, width, height, fps, clipPath);
-        clipPaths[i] = clipPath;
+        const cachedClip = SLOT_CACHE_ON ? path.join(SLOT_CACHE_DIR, slotClipKey(sid, compose) + '.mp4') : null;
+        if (cachedClip && await fileExists(cachedClip)) {
+          clipPaths[i] = cachedClip;   // checkpoint hit — slot unchanged, reuse the clip
+          slotCacheHits++;
+        } else {
+          const dest = cachedClip ?? path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
+          await buildSlotClip(sid, compose, width, height, fps, dest);
+          clipPaths[i] = dest;
+        }
         totalDur += compose.hold_s;
       }
     };
     await Promise.all(Array.from({ length: SLOT_CONC }, () => worker()));
   });
+  if (SLOT_CACHE_ON) console.log(`[compose] slot-cache: ${slotCacheHits}/${slot_order.length} clips reused (only ${slot_order.length - slotCacheHits} re-encoded)`);
 
   // Stage 2 — concat with concat demuxer.
   const concatFile = path.join(stageDir, 'concat.txt');
