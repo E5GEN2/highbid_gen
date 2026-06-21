@@ -1873,11 +1873,31 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           // adjective to the real view magnitude (user 2026-06-14 #13: don't
           // say "amazing" when avg views are low).
           const satStatsById = new Map<string, Awaited<ReturnType<typeof loadChannel>> | null>();
+          const { captureYtScreen: captureSatGrid } = await import('./yt-capture');
           for (const cId of preGate) {
             if (others.length >= 3) break;
             const cStats = await loadChannel(cId).catch(() => null);
-            if (bMinStatsOk(cStats)) { others.push(cId); satStatsById.set(cId, cStats); }
-            else console.warn(`[saturation] ${cId} fails min-stats gate — skipping page`);
+            if (!bMinStatsOk(cStats)) { console.warn(`[saturation] ${cId} fails min-stats gate — skipping page`); continue; }
+            // CAPTURE-FEASIBILITY (user 2026-06-21): the saturation beat shows this
+            // channel's videos GRID, so it must CURRENTLY render ≥4 video cards.
+            // Stale stats let a dead/emptied channel (videos tab now 404) clear
+            // min-stats and bake a YouTube "page isn't available" page into the
+            // video (job 128/129 niche_8 — a since-deleted channel with stale
+            // 15k-sub data). Capture the grid now and require real cards; the
+            // date-bucketed capture is reused by the compose, so this is not
+            // double work. A 404 throw (yt-capture's interstitial guard) or a
+            // sub-4-card grid → skip to the next candidate.
+            let satCardCount = 0;
+            try {
+              const satCap = await captureSatGrid(cId, { kind: 'videos_tab', mode: 'static' });
+              satCardCount = Object.keys((satCap?.bboxes ?? {}) as Record<string, unknown>)
+                .filter(k => /^video_card_\d+$/.test(k)).length;
+            } catch (e) {
+              console.warn(`[saturation] ${cId} videos_tab capture failed (${(e as Error).message.slice(0, 60)}) — skipping`);
+              continue;
+            }
+            if (satCardCount < 4) { console.warn(`[saturation] ${cId} grid has only ${satCardCount} cards (dead/empty) — skipping`); continue; }
+            others.push(cId); satStatsById.set(cId, cStats);
           }
           if (others.length === 1) {
             // Form B — extra-channel deep-dive (reference niche_4 Valaritas):

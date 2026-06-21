@@ -651,11 +651,24 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // genuinely dead channel still fails after MAX_ATTEMPTS rather than caching
     // the 404 as 'done'.
     const unavailable = await page.evaluate(() => {
-      const txt = (document.body?.innerText || '').slice(0, 3000);
-      const has404 = /this page isn'?t available|page not found|404 not found/i.test(txt);
       const hasContent = !!document.querySelector(
-        'ytd-rich-item-renderer, yt-lockup-view-model, ytd-grid-video-renderer, ytd-channel-name, #channel-header-container, tp-yt-paper-dialog');
-      return has404 && !hasContent;
+        'ytd-rich-item-renderer, yt-lockup-view-model, ytd-grid-video-renderer, ytd-channel-name, #channel-header-container, ytd-c4-tabbed-header-renderer, ytd-about-channel-renderer, tp-yt-paper-dialog');
+      if (hasContent) return false;   // real channel content present → not a 404
+      // No content: confirm YouTube's "page isn't available" interstitial. Its
+      // text renders in SHADOW DOM, so body.innerText misses it (job 129: the
+      // guard read innerText and never fired) — walk shadow roots explicitly.
+      const parts: string[] = [];
+      let total = 0;
+      const visit = (n: Node, depth: number) => {
+        if (!n || depth > 40 || total > 4000) return;
+        if (n.nodeType === 3) { const t = n.textContent || ''; parts.push(t); total += t.length; return; }
+        const sr = (n as Element).shadowRoot;
+        if (sr) visit(sr as unknown as Node, depth + 1);
+        const kids = n.childNodes;
+        for (let i = 0; i < kids.length; i++) visit(kids[i], depth + 1);
+      };
+      visit(document.body, 0);
+      return /this page isn'?t available|page not found|404 not found|doesn'?t exist/i.test(parts.join(' '));
     }).catch(() => false);
     if (unavailable) throw new Error(`YT_PAGE_UNAVAILABLE: "page isn't available" interstitial for ${url} (transient — retrying with fresh proxy)`);
 
