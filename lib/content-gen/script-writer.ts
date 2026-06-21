@@ -48,6 +48,7 @@ export interface ChannelData {
   subscriber_count?: number;
   total_views?: number;
   video_count?: number;
+  recent_videos_avg_views?: number;  // avg views over recent uploads (matches the grid)
   joined_date?: string;       // ISO
   top_video_id?: string;
   top_video_title?: string;

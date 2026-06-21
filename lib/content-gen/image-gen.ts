@@ -169,9 +169,16 @@ function pageOfWords(words: string[]): number[] {
     pages[i] = page; count++;
     if (/[,.;:—–!?]$/.test(words[i])) lastPunct = i;
     if (count >= MAX_WORDS_PER_SCREEN && i < words.length - 1) {
-      // If a recent punctuation break exists inside this page, retro-split
-      // there so the page ends on a natural boundary.
-      if (lastPunct > i - count && lastPunct < i) {
+      if (/\d$/.test(words[i]) && /^(million|thousand|billion)\b/i.test(words[i + 1])) {
+        // Never strand a number from its unit ("7.9" | "million views"): push
+        // the number onto the next page so "7.9 million" reads as one views
+        // count on a single frame (user 2026-06-21 #2). Highest priority — a
+        // split views count looks worse than a non-punctuation break.
+        pages[i] = page + 1;
+        count = 1;
+      } else if (lastPunct > i - count && lastPunct < i) {
+        // If a recent punctuation break exists inside this page, retro-split
+        // there so the page ends on a natural boundary.
         for (let j = lastPunct + 1; j <= i; j++) pages[j] = page + 1;
         count = i - lastPunct;
       } else {

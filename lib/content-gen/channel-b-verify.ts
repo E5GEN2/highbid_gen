@@ -115,10 +115,32 @@ async function topTitles(channelId: string, n: number): Promise<string[]> {
   return r.rows.map(x => x.title);
 }
 
+/** Top-viewed LIVE video thumbnails as base64 JPEGs — the visual evidence for
+ *  format_match (titles alone misjudged two same-format channels as different;
+ *  user 2026-06-21 #7). Downgrades maxres→hq for size, fetches in parallel,
+ *  drops any that error so the verify degrades to titles-only when offline. */
+async function topThumbsB64(channelId: string, n: number): Promise<string[]> {
+  const pool = getMainPool();
+  const r = await pool.query<{ thumbnail: string }>(
+    `SELECT thumbnail FROM niche_spy_videos
+      WHERE channel_id = $1 AND thumbnail IS NOT NULL AND thumbnail_dead_at IS NULL
+      ORDER BY view_count DESC NULLS LAST LIMIT $2`, [channelId, n]);
+  const got = await Promise.all(r.rows.map(async (row) => {
+    const url = row.thumbnail.replace(/\/maxresdefault\.jpg$/, '/hqdefault.jpg');
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (!resp.ok) return null;
+      const buf = Buffer.from(await resp.arrayBuffer());
+      return buf.length > 1000 ? buf.toString('base64') : null;   // <1KB = YT's gray error tile
+    } catch { return null; }
+  }));
+  return got.filter((x): x is string => !!x);
+}
+
 /** Bump to invalidate cached verdicts after a prompt change. v2: subject
  *  "same" sharpened to the specific topic domain (broad-genre matches
  *  mislabeled a true-crime channel as same-subject in a tornado niche). */
-const PROMPT_V = 3;  // v3: subject_match tightened — a BROADER-than-hero catalog is "different", not "same" (user #3)
+const PROMPT_V = 4;  // v4: multimodal — top video thumbnails added so format_match reads VISUAL style, not title wording (two same-format Young-Sheldon channels were mislabeled "different format"; user 2026-06-21 #7)
 
 export interface HeroEvidence {
   channelId: string;
@@ -140,20 +162,22 @@ export async function classifyRelationship(hero: HeroEvidence, candidateChannelI
     [hero.channelId, candidateChannelId]).catch(() => ({ rows: [] as Array<{ verdict_jsonb: RelationVerdict }> }));
   if (hit.rows[0]) return hit.rows[0].verdict_jsonb;
 
-  const [heroTitles, candTitles, candName] = await Promise.all([
+  const [heroTitles, candTitles, candName, heroThumbs, candThumbs] = await Promise.all([
     topTitles(hero.channelId, 10),
     topTitles(candidateChannelId, 12),
     pool.query<{ channel_name: string | null }>(
       `SELECT channel_name FROM niche_spy_channels WHERE channel_id = $1`, [candidateChannelId],
     ).then(r => r.rows[0]?.channel_name ?? candidateChannelId),
+    topThumbsB64(hero.channelId, 4),
+    topThumbsB64(candidateChannelId, 4),
   ]);
   if (heroTitles.length < 3 || candTitles.length < 3) {
     console.warn(`[channel-b-verify] insufficient titles for ${candidateChannelId} (hero=${heroTitles.length}, cand=${candTitles.length})`);
     return null;
   }
+  const hasThumbs = heroThumbs.length >= 2 && candThumbs.length >= 2;
 
-
-  const prompt = `You compare two YouTube channels for a "similar channel" callout in a faceless-niches video.
+  const promptHead = `You compare two YouTube channels for a "similar channel" callout in a faceless-niches video.
 
 HERO channel — niche: "${hero.nicheLabel ?? 'unknown'}"; what it makes: "${hero.recipeFormula ?? 'unknown'}"
 HERO top video titles:
@@ -163,18 +187,28 @@ CANDIDATE channel "${candName}" top video titles:
 ${candTitles.map(t => `- ${t}`).join('\n')}
 
 Classify the candidate against the hero on two INDEPENDENT axes:
-- format_match: "same" if the candidate uses the same VIDEO FORMAT / production style (e.g. size-comparison lineups vs ranked explainer countdowns vs scene breakdowns are all DIFFERENT formats), else "different".
+- format_match: "same" if the candidate uses the same VIDEO FORMAT / production style (e.g. size-comparison lineups vs ranked explainer countdowns vs scene breakdowns are all DIFFERENT formats), else "different".${hasThumbs ? ' JUDGE format_match PRIMARILY FROM THE THUMBNAILS shown below: matching visual style — same imagery type (character faces, dramatic scenes, gameplay, charts…), text-overlay treatment, and composition — is the SAME format EVEN IF the title wording differs. Titles styled differently ("The Truth About X" vs "X Did Something WORSE") over identical thumbnails are still the same format.' : ''}
 - subject_match: "same" ONLY if the candidate covers the SAME SPECIFIC topic domain as the hero — not merely a shared broad genre/mood, and NOT a BROADER catalog that merely happens to include the hero's topic (e.g. tornado disaster documentaries vs true-crime disappearance stories are DIFFERENT subjects even though both are dark documentary genres; fictional monsters vs real animals are DIFFERENT; a hero about "internet mysteries" vs a candidate covering disturbing facts across space, the ocean and history is DIFFERENT because the candidate is BROADER, not the same niche). "narrower" if the candidate is a strict SUB-SLICE of the hero's subject (one franchise, one entity type). "different" otherwise. If the candidate's catalog is WIDER than the hero's niche, it is "different", never "same". Sharing a broad genre or mood is NOT "same".
 
 Also output:
 - subject_term: 2-4 plain lowercase words. When subject_match is "different" or "narrower", name the CANDIDATE's subject ("SCP entries", "Game of Thrones scenes"). When "same", name the SHARED subject ("fictional monsters").
 - format_noun: 2-4 plain lowercase words naming the CANDIDATE's format, ONLY when format_match is "different" ("quick explainer countdowns"); else null.
-- confidence: "high" only if the titles make both axes obvious; otherwise "low".
+- confidence: "high" only if the evidence makes both axes obvious; otherwise "low".`;
 
-Output ONLY JSON: {"format_match": "...", "subject_match": "...", "subject_term": "...", "format_noun": ... , "confidence": "..."}`;
+  const promptTail = `Output ONLY JSON: {"format_match": "...", "subject_match": "...", "subject_term": "...", "format_noun": ... , "confidence": "..."}`;
+
+  type Part = { text: string } | { inlineData: { mimeType: string; data: string } };
+  const parts: Part[] = [{ text: promptHead }];
+  if (hasThumbs) {
+    parts.push({ text: '\nHERO channel video thumbnails:' });
+    for (const b of heroThumbs) parts.push({ inlineData: { mimeType: 'image/jpeg', data: b } });
+    parts.push({ text: `\nCANDIDATE channel "${candName}" video thumbnails:` });
+    for (const b of candThumbs) parts.push({ inlineData: { mimeType: 'image/jpeg', data: b } });
+  }
+  parts.push({ text: '\n' + promptTail });
 
   const body = JSON.stringify({
-    contents: [{ parts: [{ text: prompt }] }],
+    contents: [{ parts }],
     generationConfig: { temperature: 0.1, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } },
   });
   // PROXY first — Google keys free-tier quota per (project, caller-IP

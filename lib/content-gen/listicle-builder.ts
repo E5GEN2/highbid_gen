@@ -94,6 +94,7 @@ export async function loadChannel(channelId: string): Promise<ChannelData | null
     subscriber_count: ch.subscriber_count != null ? Number(ch.subscriber_count) : undefined,
     total_views: totalViewsReal ?? totalApprox,
     video_count: ch.video_count ?? undefined,
+    recent_videos_avg_views: ch.recent_videos_avg_views != null ? Number(ch.recent_videos_avg_views) : undefined,
     joined_date: ch.channel_created_at ?? ch.first_upload_at ?? undefined,
     // niche: producer-side listicle label preferred, sub_niche second, niche third.
     niche: cgAna.rows[0]?.niche_label ?? ana.rows[0]?.sub_niche ?? ana.rows[0]?.niche ?? undefined,
@@ -443,20 +444,12 @@ export function buildCtaSlots(niche_count: number, opts: CtaOpts = {}): Slot[] {
       ['whoosh']),
     // Icon screens are TEXT-FREE per the MG rule (icons always get a
     // dedicated screen; only the RPM-assumption combo may mix).
+    // Video ENDS on cta_card_2 — the affirmation checkmark (user 2026-06-21 #8).
+    // Removed cta_card_3 ("discover more…" pointing-hand) + cta_card_4
+    // (cat_thumbs_up "check out this video" on dark) so card_2 is the final card.
     makeFramingSlot('cta_card_2', 'video_cta', valueLine,
       { composition: 'icon_card', text: ``, bg_mode: 'white', icon: 'checkmark_green_circle', color_treatment: 'money_shot_green' },
       ['whoosh', 'ding']),
-    makeFramingSlot('cta_card_3', 'video_cta', `If you want to discover more faceless niches like these,`,
-      { composition: 'icon_card', text: ``, bg_mode: 'white', icon: 'pointing_hand', color_treatment: 'neutral' },
-      ['whoosh']),
-    makeFramingSlot('cta_card_4', 'video_cta', actionLine,
-      // cat_thumbs_up on DARK — the OG-decoded card_4 treatment. The
-      // round-1 "cat reads as noise" complaint was really the white-lock
-      // flipping this card white; with the dark exception restored the
-      // original icon is canon (and card_3 keeps the spec pointing hand).
-      { composition: 'icon_card', text: ``, bg_mode: 'dark_gray', icon: 'cat_thumbs_up', color_treatment: 'neutral' },
-      ['ascending_electronic_sting'],
-      'dark_gray'),
   ];
 }
 
@@ -1618,6 +1611,8 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       let b: typeof sim.channels[number] | null = null;
       let chB: Awaited<ReturnType<typeof loadChannel>> = null;
       let bVerdict: ReturnType<typeof verdicts.get> | null = null;
+      const { fetchChannelRecentUploads } = await import('../yt-recent-uploads');
+      const { pickRandomActiveYtPair } = await import('../yt-keys');
       for (const cand of sim.channels) {
         const v = verdicts.get(cand.channel_id) ?? null;
         if (v && isUnrelated(v)) continue;
@@ -1625,6 +1620,21 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
         if (!bMinStatsOk(c)) {
           console.warn(`[channel-b] ${cand.channel_name} fails min-stats gate (subs=${c?.subscriber_count ?? '?'}, views=${c?.total_views ?? '?'}, vids=${c?.video_count ?? '?'}) — skipping`);
           continue;
+        }
+        // LIVE no-videos guard (user 2026-06-21 #5): video_count goes stale when
+        // an owner deletes every upload after we discover the channel, so a now-empty
+        // channel can still clear the gate and land us on a blank channel_b page.
+        // Confirm uploads exist RIGHT NOW via the uploads playlist (UU = UC swap);
+        // skip only on a clean empty result, never on a fetch error (don't punish
+        // a good channel for a transient 403).
+        const livePair = await pickRandomActiveYtPair();
+        if (livePair) {
+          const uploadsId = cand.channel_id.replace(/^UC/, 'UU');
+          const live = await fetchChannelRecentUploads(uploadsId, livePair, { maxVideos: 5 }).catch(() => null);
+          if (live && !live.error && live.count === 0) {
+            console.warn(`[channel-b] ${cand.channel_name} has 0 current uploads (deleted by owner?) — skipping`);
+            continue;
+          }
         }
         b = cand; chB = c; bVerdict = v;
         break;
@@ -1879,13 +1889,18 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
             // only when the typical video genuinely performs; calmer + honest
             // wording for low-view channels.
             const satStats = satStatsById.get(satCh) ?? null;
-            const satAvgViews = (satStats?.total_views != null && satStats?.video_count)
-              ? Number(satStats.total_views) / Number(satStats.video_count) : null;
+            // Use RECENT avg views — that's what the grid shows. Lifetime
+            // total_views/video_count can read high while recent videos average
+            // under 1k, which made "consistently solid" clash with a low-view
+            // grid on screen (user 2026-06-21 #6). Wording is now view-honest.
+            const satAvgViews = satStats?.recent_videos_avg_views != null
+              ? Number(satStats.recent_videos_avg_views) : null;
             const satVerdictLine = satAvgViews == null
               ? 'and they post consistently in this same format.'
               : satAvgViews >= 100_000 ? 'and their view consistency is amazing.'
               : satAvgViews >= 20_000 ? 'and their views are consistently solid.'
-              : 'and they post steadily in this same format.';
+              : satAvgViews >= 3_000 ? 'and they post steadily in this same format.'
+              : 'and they are already starting to get noticed.';
             saturationSlots = [
               {
                 slot_id: `niche_${niche_index}_saturation_0`,

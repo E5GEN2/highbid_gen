@@ -311,6 +311,14 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
           // through the composer's placement map, then take the Nth
           // scanned text row BELOW it.
           const joinedCanvasY = panelMap.offY + (anchorBbox.y - panelMap.cropY) * panelMap.scale;
+          // Number-column left boundary: stat numbers are left-aligned with the
+          // Joined-date text, so map joined.x through the placement map (−8px
+          // slack for anti-aliasing). Scanning the marker extent from here skips
+          // the row-ICON column to its left. Most icons fall under the brightness
+          // gate, but the "views" trending-up arrow has a bright arrowhead the
+          // old scan grabbed, lunging the bar left into the arrow (user 2026-06-21
+          // #1, niche_1/niche_9 proof_2). Icons always sit left of this x.
+          const numColX = Math.round(panelMap.offX + (anchorBbox.x - panelMap.cropX) * panelMap.scale) - 8;
           // Containment match, not a y-threshold: the bbox top maps a few
           // px ABOVE the row's bright pixels (ascender offset x scale), so
           // ">,+6" included the joined row itself and every bar landed one
@@ -363,16 +371,24 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             while (cardX0 > 0 && darkAt(cardX0 - 1)) cardX0--;
             while (cardX1 < info.width - 1 && darkAt(cardX1 + 1)) cardX1++;
             // (2) text extent inside the card (white text on near-black).
+            // Scan from the number column (numColX) rightward so a leading
+            // row-icon is never part of the bar (fixes the "views" ↗ arrow,
+            // #1). Gate at 90 (was 110) so a sparse leading glyph like the
+            // lone "7" in "7 videos" registers — at 110 its column average
+            // fell under the gate and the bar skipped the digit (user
+            // 2026-06-21 #4). Verified via standalone bake on niche_1 (↗
+            // arrow), niche_8 ("7 videos"), and a no-icon modal.
             const scanX = (band: { top: number; h: number }) => {
+              const x0bound = Math.max(cardX0 + 12, numColX);
               let sx0 = -1, sx1 = -1;
-              for (let x = cardX0 + 12; x < cardX1 - 12; x++) {
+              for (let x = x0bound; x < cardX1 - 12; x++) {
                 let bright = 0;
                 for (let y = band.top; y < band.top + band.h; y++) {
                   const off = (y * info.width + x) * info.channels;
                   bright += (data[off] + data[off + 1] + data[off + 2]) / 3;
                 }
                 bright /= Math.max(1, band.h);
-                if (bright > 110) { if (sx0 < 0) sx0 = x; sx1 = x; }
+                if (bright > 90) { if (sx0 < 0) sx0 = x; sx1 = x; }
               }
               return [sx0, sx1] as const;
             };
@@ -555,10 +571,14 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
       if (typeof layer.crop_target === 'string' && layer.crop_target.startsWith('thumbnail_rapid_fire:')) {
         const idx = parseInt(layer.crop_target.split(':')[1] ?? '0', 10);
         const pick = pickCardBbox(idx);
-        // A LOWER-index fallback would duplicate an earlier rapid slot's
-        // card under "And another." narration (jobs 173/174, niche_8) —
-        // a page card is a distinct visual and the honest resort.
-        if (pick && pick.i >= idx) {
+        // EXACT-card only (user 2026-06-21 #3): the builder spoke
+        // titles_texts[idx] for this slot, so showing ANY other card —
+        // higher OR lower index — names one video while displaying another.
+        // pickCardBbox returns i===idx only when the resolved card still
+        // fits; any fallback (i!==idx) means the capture drifted out from
+        // under the build, so fall back to the honest full page rather than
+        // a mismatched card.
+        if (pick && pick.i === idx) {
           const { composeThumbnailRapidFireMG } = await import('./yt-compose-mg');
           const composed = await composeThumbnailRapidFireMG(basePath, withMetaLine(pick));
           return { kind: 'image', path: composed };
