@@ -1011,9 +1011,18 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
           clipPaths[i] = cachedClip;   // checkpoint hit — slot unchanged, reuse the clip
           slotCacheHits++;
         } else {
-          const dest = cachedClip ?? path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
-          await buildSlotClip(sid, compose, width, height, fps, dest);
-          clipPaths[i] = dest;
+          // RACE-SAFE publish: always encode to a UNIQUE temp, then atomically
+          // rename into the content-addressed cache path. Two slots with the same
+          // key (or parallel workers) thus never write the same file at once —
+          // rename(2) is atomic and idempotent on the identical-content race.
+          const tmp = path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
+          await buildSlotClip(sid, compose, width, height, fps, tmp);
+          if (cachedClip) {
+            await fs.rename(tmp, cachedClip).catch(() => {});   // atomic publish (overwrites idempotently)
+            clipPaths[i] = (await fileExists(cachedClip)) ? cachedClip : tmp;
+          } else {
+            clipPaths[i] = tmp;
+          }
         }
         totalDur += compose.hold_s;
       }
