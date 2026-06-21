@@ -1630,8 +1630,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       let b: typeof sim.channels[number] | null = null;
       let chB: Awaited<ReturnType<typeof loadChannel>> = null;
       let bVerdict: ReturnType<typeof verdicts.get> | null = null;
-      const { fetchChannelRecentUploads } = await import('../yt-recent-uploads');
-      const { pickRandomActiveYtPair } = await import('../yt-keys');
+      const { captureYtScreen: captureBGrid } = await import('./yt-capture');
       for (const cand of sim.channels) {
         const v = verdicts.get(cand.channel_id) ?? null;
         if (v && isUnrelated(v)) continue;
@@ -1640,20 +1639,24 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           console.warn(`[channel-b] ${cand.channel_name} fails min-stats gate (subs=${c?.subscriber_count ?? '?'}, views=${c?.total_views ?? '?'}, vids=${c?.video_count ?? '?'}) — skipping`);
           continue;
         }
-        // LIVE no-videos guard (user 2026-06-21 #5): video_count goes stale when
-        // an owner deletes every upload after we discover the channel, so a now-empty
-        // channel can still clear the gate and land us on a blank channel_b page.
-        // Confirm uploads exist RIGHT NOW via the uploads playlist (UU = UC swap);
-        // skip only on a clean empty result, never on a fetch error (don't punish
-        // a good channel for a transient 403).
-        const livePair = await pickRandomActiveYtPair();
-        if (livePair) {
-          const uploadsId = cand.channel_id.replace(/^UC/, 'UU');
-          const live = await fetchChannelRecentUploads(uploadsId, livePair, { maxVideos: 5 }).catch(() => null);
-          if (live && !live.error && live.count === 0) {
-            console.warn(`[channel-b] ${cand.channel_name} has 0 current uploads (deleted by owner?) — skipping`);
-            continue;
-          }
+        // CAPTURE-FEASIBILITY no-content guard (user 2026-06-21 #5): video_count
+        // goes stale when an owner deletes uploads after discovery, and the live
+        // uploads-API check proved UNRELIABLE under YT quota (403 → can't confirm,
+        // so a 0-video channel slipped through). Reliably confirm the channel still
+        // renders a real videos grid by CAPTURING it and requiring ≥4 cards — else
+        // the channel_b page shows "This channel doesn't have any content" (job
+        // 128/v7 niche_8 "Professor Jiang Predictions": 15.6k subs, 0 videos). Same
+        // proxy-capture path as the channel_b_page beat (no API quota). Skip a
+        // confirmed-empty grid or a 404; a transient capture failure is
+        // inconclusive → keep the candidate (the compose re-captures with retries).
+        try {
+          const bCap = await captureBGrid(cand.channel_id, { kind: 'videos_tab', mode: 'static' });
+          const bCards = Object.keys((bCap?.bboxes ?? {}) as Record<string, unknown>).filter(k => /^video_card_\d+$/.test(k)).length;
+          if (bCards < 4) { console.warn(`[channel-b] ${cand.channel_name} grid has only ${bCards} cards (no content) — skipping`); continue; }
+        } catch (e) {
+          const m = (e as Error).message ?? '';
+          if (/YT_PAGE_UNAVAILABLE/i.test(m)) { console.warn(`[channel-b] ${cand.channel_name} is a dead/404 channel — skipping`); continue; }
+          console.warn(`[channel-b] ${cand.channel_name} feasibility capture transient-failed (${m.slice(0, 40)}) — keeping`);
         }
         b = cand; chB = c; bVerdict = v;
         break;
