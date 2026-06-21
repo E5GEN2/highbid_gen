@@ -564,7 +564,17 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
   await emitToolCall('browser:launch', { proxy: proxy.url, kind, channelId });
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
+    args: [
+      '--no-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage',
+      // Deterministic brightness — never let the HOST OS appearance affect the
+      // capture. Chromium's auto-dark-for-web ("force dark") darkens/dims page
+      // content when the OS is in dark mode, which double-darkened our already-
+      // dark-themed YouTube captures (user 2026-06-20: dim titles + murky
+      // thumbnails after a macOS dark-mode upgrade). We want ONLY YouTube's own
+      // dark theme (via colorScheme + f6=400), so force these off + pin sRGB.
+      '--disable-features=WebContentsForceDark,ForcedColors',
+      '--force-color-profile=srgb',
+    ],
     proxy: { server: localProxyUrl },   // anonymous local — no creds needed in Chromium
     ...(executablePath ? { executablePath } : {}),
   });
@@ -680,6 +690,18 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // channel_b amplifier can speak views_texts[0] over that exact card
     // (spec rule: spoken figure must match the on-screen card).
     if (kind === 'videos_tab_popular') {
+      // The sort chip bar (Latest / Popular / Oldest) lazy-loads AFTER the
+      // grid scaffold. Querying immediately returns an empty chip list → a
+      // false "Popular chip not found" + a Latest-sorted grid (so the rapid-
+      // fire shows recent, not top, videos). Wait for the Popular chip to
+      // actually render first, then click. Only genuinely chip-less channels
+      // (too few videos for YT to show the sort bar) fall through to Latest.
+      await page.waitForFunction(() => {
+        const chips = Array.from(document.querySelectorAll(
+          'yt-chip-cloud-chip-renderer, ytd-feed-filter-chip-bar-renderer [role="tab"], [class*="ytChipShapeChip"]'
+        )) as HTMLElement[];
+        return chips.some(c => /^\s*Popular\s*$/i.test(c.innerText || ''));
+      }, undefined, { timeout: 7_000 }).catch(() => { /* chip may be genuinely absent */ });
       const clicked = await page.evaluate(() => {
         const chips = Array.from(document.querySelectorAll(
           'yt-chip-cloud-chip-renderer, ytd-feed-filter-chip-bar-renderer [role="tab"], [class*="ytChipShapeChip"]'
@@ -705,6 +727,34 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
       } else {
         console.warn(`[yt-capture] Popular chip not found for ${channelId} — grid stays Latest-sorted`);
       }
+    }
+
+    // Force ALL grid thumbnails to load before a static screenshot. The grid
+    // lazy-loads thumbnails as they scroll into view; a full-page shot taken too
+    // early (the old ≥4-thumbnail wait) bakes BLACK thumbnails into the lower
+    // rows, which the rapid-fire then crops as "dark" cards (user 2026-06-20:
+    // Dreamy Flow rapid showed an unloaded black thumbnail). Scroll the full
+    // viewport in steps to trigger lazy-load, wait until every in-view grid img
+    // has real pixels, then return to the top for the screenshot.
+    if ((kind === 'videos_tab' || kind === 'videos_tab_popular') && captureMode === 'static') {
+      const vpH = (VIEWPORT_BY_KIND[kind] ?? VIEWPORT).height;
+      for (let y = 0; y <= vpH + 200; y += 500) {
+        await page.evaluate((yy) => window.scrollTo(0, yy), y).catch(() => {});
+        await page.waitForTimeout(250);
+      }
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await page.waitForTimeout(500);
+      await page.waitForFunction((h) => {
+        const imgs = Array.from(document.querySelectorAll(
+          'ytd-rich-item-renderer img, ytd-grid-video-renderer img, ytd-rich-grid-renderer img',
+        )) as HTMLImageElement[];
+        const inView = imgs.filter((i) => {
+          const r = i.getBoundingClientRect();
+          return r.top < h - 100 && r.bottom > 0;
+        });
+        return inView.length >= 6 && inView.every((i) => i.naturalWidth > 50);
+      }, vpH, { timeout: 15_000 }).catch(() => { /* proceed anyway */ });
+      await page.waitForTimeout(400);
     }
 
     // For channel_page: the "Popular videos" / featured shelf lazy-loads
