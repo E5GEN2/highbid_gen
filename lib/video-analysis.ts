@@ -481,7 +481,15 @@ async function downloadSource(jobId: number, youtubeUrl: string, outPath: string
   await new Promise<void>((resolve, reject) => {
     const proc = spawn('yt-dlp', [
       '--merge-output-format', 'mp4',
-      '-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b',
+      // Cap at ≤480p. We download the FULL file (sectioned download 403s through
+      // the rotating proxy — see above) but only need it for AUDIO-VISUAL
+      // transcription (describing on-screen action + audio), where 480p is
+      // plenty. Best-quality (1080p+) made multi-hour videos 2-4 GB and they
+      // stalled the proxied download past the timeout (user 2026-06-20: Dreamy
+      // Flow's 2.5-4 hr tracks). ≤480p shrinks that ~4-6× so the full download
+      // completes in-window. Fall back ≤720p, then best, so we never fail to
+      // find a format.
+      '-f', 'bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480]/b[height<=720]/b',
       '-o', outPath, '--no-warnings', '--no-playlist', '--newline',
       '--proxy', proxy.url, youtubeUrl,
     ]);
