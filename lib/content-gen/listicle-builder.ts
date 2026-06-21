@@ -14,6 +14,7 @@
  */
 
 import { writeScript, type ScriptWriterInput, type ChannelData, type NarrationBeat } from './script-writer';
+import { withRetry, isTransientError } from './retry';
 import { type ConcreteScript, type HighlightRow } from './concrete-script';
 import { type ChannelBeatPlan, type BeatFlags, applyToggle } from './beat-plan';
 import { getPool } from '../db';
@@ -1383,7 +1384,22 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     // per-minute quota (Mr. Nightmare dropped with 429 on the MG anchor
     // render, 2026-06-11).
     if (acceptedCount > 0) await new Promise(r => setTimeout(r, 3000));
-    const result = await writeScript(input);
+    // W1: retry the niche writer on TRANSIENT failures (429 quota, malformed
+    // model JSON). A niche must never drop on a one-off model hiccup — Professor
+    // Jiang + Mr. Nightmare were lost exactly this way. Permanent failures (bad
+    // narration etc.) return normally and drop without wasted retries.
+    let result: Awaited<ReturnType<typeof writeScript>>;
+    try {
+      result = await withRetry(async () => {
+        const r = await writeScript(input);
+        if ((!r.ok || !r.script) && isTransientError(new Error(r.errors?.[0]?.message ?? ''))) {
+          throw new Error(r.errors?.[0]?.message ?? 'writer transient failure');
+        }
+        return r;
+      }, { attempts: 3, baseDelayMs: 5000, label: `writeScript:${cid.slice(-6)}` });
+    } catch (e) {
+      result = { ok: false, errors: [{ message: ((e as Error).message ?? 'writer failed after retries').slice(0, 200) }] } as Awaited<ReturnType<typeof writeScript>>;
+    }
     if (!result.ok || !result.script) {
       channelEvents.push({
         channelId: cid, niche_index, channel_label: ch.channel_name ?? cid,
@@ -1584,7 +1600,10 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     let channelBSlots: Slot[] = [];
     let saturationSlots: Slot[] = [];
     try {
-      const sim = await findSimilarChannels(cid, channels);
+      // W2: retry the embedding/pgvector lookup on transient DB/network errors
+      // so a niche doesn't silently lose its channel_b + saturation beats over a
+      // one-off hiccup (the outer catch still degrades gracefully if all fail).
+      const sim = await withRetry(() => findSimilarChannels(cid, channels), { attempts: 2, baseDelayMs: 3000, label: `similar:${cid.slice(-6)}` });
       // Relationship verification (channel-b-verify.ts): classify every
       // candidate we might SHOW on the format/subject axes so the
       // narration never overclaims ("the same kind of videos" over a

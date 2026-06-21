@@ -490,7 +490,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
   // fresh → fresh getRandomHealthyProxy() → likely different proxy from
   // the ~57-strong online pool. ~17% individual failure rate observed →
   // 3 attempts ≈ 99.5% effective success.
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = (kind === 'videos_tab_popular') ? 5 : 4;   // W4: was 3. At ~17% per-attempt failure, 4→5 cuts residual failure ~0.5%→~0.08-0.02%; popular-tab needs the chip click so gets one extra.
   let lastErr: Error | null = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -514,7 +514,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
           .test(msg);
       if (!transient || attempt === MAX_ATTEMPTS) break;
       // Backoff briefly so we don't hammer a slow proxy pool.
-      await new Promise(r => setTimeout(r, 800 * attempt));
+      await new Promise(r => setTimeout(r, Math.min(5000, 800 * attempt + Math.random() * 300)));  // W4: + jitter, capped 5s
     }
   }
   await pool.query(
