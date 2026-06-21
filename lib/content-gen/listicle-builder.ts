@@ -1879,22 +1879,26 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
             const cStats = await loadChannel(cId).catch(() => null);
             if (!bMinStatsOk(cStats)) { console.warn(`[saturation] ${cId} fails min-stats gate — skipping page`); continue; }
             // CAPTURE-FEASIBILITY (user 2026-06-21): the saturation beat shows this
-            // channel's videos GRID, so it must CURRENTLY render ≥4 video cards.
-            // Stale stats let a dead/emptied channel (videos tab now 404) clear
-            // min-stats and bake a YouTube "page isn't available" page into the
-            // video (job 128/129 niche_8 — a since-deleted channel with stale
-            // 15k-sub data). Capture the grid now and require real cards; the
-            // date-bucketed capture is reused by the compose, so this is not
-            // double work. A 404 throw (yt-capture's interstitial guard) or a
-            // sub-4-card grid → skip to the next candidate.
-            let satCardCount = 0;
+            // channel's videos GRID, so a dead/emptied channel (videos tab now
+            // 404) bakes a YouTube "page isn't available" page into the video
+            // (job 128/129 niche_8 — a since-deleted channel with stale 15k-sub
+            // stats). Capture the grid and require real cards; the date-bucketed
+            // capture is reused by the compose. Skip ONLY on a CONFIRMED-dead
+            // signal — a 404 interstitial (YT_PAGE_UNAVAILABLE) or a captured but
+            // sub-4-card grid. A transient proxy/timeout failure is INCONCLUSIVE,
+            // so KEEP the channel: dropping a valid beat over a proxy hiccup is
+            // its own regression (job 130 lost good saturations that way); the
+            // compose re-captures with its own retries.
+            let satCardCount = 4;  // default OK; only a successful capture can disprove
             try {
               const satCap = await captureSatGrid(cId, { kind: 'videos_tab', mode: 'static' });
               satCardCount = Object.keys((satCap?.bboxes ?? {}) as Record<string, unknown>)
                 .filter(k => /^video_card_\d+$/.test(k)).length;
             } catch (e) {
-              console.warn(`[saturation] ${cId} videos_tab capture failed (${(e as Error).message.slice(0, 60)}) — skipping`);
-              continue;
+              const m = (e as Error).message ?? '';
+              if (/YT_PAGE_UNAVAILABLE/i.test(m)) { console.warn(`[saturation] ${cId} is a dead/404 channel — skipping`); continue; }
+              console.warn(`[saturation] ${cId} feasibility capture transient-failed (${m.slice(0, 50)}) — keeping (compose retries)`);
+              satCardCount = 4;   // inconclusive → trust it
             }
             if (satCardCount < 4) { console.warn(`[saturation] ${cId} grid has only ${satCardCount} cards (dead/empty) — skipping`); continue; }
             others.push(cId); satStatsById.set(cId, cStats);
