@@ -1014,7 +1014,11 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
   // music_token=null disables the bed entirely.
   const outName = `job-${jobId}-${Date.now()}.mp4`;
   const outPath = path.join(COMPOSE_DIR, outName);
-  const musicToken = (args.music_token === undefined ? 'bed' : args.music_token) || null;
+  // OG-MG listicles use NO music bed. Default to none rather than 'bed' — a
+  // null music_token degrades to undefined through the args pipeline and the
+  // old default then 400'd on every >30s render (elevenlabs caps sfx at 30s).
+  // An explicit music_token is still honoured.
+  const musicToken = args.music_token || null;
   if (musicToken) {
     try {
       await withToolCall(`compose:music_bed (${musicToken})`, async () => {
