@@ -2084,7 +2084,9 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
         slot_order: allSlots.map(s => s.slot_id),
         width: 1920, height: 1080, fps: 30,
         default_bg: 'dark_gray',
-        music_token: 'bed',
+        // No music bed — the OG MG reference uses none (user 2026-06-20).
+        // null skips the bed entirely in video-compose (no ElevenLabs call).
+        music_token: null,
       },
     },
   };
