@@ -510,7 +510,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
       lastErr = err as Error;
       const msg = lastErr.message ?? '';
       const transient =
-        /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|EAI_AGAIN|HARD_TIMEOUT/i
+        /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|EAI_AGAIN|HARD_TIMEOUT|YT_PAGE_UNAVAILABLE/i
           .test(msg);
       if (!transient || attempt === MAX_ATTEMPTS) break;
       // Backoff briefly so we don't hammer a slow proxy pool.
@@ -641,6 +641,23 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
     // rejection — a not-quite-idle page is fine for our screenshot.
     await page.waitForLoadState('networkidle', { timeout: NETIDLE_MS }).catch(() => {});
     await page.waitForTimeout(800);
+
+    // 404 GUARD: a transient proxy/region hiccup can serve YouTube's "This page
+    // isn't available" interstitial (HTTP 200 + 404-styled body) for a LIVE
+    // channel — capturing it bakes a broken page into the video (niche_8
+    // saturation, job 128: channel was HTTP-200 live but the capture 404'd).
+    // Detect the interstitial — error text present AND no channel content — and
+    // throw a TRANSIENT error so the retry loop re-runs with a fresh proxy. A
+    // genuinely dead channel still fails after MAX_ATTEMPTS rather than caching
+    // the 404 as 'done'.
+    const unavailable = await page.evaluate(() => {
+      const txt = (document.body?.innerText || '').slice(0, 3000);
+      const has404 = /this page isn'?t available|page not found|404 not found/i.test(txt);
+      const hasContent = !!document.querySelector(
+        'ytd-rich-item-renderer, yt-lockup-view-model, ytd-grid-video-renderer, ytd-channel-name, #channel-header-container, tp-yt-paper-dialog');
+      return has404 && !hasContent;
+    }).catch(() => false);
+    if (unavailable) throw new Error(`YT_PAGE_UNAVAILABLE: "page isn't available" interstitial for ${url} (transient — retrying with fresh proxy)`);
 
     // For about_page, /about redirects to the channel page and pops a modal.
     // Wait for the modal to actually appear (contains a "Joined" text line)
