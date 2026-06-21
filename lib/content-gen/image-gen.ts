@@ -57,7 +57,11 @@ const MAX_TEXT_LEN = 80;
 const RENDERER_VERSION = 'r7'; // r5: white fg on dark cards (r4: MG dark #3C3C3C + italic builds)
 
 function cacheKey(args: ImageGenArgs, width: number, height: number): string {
-  const key = JSON.stringify({ v: RENDERER_VERSION, ...args, width, height });
+  // text_card_reveal paging changed (number+unit kept on one frame, user
+  // 2026-06-21 #2) — salt ONLY reveal gems so they regenerate, without busting
+  // every other cached image (args alone don't capture the paging-logic change).
+  const extra = args.composition === 'text_card_reveal' ? { rv: 'paging2' } : {};
+  const key = JSON.stringify({ v: RENDERER_VERSION, ...extra, ...args, width, height });
   return crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
 }
 

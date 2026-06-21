@@ -454,7 +454,7 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
                     : Math.max(2, Math.round(bands[pj].W * k / K));
                   if (wk > 0) fillBand(buf, bands[pj], wk);
                 }
-                const vPath = path.join(os.tmpdir(), `mg-hl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-b${bi}k${k}.png`);
+                const vPath = path.join(os.tmpdir(), `mg-hl-${Date.now()}-${Math.random().toString(36).slice(2, 12)}-b${bi}k${k}.png`);
                 await sharp(buf, { raw: { width: info.width, height: info.height, channels: info.channels as 3 | 4 } })
                   .png().toFile(vPath);
                 variants.push(vPath);
@@ -958,19 +958,32 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
   const stageDir = path.join(os.tmpdir(), `producer-${jobId}-${Date.now()}`);
   await fs.mkdir(stageDir, { recursive: true });
 
-  // Stage 1 — build per-slot clips.
-  const clipPaths: string[] = [];
+  // Stage 1 — build per-slot clips. WORKER POOL, not a sequential loop: each
+  // slot writes its own slot-NNN.mp4 (+ slot-keyed temp files) and the clips are
+  // concatenated afterward in index order, so the encodes are independent. ff()
+  // has no global ffmpeg semaphore, so a sequential loop pinned 1 core and made
+  // a 254-slot render take ~30min on a 14-core box; this fans out to SLOT_CONC
+  // concurrent encodes (~6× faster). totalDur/clipPaths writes are race-free in
+  // JS (synchronous, no await between read and write).
+  const clipPaths: string[] = new Array(slot_order.length);
   let totalDur = 0;
-  await withToolCall(`compose:build_slots (${slot_order.length})`, async () => {
-    for (let i = 0; i < slot_order.length; i++) {
-      const sid = slot_order[i];
-      const compose = bag[sid]?.__compose__ as unknown as ResolvedCompose | undefined;
-      if (!compose) throw new Error(`slot ${sid}: missing resolved compose`);
-      const clipPath = path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
-      await buildSlotClip(sid, compose, width, height, fps, clipPath);
-      clipPaths.push(clipPath);
-      totalDur += compose.hold_s;
-    }
+  const SLOT_CONC = Math.max(2, Math.min(8, os.cpus().length - 4));
+  await withToolCall(`compose:build_slots (${slot_order.length}, conc=${SLOT_CONC})`, async () => {
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= slot_order.length) return;
+        const sid = slot_order[i];
+        const compose = bag[sid]?.__compose__ as unknown as ResolvedCompose | undefined;
+        if (!compose) throw new Error(`slot ${sid}: missing resolved compose`);
+        const clipPath = path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
+        await buildSlotClip(sid, compose, width, height, fps, clipPath);
+        clipPaths[i] = clipPath;
+        totalDur += compose.hold_s;
+      }
+    };
+    await Promise.all(Array.from({ length: SLOT_CONC }, () => worker()));
   });
 
   // Stage 2 — concat with concat demuxer.
