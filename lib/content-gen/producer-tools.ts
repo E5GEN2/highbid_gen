@@ -500,15 +500,20 @@ async function runVideoCompose(args: Record<string, unknown>): Promise<ToolOutpu
   const default_bg = (args.default_bg as 'white' | 'dark_gray') ?? 'dark_gray';
   // Music bed token — defaults to 'bed' (calm lofi). Pass music_token=null
   // through the script.final.args to disable.
-  const music_token = (args.music_token === undefined) ? 'bed' : (args.music_token as string | null);
+  // OG-MG listicles use NO music bed; default to none (was 'bed', which 400'd on
+  // every >30s render — elevenlabs caps sfx at 30s). Explicit token still honoured.
+  const music_token = (args.music_token as string | null | undefined) || null;
   const bag = (args.__bag__ as Record<string, Record<string, Record<string, unknown>>>) ?? {};
   const jobId = (args.__job_id__ as number) ?? 0;
+  // slot_id → narration, for the HB_TELEPROMPTER debug overlay (was dropped here).
+  const narrations = (args.__narrations__ as Record<string, string>) ?? {};
   if (slot_order.length === 0) throw new Error('video_compose: empty slot_order');
   const result = await videoCompose({
     slot_order, width, height, fps, default_bg,
     music_token,
     __bag__: bag,
     __job_id__: jobId,
+    __narrations__: narrations,
   });
   return {
     file_url: result.file_url,
