@@ -1073,6 +1073,38 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
   });
   if (SLOT_CACHE_ON) console.log(`[compose] slot-cache: ${slotCacheHits}/${slot_order.length} clips reused (only ${slot_order.length - slotCacheHits} re-encoded)`);
 
+  // Optional PER-NICHE SPLIT (HB_SPLIT_NICHES=1, render.mts --split-niches):
+  // group the already-built slot clips (each carries its teleprompter overlay +
+  // voice/sfx audio) by their niche prefix and concat each into a standalone file
+  // under clips/teleprompter/, so every channel is its own clip — e.g. to record
+  // per-channel narration against the teleprompter. The full concat still runs.
+  if (process.env.HB_SPLIT_NICHES === '1') {
+    const SPLIT_DIR = path.join(CLIPS_DIR, 'teleprompter');
+    await fs.mkdir(SPLIT_DIR, { recursive: true }).catch(() => {});
+    const groupMap = new Map<string, string[]>();   // insertion order preserved
+    let curNiche = 'intro';
+    for (let i = 0; i < slot_order.length; i++) {
+      const m = slot_order[i].match(/^(niche_\d+)/);
+      const grp = m ? m[1] : (slot_order[i].startsWith('cta') ? 'cta' : curNiche);
+      if (m) curNiche = m[1];
+      if (!groupMap.has(grp)) groupMap.set(grp, []);
+      groupMap.get(grp)!.push(clipPaths[i]);
+    }
+    await withToolCall(`compose:split_niches (${groupMap.size})`, async () => {
+      for (const [name, clips] of groupMap) {
+        const nm = name.match(/^niche_(\d+)/);
+        const fname = nm ? `niche_${String(+nm[1]).padStart(2, '0')}.mp4` : (name === 'cta' ? 'zz_cta.mp4' : `${name}.mp4`);
+        const listP = path.join(stageDir, `split-${name}.txt`);
+        await fs.writeFile(listP, clips.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
+        const outP = path.join(SPLIT_DIR, fname);
+        await ff(['-y', '-f', 'concat', '-safe', '0', '-i', listP, '-c', 'copy', outP]).catch(async () => {
+          await ff(['-y', '-f', 'concat', '-safe', '0', '-i', listP, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', String(fps), '-preset', 'medium', '-crf', '20', outP]);
+        });
+      }
+    });
+    console.log(`[compose] split-niches → ${groupMap.size} clips in ${SPLIT_DIR}`);
+  }
+
   // Stage 2 — concat with concat demuxer.
   const concatFile = path.join(stageDir, 'concat.txt');
   await fs.writeFile(concatFile, clipPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));

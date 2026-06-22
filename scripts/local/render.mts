@@ -59,6 +59,12 @@ if (process.argv.includes('--teleprompter')) {
   process.env.HB_TELEPROMPTER = '1';
   console.log('[mode] TELEPROMPTER — narration overlay on');
 }
+// --split-niches → also emit each channel (niche) as a standalone clip under
+// clips/teleprompter/ (intro/cta as their own clips too). For per-channel recording.
+if (process.argv.includes('--split-niches')) {
+  process.env.HB_SPLIT_NICHES = '1';
+  console.log('[mode] SPLIT-NICHES — per-channel clips → clips/teleprompter/');
+}
 
 // --local → run against the mirrored local Postgres (hbgen_local) instead of
 // Railway. Populate it first with scripts/local/pull-local.mts.
