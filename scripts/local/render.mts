@@ -164,7 +164,12 @@ async function main() {
   if (m) {
     const localMp4 = path.join(CLIPS, 'producer_renders', decodeURIComponent(m[1]));
     if (existsSync(localMp4)) {
-      const latest = path.join(CLIPS, '_latest.mp4');
+      // Debug renders (--teleprompter / --labels) copy to their OWN _latest name
+      // so they never clobber the clean _latest.mp4 deliverable.
+      const latestName = process.env.HB_TELEPROMPTER === '1' ? '_latest_teleprompter.mp4'
+        : process.env.HB_DEBUG_LABELS === '1' ? '_latest_labeled.mp4'
+        : '_latest.mp4';
+      const latest = path.join(CLIPS, latestName);
       copyFileSync(localMp4, latest);
       log(`mp4 → ${localMp4}`);
       log(`copy → ${latest}`);
