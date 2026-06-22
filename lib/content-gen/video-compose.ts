@@ -959,19 +959,13 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
         await sharp(Buffer.from(`<svg width="${D}" height="${D}"><rect width="${D}" height="${D}" fill="#000000"/><circle cx="${D / 2}" cy="${D / 2}" r="${D / 2 - 1}" fill="#FFFFFF"/></svg>`)).png().toFile(maskPath);
       }
       const fcOut = path.join(path.dirname(outPath), `fc-${path.basename(outPath)}`);
-      // The face plays only for the NARRATION span (fc.end_s−fc.start_s). For beats with
-      // a dwell (hold_s > narration → silent video hold), FREEZE the last frame so the
-      // face holds still during the silence instead of showing mouth-movement footage.
-      const narrDur = Math.max(0.04, fc.end_s - fc.start_s);
-      const dwell = Math.max(0, hold_s - narrDur);
-      const freeze = dwell > 0.05 ? `tpad=stop_mode=clone:stop_duration=${dwell.toFixed(3)},` : '';
       await ff([
         '-y',
         '-i', silentPath,
-        '-ss', fc.start_s.toFixed(3), '-t', narrDur.toFixed(3), '-i', FCSRC,
+        '-ss', fc.start_s.toFixed(3), '-t', hold_s.toFixed(3), '-i', FCSRC,
         '-i', maskPath,
         '-filter_complex',
-        `[1:v]${freeze}scale=${D}:${D},setsar=1,format=rgba[fcv];[fcv][2:v]alphamerge[fcm];[0:v][fcm]overlay=W-w-${M}:H-h-${M}[vout]`,
+        `[1:v]scale=${D}:${D},setsar=1,format=rgba[fcv];[fcv][2:v]alphamerge[fcm];[0:v][fcm]overlay=W-w-${M}:H-h-${M}[vout]`,
         '-map', '[vout]',
         '-t', hold_s.toFixed(3),
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', String(fps),
@@ -1061,7 +1055,7 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
   // composers it calls — otherwise a stale clip would be reused after a code change.
   const SLOT_CACHE_ON = process.env.HB_SLOT_CACHE === '1';
   const SLOT_CACHE_DIR = path.join(CLIPS_DIR, 'slot_clips');
-  const SLOT_COMPOSE_VERSION = 'sc3';
+  const SLOT_COMPOSE_VERSION = 'sc2';
   if (SLOT_CACHE_ON) await fs.mkdir(SLOT_CACHE_DIR, { recursive: true }).catch(() => {});
   const fileExists = async (p: string) => { try { await fs.access(p); return true; } catch { return false; } };
   let slotCacheHits = 0;

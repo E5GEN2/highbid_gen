@@ -181,6 +181,19 @@ async function main() {
     script = { ...script, slots: script.slots.filter((s) => s.beat_id !== 'transition') };
     log(`--drop-transitions: removed ${before - script.slots.length} transition beats`);
   }
+
+  // ── 3f. --no-dwell: zero each slot's compose.dwell_s (the silent visual hold AFTER
+  // narration). For my-voice+face renders the dwell makes the face footage run past the
+  // audio (mouth moving with no sound); these beats are static, so dropping the dwell
+  // just shortens the beat to the narration length — nothing lost visually. ──
+  if (argv.includes('--no-dwell')) {
+    let n = 0;
+    for (const slot of script.slots) {
+      const c = slot.compose as { dwell_s?: number };
+      if (c.dwell_s) { c.dwell_s = 0; n++; }
+    }
+    log(`--no-dwell: zeroed dwell on ${n} beats`);
+  }
   log(`script ready: ${script.slots.length} slots, ${script.slots.reduce((a, s) => a + s.gems.length, 0)} gems`);
 
   // ── 4. Dynamic-import the pipeline (env is set, so CLIPS_DIR is correct) ──

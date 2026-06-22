@@ -153,12 +153,6 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
          WHERE s.seed_video_id = v.id AND s.status <> 'failed'
        )`
     : '';
-  // English-only: drop non-Latin-script / Vietnamese-tone-mark titles. The regex
-  // literal is a fixed constant (no user input) so it's safe to interpolate.
-  const englishOnlyClause = opts.englishOnly
-    ? `AND COALESCE(v.title, '') !~ '${NON_ENGLISH_TITLE_RE}'`
-    : '';
-
   const rowsRes = await pool.query(
     `WITH candidate_videos AS (
        SELECT v.id, v.url, v.title, v.thumbnail, v.view_count, v.posted_at,
@@ -171,7 +165,6 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
          ${longFormClause}
          ${topVideoOnlyClause}
          ${excludeSeededClause}
-         ${englishOnlyClause}
      ),
      per_channel AS (
        SELECT
@@ -237,10 +230,19 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
     [noveltyCutoff, minSubs, maxSubs],
   );
 
-  if (rowsRes.rows.length === 0) return [];
+  // English-only: drop non-Latin-script / Vietnamese-tone-mark titles in JS. The
+  // SQL `!~` regex over the whole candidate set blew the query past the request
+  // timeout; running it on the already-ranked top-500 rows here is instant. topK
+  // is sliced AFTER this, so we still return up to topK English candidates.
+  let rows = rowsRes.rows;
+  if (opts.englishOnly) {
+    const nonEnglish = new RegExp(NON_ENGLISH_TITLE_RE, 'u');
+    rows = rows.filter((r) => !nonEnglish.test(String(r.video_title ?? '')));
+  }
+  if (rows.length === 0) return [];
 
   // 3) Compute per-row percentile rank for the rows we're returning.
-  const ids = rowsRes.rows.map((r) => Number(r.video_id));
+  const ids = rows.map((r) => Number(r.video_id));
   const pctRes = await pool.query<{ id: number; pct: number }>(
     `WITH all_scored AS (
        SELECT id, novelty_score,
@@ -254,7 +256,7 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
   const pctById = new Map<number, number>(pctRes.rows.map((r) => [Number(r.id), parseFloat(String(r.pct))]));
 
   // 4) Score + shape the output.
-  const seeds: SeedCandidate[] = rowsRes.rows.map((r) => {
+  const seeds: SeedCandidate[] = rows.map((r) => {
     const ageDays = Number(r.channel_age_days) || 0;
     const subs    = Number(r.subscriber_count) || 0;
     const topV    = Number(r.channel_top_view) || 0;
