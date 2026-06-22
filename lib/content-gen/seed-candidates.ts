@@ -78,7 +78,18 @@ export interface SeedDiscoveryOptions {
    * even though 100K+ fresh candidates exist below them.
    */
   excludeSeeded?: boolean;
+  /**
+   * If true, drop candidates whose title contains a non-Latin script
+   * (Devanagari/CJK/Kana/Hangul/Arabic/Thai/Cyrillic/Hebrew) or Vietnamese
+   * tone marks — i.e. keep only English/Latin-script seeds. A title-script
+   * heuristic, not true language ID: romanized-foreign titles can still pass.
+   */
+  englishOnly?: boolean;
 }
+
+/** Character class of non-English scripts + Vietnamese-specific diacritics. A
+ *  title matching this is treated as non-English. */
+const NON_ENGLISH_TITLE_RE = '[ऀ-ॿ一-鿿぀-ヿ가-힣؀-ۿ฀-๿Ѐ-ӿ֐-׿ạảấầẩậắằẳặẹẻẽếềểễệịỉọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹđ]';
 
 function ageTier(ageDays: number): SeedCandidate['channel']['age_tier'] {
   if (ageDays > 365) return 'mature';
@@ -142,6 +153,11 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
          WHERE s.seed_video_id = v.id AND s.status <> 'failed'
        )`
     : '';
+  // English-only: drop non-Latin-script / Vietnamese-tone-mark titles. The regex
+  // literal is a fixed constant (no user input) so it's safe to interpolate.
+  const englishOnlyClause = opts.englishOnly
+    ? `AND COALESCE(v.title, '') !~ '${NON_ENGLISH_TITLE_RE}'`
+    : '';
 
   const rowsRes = await pool.query(
     `WITH candidate_videos AS (
@@ -155,6 +171,7 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
          ${longFormClause}
          ${topVideoOnlyClause}
          ${excludeSeededClause}
+         ${englishOnlyClause}
      ),
      per_channel AS (
        SELECT

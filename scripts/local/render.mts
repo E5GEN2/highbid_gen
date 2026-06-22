@@ -148,6 +148,39 @@ async function main() {
     console.error('         --summary-only  (print the beat plan, skip the render)');
     process.exit(1);
   }
+
+  // ── 3c. Narration override (--narration-manifest <json>): rewrite each slot's
+  // `narr` gem to cut from MY recording. Manifest maps slot_id → {src,start_s,end_s}.
+  // audio_slice cuts my voice; {{narr.duration_s}} re-times the beat to my pacing.
+  // No DB mutation — operates on the in-memory script only. ──
+  const nmIdx = argv.indexOf('--narration-manifest');
+  if (nmIdx >= 0 && argv[nmIdx + 1]) {
+    const manifest = JSON.parse(readFileSync(argv[nmIdx + 1], 'utf8')) as Record<string, { src: string; start_s: number; end_s: number }>;
+    let n = 0;
+    for (const slot of script.slots) {
+      const ov = manifest[slot.slot_id];
+      if (!ov) continue;
+      const narr = slot.gems.find((g) => g.id === 'narr') as { id: string; tool: string; args: Record<string, unknown> } | undefined;
+      if (narr) { narr.tool = 'audio_slice'; narr.args = { src: ov.src, start_s: ov.start_s, end_s: ov.end_s }; n++; }
+    }
+    log(`narration override → my voice: rewrote ${n} narr gems (${argv[nmIdx + 1]})`);
+  }
+
+  // ── 3d. --max-slots N: truncate the script for quick test renders. ──
+  const msIdx = argv.indexOf('--max-slots');
+  if (msIdx >= 0 && argv[msIdx + 1]) {
+    const k = parseInt(argv[msIdx + 1], 10);
+    script = { ...script, slots: script.slots.slice(0, k) };
+    log(`--max-slots ${k}: truncated to ${script.slots.length} slots`);
+  }
+
+  // ── 3e. --drop-transitions: remove the inter-niche transition beats (the
+  // dark-gray 0.5s cards that strobe between niches). Direct niche-to-niche cut. ──
+  if (argv.includes('--drop-transitions')) {
+    const before = script.slots.length;
+    script = { ...script, slots: script.slots.filter((s) => s.beat_id !== 'transition') };
+    log(`--drop-transitions: removed ${before - script.slots.length} transition beats`);
+  }
   log(`script ready: ${script.slots.length} slots, ${script.slots.reduce((a, s) => a + s.gems.length, 0)} gems`);
 
   // ── 4. Dynamic-import the pipeline (env is set, so CLIPS_DIR is correct) ──
@@ -174,6 +207,7 @@ async function main() {
       // so they never clobber the clean _latest.mp4 deliverable.
       const latestName = process.env.HB_TELEPROMPTER === '1' ? '_latest_teleprompter.mp4'
         : process.env.HB_DEBUG_LABELS === '1' ? '_latest_labeled.mp4'
+        : argv.includes('--narration-manifest') ? '_latest_myvoice.mp4'
         : '_latest.mp4';
       const latest = path.join(CLIPS, latestName);
       copyFileSync(localMp4, latest);

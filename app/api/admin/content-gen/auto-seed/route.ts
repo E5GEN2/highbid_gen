@@ -31,6 +31,7 @@ const FLAG_KEYS = [
   'auto_seed_interval_minutes',
   'novelty_auto_recompute_enabled',
   'novelty_recompute_interval_minutes',
+  'seed_english_only',
 ];
 const STAMP_KEYS = [
   'last_seed_schedule_at',
@@ -87,6 +88,7 @@ export async function GET(req: NextRequest) {
       auto_seed_interval_minutes: parseInt(config.auto_seed_interval_minutes) || 30,
       novelty_auto_recompute_enabled: config.novelty_auto_recompute_enabled === 'true',
       novelty_recompute_interval_minutes: parseInt(config.novelty_recompute_interval_minutes) || 15,
+      seed_english_only: config.seed_english_only !== 'false',
     },
     stamps: {
       last_seed_schedule_at: config.last_seed_schedule_at ?? null,

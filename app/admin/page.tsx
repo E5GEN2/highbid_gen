@@ -649,6 +649,7 @@ export default function AdminPage() {
       auto_seed_interval_minutes: number;
       novelty_auto_recompute_enabled: boolean;
       novelty_recompute_interval_minutes: number;
+      seed_english_only: boolean;
     };
     stamps: Record<string, string | null>;
     ledger: Record<string, number>;
@@ -4877,6 +4878,16 @@ export default function AdminPage() {
                       className="w-3.5 h-3.5 accent-amber-400"
                     />
                     long-form only
+                  </label>
+                  <label className="text-xs text-emerald-300 flex items-center gap-1.5 ml-2 cursor-pointer" title="Scheduler-wide: drop non-Latin-script / non-English titles (persisted)">
+                    <input
+                      type="checkbox"
+                      checked={autoSeed?.config.seed_english_only ?? true}
+                      disabled={autoSeedBusy}
+                      onChange={async e => { await setAutoSeedFlag('seed_english_only', e.target.checked); await fetchSeedCandidates(); }}
+                      className="w-3.5 h-3.5 accent-emerald-400"
+                    />
+                    English only
                   </label>
                   <button
                     type="button"

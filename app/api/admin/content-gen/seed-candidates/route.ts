@@ -73,15 +73,23 @@ export async function GET(req: NextRequest) {
     [minNoveltyPct / 100],
   );
 
+  // English-only: query param overrides; default = the persisted scheduler
+  // setting (ON unless seed_english_only='false'), so the preview matches what
+  // the scheduler will actually pick.
+  const englishParam = sp.get('englishOnly');
+  const englishOnly = englishParam === 'true' ? true
+    : englishParam === 'false' ? false
+    : (await pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='seed_english_only'`)).rows[0]?.value !== 'false';
+
   const seeds = await findSeedCandidates({
     topK, minNoveltyPct, minSubs, maxSubs, topVideoOnly, longFormOnly,
-    excludeSeeded: !includeSeeded,
+    excludeSeeded: !includeSeeded, englishOnly,
   });
 
   return NextResponse.json({
     ok: true,
     elapsedMs: Date.now() - t0,
-    params: { topK, minNoveltyPct, minSubs, maxSubs, topVideoOnly, longFormOnly },
+    params: { topK, minNoveltyPct, minSubs, maxSubs, topVideoOnly, longFormOnly, englishOnly },
     pool: {
       total_videos_with_novelty: parseInt(poolRes.rows[0]?.total_with_novelty ?? '0'),
       novelty_cutoff_used:       poolRes.rows[0]?.cutoff != null ? parseFloat(String(poolRes.rows[0].cutoff)) : null,

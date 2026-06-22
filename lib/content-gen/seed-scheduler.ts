@@ -45,6 +45,7 @@ interface SchedulerConfig {
   rofeAPIKey: string;
   maxSuggested: number;
   token: string;
+  englishOnly: boolean;
 }
 
 async function loadConfig(): Promise<SchedulerConfig> {
@@ -63,6 +64,9 @@ async function loadConfig(): Promise<SchedulerConfig> {
     rofeAPIKey:     c.agent_rofe_api_key || '',
     maxSuggested:   parseInt(c.agent_max_suggested_results) || 50,
     token:          c.xgodo_niche_spy_token || c.xgodo_api_token || process.env.XGODO_NICHE_SPY_TOKEN || process.env.XGODO_API_TOKEN || '',
+    // Default ON — filter seeds to English/Latin-script titles. Off only if the
+    // operator explicitly sets seed_english_only='false'.
+    englishOnly:    c.seed_english_only !== 'false',
   };
 }
 
@@ -255,7 +259,7 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
     // already-crawled videos and the loop starves even with 100K+ fresh
     // candidates below them.
     let pct = cfg.minNoveltyPct;
-    let candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true });
+    let candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true, englishOnly: cfg.englishOnly });
     let starvationNote: string | undefined;
 
     // Already-seeded video_ids (permanent unless failed).
@@ -283,7 +287,7 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
         `UPDATE admin_config SET value = $1 WHERE key = 'auto_seed_min_novelty_pct'`,
         [String(pct)],
       ).catch(() => {});
-      candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true });
+      candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true, englishOnly: cfg.englishOnly });
       afterVideoDedup = candidates.filter(c => !seededVideos.has(c.video_id));
     }
 
