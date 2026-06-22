@@ -376,6 +376,8 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
       // Pass the resolved bag — producer-tools.video_compose consumes it
       __bag__: bag,
       __job_id__: jobId,
+      // slot_id → spoken narration, for the HB_TELEPROMPTER debug overlay only.
+      __narrations__: Object.fromEntries(script.slots.map(s => [s.slot_id, s.narration ?? ''])),
     });
     final_video_url = composeOut.file_url as string;
     await upsertNode({

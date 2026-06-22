@@ -109,6 +109,8 @@ interface ComposeArgs {
   music_token?: string | null;
   __bag__: Record<string, Record<string, Record<string, unknown>>>;
   __job_id__: number;
+  /** slot_id → spoken narration, for the HB_TELEPROMPTER debug overlay only. */
+  __narrations__?: Record<string, string>;
 }
 
 // dark_gray re-measured 2026-06-12 on MG frames: canvas = 60,60,60.
@@ -628,7 +630,7 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
 /** Build a single width×height clip for one slot (default 1920×1080 16:9),
  *  with optional narration
  *  audio mixed in. */
-async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: number, height: number, fps: number, outPath: string): Promise<void> {
+async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: number, height: number, fps: number, outPath: string, narration?: string): Promise<void> {
   // Find the "video" channel layer — that's the main visual.
   const mainLayer = compose.layers.find(l => l.channel === 'video') ?? compose.layers[0];
   if (!mainLayer) throw new Error(`slot ${slot_id}: no video layer`);
@@ -902,6 +904,42 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
     await fs.unlink(labelPath).catch(() => {});
   }
 
+  // ── TELEPROMPTER MODE (HB_TELEPROMPTER=1, render.mts --teleprompter) ──
+  // Stamp the slot's spoken NARRATION (word-wrapped) in a readable panel at the
+  // top-right so the operator can read it aloud in sync with the video. Env-gated
+  // exactly like the label mode — never active in production; video_compose is
+  // uncached so no cache/production impact.
+  if (process.env.HB_TELEPROMPTER === '1' && narration && narration.trim()) {
+    const words = narration.replace(/\s+/g, ' ').trim().split(' ');
+    const MAX = 34;                       // chars/line at 30px in a ~660px panel
+    const lines: string[] = [];
+    let cur = '';
+    for (const w of words) {
+      if (cur && (cur + ' ' + w).length > MAX) { lines.push(cur); cur = w; }
+      else cur = cur ? cur + ' ' + w : w;
+    }
+    if (cur) lines.push(cur);
+    const fz = 30, lh = fz + 9, padX = 22, padY = 18;
+    const boxW = 660, boxH = lines.length * lh + padY * 2 - 9;
+    const tpPath = path.join(path.dirname(outPath), `tp-${path.basename(outPath)}.png`);
+    await sharp(Buffer.from(
+      `<svg width="${boxW}" height="${boxH}">
+        <rect width="${boxW}" height="${boxH}" rx="14" fill="#0A0A0A" fill-opacity="0.80"/>
+        <rect x="0" y="0" width="7" height="${boxH}" rx="3" fill="#FFE600"/>
+        ${lines.map((ln, i) => `<text x="${padX}" y="${padY + fz - 6 + i * lh}" font-family="Helvetica, Arial, sans-serif" font-size="${fz}" font-weight="600" fill="#FFFFFF">${esc(ln)}</text>`).join('')}
+      </svg>`,
+    )).png().toFile(tpPath);
+    const tpOut = path.join(path.dirname(outPath), `tpd-${path.basename(outPath)}`);
+    await ff([
+      '-y', '-i', silentPath, '-i', tpPath,
+      '-filter_complex', `[0:v][1:v]overlay=W-w-24:24`,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '20',
+      tpOut,
+    ]);
+    await fs.rename(tpOut, silentPath);
+    await fs.unlink(tpPath).catch(() => {});
+  }
+
   // Mux audio — generic N-input mixer. Inputs and weights:
   //   voice 1.0 · fx 0.7 · diegetic clip audio 0.18 (≈ -15dB under
   //   narration per the audio-sfx diegetic rule). No inputs → silent
@@ -947,7 +985,8 @@ async function buildSlotClip(slot_id: string, compose: ResolvedCompose, width: n
 /** Top-level entry called by producer-tools.runVideoCompose. */
 export async function videoCompose(args: ComposeArgs): Promise<{ file_url: string; duration_s: number; width: number; height: number; local_path: string }> {
   await fs.mkdir(COMPOSE_DIR, { recursive: true });
-  const { slot_order, width, height, fps, __bag__: bag, __job_id__: jobId } = args;
+  const { slot_order, width, height, fps, __bag__: bag, __job_id__: jobId, __narrations__ } = args;
+  const narrations: Record<string, string> = __narrations__ ?? {};
   if (!slot_order || slot_order.length === 0) throw new Error('videoCompose: empty slot_order');
 
   // Tool_call emission — visible in the Execution drawer so users can see
@@ -996,7 +1035,7 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
       // HB_DEBUG_LABELS bakes the slot-id overlay INTO each clip, so a labeled
       // and a label-free render must NOT share a cache entry (else a clean render
       // would reuse labeled clips). Key on it.
-      .update(`|${width}x${height}@${fps}|labels:${process.env.HB_DEBUG_LABELS ?? '0'}`)
+      .update(`|${width}x${height}@${fps}|labels:${process.env.HB_DEBUG_LABELS ?? '0'}|tp:${process.env.HB_TELEPROMPTER ?? '0'}`)
       .digest('hex');
   };
 
@@ -1019,7 +1058,7 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
           // key (or parallel workers) thus never write the same file at once —
           // rename(2) is atomic and idempotent on the identical-content race.
           const tmp = path.join(stageDir, `slot-${String(i).padStart(3, '0')}.mp4`);
-          await buildSlotClip(sid, compose, width, height, fps, tmp);
+          await buildSlotClip(sid, compose, width, height, fps, tmp, narrations[sid]);
           if (cachedClip) {
             await fs.rename(tmp, cachedClip).catch(() => {});   // atomic publish (overwrites idempotently)
             clipPaths[i] = (await fileExists(cachedClip)) ? cachedClip : tmp;

@@ -52,6 +52,13 @@ if (process.argv.includes('--labels')) {
   process.env.HB_DEBUG_LABELS = '1';
   console.log('[mode] TECHNICAL — slot labels on');
 }
+// --teleprompter → stamp each slot's spoken narration top-right (word-wrapped)
+// so the operator can read it aloud in sync. Same env-gated debug pattern as
+// --labels; never affects production renders.
+if (process.argv.includes('--teleprompter')) {
+  process.env.HB_TELEPROMPTER = '1';
+  console.log('[mode] TELEPROMPTER — narration overlay on');
+}
 
 // --local → run against the mirrored local Postgres (hbgen_local) instead of
 // Railway. Populate it first with scripts/local/pull-local.mts.
