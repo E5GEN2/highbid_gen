@@ -993,7 +993,10 @@ export async function videoCompose(args: ComposeArgs): Promise<{ file_url: strin
     return createHash('sha256')
       .update(SLOT_COMPOSE_VERSION).update('|')
       .update(JSON.stringify({ hold: c.hold_s, layers }))
-      .update(`|${width}x${height}@${fps}`)
+      // HB_DEBUG_LABELS bakes the slot-id overlay INTO each clip, so a labeled
+      // and a label-free render must NOT share a cache entry (else a clean render
+      // would reuse labeled clips). Key on it.
+      .update(`|${width}x${height}@${fps}|labels:${process.env.HB_DEBUG_LABELS ?? '0'}`)
       .digest('hex');
   };
 
