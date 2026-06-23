@@ -179,7 +179,9 @@ export default function ContentGenTab({ active }: { active: boolean }) {
   const [channelsPerDraft, setChannelsPerDraft] = useState<number>(10);
   const [selectedChannels, setSelectedChannels] = useState<Set<string>>(new Set());
   const [drafts, setDrafts] = useState<ListicleDraft[]>([]);
+  const [consumedDrafts, setConsumedDrafts] = useState<ListicleDraft[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [spyStatus, setSpyStatus] = useState<Record<string, DraftSpyStatus>>({});
 
   // Channel explorer state
@@ -211,27 +213,35 @@ export default function ContentGenTab({ active }: { active: boolean }) {
   // niches listicle suggestion; the niche label per item is L2 when
   // available (more representative) else L1 fallback. Quality channels
   // are picked regardless of which level their niche definition lives at.
-  const loadDrafts = async (opts?: { silent?: boolean }) => {
-    if (!opts?.silent) setDraftsLoading(true);
+  // Drafts are served from a STABLE pinned snapshot — they no longer reshuffle
+  // on load. { regenerate: true } is the ONLY thing that re-assembles a fresh
+  // snapshot (excluding channels already marked used).
+  const loadDrafts = async (opts?: { silent?: boolean; regenerate?: boolean }) => {
+    if (opts?.regenerate) setRegenerating(true);
+    else if (!opts?.silent) setDraftsLoading(true);
     try {
-      const r = await fetch(`/api/admin/content-gen/drafts?mode=mixed&n=${channelsPerDraft}&topK=300`).then(r => r.json());
+      const url = `/api/admin/content-gen/drafts?mode=mixed&n=${channelsPerDraft}&topK=300`
+        + (opts?.regenerate ? '&refresh=1' : '');
+      const r = await fetch(url).then(r => r.json());
       if (!r.ok) throw new Error(r.error || 'drafts failed');
       setDrafts(r.mixed_drafts || []);
+      setConsumedDrafts(r.consumed_drafts || []);
       setSpyStatus(r.spy_status || {});
     } catch (e) {
       if (!opts?.silent) setError((e as Error).message);
     } finally {
-      if (!opts?.silent) setDraftsLoading(false);
+      if (opts?.regenerate) setRegenerating(false);
+      else if (!opts?.silent) setDraftsLoading(false);
     }
   };
 
   // Silently refresh spy-completion badges while drafts are shown — ledger-only
   // read (no discovery re-run, so the cards don't shift under the user).
   useEffect(() => {
-    if (subTab !== 'niches' || drafts.length === 0) return;
+    if (subTab !== 'niches' || (drafts.length === 0 && consumedDrafts.length === 0)) return;
     const refresh = async () => {
       try {
-        const groups = drafts.map(d => ({
+        const groups = [...drafts, ...consumedDrafts].map(d => ({
           draft_id: d.id,
           channels: d.items.map(i => ({ channel_id: i.candidate.channel_id, top_video_id: i.candidate.top_video_id })),
         }));
@@ -244,15 +254,29 @@ export default function ContentGenTab({ active }: { active: boolean }) {
     };
     const i = setInterval(refresh, 20000);
     return () => clearInterval(i);
-  }, [subTab, drafts]);
+  }, [subTab, drafts, consumedDrafts]);
 
-  // Mark a group "used" → its channels are excluded → a fresh group replaces it.
+  // Mark a group "used" → the server marks the pin's EXACT frozen channel set
+  // (draft.id is the durable group_key) and flips it to consumed/greyed.
   const markGroupUsed = async (draft: ListicleDraft) => {
     const channelIds = draft.items.map(i => i.candidate.channel_id);
     try {
       await fetch('/api/admin/content-gen/use-group', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ draftId: draft.id, draftTitle: draft.title, channelIds }),
+        body: JSON.stringify({ pinnedGroupId: draft.id, draftTitle: draft.title, channelIds }),
+      });
+      await loadDrafts();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  // Un-mark a consumed group → flip it back to active + bring its channels back.
+  const freeGroup = async (draft: ListicleDraft) => {
+    try {
+      await fetch('/api/admin/content-gen/use-group', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinnedGroupId: draft.id }),
       });
       await loadDrafts();
     } catch (e) {
@@ -402,9 +426,17 @@ export default function ContentGenTab({ active }: { active: boolean }) {
                 className="w-16 px-2 py-1 text-sm bg-[#0a0a0a] border border-[#2a2a2a] focus:border-amber-400 focus:outline-none rounded text-white text-center font-medium"
               />
               <span className="text-xs text-[#666]">
-                Each draft has distinct niches — quality channels picked from across the pool, labeled by L2 when available (else L1).
+                Distinct niches per draft (L2 when available, else L1). Groups are <span className="text-[#999]">pinned</span> — they don&apos;t reshuffle until you regenerate.
               </span>
             </div>
+            <button
+              onClick={() => void loadDrafts({ regenerate: true })}
+              disabled={regenerating || draftsLoading}
+              title="Discard the current snapshot and assemble fresh groups (excludes channels already marked used). The only action that reshuffles the cards."
+              className="text-xs px-3 py-1.5 rounded-md border border-[#2a2a2a] text-[#ccc] hover:border-amber-400 hover:text-amber-300 disabled:opacity-40 shrink-0"
+            >
+              {regenerating ? 'Regenerating…' : '↻ Regenerate groups'}
+            </button>
             {selectedChannels.size > 0 && (
               <div className="text-sm text-[#ccc] flex items-center gap-3">
                 <span>
@@ -442,6 +474,35 @@ export default function ContentGenTab({ active }: { active: boolean }) {
                   }}
                 />
               ))}
+            </div>
+          )}
+
+          {/* Consumed groups — already used in a video, kept greyed for audit */}
+          {consumedDrafts.length > 0 && (
+            <div className="space-y-3 pt-3 mt-2 border-t border-[#222]">
+              <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-[#777] font-medium">
+                <span>Consumed groups ({consumedDrafts.length})</span>
+                <span className="text-[#555]">·</span>
+                <span className="text-[#666] normal-case tracking-normal">already used in a video — channels excluded from new groups. Free one to bring it back.</span>
+              </div>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                {consumedDrafts.map(d => (
+                  <ListicleDraftCard
+                    key={d.id}
+                    draft={d}
+                    spy={spyStatus[d.id]}
+                    consumed
+                    onFree={() => freeGroup(d)}
+                    selectedChannels={selectedChannels}
+                    onToggleChannel={(channelId) => {
+                      const next = new Set(selectedChannels);
+                      if (next.has(channelId)) next.delete(channelId);
+                      else next.add(channelId);
+                      setSelectedChannels(next);
+                    }}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -614,12 +675,16 @@ function ListicleDraftCard({
   draft,
   spy,
   onMarkUsed,
+  consumed = false,
+  onFree,
   selectedChannels,
   onToggleChannel,
 }: {
   draft: ListicleDraft;
   spy?: DraftSpyStatus;
-  onMarkUsed: () => void;
+  onMarkUsed?: () => void;
+  consumed?: boolean;
+  onFree?: () => void;
   selectedChannels: Set<string>;
   onToggleChannel: (channelId: string) => void;
 }) {
@@ -633,9 +698,18 @@ function ListicleDraftCard({
   const total = spy?.total ?? draft.items.length;
   const fully = spy?.fully_spied ?? false;
   const [confirming, setConfirming] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copyIds = () => {
+    const ids = draft.items.map(i => i.candidate.channel_id).join(',');
+    void navigator.clipboard?.writeText(ids).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  };
 
   return (
-    <div className={`rounded-lg bg-[#161616] border overflow-hidden ${fully ? 'border-emerald-500/40' : 'border-[#2f2f2f]'}`}>
+    <div className={`rounded-lg bg-[#161616] border overflow-hidden ${consumed ? 'border-[#262626] opacity-60' : fully ? 'border-emerald-500/40' : 'border-[#2f2f2f]'}`}>
       {/* Header */}
       <div className="px-5 py-4 border-b border-[#262626] bg-gradient-to-r from-amber-500/5 to-transparent">
         <div className="flex items-start justify-between gap-3">
@@ -679,15 +753,24 @@ function ListicleDraftCard({
               <span className="px-2 py-0.5 rounded-full bg-[#222] text-[#888]">{spied}/{total} spied · queued for priority crawl</span>
             )}
           </div>
-          {confirming ? (
+          {consumed ? (
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded-full bg-[#2a2a2a] text-[#999] text-[11px] font-medium">✓ used in a video</span>
+              <button onClick={onFree}
+                title="Bring this group back — un-mark its channels and reactivate the card"
+                className="px-2.5 py-1 rounded bg-[#2a2a2a] hover:bg-[#383838] text-[#bbb] hover:text-white text-[11px] font-medium transition">
+                Free this group ↩
+              </button>
+            </div>
+          ) : confirming ? (
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-[#aaa]">Mark used & replace?</span>
+              <span className="text-[11px] text-[#aaa]">Mark this group used?</span>
               <button onClick={onMarkUsed} className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-medium">Yes</button>
               <button onClick={() => setConfirming(false)} className="px-2 py-1 rounded bg-[#333] hover:bg-[#444] text-[#ccc] text-[11px]">No</button>
             </div>
           ) : (
             <button onClick={() => setConfirming(true)}
-              title="Mark this group as used in a video — hides it and surfaces a fresh group"
+              title="Mark this group as used in a video — greys it out and excludes its channels from future groups"
               className="px-2.5 py-1 rounded bg-[#2a2a2a] hover:bg-[#383838] text-[#bbb] hover:text-white text-[11px] font-medium transition">
               Mark used →
             </button>
@@ -841,11 +924,11 @@ function ListicleDraftCard({
         </span>
         <button
           type="button"
-          disabled
-          title="Coming soon — feed this draft to the script generator"
-          className="text-sm px-4 py-1.5 rounded-md border border-amber-500/40 text-amber-300 bg-amber-400/5 hover:bg-amber-400/15 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+          onClick={copyIds}
+          title="Copy this group's frozen channel IDs (comma-separated) for scripts/local/render.mts from-channels"
+          className="text-sm px-4 py-1.5 rounded-md border border-amber-500/40 text-amber-300 bg-amber-400/5 hover:bg-amber-400/15 font-medium"
         >
-          Generate this video ▸
+          {copied ? '✓ Copied IDs' : 'Copy IDs ⧉'}
         </button>
       </div>
     </div>

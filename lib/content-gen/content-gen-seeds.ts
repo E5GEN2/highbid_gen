@@ -18,6 +18,7 @@
 import { getPool } from '../db';
 import { discoverChannels } from './discovery';
 import { assembleMixedDrafts, type ListicleDraft } from './assembler';
+import { readActivePinnedDrafts } from './pinned-groups';
 
 export interface ContentGenSeed {
   channel_id: string;
@@ -40,8 +41,15 @@ const TOPK = 300;
 export async function getContentGenSeedChannels(
   n = N_PER_DRAFT, topK = TOPK,
 ): Promise<{ drafts: ListicleDraft[]; seeds: ContentGenSeed[] }> {
-  const candidates = await discoverChannels({ topK });
-  const drafts = assembleMixedDrafts(candidates, n);
+  // Prefer the PINNED snapshot (the groups the user actually sees) so the
+  // scheduler priority-crawls exactly the visible channels instead of a live
+  // re-derivation that drifts away from the cards. Fall back to live assembly
+  // only before the first snapshot exists (fresh DB / pre-first-load).
+  let drafts = await readActivePinnedDrafts(n).catch(() => [] as ListicleDraft[]);
+  if (drafts.length === 0) {
+    const candidates = await discoverChannels({ topK });
+    drafts = assembleMixedDrafts(candidates, n);
+  }
   const seen = new Set<string>();
   const seeds: ContentGenSeed[] = [];
   for (const d of drafts) {

@@ -1469,6 +1469,51 @@ export async function initSchema(): Promise<void> {
       )
     `).catch(() => {});
 
+    // Content Gen PINNED groups — a stable snapshot of the assembled draft
+    // groups so the Niches view stops reshuffling on every load. The assembler
+    // is a pure function of the LIVE candidate pool (NOW()-based recency, new
+    // discoveries, score updates, used-channel exclusion), so /drafts used to
+    // re-derive a different "top-10 per niche" every request and the group you
+    // rendered dissolved. /drafts now serves the ACTIVE pins; only an explicit
+    // "Regenerate" re-assembles. mark-used flips a pin to 'consumed' (kept
+    // greyed for audit). group_key is a surrogate (rotation + n + timestamp) so
+    // a consumed group and a freshly-regenerated same-rotation group coexist.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_pinned_groups (
+        group_key            TEXT PRIMARY KEY,
+        draft_id             TEXT NOT NULL,
+        title                TEXT NOT NULL,
+        framing              TEXT,
+        mode                 TEXT NOT NULL DEFAULT 'mixed',
+        n                    INT  NOT NULL,
+        parent_l1_label      TEXT,
+        parent_l1_cluster_id INT,
+        scale_mix_jsonb      JSONB,
+        status               TEXT NOT NULL DEFAULT 'active',
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        refreshed_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        consumed_at          TIMESTAMPTZ,
+        note                 TEXT
+      )
+    `).catch(() => {});
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS content_gen_pinned_group_members (
+        group_key   TEXT NOT NULL REFERENCES content_gen_pinned_groups(group_key) ON DELETE CASCADE,
+        channel_id  TEXT NOT NULL,
+        position    INT  NOT NULL,
+        item_jsonb  JSONB NOT NULL,
+        PRIMARY KEY (group_key, channel_id)
+      )
+    `).catch(() => {});
+    // lock_timeout makes CREATE INDEX fail fast instead of queueing behind an
+    // orphaned write lock (deploy-deadlock guard); reset after so later
+    // statements on this pooled connection are unaffected.
+    await client.query(`SET lock_timeout = '3s'`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpg_status_mode_n ON content_gen_pinned_groups(status, mode, n)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpgm_group   ON content_gen_pinned_group_members(group_key)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpgm_channel ON content_gen_pinned_group_members(channel_id)`).catch(() => {});
+    await client.query(`SET lock_timeout = '0'`).catch(() => {});
+
     // Auto-seed scheduler config defaults (admin_config rows). Ships OFF.
     await client.query(`
       INSERT INTO admin_config (key, value) VALUES

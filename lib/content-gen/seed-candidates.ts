@@ -87,9 +87,12 @@ export interface SeedDiscoveryOptions {
   englishOnly?: boolean;
 }
 
-/** Character class of non-English scripts + Vietnamese-specific diacritics. A
- *  title matching this is treated as non-English. */
-const NON_ENGLISH_TITLE_RE = '[ऀ-ॿ一-鿿぀-ヿ가-힣؀-ۿ฀-๿Ѐ-ӿ֐-׿ạảấầẩậắằẳặẹẻẽếềểễệịỉọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹđ]';
+/** Character class of non-English scripts + Vietnamese diacritics, as \u escapes
+ *  so the source is pure ASCII — literal unicode chars here got mangled by the
+ *  production build into an invalid regex (500s). Ranges: Devanagari, CJK,
+ *  Kana, Hangul, Arabic, Thai, Cyrillic, Hebrew, Latin-Extended-Additional
+ *  (Vietnamese tone marks), and đ. */
+const NON_ENGLISH_TITLE_RE = '[\u0900-\u097F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7A3\u0600-\u06FF\u0E00-\u0E7F\u0400-\u04FF\u0590-\u05FF\u1EA0-\u1EF9\u0111]';
 
 function ageTier(ageDays: number): SeedCandidate['channel']['age_tier'] {
   if (ageDays > 365) return 'mature';
@@ -236,7 +239,7 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
   // is sliced AFTER this, so we still return up to topK English candidates.
   let rows = rowsRes.rows;
   if (opts.englishOnly) {
-    const nonEnglish = new RegExp(NON_ENGLISH_TITLE_RE, 'u');
+    const nonEnglish = new RegExp(NON_ENGLISH_TITLE_RE);
     rows = rows.filter((r) => !nonEnglish.test(String(r.video_title ?? '')));
   }
   if (rows.length === 0) return [];
