@@ -439,18 +439,19 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
     );
     const finished = crawlingRes.rows.filter(r => !liveNicheIds.has(r.niche_id));
 
-    // Self-heal discovered_count for recently-completed niches. The reap-time
-    // count can come up short if the final proof snapshot lands after the niche
-    // was reaped (the thermostat snapshots on a 30s cycle), so re-count from the
-    // now-complete crawl trace. Scoped to niches completed in the last few hours
-    // so it stays cheap, and only ever raises the count. Runs every tick (even
-    // when nothing finished) so the count converges to truth on its own.
+    // Self-heal discovered_count for recently-completed niches. Counted from
+    // niche_seed_expansions — the COMPLETE record of every candidate the bot
+    // POSTed for scoring during the crawl. (agent_task_proof, the old source, is
+    // only a 30s thermostat sample of the live crawl, so it under-counted badly
+    // when a task finished between samples — e.g. showed +1 for a crawl that
+    // actually submitted 82.) Scoped to recently-completed niches, only ever
+    // raises, runs every tick so the count converges to truth.
     await pool.query(
       `UPDATE niche_discovery_seeds s SET discovered_count = sub.disc
          FROM (
-           SELECT atl.keyword AS niche_id, COUNT(DISTINCT atp.video_url) AS disc
-             FROM agent_task_proof atp
-             JOIN agent_task_log atl ON atl.task_id = atp.task_id
+           SELECT atl.keyword AS niche_id, COUNT(DISTINCT nse.candidate_url) AS disc
+             FROM niche_seed_expansions nse
+             JOIN agent_task_log atl ON atl.task_id = nse.task_id
             WHERE atl.keyword IN (
               SELECT niche_id FROM niche_discovery_seeds WHERE completed_at > NOW() - INTERVAL '3 hours'
             )
@@ -465,16 +466,16 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
     let clustersReleased = 0;
 
     for (const n of finished) {
-      // Accurate discovered count: distinct videos this niche's crawls surfaced,
-      // taken from the crawl trace (agent_task_proof) attributed via
-      // agent_task_log (task_id → nicheId). The old seed_url join was broken —
-      // the bot reports the CURRENT video as the /expand seed_url, not the
-      // original seed — so discovered_count was always 0 and every niche got
-      // mislabeled 'exhausted'.
+      // Accurate discovered count: distinct candidates this niche's crawls
+      // submitted for scoring — counted from niche_seed_expansions (the complete
+      // record), attributed via agent_task_log (task_id → nicheId). Not from
+      // agent_task_proof, which is only a sparse 30s sample of the live crawl and
+      // under-counts when a task finishes between samples (mislabeling productive
+      // niches as 'exhausted' on the <3 check below).
       const discRes = await pool.query<{ disc: string }>(
-        `SELECT COUNT(DISTINCT atp.video_url) AS disc
-           FROM agent_task_proof atp
-           JOIN agent_task_log atl ON atl.task_id = atp.task_id
+        `SELECT COUNT(DISTINCT nse.candidate_url) AS disc
+           FROM niche_seed_expansions nse
+           JOIN agent_task_log atl ON atl.task_id = nse.task_id
           WHERE atl.keyword = $1`,
         [n.niche_id],
       );
