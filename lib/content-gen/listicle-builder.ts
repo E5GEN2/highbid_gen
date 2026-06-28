@@ -19,7 +19,7 @@ import { type ConcreteScript, type HighlightRow } from './concrete-script';
 import { type ChannelBeatPlan, type BeatFlags, applyToggle } from './beat-plan';
 import { getPool } from '../db';
 import { ttsWithTimestamps, DEFAULT_VOICE_ID, type WordTiming } from './voice';
-import { loadNicheVars, spokenNumber, type NicheVars } from './niche-vars';
+import { loadNicheVars, spokenNumber, verbalizeNumberPhrase, type NicheVars } from './niche-vars';
 import { BankSession, numberWord } from './phrase-banks';
 import { findSimilarChannels } from './similar-channels';
 
@@ -141,10 +141,19 @@ function proof1Text(sub: string, extras?: StubExtras): string {
 }
 
 export function stubNarration(beat_id: string, ch: ChannelData, extras?: StubExtras): NarrationBeat[] {
-  // FLOOR rounding — these all feed "more than {N}" / "Over {N}" claims.
-  const sub = ch.subscriber_count != null ? floorHumanizeNumber(ch.subscriber_count) : 'thousands of';
-  const tv = ch.total_views != null ? floorHumanizeNumber(ch.total_views) : 'millions of';
-  const vv = ch.top_video_view_count != null ? floorHumanizeNumber(ch.top_video_view_count) : 'a million';
+  // sub/tv FLOOR — they're voiced over the about-modal screenshot, which shows
+  // the RAW number ("4,382,045 views"), so a floored lower bound never exceeds
+  // what's on screen. vv ROUNDS (spokenNumber) — top_video_callout shows an
+  // image_gen card that rounds the count to 1 decimal ("2.0M"), so the spoken
+  // number must round to MATCH it; flooring drifted ("1.9M" VO over a "2.0M"
+  // card — user 2026-06-25).
+  // verbalizeNumberPhrase: spell numbers as words for TTS ("141 thousand" →
+  // "one hundred forty-one thousand") — EL stutters on digit forms. The on-screen
+  // numbers stay digit-form (proof = about-modal capture; callout = image_gen card
+  // from the raw count), so spoken value == displayed value still holds.
+  const sub = ch.subscriber_count != null ? verbalizeNumberPhrase(floorHumanizeNumber(ch.subscriber_count)) : 'thousands of';
+  const tv = ch.total_views != null ? verbalizeNumberPhrase(floorHumanizeNumber(ch.total_views)) : 'millions of';
+  const vv = ch.top_video_view_count != null ? verbalizeNumberPhrase(spokenNumber(ch.top_video_view_count)) : 'a million';
   switch (beat_id) {
     case 'channel_proof_1': return [{ beat_id, text: proof1Text(sub, extras), hold_s: 1.8, audio_cue: { sfx: ['whoosh', 'ding'] } }];
     case 'channel_proof_2': return [{ beat_id, text: proof2Text(tv, extras), hold_s: 1.5, audio_cue: { sfx: ['whoosh', 'ding'] } }];
@@ -369,7 +378,9 @@ export function buildMoneyMathSlots(niche_index: number, ch: ChannelData, opts: 
   // generic geoLine card; absent → the old geoLine behavior is kept.
   const rpmReason = (opts.rpmReason ?? '').trim();
   const rpmBase = rpm <= 3 ? `just a $${rpm} RPM` : `a $${rpm} RPM`;
-  const rpmNarration = rpmReason ? `${rpmBase}, ${rpmReason},` : `${rpmBase},`;
+  // verbalize "$N RPM" → "N dollar RPM" for TTS (EL stutters "one dol-dollar" /
+  // "6 doar"; user 2026-06-27 #4/#5). NARRATION only — the mm_rpm card keeps "$N RPM".
+  const rpmNarration = verbalizeNumberPhrase(rpmReason ? `${rpmBase}, ${rpmReason},` : `${rpmBase},`);
   const assumptionPhrase = opts.assumption
     ?? (rpm <= 3 ? 'Even if we assume' : 'If we assume');
   const connectorPhrase = opts.connector ?? 'that one video alone has probably made around';
@@ -377,6 +388,10 @@ export function buildMoneyMathSlots(niche_index: number, ch: ChannelData, opts: 
   const slots: Slot[] = [];
   // Optional opener (bank, 50%): "Let's take that video with X views."
   if (opts.opener) {
+    // DIGIT view count — this line is BOTH the narration AND the mm_opener
+    // text_card, and the card must read "2.5 million views" as digits (user
+    // 2026-06-27 #1; verbalizing it flipped the card to "…point five million").
+    // EL pronounces "X million views" cleanly; only "N thousand"/"$N RPM" garble.
     const openerLine = `${opts.opener} with ${spokenNumber(v)} views.`;
     slots.push(makeFramingSlot(`${base}_mm_opener`, 'money_math', openerLine,
       { composition: 'text_card', text: openerLine, bg_mode: 'white', color_treatment: 'neutral' },
@@ -392,7 +407,10 @@ export function buildMoneyMathSlots(niche_index: number, ch: ChannelData, opts: 
     makeFramingSlot(`${base}_mm_translates`, 'money_math', connectorPhrase,
       { composition: 'text_card', text: connectorPhrase, bg_mode: 'white', color_treatment: 'neutral' },
       ['whoosh']),
-    makeFramingSlot(`${base}_mm_lump_sum`, 'money_math', `${formatted}.`,
+    // Verbalize the SPOKEN amount ("$7,500" -> "seven thousand five hundred dollars"); EL garbles
+    // raw "$N,NNN" the same way it garbled "$N RPM" (user 2026-06-27 #5). The text_card keeps
+    // DIGITS ("$7,500") — identical split to mm_rpm (card "$6 RPM" / VO "six dollar RPM").
+    makeFramingSlot(`${base}_mm_lump_sum`, 'money_math', verbalizeNumberPhrase(`${formatted}.`),
       { composition: 'text_card', text: formatted, bg_mode: 'white', color_treatment: 'money_shot_green' },
       ['ding']),
     makeFramingSlot(`${base}_mm_closer`, 'money_math', `from ads.`,
@@ -434,8 +452,8 @@ export function buildCtaSlots(niche_count: number, opts: CtaOpts = {}): Slot[] {
   // never a raw digit; reported bug 2026-06-11), with a singular guard for
   // 1-niche renders.
   const closer = niche_count === 1
-    ? `So, this is one of the most promising faceless niches right now.`
-    : `So, these are the ${numberWord(niche_count)} faceless niches.`;
+    ? `So, this is one of the most promising trending niches right now.`
+    : `So, these are the ${numberWord(niche_count)} trending niches.`;
   const valueLine = opts.valueLine
     ?? `And each one has huge potential if you're serious about starting a channel.`;
   const actionLine = opts.actionLine ?? `check out this video right here.`;
@@ -1019,6 +1037,12 @@ export function forceProofKind(slots: Slot[], opts: { videoCountHook?: boolean }
             ...restArgs,
             kind: 'about_page',
             annotate_element: element,
+            // STICKY Type-A fix (2026-06-27): fold the spoken stat into the capture's cache key so
+            // the rendered FRAME re-captures whenever the narrated number changes. The yt_capture
+            // cache key otherwise omits the stat value + date_bucket, so a refreshed narration kept
+            // composing a STALE frame (VO said 111K over a frame showing 108K). Ignored by the
+            // capturer (not in its read args); only mutates args_hash. Belt-and-suspenders: v1.2.7 bump.
+            narr_snapshot: slot.narration,
           },
         };
       }),
@@ -1066,17 +1090,20 @@ const SLICE_LEAD_PAD_S = 0.06;
  *  rounded DOWN to the leading magnitude — the reference's only spoken
  *  view figure says "more than 1 million" over an on-screen "1.3m views"
  *  card (channel-b spec 1A): the voice must never overshoot the card. */
-function roundedDownSpokenViews(t: string | null): string | null {
+// Verbalize the channel_b card's DISPLAYED views text faithfully so the spoken
+// number matches the screenshot. The old roundedDown logic floored to 1 sig fig
+// ("8.7M" → "8 million", "121K" → "100 thousand"), drifting badly from the card
+// the viewer sees (user 2026-06-25: "8 million" VO over an "8.7M" card).
+// floorHumanizeNumber keeps the card's precision (8.7M → "8.7 million",
+// 414K → "414 thousand") as a true "more than" lower bound. Input `t` is YT's
+// already-rounded card text (views_texts), so flooring it ≈ the card value.
+function spokenViewsFromCard(t: string | null): string | null {
   const m = t?.match(/^([\d.,]+)\s*([KMB])?\s*views?$/i);
   if (!m) return null;
   const mult = m[2]?.toUpperCase() === 'B' ? 1e9 : m[2]?.toUpperCase() === 'M' ? 1e6 : m[2]?.toUpperCase() === 'K' ? 1e3 : 1;
   const n = parseFloat(m[1].replace(/,/g, '')) * mult;
   if (!Number.isFinite(n) || n < 10_000) return null; // too small to be a payoff
-  const mag = n >= 1e6 ? 1e6 : 1e3;
-  let units = Math.floor(n / mag);                           // 1.3M → 1 ; 460K → 460
-  if (units >= 100) units = Math.floor(units / 100) * 100;   // 460 → 400
-  else if (units >= 10) units = Math.floor(units / 10) * 10; // 87 → 80
-  return spokenNumber(units * mag);
+  return floorHumanizeNumber(n);
 }
 
 function round3(n: number): number { return Math.round(n * 1000) / 1000; }
@@ -1617,16 +1644,35 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
         ...sim.montagePool.slice(0, 6),
       ])];
       const verdicts = new Map<string, Awaited<ReturnType<typeof classifyRelationship>>>();
-      for (const cand of candidateIds) {
-        verdicts.set(cand, await classifyRelationship(heroEv, cand).catch(() => null));
+      // PARALLELIZED (cap 6): a PROMPT_V bump recomputes ALL verdicts, and the
+      // old sequential loop over ~16 candidates × (desc-fetch + Gemini) was ~50min
+      // cold (user 2026-06-27). Cached after render 1, so this only bites once.
+      {
+        const CONC = 6; let _ci = 0;
+        await Promise.all(Array.from({ length: Math.min(CONC, candidateIds.length) }, async () => {
+          for (;;) {
+            const i = _ci++; if (i >= candidateIds.length) return;
+            const cand = candidateIds[i];
+            verdicts.set(cand, await classifyRelationship(heroEv, cand).catch(() => null));
+          }
+        }));
       }
       // B = highest-similarity candidate that (a) is not BOTH-axes-
       // different and (b) clears the MIN-STATS gate. Presence-only stats
       // let an emptied 86-subscriber channel through while the narration
       // claimed "performing extremely well" (job 171, niches 5/8).
+      // PEER BAND (user 2026-06-26): channel_b should be a relatable peer for a
+      // small-channel listicle, so qualify a candidate as ≥1K subs AND ≥100K
+      // views AND ≥3 videos (a real, "getting traction" channel — dead/abandoned
+      // channels excluded) but CAP OUT giants at ≤1.5M subs (a 1.5M+ channel is a
+      // questionable comparison — it's an established giant, not an up-and-comer).
+      // Only the stats gate changed; channel_b loop/relationship/capture logic is
+      // untouched.
       const bMinStatsOk = (c: Awaited<ReturnType<typeof loadChannel>>) =>
-        !!c && (((c.subscriber_count ?? 0) >= 5000)
-          || (((c.total_views ?? 0) >= 500_000) && ((c.video_count ?? 0) >= 3)));
+        !!c && ((c.subscriber_count ?? 0) >= 1000)
+            && ((c.subscriber_count ?? 0) <= 1_500_000)
+            && ((c.total_views ?? 0) >= 100_000)
+            && ((c.video_count ?? 0) >= 3);
       let b: typeof sim.channels[number] | null = null;
       let chB: Awaited<ReturnType<typeof loadChannel>> = null;
       let bVerdict: ReturnType<typeof verdicts.get> | null = null;
@@ -1742,7 +1788,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
               const n = parseViews(t ?? null);
               if (n != null && (bestViews == null || n > bestViews)) { bestViews = n; bTopIdx = i; }
             });
-            topSpoken = bestViews != null ? roundedDownSpokenViews(vt[bTopIdx] ?? null) : null;
+            topSpoken = bestViews != null ? spokenViewsFromCard(vt[bTopIdx] ?? null) : null;
           } catch (e) {
             console.warn(`[channel-b] popular capture failed for ${b.channel_id}: ${(e as Error).message.slice(0, 120)}`);
           }
@@ -1812,7 +1858,11 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
               narration: topLine,
               gems: [
                 { id: 'narr', tool: 'tts', args: { text: topLine, voice: 'money_groot' } },
-                { id: 'main', tool: 'yt_capture', args: { channelId: b.channel_id, kind: 'videos_tab_popular', mode: 'static' } },
+                // STICKY Type-A fix (2026-06-27 #1): fold the spoken views into the capture cache key
+                // so the cropped top-video FRAME re-resolves to the same fresh capture spokenViewsFromCard
+                // read at build time (VO said 92K over a stale 91K frame). Reuses the build's 06-27
+                // videos_tab_popular (no re-capture); ignored by the capturer, only mutates args_hash.
+                { id: 'main', tool: 'yt_capture', args: { channelId: b.channel_id, kind: 'videos_tab_popular', mode: 'static', narr_snapshot: topLine } },
                 { id: 'sfx', tool: 'sfx_render', args: { tokens: ['ding'] } },
               ],
               compose: {
@@ -1895,6 +1945,13 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           // adjective to the real view magnitude (user 2026-06-14 #13: don't
           // say "amazing" when avg views are low).
           const satStatsById = new Map<string, Awaited<ReturnType<typeof loadChannel>> | null>();
+          // Grid-derived median views per candidate (user 2026-06-23 #1): the
+          // verdict adjective is keyed to what the grid we ACTUALLY show reads,
+          // never a stale stored stat. videos_tab_popular surfaces the channel's
+          // best when YT offers the sort chip; tiny channels (no chip) show their
+          // full catalog — either way it's the channel's real videos, and the
+          // wording is read off those same pixels. null = unreadable → conservative.
+          const gridViewsById = new Map<string, number | null>();
           const { captureYtScreen: captureSatGrid } = await import('./yt-capture');
           for (const cId of preGate) {
             if (others.length >= 3) break;
@@ -1912,10 +1969,19 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
             // its own regression (job 130 lost good saturations that way); the
             // compose re-captures with its own retries.
             let satCardCount = 4;  // default OK; only a successful capture can disprove
+            let gridMed: number | null = null;
             try {
-              const satCap = await captureSatGrid(cId, { kind: 'videos_tab', mode: 'static' });
+              const satCap = await captureSatGrid(cId, { kind: 'videos_tab_popular', mode: 'static' });
               satCardCount = Object.keys((satCap?.bboxes ?? {}) as Record<string, unknown>)
                 .filter(k => /^video_card_\d+$/.test(k)).length;
+              // Median of the grid's per-card view texts = the on-screen magnitude.
+              const vt = (satCap?.bboxes as { __meta?: { views_texts?: Array<string | null> } })?.__meta?.views_texts ?? [];
+              const nums = vt.map(parseViewsNum).filter((n): n is number => n != null && n >= 0).sort((a, b) => b - a);
+              // CEILING = median of the top 3 (the Popular grid leads with the channel's
+              // BEST videos — that's what's prominent on screen). Top-tier median ignores
+              // a single fluke AND the low recent tail, so a proven channel (real hits,
+              // quiet lately) reads strong instead of being under-sold by a low median.
+              gridMed = nums.length ? nums.slice(0, 3)[Math.floor(Math.min(nums.length, 3) / 2)] : null;
             } catch (e) {
               const m = (e as Error).message ?? '';
               if (/YT_PAGE_UNAVAILABLE/i.test(m)) { console.warn(`[saturation] ${cId} is a dead/404 channel — skipping`); continue; }
@@ -1923,7 +1989,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
               satCardCount = 4;   // inconclusive → trust it
             }
             if (satCardCount < 4) { console.warn(`[saturation] ${cId} grid has only ${satCardCount} cards (dead/empty) — skipping`); continue; }
-            others.push(cId); satStatsById.set(cId, cStats);
+            others.push(cId); satStatsById.set(cId, cStats); gridViewsById.set(cId, gridMed);
           }
           if (others.length === 1) {
             // Form B — extra-channel deep-dive (reference niche_4 Valaritas):
@@ -1934,19 +2000,22 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
             // View-scaled verdict adjective (user 2026-06-14 #13): "amazing"
             // only when the typical video genuinely performs; calmer + honest
             // wording for low-view channels.
-            const satStats = satStatsById.get(satCh) ?? null;
-            // Use RECENT avg views — that's what the grid shows. Lifetime
-            // total_views/video_count can read high while recent videos average
-            // under 1k, which made "consistently solid" clash with a low-view
-            // grid on screen (user 2026-06-21 #6). Wording is now view-honest.
-            const satAvgViews = satStats?.recent_videos_avg_views != null
-              ? Number(satStats.recent_videos_avg_views) : null;
-            const satVerdictLine = satAvgViews == null
-              ? 'and they post consistently in this same format.'
-              : satAvgViews >= 100_000 ? 'and their view consistency is amazing.'
-              : satAvgViews >= 20_000 ? 'and their views are consistently solid.'
-              : satAvgViews >= 3_000 ? 'and they post steadily in this same format.'
+            // Wording keys off the CEILING (top-tier median) of the Popular grid we
+            // actually render (user 2026-06-23 #1). The claim can never out-run the
+            // on-screen views, and "consistency"/"amazing" are dropped: a sorted
+            // Popular grid is top-heavy, not uniform, so it's a CEILING claim ("their
+            // top videos blew up"), never a consistency one. A proven channel (real
+            // hits, quiet recently) reads strong; a genuinely small one → "noticed".
+            // null (unreadable) → conservative, no superlative. Can only ever soften.
+            const satGridMed = gridViewsById.get(satCh) ?? null;
+            const satVerdictLine = satGridMed == null
+              ? 'and they post steadily in this same format.'
+              : satGridMed >= 100_000 ? 'and their top videos here have really blown up.'
+              : satGridMed >= 20_000 ? 'and their best videos here are pulling solid numbers.'
               : 'and they are already starting to get noticed.';
+            const sat1Line = satGridMed != null && satGridMed >= 20_000
+              ? 'That kind of reach shows the real potential here.'
+              : 'That early traction shows the real potential here.';
             saturationSlots = [
               {
                 slot_id: `niche_${niche_index}_saturation_0`,
@@ -1978,10 +2047,10 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
               {
                 slot_id: `niche_${niche_index}_saturation_1`,
                 beat_id: 'saturation_callout',
-                narration: `That consistency shows the real potential here.`,
+                narration: sat1Line,
                 gems: [
-                  { id: 'narr', tool: 'tts', args: { text: `That consistency shows the real potential here.`, voice: 'money_groot' } },
-                  { id: 'main', tool: 'yt_capture', args: { channelId: satCh, kind: 'videos_tab', mode: 'static' } },
+                  { id: 'narr', tool: 'tts', args: { text: sat1Line, voice: 'money_groot' } },
+                  { id: 'main', tool: 'yt_capture', args: { channelId: satCh, kind: 'videos_tab_popular', mode: 'static' } },
                 ],
                 compose: {
                   bg: 'dark_gray' as const,
@@ -2060,9 +2129,14 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     //   ? buildConceptSlot(niche_index, vars.concept_word, conceptLine)
     //   : null;
     const conceptSlot: Slot | null = null;
-    // transition — vocal 20% of the time, silent breather otherwise.
+    // transition — vocal 20% of the time, silent breather otherwise. The LAST
+    // niche NEVER gets a vocal cue: "Next up," before the CTA announces a
+    // non-existent next channel (user 2026-06-25, niche_10). Force silent
+    // (null) on the final channel so it flows straight into the CTA. (Gate is
+    // before applyContinuousNarration, so the niche's read never bakes the cue.)
+    const isLastNiche = i === channels.length - 1;
     const transitionSlot = buildTransitionSlot(
-      niche_index, banks.pick('transition_optional', niche_index, { skipProbability: 0.8 }));
+      niche_index, isLastNiche ? null : banks.pick('transition_optional', niche_index, { skipProbability: 0.8 }));
 
     // Continuous narration for the whole niche group — one natural read,
     // sliced per slot; reveals wired where applicable. Slot order follows

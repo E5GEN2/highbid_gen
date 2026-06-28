@@ -83,13 +83,34 @@ export async function refreshChannelStats(
   //    the entire producer/start route — observed 2026-06-10 when a curl
   //    POST to /start sat for 90+ seconds and never returned because
   //    refreshChannelStats blocked on a proxy that never responded.
-  //    With the cap, the whole loop is bounded at MAX_RETRIES × 8s = 40s
-  //    worst case, but in practice ~1-2s on a healthy proxy.
-  const MAX_RETRIES = 5;
+  //    With the cap, the whole loop is bounded at MAX_RETRIES × 8s worst case,
+  //    but in practice ~1-2s on a healthy proxy (403s/200s return fast; only a
+  //    wedged proxy hits the 8s cap, so more retries cost ~nothing normally).
+  // 100 (was 10): the YT Data API pool is ~3900 active keys but a busy bake
+  // (analyze + captures + refresh) leaves CLUSTERS of keys quota-exhausted (403)
+  // at any moment. getNextYtPair is round-robin + ban-aware, so each 403 BANS the
+  // offender (5min) and the next attempt advances to a fresh pair — i.e. retries
+  // dig DEEPER into the pool and converge it to working keys. 10 was far too
+  // shallow: it gave up inside one exhausted cluster, dropping proof stats to the
+  // stale SUM AND skipping every channel_b candidate ("fails min-stats gate,
+  // subs=?"). Deep rotation reliably finds a quota-fresh key (403s return fast, so
+  // the cost is tiny — the loop STOPS the instant a key works; the ceiling is only
+  // hit if a huge run of keys is exhausted). Required data points (proof
+  // subs/views/videos, channel_b stats) must NOT be dropped — dig as deep as
+  // needed. (user 2026-06-26: "rotate deep enough"; "don't be afraid to try 1k".)
+  const MAX_RETRIES = 1000;
   const PER_ATTEMPT_TIMEOUT_MS = 8_000;
+  // TOTAL time budget — dig deep through the pool, but NEVER hang the render. If
+  // a key cluster is heavily quota-exhausted at this moment, stop after DEADLINE_MS
+  // and fall back to the stored stat (already a recent prod-API value). Without
+  // this cap the 1000-retry loop churned ~50min on ONE channel when the pool was
+  // exhausted, hanging the whole render (user 2026-06-26).
+  const DEADLINE_MS = 45_000;
+  const startMs = Date.now();
   let item: YtChannelStatsItem | undefined;
   let lastError = '';
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (Date.now() - startMs > DEADLINE_MS) { lastError = `time budget ${DEADLINE_MS}ms exhausted after ${attempt} attempts`; break; }
     const pair = await getNextYtPair();
     if (!pair) {
       lastError = 'no YT API pair available';

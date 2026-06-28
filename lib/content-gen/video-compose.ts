@@ -349,7 +349,16 @@ async function resolveLayerToLocalFile(layer: ComposeLayer, bg: 'white' | 'dark_
             const belowIdx = target === 'subscribers' ? 0 : target === 'videos' ? 1 : 2;
             // Legacy absolute index, used only as a desperation fallback.
             const rowIdx   = target === 'subscribers' ? 3 : target === 'videos' ? 4 : 5;
-            let r: { top: number; h: number } | undefined = below[belowIdx] ?? rows[rowIdx];
+            // BOTTOM-anchored (2026-06-27 fix, Type B): the modal's trailing stat stack is invariant
+            // — subscribers → videos → views → [Share]; the Share pill is dropped by the h<30 gate,
+            // so the last 3 KEPT rows are exactly subs/videos/views regardless of how many rows
+            // (URL/country/links/Sign-in) sit above Joined or how the modal scroll-settled. The
+            // joined-anchor below[] FAILED for Domain (its modal rendered ~62px below the stored
+            // joined_date.y → jIdx=-1 → the jIdx<0 fallback boxed the Joined row itself). Bottom-
+            // anchor is invariant to that; below[]/rowIdx remain as fallback for atypical (<3-row) modals.
+            const fromBottom = target === 'subscribers' ? 3 : target === 'videos' ? 2 : 1;
+            const bottomRow = rows.length >= 3 ? rows[rows.length - fromBottom] : undefined;
+            let r: { top: number; h: number } | undefined = bottomRow ?? below[belowIdx] ?? rows[rowIdx];
             if (!r) return null;
             // Scan the row band HORIZONTALLY for the text's actual extent.
             // A hardcoded TEXT_X (625, measured 2026-06-10) broke whenever

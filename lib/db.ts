@@ -21,6 +21,12 @@ const pool = new Pool({
   connectionTimeoutMillis: 30000,
 });
 
+// Swallow idle-client 'error' events. A Railway-proxy/keepalive drop on a pooled
+// connection emits 'error'; with no handler that's an unhandled event that crashes
+// the process (a transient read ETIMEDOUT killed a mid-run render, 2026-06-27).
+// pg evicts the dead client and reconnects on the next query.
+pool.on('error', (err) => { console.warn(`[db] idle pool client error (ignored): ${err.message}`); });
+
 // Graceful shutdown: close the pool on SIGTERM/SIGINT so a redeploy/restart
 // releases its ~50 DB connections cleanly instead of orphaning them on the
 // server. Orphaned connections linger until TCP keepalive reaps them, and

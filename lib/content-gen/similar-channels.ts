@@ -50,6 +50,9 @@ function getMainPool(): pg.Pool {
     const url = process.env.HB_RAILWAY_DB_URL || process.env.DATABASE_URL;
     if (!url) throw new Error('similar-channels: no DB url');
     mainPool = new pg.Pool({ connectionString: url, ssl: false, max: 3 });
+    // Swallow idle-client 'error' (transient Railway-proxy drop) — without a handler
+    // it's an unhandled event that crashes the render (read ETIMEDOUT, 2026-06-27).
+    mainPool.on('error', (e) => console.warn(`[similar-channels] idle main-pool client error (ignored): ${e.message}`));
   }
   return mainPool;
 }
@@ -58,6 +61,7 @@ function getVecPool(): pg.Pool {
     const url = process.env.VECTOR_DB_URL;
     if (!url) throw new Error('similar-channels: VECTOR_DB_URL not set');
     vecPool = new pg.Pool({ connectionString: url, ssl: false, max: 3 });
+    vecPool.on('error', (e) => console.warn(`[similar-channels] idle vec-pool client error (ignored): ${e.message}`));
   }
   return vecPool;
 }
@@ -114,10 +118,16 @@ export async function findSimilarChannels(
   }
 
   const saturationCount = [...best.values()].filter(s => s >= SATURATION_MIN_SIM).length;
+  // Top-10 (was 3): the channel_b loop tries these in order until one clears the
+  // min-stats gate + relationship + capture-feasibility checks. Top-3 was too
+  // tight — the closest matches are often tiny niche-mates (<5K subs) while the
+  // big qualifying channels sit at rank 4-8 (user 2026-06-26: e.g. "Old Money
+  // Dynasty" had 83 gate-passing candidates but ranks 1-5 were all <1.3K subs,
+  // the real B at rank 6/8). Widening surfaces them so channel_b populates.
   const strong = [...score.entries()]
     .filter(([ch]) => best.get(ch)! >= CHANNEL_B_MIN_SIM)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 3);
+    .slice(0, 10);
 
   let channels: SimilarChannel[] = [];
   if (strong.length) {

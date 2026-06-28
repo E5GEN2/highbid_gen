@@ -67,6 +67,54 @@ export function spokenNumber(n: number): string {
   return String(n);
 }
 
+const ONES_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TENS_WORDS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+/** 0–999 → English words ("one hundred forty-one"). */
+function intToWords(n: number): string {
+  if (n < 0 || n > 999) return String(n);
+  if (n < 20) return ONES_WORDS[n];
+  if (n < 100) { const t = Math.floor(n / 10), o = n % 10; return TENS_WORDS[t] + (o ? '-' + ONES_WORDS[o] : ''); }
+  const h = Math.floor(n / 100), r = n % 100;
+  return ONES_WORDS[h] + ' hundred' + (r ? ' ' + intToWords(r) : '');
+}
+/** Whole-dollar amount → spoken words ("$7,500" → "seven thousand five hundred dollars").
+ *  EL garbles raw "$N,NNN" the same way it garbled "$N RPM" (user 2026-06-27 #5). Lump sums
+ *  are < $1M in practice; the >=1M branch is a safety net. */
+function dollarsToWords(n: number): string {
+  if (n < 1000) return `${intToWords(n)} dollars`;
+  if (n < 1_000_000) { const th = Math.floor(n / 1000), rem = n % 1000; return `${intToWords(th)} thousand${rem > 0 ? ' ' + intToWords(rem) : ''} dollars`; }
+  const mm = Math.floor(n / 1e6), remK = Math.round((n % 1e6) / 1000); return `${intToWords(mm)} million${remK > 0 ? ' ' + intToWords(remK) + ' thousand' : ''} dollars`;
+}
+/**
+ * Spell numbers out as WORDS for TTS. ElevenLabs' internal number normalizer
+ * verbalizes digit forms ("141 thousand") non-deterministically and stutters
+ * ("hu-hundred and forty…" — user 2026-06-26); pre-verbalizing removes that step.
+ * MUST run at AUTHORING time on the NARRATION string (not inside voice.ts) — the
+ * on-screen card numbers stay digit-form (about-modal capture / image_gen card),
+ * and applyContinuousNarration slices word-timings by char offset into the
+ * narration, so mutating it any later would desync every caption.
+ *   "141 thousand" → "one hundred forty-one thousand"
+ *   "20.4 million" → "twenty point four million"
+ *   "Number 1"     → "Number one"
+ */
+export function verbalizeNumberPhrase(text: string): string {
+  return text
+    // "$1 RPM" → "one dollar RPM" (EL stutters "one dol-dollar" / "6 doar" on
+    // "$N RPM"; user 2026-06-27 #4/#5). Card text keeps "$N RPM" — this is
+    // applied to the NARRATION only.
+    .replace(/\$(\d+)\s+RPM\b/g, (_m, n: string) => `${intToWords(parseInt(n, 10))} dollar RPM`)
+    // "$7,500" → "seven thousand five hundred dollars" (NARRATION only; the lump-sum text_card keeps
+    // "$7,500"). Runs AFTER the "$N RPM" rule so "$6 RPM" is already consumed and never hits this.
+    .replace(/\$([\d,]+)/g, (_m, n: string) => dollarsToWords(parseInt(n.replace(/,/g, ''), 10)))
+    .replace(/\b(\d{1,3})(?:\.(\d))?\s+(thousand|million|billion)\b/gi,
+      (_m, intPart: string, dec: string | undefined, scale: string) => {
+        let w = intToWords(parseInt(intPart, 10));
+        if (dec != null) w += ' point ' + ONES_WORDS[parseInt(dec, 10)];
+        return `${w} ${scale.toLowerCase()}`;
+      })
+    .replace(/\bNumber (\d{1,2})\b/g, (_m, n: string) => `Number ${intToWords(parseInt(n, 10))}`);
+}
+
 /** Rule-based one-clause simplification of the analysis recipe_formula into
  *  a verb phrase for "This channel ___." Stored formulas open with "Videos
  *  are/feature/show…" — map the opener, keep the first clause, cap length.

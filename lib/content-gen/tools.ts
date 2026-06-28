@@ -298,6 +298,11 @@ export const TOOL_REGISTRY: ToolSpec[] = [
     output_fields: ['file_url', 'asset_kind', 'bboxes', 'page_width', 'page_height', 'duration_s'],
     // v1.2.6: tabs_strip container rect (DOM-true chip bottom). v1.2.5:
     // rule_texts in __meta. v1.2.4: modal scrolled to Joined.
+    // NOTE (2026-06-27): do NOT bump this to bust stale stat-desync rows — a global bump force-
+    // re-captures the hard channel_b/saturation channels (6/12 thumbs unloaded → never pass the
+    // THUMBS_UNLOADED gate → render abort). The Type-A desync is fixed TARGETEDLY instead: the proof
+    // gems fold the spoken stat into their args (narr_snapshot, listicle-builder forceProofKind) so
+    // ONLY they re-resolve; niche_4's black frame is busted by deleting that one stale row.
     version: 'v1.2.6',
     cache_key_excludes: ['force'],
   },

@@ -758,14 +758,22 @@ async function renderCircleAvatar(srcBuf: Buffer, size: number, borderW: number)
 /** Fetch a YT CDN avatar at a larger size — DB stores `=s88-c-k-...`; bump
  *  to `=s400-` so we have enough resolution for a 280-px circle render. */
 async function fetchYtAvatar(url: string): Promise<Buffer | null> {
-  const upsized = url.replace(/=s\d+-/, '=s400-');
-  try {
-    const r = await fetch(upsized);
-    if (!r.ok) return null;
-    return Buffer.from(await r.arrayBuffer());
-  } catch {
-    return null;
+  // Resilient fetch — mirror thumb_mosaic's fetchThumb (image-gen.ts): an 8s
+  // timeout + try the =s400- upsize AND the original URL across two attempts.
+  // The old single un-timed fetch silently returned null on any transient CDN
+  // miss → one blank avatar cell → a blank "Number N" zoom (user 2026-06-26).
+  const candidates = [url.replace(/=s\d+-/, '=s400-'), url];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (const u of candidates) {
+      try {
+        const r = await fetch(u, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) continue;
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length > 0) return buf;
+      } catch { /* timeout / network — try next candidate/attempt */ }
+    }
   }
+  return null;
 }
 
 /**
@@ -776,19 +784,34 @@ async function fetchYtAvatar(url: string): Promise<Buffer | null> {
  * @returns local path to the rendered PNG (1920×1080, white canvas).
  */
 export async function composeChannelLogosMontageMG(avatarUrls: (string | null)[]): Promise<string> {
+  // Neutral gray placeholder so a missing/failed avatar NEVER leaves a blank
+  // white cell — intro_card zooms (pan_to_target) into ONE specific cell, so a
+  // single blank cell = a blank "Number N" reveal (user 2026-06-26). Real
+  // avatars still win; placeholders only fill gaps.
+  const grayBuf = await sharp({ create: { width: LOGOS_AVATAR_SIZE, height: LOGOS_AVATAR_SIZE, channels: 3, background: { r: 190, g: 190, b: 190 } } }).png().toBuffer();
+  const placeholder = await renderCircleAvatar(grayBuf, LOGOS_AVATAR_SIZE, LOGOS_BORDER_W);
+
   const composites: Array<{ input: Buffer; left: number; top: number }> = [];
+  let realCount = 0;
   for (let i = 0; i < Math.min(avatarUrls.length, LOGOS_GRID_COLS * LOGOS_GRID_ROWS); i++) {
     const url = avatarUrls[i];
-    if (!url) continue;
-    const srcBuf = await fetchYtAvatar(url);
-    if (!srcBuf) continue;
-    const circle = await renderCircleAvatar(srcBuf, LOGOS_AVATAR_SIZE, LOGOS_BORDER_W);
+    let circle: Buffer | null = null;
+    if (url) {
+      const srcBuf = await fetchYtAvatar(url);
+      if (srcBuf) { circle = await renderCircleAvatar(srcBuf, LOGOS_AVATAR_SIZE, LOGOS_BORDER_W); realCount++; }
+    }
+    if (!circle) circle = placeholder;
     const { cx, cy } = logosTargetCenter(i);
     composites.push({
       input: circle,
       left: Math.round(cx - LOGOS_AVATAR_SIZE / 2),
       top: Math.round(cy - LOGOS_AVATAR_SIZE / 2),
     });
+  }
+  // Refuse an all-placeholder montage (no real avatar) — throw so the gem fails
+  // LOUDLY (retryable) instead of silently caching a content-free grid.
+  if (realCount === 0) {
+    throw new Error(`logos_montage: 0/${avatarUrls.length} avatars loaded (all null or fetch-failed) — refusing to write a blank montage`);
   }
 
   const outPath = path.join(os.tmpdir(), `mg-logos-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);

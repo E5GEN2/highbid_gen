@@ -36,6 +36,11 @@ function getMainPool(): pg.Pool {
     const url = process.env.HB_RAILWAY_DB_URL || process.env.DATABASE_URL;
     if (!url) throw new Error('channel-b-verify: no DB url');
     mainPool = new pg.Pool({ connectionString: url, ssl: false, max: 3 });
+    // A transient Railway-proxy drop emits 'error' on an idle pooled client; with no
+    // handler that's an unhandled 'error' event → the whole render crashes mid-run
+    // (read ETIMEDOUT killed a 7-niche render, 2026-06-27). Swallow it — pg discards
+    // the dead client and dials a fresh one on the next query.
+    mainPool.on('error', (e) => console.warn(`[channel-b-verify] idle pool client error (ignored): ${e.message}`));
   }
   return mainPool;
 }
@@ -137,10 +142,43 @@ async function topThumbsB64(channelId: string, n: number): Promise<string[]> {
   return got.filter((x): x is string => !!x);
 }
 
+/** Self-stated channel description (YT API snippet) — the cheapest high-signal
+ *  cue for CONTENT INTENT that titles+thumbnails miss: "we RECAP sci-fi movies"
+ *  vs "we CREATE original A.I films" are visually identical but a different
+ *  format. Not stored in niche_spy_channels, so fetched live via the YT data-key
+ *  pool; degrades to null offline (verify falls back to titles+thumbnails). */
+const _descCache = new Map<string, string | null>();   // per-process: hero fetched once, not per candidate pair
+async function channelDescription(channelId: string): Promise<string | null> {
+  if (_descCache.has(channelId)) return _descCache.get(channelId)!;
+  let out: string | null = null;
+  try {
+    const { getNextYtPair } = await import('../yt-keys');
+    const { ytFetchViaProxy } = await import('../yt-proxy-fetch');
+    // 5 attempts × 6s hard cap each — without the per-attempt timeout one wedged
+    // proxy hung this 300s+ (The Recap Mania, user 2026-06-27). Degrades to
+    // titles+thumbnails on exhaustion.
+    for (let i = 0; i < 5; i++) {
+      const pair = await getNextYtPair();
+      if (!pair) break;
+      const res = await Promise.race([
+        ytFetchViaProxy(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelId}&key=${pair.key}`, pair),
+        new Promise<null>(r => setTimeout(() => r(null), 6000)),
+      ]).catch(() => null);
+      if (res?.ok) {
+        const d = (res.data as { items?: Array<{ snippet?: { description?: string } }> } | null)?.items?.[0]?.snippet?.description;
+        out = typeof d === 'string' && d.trim() ? d.trim().replace(/\s+/g, ' ').slice(0, 600) : null;
+        break;
+      }
+    }
+  } catch { /* degrade to titles+thumbnails */ }
+  _descCache.set(channelId, out);
+  return out;
+}
+
 /** Bump to invalidate cached verdicts after a prompt change. v2: subject
  *  "same" sharpened to the specific topic domain (broad-genre matches
  *  mislabeled a true-crime channel as same-subject in a tornado niche). */
-const PROMPT_V = 4;  // v4: multimodal — top video thumbnails added so format_match reads VISUAL style, not title wording (two same-format Young-Sheldon channels were mislabeled "different format"; user 2026-06-21 #7)
+const PROMPT_V = 5;  // v5: + self-stated channel DESCRIPTIONS (YT snippet) + create-vs-recap/compilation/reaction format rule — a movie-RECAP channel ("The Recap Mania") was mislabeled same-format as an AI-FILMS channel ("Domain Films A.I") because their titles+thumbnails both look sci-fi; the descriptions ("we recap movies" vs "we create original A.I films") are the decisive cue (user 2026-06-27)
 
 export interface HeroEvidence {
   channelId: string;
@@ -154,15 +192,19 @@ export interface HeroEvidence {
  * verdicts describe catalogs, which drift slowly; a stale verdict is
  * strictly better than a per-render Gemini bill.
  */
-export async function classifyRelationship(hero: HeroEvidence, candidateChannelId: string): Promise<RelationVerdict | null> {
+export async function classifyRelationship(hero: HeroEvidence, candidateChannelId: string, opts: { bypassCache?: boolean } = {}): Promise<RelationVerdict | null> {
   const pool = getMainPool();
-  const hit = await pool.query<{ verdict_jsonb: RelationVerdict }>(
-    `SELECT verdict_jsonb FROM content_gen_channel_relationships
-      WHERE hero_channel_id = $1 AND candidate_channel_id = $2 AND prompt_v >= ${PROMPT_V}`,
-    [hero.channelId, candidateChannelId]).catch(() => ({ rows: [] as Array<{ verdict_jsonb: RelationVerdict }> }));
-  if (hit.rows[0]) return hit.rows[0].verdict_jsonb;
+  // bypassCache (verification only): re-compute the FULL prod request and neither
+  // read nor write the shared verdict cache — safe to run alongside a live render.
+  if (!opts.bypassCache) {
+    const hit = await pool.query<{ verdict_jsonb: RelationVerdict }>(
+      `SELECT verdict_jsonb FROM content_gen_channel_relationships
+        WHERE hero_channel_id = $1 AND candidate_channel_id = $2 AND prompt_v >= ${PROMPT_V}`,
+      [hero.channelId, candidateChannelId]).catch(() => ({ rows: [] as Array<{ verdict_jsonb: RelationVerdict }> }));
+    if (hit.rows[0]) return hit.rows[0].verdict_jsonb;
+  }
 
-  const [heroTitles, candTitles, candName, heroThumbs, candThumbs] = await Promise.all([
+  const [heroTitles, candTitles, candName, heroThumbs, candThumbs, heroDesc, candDesc] = await Promise.all([
     topTitles(hero.channelId, 10),
     topTitles(candidateChannelId, 12),
     pool.query<{ channel_name: string | null }>(
@@ -170,6 +212,8 @@ export async function classifyRelationship(hero: HeroEvidence, candidateChannelI
     ).then(r => r.rows[0]?.channel_name ?? candidateChannelId),
     topThumbsB64(hero.channelId, 4),
     topThumbsB64(candidateChannelId, 4),
+    channelDescription(hero.channelId),
+    channelDescription(candidateChannelId),
   ]);
   if (heroTitles.length < 3 || candTitles.length < 3) {
     console.warn(`[channel-b-verify] insufficient titles for ${candidateChannelId} (hero=${heroTitles.length}, cand=${candTitles.length})`);
@@ -179,15 +223,16 @@ export async function classifyRelationship(hero: HeroEvidence, candidateChannelI
 
   const promptHead = `You compare two YouTube channels for a "similar channel" callout in a faceless-niches video.
 
-HERO channel — niche: "${hero.nicheLabel ?? 'unknown'}"; what it makes: "${hero.recipeFormula ?? 'unknown'}"
+HERO channel — niche: "${hero.nicheLabel ?? 'unknown'}"; what it makes: "${hero.recipeFormula ?? 'unknown'}"${heroDesc ? `\nHERO self-stated channel description: "${heroDesc}"` : ''}
 HERO top video titles:
 ${heroTitles.map(t => `- ${t}`).join('\n')}
 
-CANDIDATE channel "${candName}" top video titles:
+CANDIDATE channel "${candName}"${candDesc ? `\nCANDIDATE self-stated channel description: "${candDesc}"` : ''}
+CANDIDATE top video titles:
 ${candTitles.map(t => `- ${t}`).join('\n')}
 
 Classify the candidate against the hero on two INDEPENDENT axes:
-- format_match: "same" if the candidate uses the same VIDEO FORMAT / production style (e.g. size-comparison lineups vs ranked explainer countdowns vs scene breakdowns are all DIFFERENT formats), else "different".${hasThumbs ? ' JUDGE format_match PRIMARILY FROM THE THUMBNAILS shown below: matching visual style — same imagery type (character faces, dramatic scenes, gameplay, charts…), text-overlay treatment, and composition — is the SAME format EVEN IF the title wording differs. Titles styled differently ("The Truth About X" vs "X Did Something WORSE") over identical thumbnails are still the same format.' : ''}
+- format_match: "same" if the candidate uses the same VIDEO FORMAT / production style (e.g. size-comparison lineups vs ranked explainer countdowns vs scene breakdowns are all DIFFERENT formats), else "different". A channel that RECAPS, summarizes, reviews, reacts to, or COMPILES existing third-party movies/shows is a DIFFERENT format from one that CREATES ORIGINAL content — titles and thumbnails CANNOT tell a recap of a film from an original film, so the self-stated DESCRIPTIONS are the decisive evidence: when a description says the channel recaps / reviews / reacts to / compiles existing media, set format_match="different".${hasThumbs ? ' Use the THUMBNAILS below as SECONDARY evidence of visual style (same imagery type, text-overlay treatment, composition = same visual style even if title wording differs) — but the DESCRIPTIONS OVERRIDE thumbnail similarity for the create-vs-recap/compilation distinction.' : ''}
 - subject_match: "same" ONLY if the candidate covers the SAME SPECIFIC topic domain as the hero — not merely a shared broad genre/mood, and NOT a BROADER catalog that merely happens to include the hero's topic (e.g. tornado disaster documentaries vs true-crime disappearance stories are DIFFERENT subjects even though both are dark documentary genres; fictional monsters vs real animals are DIFFERENT; a hero about "internet mysteries" vs a candidate covering disturbing facts across space, the ocean and history is DIFFERENT because the candidate is BROADER, not the same niche). "narrower" if the candidate is a strict SUB-SLICE of the hero's subject (one franchise, one entity type). "different" otherwise. If the candidate's catalog is WIDER than the hero's niche, it is "different", never "same". Sharing a broad genre or mood is NOT "same".
 
 Also output:
@@ -274,10 +319,14 @@ Also output:
     return null;
   }
 
-  await pool.query(
-    `INSERT INTO content_gen_channel_relationships (hero_channel_id, candidate_channel_id, verdict_jsonb, prompt_v)
-     VALUES ($1, $2, $3, ${PROMPT_V})
-     ON CONFLICT (hero_channel_id, candidate_channel_id) DO UPDATE SET verdict_jsonb = EXCLUDED.verdict_jsonb, prompt_v = ${PROMPT_V}, updated_at = NOW()`,
-    [hero.channelId, candidateChannelId, JSON.stringify(v)]).catch(() => { /* cache is best-effort */ });
+  if (opts.bypassCache) {
+    console.log(`[verify] ${candName}: heroTitles=${heroTitles.length} candTitles=${candTitles.length} heroThumbs=${heroThumbs.length} candThumbs=${candThumbs.length} hasThumbs=${hasThumbs} heroDesc=${heroDesc ? 'Y' : 'n'} candDesc=${candDesc ? 'Y' : 'n'} → ${JSON.stringify(v)}`);
+  } else {
+    await pool.query(
+      `INSERT INTO content_gen_channel_relationships (hero_channel_id, candidate_channel_id, verdict_jsonb, prompt_v)
+       VALUES ($1, $2, $3, ${PROMPT_V})
+       ON CONFLICT (hero_channel_id, candidate_channel_id) DO UPDATE SET verdict_jsonb = EXCLUDED.verdict_jsonb, prompt_v = ${PROMPT_V}, updated_at = NOW()`,
+      [hero.channelId, candidateChannelId, JSON.stringify(v)]).catch(() => { /* cache is best-effort */ });
+  }
   return v;
 }

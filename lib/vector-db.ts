@@ -38,6 +38,9 @@ const vectorPool: Pool = new Proxy({} as Pool, {
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 10000,
       });
+      // Swallow idle-client 'error' (transient proxy drop) — unhandled it crashes the
+      // process (read ETIMEDOUT killed a mid-run render, 2026-06-27).
+      _vectorPool.on('error', (e: Error) => console.warn(`[vector-db] idle pool client error (ignored): ${e.message}`));
     }
     const v = Reflect.get(_vectorPool, prop, _vectorPool);
     return typeof v === 'function' ? v.bind(_vectorPool) : v;

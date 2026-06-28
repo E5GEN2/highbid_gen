@@ -490,7 +490,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
   // fresh → fresh getRandomHealthyProxy() → likely different proxy from
   // the ~57-strong online pool. ~17% individual failure rate observed →
   // 3 attempts ≈ 99.5% effective success.
-  const MAX_ATTEMPTS = (kind === 'videos_tab_popular') ? 5 : 4;   // W4: was 3. At ~17% per-attempt failure, 4→5 cuts residual failure ~0.5%→~0.08-0.02%; popular-tab needs the chip click so gets one extra.
+  const MAX_ATTEMPTS = (kind === 'videos_tab_popular') ? 10 : 9;   // W4: was 3→4/5 at ~17% per-attempt failure. 2026-06-27: the proxy pool hit a rough patch (~75% per-attempt failure → 14-18 CRITICAL page captures failed a full render, needing repeated from-job retries that only whittled 18→14→11). Bumped to 9/10 so a single pass rotates through enough proxies (0.75^9 ≈ 7.5% residual) and the render completes in one go. Dead-proxy (ERR_TUNNEL) attempts fail fast, so the extra attempts mostly cost time only on genuinely-slow proxies.
   let lastErr: Error | null = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -510,7 +510,7 @@ export async function captureYtScreen(channelId: string, opts: { kind?: ScreenKi
       lastErr = err as Error;
       const msg = lastErr.message ?? '';
       const transient =
-        /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|EAI_AGAIN|HARD_TIMEOUT|YT_PAGE_UNAVAILABLE/i
+        /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|EAI_AGAIN|HARD_TIMEOUT|YT_PAGE_UNAVAILABLE|THUMBS_UNLOADED|CAPTURE_DIMMED/i
           .test(msg);
       if (!transient || attempt === MAX_ATTEMPTS) break;
       // Backoff briefly so we don't hammer a slow proxy pool.
@@ -785,6 +785,25 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         return inView.length >= 6 && inView.every((i) => i.naturalWidth > 50);
       }, vpH, { timeout: 15_000 }).catch(() => { /* proceed anyway */ });
       await page.waitForTimeout(400);
+      // Force every grid card to FULL opacity before the static shot. YT fades
+      // cards in (opacity 0→1) as they enter the viewport; after the Popular
+      // re-sort the re-rendered lower cards can still be mid-fade when the shot
+      // fires, baking DIM cards (user 2026-06-25: niche_8 channel_b top-video
+      // card had dim/gray title text — videos_tab_popular mean-luma 31 vs
+      // videos_tab 79 for the same channel; card_15 sat in the unsettled lower
+      // region). Forcing opacity:1 + killing the fade is deterministic (no
+      // timing race) and can ONLY brighten an unsettled card, never darken a
+      // settled one — so it's safe for the already-fine videos_tab path too.
+      await page.addStyleTag({ content: `
+        ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-rich-grid-media,
+        yt-img-shadow, ytd-thumbnail, ytd-rich-grid-renderer #contents > * {
+          opacity: 1 !important;
+          animation: none !important;
+          transition: none !important;
+          filter: none !important;
+        }
+      ` }).catch(() => { /* best effort */ });
+      await page.waitForTimeout(250);
     }
 
     // For channel_page: the "Popular videos" / featured shelf lazy-loads
@@ -810,6 +829,19 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
         ) as HTMLImageElement | null;
         return !!a && !!a.src && a.naturalWidth > 0;
       }, undefined, { timeout: 6_000 }).catch(() => { /* proceed anyway */ });
+      // Trigger lazy-load + kill the fade for the in-view grid cards. channel_page
+      // previously did NEITHER (only videos_tab scrolled + forced opacity), so its
+      // thumbnails baked BLACK/dim — the most-affected kind (user 2026-06-26:
+      // Royal Walls channel_page 6/6 black). A short scroll jiggle fires YT's
+      // intersection-observer lazy-load; opacity:1 can only brighten a mid-fade
+      // card, never darken a settled one. The THUMBS_UNLOADED gate below still
+      // catches anything that genuinely failed to fetch.
+      for (const yy of [400, 800, 0]) { await page.evaluate((y) => window.scrollTo(0, y), yy).catch(() => {}); await page.waitForTimeout(200); }
+      await page.addStyleTag({ content: `
+        ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-rich-grid-media,
+        ytd-rich-shelf-renderer, yt-img-shadow, ytd-thumbnail {
+          opacity: 1 !important; animation: none !important; transition: none !important; filter: none !important;
+        }` }).catch(() => { /* best effort */ });
       await page.waitForTimeout(400);
     }
 
@@ -842,6 +874,44 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           }
         }
       }).catch(() => { /* cosmetic — extraction still works on raw text */ });
+    }
+
+    // THUMBNAIL LOAD GATE — every wait above ends in `.catch(/* proceed anyway */)`,
+    // so when a proxy is slow to fetch i.ytimg.com the capture BAKES a black grid
+    // and caches it as 'done' (user 2026-06-26: Royal Walls channel_page 6/6 black,
+    // Ponpon videos_tab_popular 7/18; found by scripts/local/qa-thumbnails.mts).
+    // Instead, count grid thumbnails that are STILL unloaded (naturalWidth<50)
+    // inside the captured viewport and throw a TRANSIENT error so the retry loop
+    // re-captures with a fresh (faster) proxy. naturalWidth is the load signal —
+    // a genuinely dark-but-loaded thumbnail has naturalWidth>50 and passes, so we
+    // never reject a real thumbnail, only blank ones. Tolerate a single straggler
+    // on a large grid (its bottom edge is rarely shown); zero-tolerance on the
+    // small channel_page grid (shown prominently).
+    if (kind === 'videos_tab' || kind === 'videos_tab_popular' || kind === 'channel_page') {
+      const tg = await page.evaluate(() => {
+        const imgs = Array.from(document.querySelectorAll(
+          'ytd-rich-item-renderer img, ytd-grid-video-renderer img, ytd-rich-grid-media img, ytd-rich-shelf-renderer img',
+        )) as HTMLImageElement[];
+        // Check the TOP ~12 grid thumbnails (the rows the saturation/channel_b beat
+        // actually shows), ordered by ABSOLUTE page position so it is scroll-independent.
+        // Avoids two opposite mistakes: (1) the original `r.bottom>0` in-view filter was
+        // scroll-relative, so thumbs scrolled above the viewport top at check-time were
+        // skipped and baked black (Saving Savers thumb_4/6); (2) checking ALL ~60 thumbs
+        // on a 2500px-tall videos_tab over-rejected deep-bottom lazy-load stragglers that
+        // are never shown → endless retry churn (Unlucky Tortol 30/60, 2026-06-27).
+        // naturalWidth is the load signal — a loaded-but-dark thumb still passes.
+        const grid = imgs.map((i) => { const r = i.getBoundingClientRect(); return { i, y: r.top + window.scrollY, w: r.width, h: r.height }; })
+          .filter((o) => o.w > 80 && o.h > 45)
+          .sort((a, b) => a.y - b.y)
+          .slice(0, 12);
+        const bad = grid.filter((o) => !o.i.naturalWidth || o.i.naturalWidth < 50).length;
+        return { total: grid.length, bad };
+      }).catch(() => ({ total: 0, bad: 0 }));
+      if (tg.total === 0 || tg.bad >= 2 || (tg.bad >= 1 && tg.total <= 8)) {
+        // total===0 → the page BODY never rendered (only the nav bar) — a whole-
+        // page-black capture (user 2026-06-27 #3: niche_4 channel_page). Retry.
+        throw new Error(`THUMBS_UNLOADED: ${tg.total === 0 ? 'page body did not render (0 grid cards)' : tg.bad + '/' + tg.total + ' grid thumbnails unloaded'} for ${url} (transient — retrying with fresh proxy)`);
+      }
     }
 
     // Extract element bboxes for the renderer's annotation overlays. Done
@@ -1625,9 +1695,31 @@ async function runCapture(rowId: number, channelId: string, handle: string | nul
           annotationDebug = { error: (e as Error).message.slice(0, 200) };
         }
       }
+      // For GRID captures only (NOT about_page, whose modal backdrop is intentional): strip any
+      // dark overlay/backdrop before the shot — a lingering popup's tp-yt-iron-overlay-backdrop dims
+      // the WHOLE page ~50% (niche_7/BillyFR videos_tab_popular came out uniformly gray, 2026-06-28).
+      if (kind === 'videos_tab' || kind === 'videos_tab_popular' || kind === 'channel_page') {
+        await page.evaluate(() => {
+          document.querySelectorAll('tp-yt-iron-overlay-backdrop, ytd-popup-container tp-yt-paper-dialog, yt-mealbar-promo-renderer, ytd-consent-bump-v2-lightbox, .ytp-popup').forEach(e => { try { (e as HTMLElement).style.setProperty('display', 'none', 'important'); } catch { /* */ } });
+          document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+        }).catch(() => { /* */ });
+        await page.waitForTimeout(150);
+      }
       await emitToolCall('screenshot:start', { kind });
       buf = await page.screenshot({ fullPage: false, type: 'png', timeout: SCREENSHOT_TIMEOUT_MS });
       await emitToolCall('screenshot:done', { bytes: buf.length });
+      // Brightness gate (grid captures): a surviving dark overlay / OS forced-dark leak washes even
+      // the white UI/title text to gray. p90<100 = dimmed (crisp captures keep p90>=130 from the
+      // bright chrome; the niche_7 defect measured p90=73). Throw transient → retry fresh proxy.
+      if (kind === 'videos_tab' || kind === 'videos_tab_popular' || kind === 'channel_page') {
+        try {
+          const _sharp = (await import('sharp')).default;
+          const gb = await _sharp(buf).resize({ width: 400 }).greyscale().raw().toBuffer();
+          const arr = Array.from(gb).sort((a, b) => a - b);
+          const p90 = arr[Math.floor(0.9 * (arr.length - 1))];
+          if (p90 < 100) throw new Error(`CAPTURE_DIMMED: p90=${p90} (uniform dim — transient, retrying fresh) for ${url}`);
+        } catch (e) { if ((e as Error).message?.startsWith('CAPTURE_DIMMED')) throw e; /* measure failure: don't block */ }
+      }
       // Composite annotation pass — runs AFTER the screenshot, draws richer
       // shapes (sharpie circle, arrow, label) via Sharp + SVG overlay. Uses
       // the bbox the walker just found (annotationDebug.picked). When the

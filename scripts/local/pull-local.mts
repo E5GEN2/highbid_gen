@@ -101,7 +101,13 @@ async function copyTable(src: pg.Pool, dst: pg.Pool | pg.Client, table: string, 
   if (!srcCols.length) { log(`  ${table}: missing on Railway — skip`); return; }
   if (!dstCols.length) { log(`  ${table}: missing locally — skip`); return; }
   const dstByName = new Map(dstCols.map(c => [c.name, c]));
-  const cols = srcCols.filter(c => dstByName.has(c.name));
+  // Exclude *embedding* columns ALWAYS. They are 3072-dim vectors (~12KB/row);
+  // when the local schema HAS them (it does for niche_spy_videos: title_embedding,
+  // *_embedding_v2, combined_embedding_v2), the plain src∩local intersection would
+  // copy ~15MB for a 314-row group over the flaky Railway proxy and hang forever
+  // (no per-query timeout). KNN/embeddings are read from prod at render time, never
+  // local — so these are pure dead weight here. (Root cause of the 2026-06-26 hangs.)
+  const cols = srcCols.filter(c => dstByName.has(c.name) && !/embedding/i.test(c.name));
   const names = cols.map(c => `"${c.name}"`).join(', ');
 
   await dst.query(`TRUNCATE TABLE ${table} CASCADE`);
@@ -226,7 +232,10 @@ async function rewritePaths(local: pg.Pool) {
 }
 
 async function main() {
-  const channels = process.argv.slice(2).filter(a => a.startsWith('UC'));
+  // Accept both CSV ("UCa,UCb") and space-separated ("UCa UCb") — the runbook
+  // example uses CSV, so split on commas before filtering (else a single CSV
+  // arg becomes one bogus "UCa,UCb,…" element and channel-filtered copies match 0).
+  const channels = process.argv.slice(2).flatMap(a => a.split(',')).map(s => s.trim()).filter(a => a.startsWith('UC'));
   const chList = channels.length ? channels : DEFAULT_CHANNELS;
 
   const src = new pg.Pool({ connectionString: railwayUrl(), ssl: false, max: 4 });
@@ -237,16 +246,32 @@ async function main() {
   await dstClient.connect();
   await dstClient.query(`SET session_replication_role = replica`);
 
-  log('phase 1 — tables');
-  for (const t of FULL_TABLES) await copyTable(src, dstClient, t);
+  // Optional recovery filter: ONLY_TABLES=a,b,c copies just those tables
+  // (fresh src connection) — used to resume a pull that dropped mid-way on a
+  // big table without re-streaming the ones that already succeeded. No-op when unset.
+  const ONLY = (process.env.ONLY_TABLES || '').split(',').map(s => s.trim()).filter(Boolean);
+  const want = (t: string) => ONLY.length === 0 || ONLY.includes(t);
+  log('phase 1 — tables' + (ONLY.length ? ` (ONLY: ${ONLY.join(',')})` : ''));
+  for (const t of FULL_TABLES) {
+    if (!want(t)) continue;
+    // NSC_FILTER: copy only the group's niche_spy_channels rows. Safe because
+    // the local render reads the group channels from local (loadChannel) but
+    // resolves channel_b/saturation similar-channels from prod (HB_RAILWAY_DB_URL),
+    // so the full 124K table isn't needed locally — and the full copy ages out
+    // the proxy connection (~400s limit). No-op unless NSC_FILTER is set.
+    if (t === 'niche_spy_channels' && process.env.NSC_FILTER)
+      await copyTable(src, dstClient, t, `WHERE channel_id = ANY($1)`, [chList]);
+    else
+      await copyTable(src, dstClient, t);
+  }
   // Parent before children: the analysis tables FK niche_spy_videos.
   // BUT video_analysis_jobs references videos from the FULL 300+ corpus
   // (reference-class channels), not just the draft group — so pull ALL
   // video rows that transcripts point at, plus the draft channels' rows.
-  await copyTable(src, dstClient, 'niche_spy_videos',
+  if (want('niche_spy_videos')) await copyTable(src, dstClient, 'niche_spy_videos',
     `WHERE channel_id = ANY($1)
         OR id IN (SELECT video_id FROM video_analysis_jobs WHERE video_id IS NOT NULL)`, [chList]);
-  for (const t of ANALYSIS_TABLES) await copyTable(src, dstClient, t);
+  for (const t of ANALYSIS_TABLES) if (want(t)) await copyTable(src, dstClient, t);
   await dstClient.query(`SET session_replication_role = DEFAULT`);
   await dstClient.end();
   const dst = new pg.Pool({ connectionString: LOCAL_DB, max: 4 });
