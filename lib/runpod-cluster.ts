@@ -345,11 +345,12 @@ export async function dispatchGlobalBakeToRunPod(opts: {
   const dispatch = await dispatchClusterToRunPod(opts.creds, {
     payload,
     existingJobId: opts.resumeJobId,   // RESUME: poll the live job instead of /run
-    // Combined runs are long — empirically a minClusterSize=30 bake
-    // took ~3.5h on RunPod's L4 due to deep L2 fanout. Default 6h so
-    // a slightly deeper-than-expected run doesn't get its result
-    // orphaned by a too-tight Node-side timeout.
-    timeoutMs: opts.timeoutMs ?? 6 * 60 * 60 * 1000,
+    // Combined runs are LONG — a fine minClusterSize=30 bake over the full corpus
+    // streams hours of vectors then fans out deep L2 (1178 @531K ran ~7h; bigger
+    // corpora run longer). 24h ceiling so a big run is never orphaned by a too-tight
+    // Node poll; the RunPod job is the source of truth and the boot re-attach resumes
+    // polling across any restart anyway, so a generous ceiling costs nothing.
+    timeoutMs: opts.timeoutMs ?? 24 * 60 * 60 * 1000,
     onJobStart: opts.onJobStart,
     onProgress: opts.onProgress,
   });
