@@ -42,6 +42,7 @@ export interface ImageGenInput {
   aspect?: string;
   model?: string;
   purpose?: string;   // free tag, e.g. 'icon:shrug_with_question_marks'
+  imageURI?: string;  // 1-3 comma-separated public image URLs -> image-to-image conditioning
 }
 
 async function getXgodoToken(): Promise<string> {
@@ -75,8 +76,9 @@ export async function submitImageGenTask(input: ImageGenInput, opts: SubmitOpts 
   const pool = await getPool();
   const token = await getXgodoToken();
 
-  // xgodo's image-gen automation reads {prompt, aspect, model}.
-  const taskInput = { prompt, aspect, model };
+  // xgodo's image-gen automation reads {prompt, aspect, model, imageURI?}.
+  // imageURI = 1-3 comma-separated public image URLs for image-to-image conditioning.
+  const taskInput = { prompt, aspect, model, ...(input.imageURI ? { imageURI: input.imageURI } : {}) };
   const body: Record<string, unknown> = { job_id: IMAGEGEN_JOB_ID, inputs: [JSON.stringify(taskInput)] };
   if (opts.pinDevice) { body.device_name = opts.pinDevice; body.run_immediately = true; }
 
@@ -154,10 +156,16 @@ export async function getPinnableDevices(token: string): Promise<string[]> {
     listMarketDevices(token).catch(() => []),
     fetchBusyDevices(token).catch(() => new Set<string>()),
   ]);
-  const online = marketDeviceNameSet(market);
-  return rep
-    .filter(d => d.done >= 1 && d.success_rate >= 0.2 && online.has(d.device_name) && !busy.has(d.device_name))
-    .map(d => d.device_name);
+  // USA-only: the 'ng' device pool is the main source of "time limit exceeded"
+  // failures; restrict pinning to the far more reliable 'us' devices. Include
+  // every online US device (proven-first) so image-to-image batches have a
+  // usable pool — only drop devices with a proven-bad record.
+  const usOnline = market.filter(d => (d.country || '').toLowerCase() === 'us').map(d => d.name).filter(Boolean);
+  const repByName = new Map(rep.map(d => [d.device_name, d]));
+  return usOnline
+    .filter(name => !busy.has(name))
+    .filter(name => { const r = repByName.get(name); return !r || r.total < 3 || r.success_rate >= 0.2; })
+    .sort((a, b) => (repByName.get(b)?.success_rate ?? 0.5) - (repByName.get(a)?.success_rate ?? 0.5));
 }
 
 /**
