@@ -1064,43 +1064,89 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       }
     }
 
-    // ── L1 pipeline ─────────────────────────────────────────────
-    const l1 = await runOneClusteringPipeline({
-      runId,
-      source,
-      videoIds: eligibleIds,
-      parentClusterId: null,
-      level: 1,
-      minClusterSize: params.minClusterSize || 80,
-      minSamples:     params.minSamples     || 10,
-      umapDims:       params.umapDims       || 50,
-      nNeighbors:     params.nNeighbors     || 15,
-      outlierIqrMult: params.outlierIqrMult ?? 3.0,
-      scriptKeyword:  '__global__',
-      executionMode:  params.executionMode,
-      // GPU path: feed the pre-computed result from the combined bake
-      // so we skip a second RunPod dispatch. CPU path: undefined, runs
-      // the local subprocess as before.
-      prefetchedResult: prefetchedL1Result,
-    });
-
-    if (l1.ok === false) {
-      // If the user cancelled the run, the L1 row is already in
-      // 'error' state with a "Cancelled by user" message. The
-      // status='running' guard makes this a no-op in that case so
-      // the cancel reason isn't overwritten.
-      await pool.query(
-        `UPDATE niche_tree_runs
-           SET status='error', error_message=$1, completed_at=NOW()
-           WHERE id=$2 AND status='running'`,
-        [l1.error, runId],
-      );
-      return;
+    // ── RESUME idempotency ──────────────────────────────────────
+    // A boot re-attach (params.resumeJobId set) re-runs this whole
+    // ingest from the staged bake result. The writes below are NOT
+    // idempotent — re-running would duplicate L1 clusters/assignments
+    // and mint a second set of subdivide runs. So make the re-ingest
+    // RESUMABLE: detect L1/stitch already done (skip them, keeping the
+    // L1 cluster ids stable so existing L2 subruns still point at their
+    // parents), and drop any orphaned (non-'done') subdivide runs from
+    // the interrupted attempt. The L2 loop below then re-bakes only the
+    // parents without a 'done' subrun. Re-attaching is safe to repeat.
+    let l1AlreadyIngested = false;
+    let l1StitchDone = false;
+    if (params.resumeJobId) {
+      l1AlreadyIngested = (await pool.query(
+        `SELECT 1 FROM niche_tree_clusters WHERE run_id = $1 AND parent_cluster_id IS NULL LIMIT 1`,
+        [runId],
+      )).rows.length > 0;
+      l1StitchDone = (await pool.query(
+        `SELECT 1 FROM niche_cluster_events WHERE run_id = $1 AND level = 1 LIMIT 1`,
+        [runId],
+      )).rows.length > 0;
+      const orphans = (await pool.query<{ id: number }>(
+        `SELECT id FROM niche_tree_runs
+           WHERE kind='subdivide' AND status <> 'done'
+             AND parent_cluster_id IN (SELECT id FROM niche_tree_clusters WHERE run_id = $1)`,
+        [runId],
+      )).rows.map(r => r.id);
+      if (orphans.length) {
+        // FK cascade drops their clusters + assignments.
+        await pool.query(`DELETE FROM niche_tree_runs WHERE id = ANY($1)`, [orphans]);
+        console.log(`[niche-tree] run ${runId}: resume cleared ${orphans.length} orphan (non-done) subdivide runs`);
+      }
+      if (l1AlreadyIngested) {
+        console.log(`[niche-tree] run ${runId}: resume — L1 present, skipping L1 re-ingest; resuming L2 from unfinished parents`);
+      }
     }
-    // If cancellation came in mid-L1, the helper exited via SIGTERM
-    // and reported ok:false above. If we somehow reached here despite
-    // a cancel, bail before starting L2 baking.
-    if (cancelledL1Runs.has(runId)) return;
+
+    // ── L1 pipeline ─────────────────────────────────────────────
+    let l1NumClusters = 0;
+    if (l1AlreadyIngested) {
+      l1NumClusters = (await pool.query<{ n: number }>(
+        `SELECT count(*)::int n FROM niche_tree_clusters WHERE run_id = $1 AND parent_cluster_id IS NULL`,
+        [runId],
+      )).rows[0].n;
+    } else {
+      const l1 = await runOneClusteringPipeline({
+        runId,
+        source,
+        videoIds: eligibleIds,
+        parentClusterId: null,
+        level: 1,
+        minClusterSize: params.minClusterSize || 80,
+        minSamples:     params.minSamples     || 10,
+        umapDims:       params.umapDims       || 50,
+        nNeighbors:     params.nNeighbors     || 15,
+        outlierIqrMult: params.outlierIqrMult ?? 3.0,
+        scriptKeyword:  '__global__',
+        executionMode:  params.executionMode,
+        // GPU path: feed the pre-computed result from the combined bake
+        // so we skip a second RunPod dispatch. CPU path: undefined, runs
+        // the local subprocess as before.
+        prefetchedResult: prefetchedL1Result,
+      });
+
+      if (l1.ok === false) {
+        // If the user cancelled the run, the L1 row is already in
+        // 'error' state with a "Cancelled by user" message. The
+        // status='running' guard makes this a no-op in that case so
+        // the cancel reason isn't overwritten.
+        await pool.query(
+          `UPDATE niche_tree_runs
+             SET status='error', error_message=$1, completed_at=NOW()
+             WHERE id=$2 AND status='running'`,
+          [l1.error, runId],
+        );
+        return;
+      }
+      // If cancellation came in mid-L1, the helper exited via SIGTERM
+      // and reported ok:false above. If we somehow reached here despite
+      // a cancel, bail before starting L2 baking.
+      if (cancelledL1Runs.has(runId)) return;
+      l1NumClusters = l1.numClusters;
+    }
 
     // ── Stitching phase ──────────────────────────────────────────
     // Match the freshly-clustered L1 against the most recent prior L1
@@ -1111,7 +1157,10 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
     // Best-effort: if stitching throws, we still want the run marked
     // 'done' and L2 baking to proceed — stable_ids can be reconciled
     // post-hoc by re-running just the stitcher.
-    try {
+    //
+    // On a resume where L1 stitch already ran, skip it — re-stitching
+    // would duplicate this run's niche_cluster_events rows.
+    if (!l1StitchDone) try {
       const { stitchL1Run } = await import('./cluster-stitch');
       await writeProgress(runId, {
         stage: 'stitching',
@@ -1176,6 +1225,22 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       if (cancelledL1Runs.has(runId)) {
         console.log(`[niche-tree] L2 baking cancelled at ${l2State.completed}/${l2State.total}`);
         break;
+      }
+
+      // RESUME: skip parents already subdivided on a prior attempt
+      // (a 'done' subrun exists). Keeps a re-attach fast and non-
+      // duplicating — only the unfinished tail gets re-baked.
+      if (params.resumeJobId) {
+        const alreadyDone = (await pool.query(
+          `SELECT 1 FROM niche_tree_runs
+             WHERE kind='subdivide' AND status='done' AND parent_cluster_id = $1 LIMIT 1`,
+          [parent.id],
+        )).rows.length > 0;
+        if (alreadyDone) {
+          l2State.completed++;
+          await writeProgress(runId, { l2: { ...l2State } });
+          continue;
+        }
       }
 
       // Pull the parent cluster's video IDs from its assignments.
@@ -1340,7 +1405,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
       }), runId],
     );
     console.log(
-      `[niche-tree] global run ${runId} complete: ${l1.numClusters} L1 clusters, ` +
+      `[niche-tree] global run ${runId} complete: ${l1NumClusters} L1 clusters, ` +
       `L2 baked ${l2State.completed}/${l2State.total} (skipped ${l2State.skipped}, failed ${l2State.failed})`,
     );
   } catch (err) {

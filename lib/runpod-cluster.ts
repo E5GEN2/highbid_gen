@@ -220,6 +220,30 @@ export async function dispatchClusterToRunPod(
       headers: { 'Authorization': `Bearer ${creds.apiKey}` },
     });
     if (!statusRes.ok) {
+      // A 404 on a RESUMED job means RunPod has aged the (already
+      // terminal) job off its status store — the common case when a
+      // redeploy re-attaches AFTER the job had already COMPLETED. The
+      // real result was staged to runpod_job_results regardless, so
+      // recover it directly instead of looping forever on a /status
+      // that will never come back. Fresh dispatches never 404 here, so
+      // this only fires on the boot re-attach path.
+      if (statusRes.status === 404 && opts.existingJobId) {
+        const staged = await fetchRunpodResult(startJson.id);
+        if (staged) {
+          opts.onProgress?.(`[runpod] /status 404 but staged result present in runpod_job_results — job completed before re-attach, recovering result`);
+          logPollerStopped = true;
+          await logPollerPromise.catch(() => { /* swallow */ });
+          return {
+            jobId: startJson.id,
+            delayMs: 0,
+            executionMs: 0,
+            result: staged,
+          };
+        }
+        // No staged row yet → either the 404 was transient (job still
+        // mid-flight) or it died without staging. Fall through to retry;
+        // the deadline guard bounds how long we wait.
+      }
       // Transient — don't kill the whole run on a single 5xx. Surface
       // it though, so operator sees if we're stuck.
       opts.onProgress?.(`[runpod] /status ${statusRes.status} — retrying`);
