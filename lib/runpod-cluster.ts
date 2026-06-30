@@ -122,6 +122,10 @@ interface DispatchOpts {
   /** Payload to forward verbatim to the handler — same shape as the
    *  config the local subprocess reads from its tmpfile. */
   payload: Record<string, unknown>;
+  /** RESUME: poll an EXISTING RunPod job instead of POSTing /run. Set by the
+   *  boot re-attach so an in-flight clustering run survives a redeploy/restart —
+   *  the RunPod job keeps computing on RunPod's infra, we just re-poll it. */
+  existingJobId?: string;
   /** Hard ceiling on the poll loop, in ms. Default 90 min. Tracks
    *  pyTimeoutMs on the CPU path. */
   timeoutMs?: number;
@@ -142,22 +146,30 @@ export async function dispatchClusterToRunPod(
   const timeoutMs = opts.timeoutMs ?? 90 * 60 * 1000;
   const deadline = Date.now() + timeoutMs;
 
-  // --- POST /run ---------------------------------------------------
-  const startRes = await fetch(`${RUNPOD_API}/${creds.endpointId}/run`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${creds.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ input: opts.payload }),
-  });
-  if (!startRes.ok) {
-    const t = await startRes.text().catch(() => '');
-    throw new Error(`RunPod /run ${startRes.status}: ${t.slice(0, 300)}`);
-  }
-  const startJson = await startRes.json() as RunPodStartResponse;
-  if (!startJson.id) {
-    throw new Error(`RunPod /run returned no job id: ${JSON.stringify(startJson).slice(0, 300)}`);
+  // --- POST /run (or RE-ATTACH to an existing job) -----------------
+  let startJson: RunPodStartResponse;
+  if (opts.existingJobId) {
+    // Resume: the RunPod job is already running on RunPod's infra (it survives
+    // a Node redeploy). Skip /run and poll its /status directly.
+    startJson = { id: opts.existingJobId } as RunPodStartResponse;
+    opts.onProgress?.(`[runpod] re-attaching to existing job ${opts.existingJobId} (no /run)`);
+  } else {
+    const startRes = await fetch(`${RUNPOD_API}/${creds.endpointId}/run`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${creds.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ input: opts.payload }),
+    });
+    if (!startRes.ok) {
+      const t = await startRes.text().catch(() => '');
+      throw new Error(`RunPod /run ${startRes.status}: ${t.slice(0, 300)}`);
+    }
+    startJson = await startRes.json() as RunPodStartResponse;
+    if (!startJson.id) {
+      throw new Error(`RunPod /run returned no job id: ${JSON.stringify(startJson).slice(0, 300)}`);
+    }
   }
   opts.onJobStart?.(startJson.id);
   opts.onProgress?.(`[runpod] job ${startJson.id} queued`);
@@ -302,6 +314,9 @@ export async function dispatchGlobalBakeToRunPod(opts: {
     outlierIqrMult?: number;
   };
   timeoutMs?: number;
+  /** RESUME: re-attach to this already-running RunPod job (skip /run dispatch).
+   *  The boot re-attach passes this so a redeploy mid-bake resumes instead of orphaning. */
+  resumeJobId?: string;
   onJobStart?: (jobId: string) => void;
   onProgress?: (msg: string) => void;
 }): Promise<GlobalBakeResult> {
@@ -329,6 +344,7 @@ export async function dispatchGlobalBakeToRunPod(opts: {
 
   const dispatch = await dispatchClusterToRunPod(opts.creds, {
     payload,
+    existingJobId: opts.resumeJobId,   // RESUME: poll the live job instead of /run
     // Combined runs are long — empirically a minClusterSize=30 bake
     // took ~3.5h on RunPod's L4 due to deep L2 fanout. Default 6h so
     // a slightly deeper-than-expected run doesn't get its result

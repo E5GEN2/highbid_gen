@@ -371,6 +371,10 @@ const SOURCE_FILTER: Record<TreeSource, string> = {
 };
 
 export interface TreeClusterParams {
+  /** RESUME: re-attach to this in-flight RunPod job instead of dispatching a new bake.
+   *  Set by the boot re-attach (instrumentation.ts) so a redeploy mid-clustering resumes
+   *  polling + ingest of the still-running GPU job rather than orphaning the run. */
+  resumeJobId?: string;
   /** L1 default ~80; smaller min_cluster_size = more, smaller niches */
   minClusterSize?: number;
   minSamples?: number;
@@ -986,6 +990,7 @@ export async function runGlobalClusteringJob(runId: number, params: TreeClusterP
           creds,
           dbUrl: vectorDbUrl,
           source,
+          resumeJobId: params.resumeJobId,   // RESUME: re-attach to a live job after a redeploy (skip /run)
           videoIds: eligibleIds,
           l1: {
             minClusterSize: params.minClusterSize || 80,

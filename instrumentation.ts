@@ -334,22 +334,36 @@ export async function register() {
       if (r2.rowCount && r2.rowCount > 0) {
         console.log(`[boot] Marked ${r2.rowCount} orphaned enrich job(s) as error`);
       }
-      // niche_tree_runs: the global L1 + chained L2 baking pipeline runs
-      // entirely in-process (Node-driven loop calling python via spawn).
-      // A redeploy kills both the python child and the JS loop, but the
-      // DB rows stay flagged 'running' forever. Sweep both kinds (global
-      // and subdivide) using the same 3-minute grace so a fresh click
-      // post-boot isn't caught.
-      const r3 = await pool.query(
-        `UPDATE niche_tree_runs
-            SET status = 'error',
-                error_message = 'Orphaned: server restarted before run finished',
-                completed_at = NOW()
-          WHERE status = 'running' AND started_at < NOW() - INTERVAL '3 minutes'
-          RETURNING id, kind`
+      // niche_tree_runs: a redeploy kills the in-process Node driver, but a GPU
+      // run's RunPod job keeps COMPUTING on RunPod's infra and stages its result
+      // to runpod_job_results regardless. So instead of blanket-orphaning, RE-ATTACH
+      // any global run that still has a live RunPod job: resume polling + ingest from
+      // the new container. Only runs with NO RunPod job (never dispatched, or the CPU
+      // subprocess path which can't survive a restart) get orphan-errored.
+      // 3-minute grace so a fresh click post-boot isn't caught.
+      const stale = await pool.query<{ id: number; kind: string; params: Record<string, unknown> | null; runpod_job: string | null }>(
+        `SELECT id, kind, params, progress->>'runpodJobId' AS runpod_job
+           FROM niche_tree_runs
+          WHERE status = 'running' AND started_at < NOW() - INTERVAL '3 minutes'`
       );
-      if (r3.rowCount && r3.rowCount > 0) {
-        console.log(`[boot] Marked ${r3.rowCount} orphaned niche_tree run(s) as error`);
+      for (const row of stale.rows) {
+        if (row.kind === 'global' && row.runpod_job) {
+          console.log(`[boot] re-attaching in-flight niche_tree run ${row.id} (RunPod job ${row.runpod_job})`);
+          const { runGlobalClusteringJob } = await import('./lib/niche-tree');
+          // Fire-and-forget resume: skips /run, re-polls the live job, then the SAME ingest path runs.
+          runGlobalClusteringJob(row.id, { ...(row.params || {}), resumeJobId: row.runpod_job })
+            .catch(err => console.error(`[boot] resume run ${row.id} failed:`, err instanceof Error ? err.message : err));
+        } else {
+          await pool.query(
+            `UPDATE niche_tree_runs
+                SET status = 'error',
+                    error_message = 'Orphaned: server restarted before run finished (no RunPod job to resume)',
+                    completed_at = NOW()
+              WHERE id = $1`,
+            [row.id],
+          );
+          console.log(`[boot] Marked orphaned niche_tree run ${row.id} (${row.kind}) as error`);
+        }
       }
     } catch (err) {
       console.error('[boot] Failed to cleanup orphaned jobs:', (err as Error).message);
