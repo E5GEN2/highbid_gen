@@ -40,12 +40,23 @@ if (typeof process !== 'undefined' && typeof process.once === 'function') {
 }
 
 let schemaInitialized = false;
+let schemaIniting = false;
 
 export async function initSchema(): Promise<void> {
   if (schemaInitialized) return;
+  // Mutex: only ONE init runs at a time. Otherwise a slow/contended init (the
+  // niche-spy flywheel holding locks on hot tables) lets every concurrent request
+  // start its own init — a thundering herd that pins the connection pool and 500s
+  // every DB route (imagegen included).
+  while (schemaIniting) { await new Promise(r => setTimeout(r, 50)); if (schemaInitialized) return; }
+  if (schemaInitialized) return;
+  schemaIniting = true;
 
   const client = await pool.connect();
   try {
+    // Fail fast instead of hanging when DDL queues behind the flywheel's writes on
+    // hot tables (niche_spy_videos, niche_spy_channels, agent_task_log, …).
+    await client.query(`SET lock_timeout = '3s'`).catch(() => {});
     await client.query(`
       CREATE TABLE IF NOT EXISTS render_jobs (
         id VARCHAR(64) PRIMARY KEY,
@@ -474,12 +485,9 @@ export async function initSchema(): Promise<void> {
         synced_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    // niche_spy_videos is the niche-spy flywheel's HOT table. Its index builds can
-    // queue behind the flywheel's long-running DELETEs and hang initSchema forever
-    // (→ every getPool() hangs → imagegen + all DB routes 500). lock_timeout makes a
-    // contended build fail fast; IF-NOT-EXISTS + .catch() means it's simply retried on
-    // a later, quieter boot. This lets the imagegen tool and the niche-spy flywheel coexist.
-    await client.query(`SET lock_timeout = '3s'`).catch(() => {});
+    // niche_spy_videos is a flywheel-hot table; these index builds are .catch()-guarded
+    // so a lock_timeout skip (from the SET lock_timeout at the top of initSchema) just
+    // retries on a quieter boot instead of hanging or failing the whole init.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_keyword ON niche_spy_videos(keyword)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_score ON niche_spy_videos(score DESC NULLS LAST)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_views ON niche_spy_videos(view_count DESC NULLS LAST)`).catch(() => {});
@@ -488,7 +496,6 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_kw_score_views ON niche_spy_videos(keyword, score DESC NULLS LAST, view_count DESC NULLS LAST)`).catch(() => {});
     // Add unique URL constraint if not exists
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_niche_spy_url ON niche_spy_videos(url)`).catch(() => {});
-    await client.query(`SET lock_timeout = '0'`).catch(() => {});
     // Add enrichment tracking column
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_created_at TIMESTAMPTZ`).catch(() => {});
@@ -2287,9 +2294,17 @@ export async function initSchema(): Promise<void> {
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgpge_job ON content_gen_producer_graph_edges(job_id, id ASC)`).catch(() => {});
 
+    await client.query(`SET lock_timeout = '0'`).catch(() => {}); // reset before returning the pooled conn
     schemaInitialized = true;
     console.log('Database schema initialized');
+  } catch (e) {
+    // A contended DDL (ALTER/CREATE INDEX on a flywheel-hot table) timed out. The
+    // schema is idempotent and mostly present from prior boots — mark initialized so
+    // we don't thundering-herd retry; the skipped statement lands on a quieter boot.
+    schemaInitialized = true;
+    console.warn('[initSchema] completed with skipped statement(s):', (e as Error)?.message?.slice(0, 140));
   } finally {
+    schemaIniting = false;
     client.release();
   }
 }
