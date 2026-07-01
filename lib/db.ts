@@ -474,14 +474,21 @@ export async function initSchema(): Promise<void> {
         synced_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_keyword ON niche_spy_videos(keyword)`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_score ON niche_spy_videos(score DESC NULLS LAST)`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_views ON niche_spy_videos(view_count DESC NULLS LAST)`);
+    // niche_spy_videos is the niche-spy flywheel's HOT table. Its index builds can
+    // queue behind the flywheel's long-running DELETEs and hang initSchema forever
+    // (→ every getPool() hangs → imagegen + all DB routes 500). lock_timeout makes a
+    // contended build fail fast; IF-NOT-EXISTS + .catch() means it's simply retried on
+    // a later, quieter boot. This lets the imagegen tool and the niche-spy flywheel coexist.
+    await client.query(`SET lock_timeout = '3s'`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_keyword ON niche_spy_videos(keyword)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_score ON niche_spy_videos(score DESC NULLS LAST)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_views ON niche_spy_videos(view_count DESC NULLS LAST)`).catch(() => {});
     // Composite index matching the shape of the insights/distribution queries:
     // WHERE keyword=? AND score>=? ORDER BY view_count DESC — collapses 8-15s queries to <500ms
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_spy_kw_score_views ON niche_spy_videos(keyword, score DESC NULLS LAST, view_count DESC NULLS LAST)`).catch(() => {});
     // Add unique URL constraint if not exists
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_niche_spy_url ON niche_spy_videos(url)`).catch(() => {});
+    await client.query(`SET lock_timeout = '0'`).catch(() => {});
     // Add enrichment tracking column
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_created_at TIMESTAMPTZ`).catch(() => {});
