@@ -5,6 +5,7 @@ import { assembleMixedDrafts, assembleThemedDrafts, auditDrafts, type ListicleDr
 import { getDraftSpyStatuses } from '@/lib/content-gen/content-gen-seeds';
 import { hasActivePins, readActivePinnedDrafts, readConsumedPinnedDrafts, persistPinnedSnapshot } from '@/lib/content-gen/pinned-groups';
 import { filterShortsFocusedCandidates } from '@/lib/content-gen/shorts-profile';
+import { filterEnglishCandidates } from '@/lib/content-gen/english-gate';
 import { getPool } from '@/lib/db';
 
 /**
@@ -65,6 +66,7 @@ export async function GET(req: NextRequest) {
   let candidates: DiscoveryCandidate[] | null = null;
   let candidatePoolSize = 0;
   let shortsExcludedCount = 0;
+  let englishExcludedCount = 0;
   const loadCandidates = async (): Promise<DiscoveryCandidate[]> => {
     if (candidates) return candidates;
     const rawCandidates = await discoverChannels({ topK });
@@ -73,10 +75,15 @@ export async function GET(req: NextRequest) {
     // excluded channel's niche slot refills with the next candidate.
     const { kept, excluded } = await filterShortsFocusedCandidates(rawCandidates)
       .catch(() => ({ kept: rawCandidates, excluded: [] as string[] }));
-    candidates = kept;
-    candidatePoolSize = kept.length;
     shortsExcludedCount = excluded.length;
-    return kept;
+    // Cheap English-only gate (no AI, no extra queries): drop obvious non-English
+    // channels from the draft pool via name + top title + niche label. Layers on
+    // top of the SQL cga.language filter. See lib/content-gen/english-gate.ts.
+    const eng = filterEnglishCandidates(kept);
+    englishExcludedCount = eng.excluded.length;
+    candidates = eng.kept;
+    candidatePoolSize = eng.kept.length;
+    return eng.kept;
   };
 
   // MIXED — served from the stable pinned snapshot. Re-assemble + persist only on
@@ -129,6 +136,7 @@ export async function GET(req: NextRequest) {
     params: { mode, n, topK, refresh },
     candidate_pool_size: candidatePoolSize,
     shorts_excluded: shortsExcludedCount,
+    english_excluded: englishExcludedCount,
     mixed_drafts:  mixed,
     consumed_drafts: consumed,
     themed_drafts: themed,
