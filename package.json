@@ -15,6 +15,7 @@
     "@remotion/cli": "^4.0.422",
     "@remotion/media-utils": "^4.0.422",
     "@remotion/renderer": "^4.0.422",
+    "franc": "^6.2.0",
     "html2canvas-pro": "^1.6.7",
     "https-proxy-agent": "^7.0.6",
     "jszip": "^3.10.1",

@@ -79,7 +79,7 @@ export async function GET(req: NextRequest) {
     // Cheap English-only gate (no AI, no extra queries): drop obvious non-English
     // channels from the draft pool via name + top title + niche label. Layers on
     // top of the SQL cga.language filter. See lib/content-gen/english-gate.ts.
-    const eng = filterEnglishCandidates(kept);
+    const eng = await filterEnglishCandidates(kept);
     englishExcludedCount = eng.excluded.length;
     candidates = eng.kept;
     candidatePoolSize = eng.kept.length;

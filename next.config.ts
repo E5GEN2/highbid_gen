@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   instrumentationHook: true,
-  serverExternalPackages: ['@remotion/renderer', '@remotion/bundler', 'playwright', 'playwright-core'],
+  serverExternalPackages: ['@remotion/renderer', '@remotion/bundler', 'playwright', 'playwright-core', 'franc'],
   experimental: {
     serverActions: {
       bodySizeLimit: '500MB'
