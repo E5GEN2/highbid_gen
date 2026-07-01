@@ -160,7 +160,9 @@ export async function getPinnableDevices(token: string): Promise<string[]> {
   // failures; restrict pinning to the far more reliable 'us' devices. Include
   // every online US device (proven-first) so image-to-image batches have a
   // usable pool — only drop devices with a proven-bad record.
-  const usOnline = market.filter(d => (d.country || '').toLowerCase() === 'us').map(d => d.name).filter(Boolean);
+  // isAvailable===true means the device has NO running job task right now — only these
+  // will accept a run_immediately pin (busy ones fall into limbo). This is the key fix.
+  const usOnline = market.filter(d => (d.country || '').toLowerCase() === 'us' && d.isAvailable === true).map(d => d.name).filter(Boolean);
   const repByName = new Map(rep.map(d => [d.device_name, d]));
   return usOnline
     .filter(name => !busy.has(name))

@@ -19,6 +19,8 @@ const XGODO_API = 'https://xgodo.com/api/v2';
 export interface MarketDevice {
   name: string;
   country: string;
+  /** false when the device already has a running job task; true = free to pin right now. */
+  isAvailable?: boolean;
 }
 
 export async function listMarketDevices(
