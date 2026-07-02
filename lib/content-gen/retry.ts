@@ -22,7 +22,7 @@ export interface RetryOpts {
 // Broad on purpose: the cost of one extra retry is tiny; the cost of dropping a
 // niche is a re-render. Permanent errors (bad args, not-found) are matched by the
 // per-call-site deny logic, not here.
-const TRANSIENT = /failed to parse JSON|unexpected (token|end)|429|RESOURCE_EXHAUSTED|quota|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|HARD_TIMEOUT|YT_PAGE_UNAVAILABLE|ERR_(TUNNEL|PROXY|TIMED_OUT|CONNECTION|NETWORK)|proxy|tunnel|socket hang up|\b50[234]\b|timeout|timed out|network|fetch failed/i;
+const TRANSIENT = /failed to parse JSON|unexpected (token|end)|429|RESOURCE_EXHAUSTED|quota|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|HARD_TIMEOUT|YT_PAGE_UNAVAILABLE|THUMBS_UNLOADED|ERR_(TUNNEL|PROXY|TIMED_OUT|CONNECTION|NETWORK)|proxy|tunnel|socket hang up|\b50[234]\b|timeout|timed out|network|fetch failed/i;
 
 export function isTransientError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? '');

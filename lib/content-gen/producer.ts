@@ -30,6 +30,7 @@ import { getPool } from '../db';
 import { resolveRef, type ConcreteScript } from './concrete-script';
 import { TOOLS_BY_NAME } from './tools';
 import { runTool } from './producer-tools';
+import { isTransientError } from './retry';
 
 const MAX_SLOT_CONC = 3;
 /** "main visual" + narration are required for a slot to be usable; sfx is
@@ -285,6 +286,33 @@ export async function runJob(jobId: number): Promise<{ ok: boolean; final_video_
     const batch = script.slots.slice(i, i + MAX_SLOT_CONC);
     await Promise.all(batch.map(runSlot));
     // Refresh aggregate counts so the GUI can show progress.
+    await pool.query(
+      `UPDATE content_gen_producer_jobs
+          SET gems_done = (SELECT COUNT(*) FROM content_gen_producer_gems WHERE job_id=$1 AND status='done'),
+              gems_failed = (SELECT COUNT(*) FROM content_gen_producer_gems WHERE job_id=$1 AND status='failed'),
+              updated_at = NOW()
+        WHERE id=$1`,
+      [jobId],
+    );
+  }
+
+  // ── Self-heal: re-run critically-failed slots before giving up ──────────
+  // A critical gem failure is usually a transient yt_capture (proxy timeout /
+  // THUMBS_UNLOADED) that clears on a fresh proxy. Re-run ONLY the failed
+  // slots — cached done gems skip via the tool cache, so just the failed
+  // capture re-attempts (with fresh proxy rotation) — up to MAX_RETRY_PASSES.
+  // This makes the render SELF-COMPLETE without a manual from-job pass.
+  // Non-transient (hard) failures break the loop early so we don't spin.
+  const MAX_RETRY_PASSES = 5;
+  for (let pass = 1; pass <= MAX_RETRY_PASSES && Object.keys(slotCritFail).length > 0; pass++) {
+    const retrySids = Object.keys(slotCritFail).filter(sid => isTransientError(slotCritFail[sid]));
+    if (retrySids.length === 0) break;   // remaining failures are hard — retrying won't help
+    console.log(`[producer] job ${jobId}: self-heal pass ${pass}/${MAX_RETRY_PASSES} — re-running ${retrySids.length} failed slot(s): ${retrySids.slice(0, 6).join(', ')}`);
+    for (const sid of retrySids) delete slotCritFail[sid];   // clear; runSlot re-sets it if it fails again
+    const retrySlots = script.slots.filter(s => retrySids.includes(s.slot_id));
+    for (let i = 0; i < retrySlots.length; i += MAX_SLOT_CONC) {
+      await Promise.all(retrySlots.slice(i, i + MAX_SLOT_CONC).map(runSlot));
+    }
     await pool.query(
       `UPDATE content_gen_producer_jobs
           SET gems_done = (SELECT COUNT(*) FROM content_gen_producer_gems WHERE job_id=$1 AND status='done'),

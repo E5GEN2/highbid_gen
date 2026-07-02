@@ -226,6 +226,25 @@ async function main() {
       copyFileSync(localMp4, latest);
       log(`mp4 → ${localMp4}`);
       log(`copy → ${latest}`);
+      // ── Self-verify: run BOTH QA gates automatically so verification is
+      // self-sustaining (no manual gate invocation). Skip with --no-verify. ──
+      if (result.ok && !argv.includes('--no-verify')) {
+        const { execFileSync } = await import('child_process');
+        const { fileURLToPath } = await import('url');
+        const gates: Array<[string, string[]]> = [
+          ['render-qa.mts', [String(jobId), latest]],
+          ['render-verify.mts', [String(jobId)]],
+        ];
+        for (const [name, gargs] of gates) {
+          const gatePath = fileURLToPath(new URL(name, import.meta.url));
+          log(`── self-verify: ${name} ──`);
+          try {
+            execFileSync('npx', ['tsx', '--tsconfig', './tsconfig.json', gatePath, ...gargs], { stdio: 'inherit' });
+          } catch {
+            log(`⚠️ ${name} reported a FAIL (non-zero exit) — see gate output above`);
+          }
+        }
+      }
     } else {
       log(`expected mp4 not on disk: ${localMp4}`);
     }
