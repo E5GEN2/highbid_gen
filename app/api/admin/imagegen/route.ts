@@ -21,7 +21,7 @@ export const maxDuration = 120;
 export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin token required' }, { status: 403 });
   const body = await req.json().catch(() => ({})) as {
-    action?: string; tasks?: ImageGenInput[]; prompt?: string; aspect?: string; model?: string; purpose?: string; count?: number; pin?: boolean;
+    action?: string; tasks?: ImageGenInput[]; prompt?: string; aspect?: string; model?: string; purpose?: string; count?: number; pin?: boolean; dispatch?: string;
   };
 
   // Action: resubmit every purpose missing a success, pinned to good devices.
@@ -40,9 +40,12 @@ export async function POST(req: NextRequest) {
   if (inputs.length === 0) return NextResponse.json({ error: 'prompt or tasks[] required' }, { status: 400 });
   if (inputs.length > 50) return NextResponse.json({ error: 'max 50 tasks per call' }, { status: 400 });
 
-  // Device-affinity submit: pin a share to proven good online devices.
-  const r = await submitImageGenBatch(inputs, { pin: body.pin ?? true });
-  return NextResponse.json({ ok: true, submitted: r.submitted, failed: r.failed, ids: r.ids, pinnedTo: r.pinnedTo, errors: r.errors });
+  // dispatch:'any' -> run_immediately with no device (instant assign to any free
+  // US worker; the reliable path). Otherwise device-affinity pin as before.
+  const r = body.dispatch === 'any'
+    ? await submitImageGenBatch(inputs, { dispatchAny: true })
+    : await submitImageGenBatch(inputs, { pin: body.pin ?? true });
+  return NextResponse.json({ ok: true, submitted: r.submitted, failed: r.failed, ids: r.ids, pinnedTo: r.pinnedTo, unpinned: r.unpinned, errors: r.errors });
 }
 
 export async function GET(req: NextRequest) {

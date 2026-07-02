@@ -62,6 +62,12 @@ async function getXgodoToken(): Promise<string> {
 export interface SubmitOpts {
   /** Pin the task to this device (device_name) + run it immediately. */
   pinDevice?: string;
+  /** Dispatch NOW to any free worker (run_immediately, no device_name). The job
+   *  is country-restricted, so this stays US-only. This is the reliable path:
+   *  plain (no run_immediately) tasks sit in the "planned" stack and are never
+   *  auto-pulled; run_immediately without a device is instantly assigned to any
+   *  available worker (no specific-device limbo). */
+  runImmediately?: boolean;
   /** Mark this row as a retry of an earlier task id. */
   retryOf?: number;
 }
@@ -81,6 +87,7 @@ export async function submitImageGenTask(input: ImageGenInput, opts: SubmitOpts 
   const taskInput = { prompt, aspect, model, ...(input.imageURI ? { imageURI: input.imageURI } : {}) };
   const body: Record<string, unknown> = { job_id: IMAGEGEN_JOB_ID, inputs: [JSON.stringify(taskInput)] };
   if (opts.pinDevice) { body.device_name = opts.pinDevice; body.run_immediately = true; }
+  else if (opts.runImmediately) { body.run_immediately = true; }   // dispatch to any free (US) worker now
 
   const res = await fetch(`${XGODO_API}/planned_tasks/submit`, {
     method: 'POST',
@@ -179,9 +186,12 @@ export async function getPinnableDevices(token: string): Promise<string[]> {
  */
 export async function submitImageGenBatch(
   inputs: ImageGenInput[],
-  opts: { pin?: boolean; retryOf?: (i: number) => number | undefined } = {},
+  opts: { pin?: boolean; dispatchAny?: boolean; retryOf?: (i: number) => number | undefined } = {},
 ): Promise<{ submitted: number; failed: number; ids: number[]; pinnedTo: string[]; unpinned: number; errors: string[] }> {
-  const pin = opts.pin ?? true;
+  // dispatchAny: run_immediately with NO device -> xgodo assigns to any free
+  // (US) worker instantly. The reliable, high-throughput path (see SubmitOpts).
+  const dispatchAny = opts.dispatchAny ?? false;
+  const pin = !dispatchAny && (opts.pin ?? true);
   let pinnable: string[] = [];
   if (pin) {
     try { pinnable = await getPinnableDevices(await getXgodoToken()); } catch { pinnable = []; }
@@ -194,7 +204,7 @@ export async function submitImageGenBatch(
   const ids: number[] = []; const errors: string[] = []; const pinnedTo: string[] = [];
   const results = await Promise.all(inputs.map(async (input, i) => {
     const dev = assignments[i];
-    const r = await submitImageGenTask(input, { pinDevice: dev, retryOf: opts.retryOf?.(i) });
+    const r = await submitImageGenTask(input, { pinDevice: dev, runImmediately: dispatchAny, retryOf: opts.retryOf?.(i) });
     if ('error' in r) return { ok: false as const, error: r.error };
     return { ok: true as const, id: r.id, dev };
   }));
