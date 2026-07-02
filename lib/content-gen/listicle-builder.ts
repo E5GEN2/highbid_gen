@@ -17,6 +17,7 @@ import { writeScript, type ScriptWriterInput, type ChannelData, type NarrationBe
 import { withRetry, isTransientError } from './retry';
 import { type ConcreteScript, type HighlightRow } from './concrete-script';
 import { type ChannelBeatPlan, type BeatFlags, applyToggle } from './beat-plan';
+import pg from 'pg';
 import { getPool } from '../db';
 import { ttsWithTimestamps, DEFAULT_VOICE_ID, type WordTiming } from './voice';
 import { loadNicheVars, spokenNumber, verbalizeNumberPhrase, type NicheVars } from './niche-vars';
@@ -30,8 +31,22 @@ export type ChannelEvent = {
   writer: { ok: boolean; slot_count: number; beats: string[]; first_slot_id?: string; error?: string };
 };
 
-export async function loadChannel(channelId: string): Promise<ChannelData | null> {
-  const pool = await getPool();
+// Peer-stat pool: channel_b / saturation candidates are NOT in the local mirror
+// (a --local render pulls only the group's niche_spy_channels rows via NSC_FILTER),
+// so their min-stats must be read from PROD (HB_RAILWAY_DB_URL). On a prod render
+// HB_RAILWAY_DB_URL is unset → returns undefined so loadChannel uses the default
+// (already-prod) pool. Mirrors similar-channels' getMainPool (ssl:false, memoized).
+let _peerPool: pg.Pool | null | undefined;
+function getPeerPool(): pg.Pool | undefined {
+  if (_peerPool !== undefined) return _peerPool ?? undefined;
+  const url = process.env.HB_RAILWAY_DB_URL;
+  _peerPool = url ? new pg.Pool({ connectionString: url, ssl: false, max: 3 }) : null;
+  _peerPool?.on('error', (e) => console.warn(`[peer-pool] idle client error (ignored): ${e.message}`));
+  return _peerPool ?? undefined;
+}
+
+export async function loadChannel(channelId: string, poolOverride?: pg.Pool): Promise<ChannelData | null> {
+  const pool = poolOverride ?? await getPool();
 
   // Refresh stats from YT Data API before reading so subscriber_count / video_count /
   // total_views match what YT is serving on the live page (and what the about_modal
@@ -1335,7 +1350,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
     // Per-niche bank picks (worked-example template beats 1-9).
     const introLine = banks.pick('intro_card', niche_index)?.replace('{N}', String(niche_index)) ?? null;
     const recipeLine = vars.recipe_formula_simplified
-      ? `This channel ${vars.recipe_formula_simplified}.` : null;
+      ? verbalizeNumberPhrase(`This channel ${vars.recipe_formula_simplified}.`) : null;
     const emphasisLine = banks.pick('emphasis_intro', niche_index);
     const consistencyLine = banks.pick('consistency_intro', niche_index);
     const moneyOpener = banks.pick('money_opener_optional', niche_index, { skipProbability: 0.5 });
@@ -1463,9 +1478,12 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       .map((b, bi) => ({
         slot_id: `niche_${niche_index}_recipe_demo_${bi}`,
         beat_id: 'recipe_demo',
-        narration: b.narration,
+        // VERBALIZE: recipe_showcase narration is Gemini-authored from transcripts and can carry raw
+        // "$1,500" that EL garbles ("doar"); spell it to words at authoring like every other beat
+        // (render-verify checkD flags any un-verbalized $ that reaches a narration/tts field).
+        narration: verbalizeNumberPhrase(b.narration),
         gems: [
-          { id: 'narr', tool: 'tts', args: { text: b.narration, voice: 'money_groot' } },
+          { id: 'narr', tool: 'tts', args: { text: verbalizeNumberPhrase(b.narration), voice: 'money_groot' } },
           // Window EXTENDS past the matched moment (user feedback
           // 2026-06-11: looping the same 4s for a 10s slot reads as a
           // glitch). The clip STARTS on the transcript-matched moment —
@@ -1680,7 +1698,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
       for (const cand of sim.channels) {
         const v = verdicts.get(cand.channel_id) ?? null;
         if (v && isUnrelated(v)) continue;
-        const c = await loadChannel(cand.channel_id);
+        const c = await loadChannel(cand.channel_id, getPeerPool());
         if (!bMinStatsOk(c)) {
           console.warn(`[channel-b] ${cand.channel_name} fails min-stats gate (subs=${c?.subscriber_count ?? '?'}, views=${c?.total_views ?? '?'}, vids=${c?.video_count ?? '?'}) — skipping`);
           continue;
@@ -1955,7 +1973,7 @@ export async function buildListicleScript(opts: BuildListicleOpts): Promise<Buil
           const { captureYtScreen: captureSatGrid } = await import('./yt-capture');
           for (const cId of preGate) {
             if (others.length >= 3) break;
-            const cStats = await loadChannel(cId).catch(() => null);
+            const cStats = await loadChannel(cId, getPeerPool()).catch(() => null);
             if (!bMinStatsOk(cStats)) { console.warn(`[saturation] ${cId} fails min-stats gate — skipping page`); continue; }
             // CAPTURE-FEASIBILITY (user 2026-06-21): the saturation beat shows this
             // channel's videos GRID, so a dead/emptied channel (videos tab now
