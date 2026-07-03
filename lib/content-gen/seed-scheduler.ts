@@ -494,13 +494,27 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
         videosRescored += r.scored;
       }
 
-      // Backfill discovered_count + mark seeds done + release the niche.
+      // Backfill discovered_count + release the niche. A crawl that surfaced
+      // ZERO candidates almost always FAILED to run (a healthy 14-hop crawl finds
+      // dozens) — re-queue the seed for another attempt instead of retiring it:
+      // mark 'failed', which excludeSeeded treats as re-eligible, so the scheduler
+      // re-picks it. Capped at ZERO_SCORE_MAX_ATTEMPTS total crawls per seed_video
+      // (count of its rows) so a genuinely-dead/inaccessible video can't loop.
+      const ZERO_SCORE_MAX_ATTEMPTS = 3;
+      let seedStatus = 'done';
+      if (discoveredCount === 0 && seedIds.length > 0) {
+        const att = await pool.query<{ n: string }>(
+          `SELECT COUNT(*) AS n FROM niche_discovery_seeds WHERE seed_video_id = $1`,
+          [seedIds[0]],
+        );
+        if ((parseInt(att.rows[0]?.n) || 1) < ZERO_SCORE_MAX_ATTEMPTS) seedStatus = 'failed';
+      }
       await pool.query(
         `UPDATE niche_discovery_seeds
-            SET status = 'done', completed_at = NOW(), rescored_at = NOW(),
-                discovered_count = $2
+            SET status = $2, completed_at = NOW(), rescored_at = NOW(),
+                discovered_count = $3
           WHERE niche_id = $1`,
-        [n.niche_id, discoveredCount],
+        [n.niche_id, seedStatus, discoveredCount],
       ).catch(() => {});
       // Exhausted only if the crawl genuinely surfaced almost nothing.
       const newStatus = discoveredCount < 3 ? 'exhausted' : 'active';
