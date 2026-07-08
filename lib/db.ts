@@ -513,6 +513,9 @@ export async function initSchema(): Promise<void> {
     // space at MRL dim 3072; vectors live in the vector DB
     // (niche_video_vectors_qwen_v1), this stamp tracks presence main-side.
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS qwen_embedded_v1_at TIMESTAMPTZ`).catch(() => {});
+    // soft claim for PULL-based qwen workers (Colab polls rofe.ai for batches);
+    // a claim older than 15 min counts as expired — no reaper needed.
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS qwen_claimed_at TIMESTAMPTZ`).catch(() => {});
     // combined_v2 — gemini multimodal embedding of (title text + thumbnail
     // image) packed into a single content with two parts. One vector that
     // captures the joint signal "this title delivered with this visual".

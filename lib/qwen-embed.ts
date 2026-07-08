@@ -116,7 +116,7 @@ export async function qwenHealth(cfg: { url: string; token: string }): Promise<R
   }
 }
 
-async function ensureQwenTables(): Promise<void> {
+export async function ensureQwenTables(): Promise<void> {
   await vectorPool.query(`
     CREATE TABLE IF NOT EXISTS niche_video_vectors_qwen_v1 (
       video_id INTEGER PRIMARY KEY,
@@ -155,14 +155,14 @@ async function maybeCreateIvfIndex(): Promise<void> {
   ivfChecked = true;
 }
 
-interface BackfillRow {
+export interface BackfillRow {
   id: number;
   title: string;
   thumbnail: string;
   keyword: string | null;
 }
 
-async function stampOnly(ids: number[]): Promise<void> {
+export async function stampOnly(ids: number[]): Promise<void> {
   if (ids.length === 0) return;
   const pool = await getPool();
   await pool.query(
@@ -171,7 +171,7 @@ async function stampOnly(ids: number[]): Promise<void> {
   ).catch(() => {});
 }
 
-async function persistVectors(rows: BackfillRow[], vectors: number[][]): Promise<number> {
+export async function persistVectors(rows: BackfillRow[], vectors: number[][]): Promise<number> {
   const pool = await getPool();
   let ok = 0;
   for (let i = 0; i < rows.length && i < vectors.length; i++) {
@@ -258,6 +258,7 @@ async function backfillLoop(): Promise<void> {
         `SELECT id, title, thumbnail, keyword
            FROM niche_spy_videos
           WHERE qwen_embedded_v1_at IS NULL
+            AND (qwen_claimed_at IS NULL OR qwen_claimed_at < NOW() - INTERVAL '15 minutes')
             AND title IS NOT NULL AND title <> ''
             AND thumbnail IS NOT NULL AND thumbnail <> ''
             AND thumbnail_dead_at IS NULL
