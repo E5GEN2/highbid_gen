@@ -509,6 +509,10 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS title_embedded_v2_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS thumbnail_embedding_v2 REAL[]`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS thumbnail_embedded_v2_at TIMESTAMPTZ`).catch(() => {});
+    // qwen_v1 — self-hosted Qwen3-VL-Embedding-8B combined (title+thumbnail)
+    // space at MRL dim 3072; vectors live in the vector DB
+    // (niche_video_vectors_qwen_v1), this stamp tracks presence main-side.
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS qwen_embedded_v1_at TIMESTAMPTZ`).catch(() => {});
     // combined_v2 — gemini multimodal embedding of (title text + thumbnail
     // image) packed into a single content with two parts. One vector that
     // captures the joint signal "this title delivered with this visual".
@@ -561,6 +565,10 @@ export async function initSchema(): Promise<void> {
       )
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_first_upload ON niche_spy_channels(first_upload_at)`).catch(() => {});
+    // Posting-streak start (walk-derived; see lib/yt-channel-age.ts): the
+    // current run's first upload — first_upload_at alone misreads mid-life-
+    // dormancy channels (one early upload, long gap, recent streak).
+    await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS posting_streak_started_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_last_uploads ON niche_spy_channels(last_uploads_fetched_at NULLS FIRST)`).catch(() => {});
     // Peer-outlier score: channel.avg_views / median(avg_views of channels in
     // the same subscriber bucket). Computed by a nightly cron over all
@@ -1992,6 +2000,38 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE imagegen_tasks ADD COLUMN IF NOT EXISTS retry_of INTEGER`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_status ON imagegen_tasks(status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_purpose ON imagegen_tasks(purpose)`).catch(() => {});
+
+    // yt_video_summaries — WATCHED-content evidence from the Gemini app's
+    // YouTube ingestion, automated via the xgodo "Gemini app api" job
+    // (lib/xgodo-ytsummary.ts). Feeds classifyRelationship with observed
+    // format/originality per video — the evidence tier above self-stated
+    // descriptions. status: queued | done | unavailable | failed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS yt_video_summaries (
+        id                      SERIAL PRIMARY KEY,
+        video_url               TEXT NOT NULL,
+        video_id                TEXT UNIQUE,
+        channel_id              TEXT,
+        status                  TEXT NOT NULL DEFAULT 'queued',
+        planned_task_id         TEXT,
+        attempts                INTEGER NOT NULL DEFAULT 1,
+        prompt_v                INTEGER NOT NULL DEFAULT 1,
+        subject                 TEXT,
+        format                  TEXT,
+        original_or_thirdparty  TEXT,
+        narration               TEXT,
+        language                TEXT,
+        production_style        TEXT,
+        detailed_summary        TEXT,
+        raw_reply               TEXT,
+        error                   TEXT,
+        submitted_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at            TIMESTAMPTZ,
+        updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_yvs_channel ON yt_video_summaries(channel_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_yvs_status ON yt_video_summaries(status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_device ON imagegen_tasks(device_name)`).catch(() => {});
 
     // Voice asset cache — every TTS'd phrase keyed by (text + voice + model +

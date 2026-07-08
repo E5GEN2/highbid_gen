@@ -303,6 +303,12 @@ export async function register() {
     const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
     ensureThermostatRunning();
 
+    // Qwen embedding backfill loop — always started; it parks while
+    // qwen_backfill_enabled != 'true', so a deploy never silently kills the
+    // backfill (flag-driven, same lesson as the yt-enrich auto-resume).
+    const { ensureQwenBackfillRunning } = await import('./lib/qwen-embed');
+    ensureQwenBackfillRunning();
+
     // Mark "running" embedding jobs that haven't had progress in >3 minutes as
     // orphaned. They're leftovers from a previous server process whose worker
     // loops no longer exist. Fresh jobs are untouched — if we swept ALL running
