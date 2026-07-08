@@ -133,6 +133,21 @@ export async function POST(req: NextRequest) {
   }
 
   const totalBatches = Math.ceil(totalNeeded / batchSize);
+
+  // Re-check single-flight AFTER the slow count queries above (~60s on a
+  // busy DB): two near-simultaneous POSTs can both pass the early check,
+  // then both insert — observed as jobs 66+67 running concurrently.
+  const running2 = await pool.query(
+    `SELECT id, keyword FROM niche_yt_enrich_jobs WHERE status = 'running' LIMIT 1`
+  );
+  if (running2.rows.length > 0) {
+    return NextResponse.json({
+      ok: true, status: 'already-running',
+      jobId: running2.rows[0].id,
+      runningKeyword: running2.rows[0].keyword,
+    });
+  }
+
   const jobRes = await pool.query(
     `INSERT INTO niche_yt_enrich_jobs (status, keyword, threads, total_needed, total_batches, indefinite, error_message)
      VALUES ('running', $1, $2, $3, $4, $5, $6) RETURNING id`,

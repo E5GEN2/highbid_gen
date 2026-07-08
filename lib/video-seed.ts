@@ -127,6 +127,11 @@ async function batchEmbedGroupedViaProxy(
     const errBody = await res.text().catch(() => '');
     if (res.status === 403 && /PERMISSION_DENIED|has been (denied|suspended)/i.test(errBody)) {
       invalidateAiKey(keyId, `gemini_403: ${errBody.slice(0, 80)}`);
+    } else if (res.status === 401) {
+      // 401 UNAUTHENTICATED = the key itself is dead (deleted/disabled
+      // service account, revoked key) — never transient. Without this the
+      // key stays 'active' and the random picker re-burns it forever.
+      invalidateAiKey(keyId, `gemini_401: ${errBody.slice(0, 80)}`);
     } else if (res.status === 429) {
       cooloffAiKey(keyId, 90);
     }
