@@ -468,7 +468,8 @@ export async function getKeyStatus(): Promise<Array<{ key: string; proxy: string
 export async function getEmbeddingStats(): Promise<{
   apiKeysConfigured: number;
   legacyModel: string;
-  targets: Record<EmbeddingTarget, { totalVideos: number; embedded: number; notEmbedded: number }>;
+  targets: Record<EmbeddingTarget, { totalVideos: number; embedded: number; notEmbedded: number }>
+    & { qwen_v1: { totalVideos: number; embedded: number; notEmbedded: number; claimedNow: number } };
 }> {
   const pool = await getPool();
   const allPairs = await buildPairs();
@@ -481,13 +482,20 @@ export async function getEmbeddingStats(): Promise<{
       COUNT(*) FILTER (WHERE title_embedding_v2 IS NOT NULL)       AS e_title_v2,
       COUNT(*) FILTER (WHERE thumbnail_embedding_v2 IS NOT NULL)   AS e_thumb_v2,
       COUNT(*) FILTER (WHERE combined_embedding_v2 IS NOT NULL)    AS e_combined_v2,
+      COUNT(*) FILTER (WHERE qwen_embedded_v1_at IS NOT NULL)      AS e_qwen_v1,
       COUNT(*) FILTER (WHERE title_embedding IS NULL          AND title IS NOT NULL AND title != '') AS ne_title_v1,
       COUNT(*) FILTER (WHERE title_embedding_v2 IS NULL       AND title IS NOT NULL AND title != '') AS ne_title_v2,
       COUNT(*) FILTER (WHERE thumbnail_embedding_v2 IS NULL
                        AND (thumbnail IS NOT NULL AND thumbnail != '' OR url IS NOT NULL AND url != '')) AS ne_thumb_v2,
       COUNT(*) FILTER (WHERE combined_embedding_v2 IS NULL
                        AND title IS NOT NULL AND title != ''
-                       AND (thumbnail IS NOT NULL AND thumbnail != '' OR url IS NOT NULL AND url != '')) AS ne_combined_v2
+                       AND (thumbnail IS NOT NULL AND thumbnail != '' OR url IS NOT NULL AND url != '')) AS ne_combined_v2,
+      COUNT(*) FILTER (WHERE qwen_embedded_v1_at IS NULL
+                       AND title IS NOT NULL AND title != ''
+                       AND thumbnail IS NOT NULL AND thumbnail != ''
+                       AND thumbnail_dead_at IS NULL) AS ne_qwen_v1,
+      COUNT(*) FILTER (WHERE qwen_embedded_v1_at IS NULL
+                       AND qwen_claimed_at > NOW() - INTERVAL '15 minutes') AS claimed_qwen_v1
     FROM niche_spy_videos
   `);
   const r = statsRes.rows[0];
@@ -501,6 +509,11 @@ export async function getEmbeddingStats(): Promise<{
       title_v2:     { totalVideos: total, embedded: parseInt(r.e_title_v2),     notEmbedded: parseInt(r.ne_title_v2) },
       thumbnail_v2: { totalVideos: total, embedded: parseInt(r.e_thumb_v2),     notEmbedded: parseInt(r.ne_thumb_v2) },
       combined_v2:  { totalVideos: total, embedded: parseInt(r.e_combined_v2),  notEmbedded: parseInt(r.ne_combined_v2) },
+      // Qwen space: filled by pull-based Colab workers (POST /api/qwen-worker),
+      // not by the Gemini push loop below. claimedNow = rows currently soft-
+      // claimed by live workers (15-min expiry).
+      qwen_v1:      { totalVideos: total, embedded: parseInt(r.e_qwen_v1),      notEmbedded: parseInt(r.ne_qwen_v1),
+                      claimedNow: parseInt(r.claimed_qwen_v1) },
     },
   };
 }

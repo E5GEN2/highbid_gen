@@ -406,10 +406,10 @@ export default function AdminPage() {
   const [adminTokenCopied, setAdminTokenCopied] = useState(false);
 
   // Niche Explorer embedding state — API now reports all 3 targets separately
-  type TargetStats = { totalVideos: number; embedded: number; notEmbedded: number };
+  type TargetStats = { totalVideos: number; embedded: number; notEmbedded: number; claimedNow?: number };
   const [embeddingStats, setEmbeddingStats] = useState<{
-    apiKeysConfigured: number; legacyModel: string; similaritySource?: 'title_v1' | 'title_v2' | 'thumbnail_v2';
-    targets: { title_v1: TargetStats; title_v2: TargetStats; thumbnail_v2: TargetStats };
+    apiKeysConfigured: number; legacyModel: string; similaritySource?: string;
+    targets: { title_v1: TargetStats; title_v2: TargetStats; thumbnail_v2: TargetStats; combined_v2?: TargetStats; qwen_v1?: TargetStats };
     job: { id: number; status: string; target?: string | null; total_needed: number; processed: number; errors: number; current_batch: number; total_batches: number; error_message: string | null; started_at: string; completed_at: string | null } | null;
     keys?: Array<{ key: string; proxy: string; banned: boolean; banExpiresIn: number | null }>;
     proxy?: { total: number; online: number; cached: boolean; cacheAge: number; current: { deviceId: string; networkType: string } | null };
@@ -2696,12 +2696,13 @@ export default function AdminPage() {
             {embeddingStats && (
               <div className="space-y-4">
                 {/* Per-target stats — 4 cards side-by-side for the embedding spaces */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
                   {([
                     { key: 'title_v1',     label: 'Title v1',     subtitle: 'gemini-embedding-001',       accent: 'text-gray-300', border: 'border-gray-700' },
                     { key: 'title_v2',     label: 'Title v2',     subtitle: 'gemini-embedding-2-preview', accent: 'text-cyan-300', border: 'border-cyan-800/40' },
                     { key: 'thumbnail_v2', label: 'Thumbnail v2', subtitle: 'gemini-embedding-2-preview (image)', accent: 'text-purple-300', border: 'border-purple-800/40' },
                     { key: 'combined_v2',  label: 'Combined v2',  subtitle: 'gemini-embedding-2-preview (title + thumb, joint)', accent: 'text-pink-300', border: 'border-pink-800/40' },
+                    { key: 'qwen_v1',      label: 'Qwen combined v1', subtitle: 'Qwen3-VL-Embedding-8B (title + thumb, joint) · Colab workers', accent: 'text-emerald-300', border: 'border-emerald-800/40' },
                   ] as const).map(t => {
                     const s = embeddingStats.targets[t.key];
                     if (!s) return null;  // gracefully handle pre-deploy stats payloads
@@ -2726,6 +2727,18 @@ export default function AdminPage() {
                         </div>
                         <div className="flex items-center justify-between mt-2 text-[10px]">
                           <span className="text-yellow-400">{s.notEmbedded.toLocaleString()} remaining</span>
+                          {t.key === 'qwen_v1' ? (
+                            /* Qwen space is fed by pull-based Colab workers, not the
+                               Gemini push loop — posting target=qwen_v1 to the embeddings
+                               route would silently fall back to a title_v1 job. */
+                            <span className={`px-1.5 py-0.5 rounded border font-mono ${
+                              (s.claimedNow ?? 0) > 0
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                                : 'bg-gray-700/40 text-gray-400 border-gray-600'
+                            }`}>
+                              {(s.claimedNow ?? 0) > 0 ? `● worker live · ${s.claimedNow} claimed` : '○ no workers'}
+                            </span>
+                          ) : (
                           <div className="flex gap-1.5">
                             <button
                               onClick={async () => {
@@ -2767,6 +2780,7 @@ export default function AdminPage() {
                               ∞
                             </button>
                           </div>
+                          )}
                         </div>
                       </div>
                     );
