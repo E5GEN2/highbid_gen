@@ -8091,6 +8091,14 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
   onRefresh: () => void;
   active: boolean;
 }) {
+  // ── Master spy-flow switch ──────────────────────────────────────────
+  // One click pauses/resumes the ENTIRE yt spy agent flow: the auto-seed
+  // scheduler (no new crawls dispatched → embed-gen Gemini calls stop as
+  // in-flight agents drain, ~15-25 min) plus the novelty recompute loop.
+  // Used e.g. while reloading the google_ai_studio key pool.
+  const [flywheelOn, setFlywheelOn] = useState<boolean | null>(null);
+  const [flywheelBusy, setFlywheelBusy] = useState(false);
+
   // Load defaults from admin config on first render
   useEffect(() => {
     if (!active) return;
@@ -8104,6 +8112,9 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
           maxSearchResults: parseInt(d.config.agent_max_search_results) || prev.maxSearchResults,
           maxSuggestedResults: parseInt(d.config.agent_max_suggested_results) || prev.maxSuggestedResults,
         }));
+        // Master spy-flow switch state rides the same cheap config fetch —
+        // the auto-seed GET is 60-90s under load (ledger counts), this is ~1s.
+        setFlywheelOn(d.config.auto_seed_enabled === 'true');
       }
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8114,6 +8125,24 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
     const interval = setInterval(onRefresh, 5000);
     return () => clearInterval(interval);
   }, [active, autoRefresh, onRefresh]);
+
+  const toggleFlywheel = async () => {
+    if (flywheelOn === null || flywheelBusy) return;
+    const next = !flywheelOn;
+    setFlywheelBusy(true);
+    try {
+      const res = await fetch('/api/admin/content-gen/auto-seed', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: {
+          auto_seed_enabled: String(next),
+          novelty_auto_recompute_enabled: String(next),
+        }}),
+      });
+      const d = await res.json();
+      if (d.ok) setFlywheelOn(next);
+    } catch { /* leave state as-is; next GET re-syncs */ }
+    setFlywheelBusy(false);
+  };
 
   const deployAgents = async () => {
     const isSeed = deploy.mode === 'seed';
@@ -8220,6 +8249,17 @@ function AgentsTab({ data, loading, autoRefresh, setAutoRefresh, deploy, setDepl
             <p className="text-gray-400 text-sm">Track and control xgodo data collection agents</p>
           </div>
           <div className="flex items-center gap-3">
+            <button onClick={toggleFlywheel} disabled={flywheelOn === null || flywheelBusy}
+              title="Master switch for the whole yt spy agent flow: auto-seed scheduler + novelty recompute. OFF = no new crawls dispatched; in-flight agents drain in ~15-25 min and embed-gen calls stop with them. Use while reloading the AI key pool."
+              className={`px-4 py-1.5 rounded-lg text-sm font-bold border transition-colors disabled:opacity-50 ${
+                flywheelOn === null
+                  ? 'bg-gray-700 border-gray-600 text-gray-400'
+                  : flywheelOn
+                    ? 'bg-green-600/20 border-green-500 text-green-300 hover:bg-green-600/40'
+                    : 'bg-red-600/20 border-red-500 text-red-300 hover:bg-red-600/40'
+              }`}>
+              {flywheelOn === null ? 'SPY FLOW …' : flywheelBusy ? '…' : flywheelOn ? '● SPY FLOW ON' : '○ SPY FLOW OFF'}
+            </button>
             <span className={`text-2xl font-bold ${data && data.totalActive > 0 ? 'text-green-400' : 'text-gray-500'}`}>
               {loading ? '...' : data?.totalActive ?? 0}
             </span>
