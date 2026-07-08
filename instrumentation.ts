@@ -322,17 +322,49 @@ export async function register() {
       if (r.rowCount && r.rowCount > 0) {
         console.log(`[boot] Marked ${r.rowCount} orphaned embedding job(s) as error`);
       }
-      // Same treatment for YT enrich jobs
-      const r2 = await pool.query(
+      // Same treatment for YT enrich jobs — but an INDEFINITE job (the
+      // channel-stats enricher the content-gen KPI depends on) is meant to
+      // run forever, so after orphaning it, auto-restart it. Without this a
+      // deploy silently kills enrichment until someone notices subs stop
+      // filling (cost 6 days of eligible-channel flow 6-28..7-04).
+      const r2 = await pool.query<{ id: number; indefinite: boolean; keyword: string | null; threads: number | null }>(
         `UPDATE niche_yt_enrich_jobs
             SET status = 'error',
                 error_message = 'Orphaned: server restarted before job finished',
                 completed_at = NOW()
           WHERE status = 'running' AND started_at < NOW() - INTERVAL '3 minutes'
-          RETURNING id`
+          RETURNING id, indefinite, keyword, threads`
       );
       if (r2.rowCount && r2.rowCount > 0) {
         console.log(`[boot] Marked ${r2.rowCount} orphaned enrich job(s) as error`);
+        const indef = r2.rows.find(j => j.indefinite);
+        if (indef) {
+          // Delay so the boot (initSchema, tick loops) settles before a
+          // 30-thread job spins up. The enrich POST's single-flight check
+          // makes this a no-op if a human already restarted it.
+          setTimeout(async () => {
+            try {
+              const { POST: enrichPost } = await import('./app/api/niche-spy/enrich/route');
+              const { NextRequest } = await import('next/server');
+              const req = new NextRequest('http://localhost/api/niche-spy/enrich', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  keyword: indef.keyword || undefined,
+                  limit: 10000,
+                  batchSize: 50,
+                  threads: indef.threads || 30,
+                  delayMs: 200,
+                  indefinite: true,
+                }),
+              });
+              const res = await enrichPost(req);
+              console.log(`[boot] auto-resumed indefinite enrich job (was ${indef.id}):`, await res.text());
+            } catch (err) {
+              console.error('[boot] enrich auto-resume failed:', (err as Error).message);
+            }
+          }, 60_000);
+        }
       }
       // niche_tree_runs: a redeploy kills the in-process Node driver, but a GPU
       // run's RunPod job keeps COMPUTING on RunPod's infra and stages its result

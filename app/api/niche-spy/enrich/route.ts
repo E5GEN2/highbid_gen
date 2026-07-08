@@ -172,53 +172,79 @@ async function runEnrichWithIndef(
   const pool = await getPool();
   const IDLE_WINDOW_MS = 60_000;
   const PROBE_SLEEP_MS = 10_000;
+  // A transient failure (DB blip, YT outage) must not kill the indefinite
+  // loop permanently — retry with backoff and only give up after several
+  // consecutive failed passes.
+  const MAX_CONSEC_FAILURES = 5;
+  let consecFailures = 0;
   let lastSawWork = Date.now();
 
   while (true) {
-    await runEnrichJob(jobId, keyword, limit, batchSize, threads, delayMs);
-    if (!indefinite) return;
+    try {
+      await runEnrichJob(jobId, keyword, limit, batchSize, threads, delayMs);
+      if (!indefinite) return;
 
-    // After the pass, the job row is in 'done' / 'partial' / 'cancelled'.
-    // Cancellation propagates straight out — no more passes.
-    const stat = await pool.query<{ status: string }>(
-      `SELECT status FROM niche_yt_enrich_jobs WHERE id = $1`, [jobId]
-    );
-    const s = stat.rows[0]?.status;
-    if (s === 'cancelled' || s === 'error') return;
+      // After the pass, the job row is in 'done' / 'partial' / 'cancelled'.
+      // Cancellation propagates straight out — no more passes. A pass that
+      // ended in 'error' is treated like a thrown pass (retried below).
+      const stat = await pool.query<{ status: string; error_message: string | null }>(
+        `SELECT status, error_message FROM niche_yt_enrich_jobs WHERE id = $1`, [jobId]
+      );
+      const s = stat.rows[0]?.status;
+      if (s === 'cancelled') return;
+      if (s === 'error') throw new Error(stat.rows[0]?.error_message || 'pass ended in error status');
+      consecFailures = 0;
 
-    // Probe how much work is left. If nothing for a sustained window,
-    // mark fully done and exit.
-    const pending = await countPendingForEnrich(keyword, limit);
-    if (pending.totalNeeded === 0) {
-      if (Date.now() - lastSawWork >= IDLE_WINDOW_MS) {
-        await pool.query(
-          `UPDATE niche_yt_enrich_jobs SET status = 'done', completed_at = NOW(),
-              error_message = COALESCE(error_message, '') || ' · idle window reached'
-            WHERE id = $1`,
-          [jobId],
-        ).catch(() => {});
-        return;
+      // Probe how much work is left. If nothing for a sustained window,
+      // mark fully done and exit.
+      const pending = await countPendingForEnrich(keyword, limit);
+      if (pending.totalNeeded === 0) {
+        if (Date.now() - lastSawWork >= IDLE_WINDOW_MS) {
+          await pool.query(
+            `UPDATE niche_yt_enrich_jobs SET status = 'done', completed_at = NOW(),
+                error_message = COALESCE(error_message, '') || ' · idle window reached'
+              WHERE id = $1`,
+            [jobId],
+          ).catch(() => {});
+          return;
+        }
+        await new Promise(r => setTimeout(r, PROBE_SLEEP_MS));
+        continue;
       }
-      await new Promise(r => setTimeout(r, PROBE_SLEEP_MS));
-      continue;
-    }
-    lastSawWork = Date.now();
+      lastSawWork = Date.now();
 
-    // Revive job row for another pass — bump loops, reset batch
-    // counters and totals to reflect the fresh queue.
-    const totalBatches = Math.ceil(pending.totalNeeded / batchSize);
-    await pool.query(
-      `UPDATE niche_yt_enrich_jobs
-          SET status = 'running',
-              loops = COALESCE(loops, 0) + 1,
-              current_batch = 0,
-              total_batches = $1,
-              total_needed = $2,
-              error_message = $3
-        WHERE id = $4`,
-      [totalBatches, pending.totalNeeded,
-        `loop ${(await getLoops(jobId)) + 1} · threads=${threads} · batch=${batchSize}`, jobId],
-    );
+      // Revive job row for another pass — bump loops, reset batch
+      // counters and totals to reflect the fresh queue.
+      const totalBatches = Math.ceil(pending.totalNeeded / batchSize);
+      await pool.query(
+        `UPDATE niche_yt_enrich_jobs
+            SET status = 'running',
+                loops = COALESCE(loops, 0) + 1,
+                current_batch = 0,
+                total_batches = $1,
+                total_needed = $2,
+                error_message = $3
+          WHERE id = $4`,
+        [totalBatches, pending.totalNeeded,
+          `loop ${(await getLoops(jobId)) + 1} · threads=${threads} · batch=${batchSize}`, jobId],
+      );
+    } catch (err) {
+      if (!indefinite) throw err;
+      // A cancel that raced the failure still wins.
+      const s = await pool.query<{ status: string }>(
+        `SELECT status FROM niche_yt_enrich_jobs WHERE id = $1`, [jobId]
+      ).then(r => r.rows[0]?.status).catch(() => null);
+      if (s === 'cancelled') return;
+      consecFailures++;
+      if (consecFailures >= MAX_CONSEC_FAILURES) throw err;
+      const note = `transient failure ${consecFailures}/${MAX_CONSEC_FAILURES}, retrying: ${((err as Error).message || 'unknown').substring(0, 300)}`;
+      console.error(`[enrich ${jobId}] ${note}`);
+      await pool.query(
+        `UPDATE niche_yt_enrich_jobs SET status = 'running', error_message = $1 WHERE id = $2`,
+        [note, jobId],
+      ).catch(() => {});
+      await new Promise(r => setTimeout(r, 30_000 * consecFailures));
+    }
   }
 }
 
