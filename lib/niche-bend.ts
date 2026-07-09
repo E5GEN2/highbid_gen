@@ -345,6 +345,16 @@ export async function runBendBakerTick(opts: { target?: number } = {}): Promise<
   //    existing pipeline (xgodo workers + imagegen_tasks) — no parallel system.
   await tickImageGen().catch(() => {});
 
+  // 0b. Persist rendering->done for any bend whose thumbnail is now downloaded.
+  //     listBends only *displays* downloaded-as-done (a read); without this the
+  //     DB status stayed 'rendering' forever, inflating the in-flight count and
+  //     tripping the `rendering < N` guard below so baking self-blocked.
+  await pool.query(
+    `UPDATE niche_bends b SET status='done', updated_at=NOW()
+       FROM imagegen_tasks t
+      WHERE t.id = b.imagegen_task_id AND b.status='rendering' AND t.local_path IS NOT NULL`,
+  ).catch(() => {});
+
   // 1. Retry timed-out thumbnails (reuse the title+prompt — no new Gemini call).
   //    One retry per tick keeps the imagegen tick from being drowned.
   let retried = 0;
