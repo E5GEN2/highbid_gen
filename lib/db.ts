@@ -503,6 +503,7 @@ export async function initSchema(): Promise<void> {
     // Add unique URL constraint if not exists
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_niche_spy_url ON niche_spy_videos(url)`).catch(() => {});
     // Add enrichment tracking column
+    await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS is_short BOOLEAN`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_created_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_videos ADD COLUMN IF NOT EXISTS channel_id VARCHAR(64)`).catch(() => {});

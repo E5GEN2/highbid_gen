@@ -43,6 +43,7 @@ export interface BendCandidate {
   peerOutlierScore: number | null;
   postedAt: string | null;
   isShort: boolean;
+  shortFlag: boolean | null;  // cached is_short from DB (null = not yet detected)
   nicheLabel: string;   // effective (L2 if present, else L1) label — for display
   l1Id: number;         // top-level cluster id — the distinct-niche key
   l1Label: string;      // top-level label
@@ -114,6 +115,7 @@ export async function getBendCandidates(opts: {
     `c.peer_outlier_score IS NOT NULL`,
     `c.peer_outlier_score >= $${p++}`,
     `v.thumbnail IS NOT NULL`,
+    `v.is_short IS NOT TRUE`,   // exclude detected Shorts (URL type-filter is inert: all youtu.be/ID)
   ];
   params.push(minOutlier);
   if (minViews != null) { conds.push(`v.view_count >= $${p++}`); params.push(minViews); }
@@ -137,7 +139,7 @@ export async function getBendCandidates(opts: {
     ranked AS (
       SELECT DISTINCT ON (c.channel_id)
         v.id, v.url, v.title, v.thumbnail, v.view_count, v.channel_name,
-        v.posted_at, v.channel_id,
+        v.posted_at, v.channel_id, v.is_short,
         c.subscriber_count, c.peer_outlier_score
       FROM niche_spy_videos v
       JOIN niche_spy_channels c ON c.channel_id = v.channel_id
@@ -189,6 +191,7 @@ function rowToCand(row: Record<string, unknown>): BendCandidate {
     peerOutlierScore: row.peer_outlier_score != null ? parseFloat(String(row.peer_outlier_score)) : null,
     postedAt: row.posted_at as string,
     isShort: typeof url === 'string' && url.includes('/shorts/'),
+    shortFlag: row.is_short == null ? null : Boolean(row.is_short),
     nicheLabel: (row.niche_label as string) || (row.l1_label as string) || 'niche',
     l1Id: row.l1_id as number,
     l1Label: (row.l1_label as string) || (row.niche_label as string) || 'niche',
@@ -213,10 +216,11 @@ export async function getBendCandidatesByIds(ids: number[]): Promise<BendCandida
     ),
     base AS (
       SELECT v.id, v.url, v.title, v.thumbnail, v.view_count, v.channel_name,
-             v.posted_at, v.channel_id, c.subscriber_count, c.peer_outlier_score
+             v.posted_at, v.channel_id, v.is_short, c.subscriber_count, c.peer_outlier_score
       FROM niche_spy_videos v
       JOIN niche_spy_channels c ON c.channel_id = v.channel_id
       WHERE v.id = ANY($2::int[]) AND v.thumbnail IS NOT NULL
+        AND v.is_short IS NOT TRUE
         AND EXISTS (SELECT 1 FROM niche_tree_assignments a JOIN active ac ON ac.id=a.cluster_id WHERE a.video_id=v.id)
     ),
     tagged AS (
@@ -475,9 +479,43 @@ let candCache: { list: BendCandidate[]; at: number } | null = null;
 const CAND_TTL_MS = 5 * 60 * 1000;
 async function getCachedCandidates(): Promise<BendCandidate[]> {
   if (candCache && Date.now() - candCache.at < CAND_TTL_MS && candCache.list.length >= 2) return candCache.list;
-  const list = await getBendCandidates({ limit: 400, randomize: true });
+  // type:'long' — Shorts make weak, low-context parents for bending.
+  const list = await getBendCandidates({ limit: 400, randomize: true, type: 'long' });
   candCache = { list, at: Date.now() };
   return list;
+}
+
+// Shorts detection: the dataset stores every video as youtu.be/ID with no
+// duration, so there's no stored short signal. youtube.com/shorts/{ID} returns
+// 200 for a real Short but 3xx (redirect to /watch) for long-form — use that,
+// cache the result on niche_spy_videos.is_short. Fail-open (unknown -> treat as
+// long) so a flaky check never blocks baking.
+function ytIdOf(url: string): string | null {
+  const m = url.match(/(?:youtu\.be\/|\/shorts\/|v=)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+async function detectShort(url: string): Promise<boolean | null> {
+  const id = ytIdOf(url);
+  if (!id) return null;
+  try {
+    const r = await fetch(`https://www.youtube.com/shorts/${id}`, {
+      redirect: 'manual', signal: AbortSignal.timeout(8000),
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    return r.status === 200;   // 200 = Short; 3xx = redirect to /watch = long
+  } catch { return null; }
+}
+// True if the candidate is a Short. Uses the cached flag; detects+persists when
+// unknown. Fail-open: an undetermined check counts as long (returns false).
+async function resolveShort(c: BendCandidate): Promise<boolean> {
+  if (c.shortFlag != null) return c.shortFlag;
+  const short = await detectShort(c.url);
+  if (short != null) {
+    c.shortFlag = short;
+    const pool = await getPool();
+    await pool.query(`UPDATE niche_spy_videos SET is_short=$1 WHERE id=$2`, [short, c.id]).catch(() => {});
+  }
+  return short === true;
 }
 
 async function pickFreshPair(): Promise<{ a: BendCandidate; b: BendCandidate } | null> {
@@ -494,11 +532,15 @@ async function pickFreshPair(): Promise<{ a: BendCandidate; b: BendCandidate } |
   // Prefer an A that hasn't been used yet; else fall back to the top.
   const aPool = cands.filter(c => !usedVid.has(c.id));
   const aList = aPool.length ? aPool : cands;
+  let checks = 0;                       // bound inline Shorts checks per call
   for (const a of aList) {
-    const b = cands.find(c => c.l1Id !== a.l1Id && c.id !== a.id
+    if (checks < 12 && await resolveShort(a)) { checks++; continue; }  // skip a Short A
+    const cand = cands.find(c => c.l1Id !== a.l1Id && c.id !== a.id
       && !usedPair.has(`${a.id}:${c.id}`) && !usedPair.has(`${c.id}:${a.id}`)
       && (!usedVid.has(c.id) || aPool.length === 0));
-    if (b) return { a, b };
+    if (!cand) continue;
+    if (checks < 12 && await resolveShort(cand)) { checks++; continue; }  // skip a Short B
+    return { a, b: cand };
   }
   return null;
 }

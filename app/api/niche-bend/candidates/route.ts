@@ -22,7 +22,8 @@ export async function GET(req: NextRequest) {
       minOutlier: numOrNull(sp.get('minOutlier')) ?? 5,
       minViews: numOrNull(sp.get('minViews')),
       postedWithinDays: sp.get('postedWithin') === null ? 240 : numOrNull(sp.get('postedWithin')),
-      type: (sp.get('type') as 'long' | 'short' | null) ?? '',
+      // Default to long-form — Shorts make weak parents for bending.
+      type: (sp.get('type') as 'long' | 'short' | null) ?? 'long',
     });
     return NextResponse.json({ candidates, total: candidates.length });
   } catch (e) {
