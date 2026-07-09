@@ -173,21 +173,65 @@ export async function getBendCandidates(opts: {
     LIMIT $${limitP}`;
 
   const r = await pool.query(sql, params);
-  return r.rows.map((row): BendCandidate => ({
-    id: row.id,
-    url: row.url,
-    title: row.title,
-    thumbnail: row.thumbnail,
-    viewCount: parseInt(row.view_count) || 0,
-    channelName: row.channel_name,
-    subscriberCount: row.subscriber_count != null ? parseInt(row.subscriber_count) : null,
-    peerOutlierScore: row.peer_outlier_score != null ? parseFloat(row.peer_outlier_score) : null,
-    postedAt: row.posted_at,
-    isShort: typeof row.url === 'string' && row.url.includes('/shorts/'),
-    nicheLabel: row.niche_label || row.l1_label || 'niche',
-    l1Id: row.l1_id,
-    l1Label: row.l1_label || row.niche_label || 'niche',
-  }));
+  return r.rows.map(rowToCand);
+}
+
+function rowToCand(row: Record<string, unknown>): BendCandidate {
+  const url = row.url as string;
+  return {
+    id: row.id as number,
+    url,
+    title: row.title as string,
+    thumbnail: row.thumbnail as string,
+    viewCount: parseInt(String(row.view_count)) || 0,
+    channelName: row.channel_name as string,
+    subscriberCount: row.subscriber_count != null ? parseInt(String(row.subscriber_count)) : null,
+    peerOutlierScore: row.peer_outlier_score != null ? parseFloat(String(row.peer_outlier_score)) : null,
+    postedAt: row.posted_at as string,
+    isShort: typeof url === 'string' && url.includes('/shorts/'),
+    nicheLabel: (row.niche_label as string) || (row.l1_label as string) || 'niche',
+    l1Id: row.l1_id as number,
+    l1Label: (row.l1_label as string) || (row.niche_label as string) || 'niche',
+  };
+}
+
+/**
+ * Resolve SPECIFIC video ids to bend candidates (for the on-demand "make your
+ * own" path and synthesize validation) — the specific videos themselves, not a
+ * channel's top-by-view (so no DISTINCT ON), still requiring a live thumbnail +
+ * an active-tree cluster so every result carries a valid L1 niche.
+ */
+export async function getBendCandidatesByIds(ids: number[]): Promise<BendCandidate[]> {
+  if (!ids.length) return [];
+  const pool = await getPool();
+  const clusterIds = await getActiveTreeClusterIds();
+  if (!clusterIds.length) return [];
+  const sql = `
+    WITH active AS (
+      SELECT id, parent_cluster_id, COALESCE(label, ai_label, auto_label) AS lbl
+      FROM niche_tree_clusters WHERE id = ANY($1::int[])
+    ),
+    base AS (
+      SELECT v.id, v.url, v.title, v.thumbnail, v.view_count, v.channel_name,
+             v.posted_at, v.channel_id, c.subscriber_count, c.peer_outlier_score
+      FROM niche_spy_videos v
+      JOIN niche_spy_channels c ON c.channel_id = v.channel_id
+      WHERE v.id = ANY($2::int[]) AND v.thumbnail IS NOT NULL
+        AND EXISTS (SELECT 1 FROM niche_tree_assignments a JOIN active ac ON ac.id=a.cluster_id WHERE a.video_id=v.id)
+    ),
+    tagged AS (
+      SELECT b.*, asg.cluster_id AS cid, ac.parent_cluster_id AS parent_id, ac.lbl AS niche_label
+      FROM base b
+      JOIN LATERAL (
+        SELECT a.cluster_id FROM niche_tree_assignments a JOIN active ax ON ax.id=a.cluster_id
+        WHERE a.video_id=b.id ORDER BY (ax.parent_cluster_id IS NOT NULL) DESC, a.cluster_id LIMIT 1
+      ) asg ON TRUE
+      JOIN active ac ON ac.id = asg.cluster_id
+    )
+    SELECT t.*, COALESCE(t.parent_id, t.cid) AS l1_id, COALESCE(l1.lbl, t.niche_label) AS l1_label
+    FROM tagged t LEFT JOIN active l1 ON l1.id = t.parent_id`;
+  const r = await pool.query(sql, [clusterIds, ids]);
+  return r.rows.map(rowToCand);
 }
 
 /** Download an image URL to base64 (for inlineData). Returns null on failure. */
@@ -272,14 +316,21 @@ Return ONLY minified JSON, no prose:
  * Full bend: validate distinct L1, synthesize title+thumbnail prompt, submit
  * the image-gen job, persist a niche_bends row. Returns the new bend id.
  */
-export async function synthesizeBend(videoAId: number, videoBId: number): Promise<
+/** On-demand path: resolve two video ids to candidates, then bend them. */
+export async function synthesizeBendByIds(videoAId: number, videoBId: number): Promise<
   { ok: true; id: number } | { ok: false; error: string }
 > {
-  const pool = await getPool();
-  const cands = await getBendCandidates({ limit: 400 });
+  const cands = await getBendCandidatesByIds([videoAId, videoBId]);
   const a = cands.find(c => c.id === videoAId);
   const b = cands.find(c => c.id === videoBId);
   if (!a || !b) return { ok: false, error: 'both videos must be current bend candidates' };
+  return synthesizeBend(a, b);
+}
+
+export async function synthesizeBend(a: BendCandidate, b: BendCandidate): Promise<
+  { ok: true; id: number } | { ok: false; error: string }
+> {
+  const pool = await getPool();
   if (a.id === b.id) return { ok: false, error: 'pick two different videos' };
   if (a.l1Id === b.l1Id) return { ok: false, error: 'pick two videos from DIFFERENT top-level niches' };
 
@@ -405,8 +456,8 @@ export async function runBendBakerTick(
     if (inFlight >= maxInFlight) break;              // protect shared imagegen pool
     const pair = await pickFreshPair();
     if (!pair) break;                                // no fresh distinct-L1 pair right now
-    const res = await synthesizeBend(pair.a.id, pair.b.id);
-    if (!('id' in res)) break;                       // synth failed — stop this tick
+    const res = await synthesizeBend(pair.a, pair.b);
+    if (!res.ok) break;                              // synth failed — stop this tick
     baked++; inFlight++;
   }
   return { baked, retried, ready, rendering };

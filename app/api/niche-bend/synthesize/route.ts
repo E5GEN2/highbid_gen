@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { synthesizeBend } from '@/lib/niche-bend';
+import { synthesizeBendByIds } from '@/lib/niche-bend';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'videoAId and videoBId required' }, { status: 400 });
   }
   try {
-    const res = await synthesizeBend(a, b);
+    const res = await synthesizeBendByIds(a, b);
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: 400 });
     return NextResponse.json({ id: res.id });
   } catch (e) {
