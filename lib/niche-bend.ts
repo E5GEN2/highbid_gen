@@ -96,6 +96,7 @@ export async function getBendCandidates(opts: {
   minViews?: number | null;
   postedWithinDays?: number | null;
   type?: 'long' | 'short' | '';
+  randomize?: boolean;
 } = {}): Promise<BendCandidate[]> {
   const pool = await getPool();
   const clusterIds = await getActiveTreeClusterIds();
@@ -168,7 +169,7 @@ export async function getBendCandidates(opts: {
            COALESCE(l1.lbl, t.niche_label) AS l1_label
     FROM tagged t
     LEFT JOIN active l1 ON l1.id = t.parent_id
-    ORDER BY t.peer_outlier_score DESC NULLS LAST, t.view_count DESC NULLS LAST
+    ORDER BY ${opts.randomize ? 'RANDOM()' : 't.peer_outlier_score DESC NULLS LAST, t.view_count DESC NULLS LAST'}
     LIMIT $${limitP}`;
 
   const r = await pool.query(sql, params);
@@ -330,15 +331,22 @@ const MAX_RENDER_ATTEMPTS = 4;
 
 /**
  * Background baker tick (called from instrumentation runAll, gated by
- * admin_config.niche_bend_baker_enabled). Keeps a buffer of fresh baked ideas
- * ready so the page is never empty, and retries thumbnails that timed out.
- * Rate-limited: at most one NEW bend per tick to avoid Gemini/imagegen churn.
+ * admin_config.niche_bend_baker_enabled). Mints fresh bends CONTINUOUSLY —
+ * up to `perTick` new ideas each tick — exploring the whole outlier pool via
+ * randomized pair sampling, so it keeps generating indefinitely rather than
+ * stopping at a fixed buffer. Bounded only by:
+ *   - `target`: a high storage ceiling (max stored, non-destructive safety valve);
+ *   - `maxInFlight`: caps concurrent renders so the SHARED imagegen worker pool
+ *     is never starved for other rofe operations;
+ *   - fresh-pair availability (distinct-L1, unused in the last 30 days).
  */
-export async function runBendBakerTick(opts: { target?: number } = {}): Promise<
-  { baked: number; retried: number; ready: number; rendering: number; skipped?: string }
-> {
+export async function runBendBakerTick(
+  opts: { target?: number; perTick?: number; maxInFlight?: number } = {},
+): Promise<{ baked: number; retried: number; ready: number; rendering: number; skipped?: string }> {
   const pool = await getPool();
-  const target = opts.target ?? 24;
+  const target = opts.target ?? 5000;        // storage ceiling (raisable)
+  const perTick = Math.max(1, opts.perTick ?? 3);
+  const maxInFlight = Math.max(1, opts.maxInFlight ?? 10);
 
   // 0. Run the shared imagegen tick so baked thumbnails download to the volume
   //    even when nobody has the admin Image Gen page open. Reuses the exact
@@ -387,14 +395,19 @@ export async function runBendBakerTick(opts: { target?: number } = {}): Promise<
   const ready = parseInt(cnt.rows[0].ready) || 0;
   const rendering = parseInt(cnt.rows[0].rendering) || 0;
 
-  // 3. Bake one new bend if under target and not too many in flight.
+  // 3. Continuous baking: mint up to `perTick` fresh bends this tick while under
+  //    the storage ceiling and not saturating the shared imagegen workers. Each
+  //    pickFreshPair sees the bends we just inserted (dedup), so no repeats.
   let baked = 0;
-  if (ready + rendering < target && rendering < 6) {
+  let inFlight = rendering;
+  for (let i = 0; i < perTick; i++) {
+    if (ready + inFlight + baked >= target) break;   // storage safety valve
+    if (inFlight >= maxInFlight) break;              // protect shared imagegen pool
     const pair = await pickFreshPair();
-    if (pair) {
-      const res = await synthesizeBend(pair.a.id, pair.b.id);
-      if ('id' in res) baked = 1;
-    }
+    if (!pair) break;                                // no fresh distinct-L1 pair right now
+    const res = await synthesizeBend(pair.a.id, pair.b.id);
+    if (!('id' in res)) break;                       // synth failed — stop this tick
+    baked++; inFlight++;
   }
   return { baked, retried, ready, rendering };
 }
@@ -405,7 +418,10 @@ export async function runBendBakerTick(opts: { target?: number } = {}): Promise<
  */
 async function pickFreshPair(): Promise<{ a: BendCandidate; b: BendCandidate } | null> {
   const pool = await getPool();
-  const cands = await getBendCandidates({ limit: 200 });
+  // Randomized 400-candidate sample so indefinite baking explores the whole
+  // outlier pool over time (not just the same top-by-score head), approaching
+  // the full distinct-L1 pair space instead of exhausting one corner of it.
+  const cands = await getBendCandidates({ limit: 400, randomize: true });
   if (cands.length < 2) return null;
   const usedR = await pool.query<{ video_a_id: number; video_b_id: number }>(
     `SELECT video_a_id, video_b_id FROM niche_bends WHERE created_at > NOW() - INTERVAL '30 days'`,

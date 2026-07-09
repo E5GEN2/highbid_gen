@@ -377,25 +377,28 @@ export async function register() {
       try {
         const pool = await getPool();
         const cfg = await pool.query<{ key: string; value: string }>(
-          `SELECT key, value FROM admin_config WHERE key IN ('niche_bend_baker_enabled','niche_bend_target','last_niche_bend_bake_at')`,
+          `SELECT key, value FROM admin_config WHERE key IN
+             ('niche_bend_baker_enabled','niche_bend_target','niche_bend_per_tick','niche_bend_max_inflight')`,
         );
         const c: Record<string, string> = {};
         for (const r of cfg.rows) c[r.key] = r.value;
         if (c.niche_bend_baker_enabled !== 'true') return;   // ships OFF
 
-        // Throttle to ~2 min between bakes so Gemini + imagegen never churn.
-        const last = c.last_niche_bend_bake_at ? new Date(c.last_niche_bend_bake_at).getTime() : 0;
-        if (Date.now() - last < 2 * 60 * 1000) return;
+        // Runs every runAll cycle (~60s) for continuous generation. The real
+        // rate limiter is maxInFlight (shared-pool guard), not a time throttle.
+        // The heartbeat timestamp lets the UI show the loop is alive.
         await pool.query(
           `INSERT INTO admin_config (key, value) VALUES ('last_niche_bend_bake_at', NOW()::text)
              ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
         ).catch(() => {});
 
         const { runBendBakerTick } = await import('./lib/niche-bend');
-        const target = parseInt(c.niche_bend_target) || 24;
-        const r = await runBendBakerTick({ target });
+        const target = parseInt(c.niche_bend_target) || 5000;
+        const perTick = parseInt(c.niche_bend_per_tick) || 3;
+        const maxInFlight = parseInt(c.niche_bend_max_inflight) || 10;
+        const r = await runBendBakerTick({ target, perTick, maxInFlight });
         if (r.baked || r.retried) {
-          console.log(`[niche-bend] baked=${r.baked} retried=${r.retried} ready=${r.ready} rendering=${r.rendering}/${target}`);
+          console.log(`[niche-bend] baked=${r.baked} retried=${r.retried} ready=${r.ready} rendering=${r.rendering} (ceiling ${target})`);
         }
       } catch (err) {
         console.error('[niche-bend] baker error:', err instanceof Error ? err.message : err);
