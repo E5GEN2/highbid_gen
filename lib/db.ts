@@ -11,14 +11,20 @@ const pool = new Pool({
   // is 500 (not 100), and graceful pool shutdown on SIGTERM now prevents the
   // per-deploy connection leak — so 100 is safe headroom that keeps HTTP + the
   // scheduler responsive even while a backfill spike holds many connections.
-  max: 100,
+  // Bumped 100 → 150 (2026-07-09). The flywheel now runs 28 crawl threads
+  // (each POST embedding + persisting candidate batches) plus a 30-thread
+  // channel enricher; video-seed bursts held all 100 connections and embed
+  // persist/key-pick acquires timed out ("timeout exceeded when trying to
+  // connect" — 87 candidate rows errored in one 3h window). DB-side
+  // max_connections is 500 with ~136 in use, so 150 still leaves room for
+  // a second instance during deploy swaps.
+  max: 150,
   idleTimeoutMillis: 30000,
-  // Bumped from 10s — getLatestGlobalRun fans out 6 queries in
-  // parallel and the niche-tree page can stack a few simultaneous
-  // requests during initial render. 10s was tight enough that Railway
-  // connection-pool churn surfaced as "timeout exceeded when trying
-  // to connect" in the UI.
-  connectionTimeoutMillis: 30000,
+  // Bumped from 10s → 30s → 60s. Under a burst it's strictly better for a
+  // caller to queue for a connection than to fail the candidate: these are
+  // background pipeline writes, not user-facing requests, and a lost persist
+  // wastes a paid Gemini embed call.
+  connectionTimeoutMillis: 60000,
 });
 
 // Swallow idle-client 'error' events. A Railway-proxy/keepalive drop on a pooled
