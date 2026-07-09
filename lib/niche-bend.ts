@@ -416,12 +416,22 @@ export async function runBendBakerTick(
  * Pick a distinct-L1 pair not baked in the last 30 days. Rotates the "A" anchor
  * across the top candidates so successive bakes aren't all the same top video.
  */
+// The candidate query (DISTINCT ON over ~1.8M niche_spy_videos + LATERAL niche
+// joins) costs ~13s, far too slow to run per-bake. Cache a randomized 400-sample
+// in-process; refresh every few minutes so continuous baking stays fast AND still
+// explores a NEW slice of the whole outlier pool on each refresh.
+let candCache: { list: BendCandidate[]; at: number } | null = null;
+const CAND_TTL_MS = 5 * 60 * 1000;
+async function getCachedCandidates(): Promise<BendCandidate[]> {
+  if (candCache && Date.now() - candCache.at < CAND_TTL_MS && candCache.list.length >= 2) return candCache.list;
+  const list = await getBendCandidates({ limit: 400, randomize: true });
+  candCache = { list, at: Date.now() };
+  return list;
+}
+
 async function pickFreshPair(): Promise<{ a: BendCandidate; b: BendCandidate } | null> {
   const pool = await getPool();
-  // Randomized 400-candidate sample so indefinite baking explores the whole
-  // outlier pool over time (not just the same top-by-score head), approaching
-  // the full distinct-L1 pair space instead of exhausting one corner of it.
-  const cands = await getBendCandidates({ limit: 400, randomize: true });
+  const cands = await getCachedCandidates();
   if (cands.length < 2) return null;
   const usedR = await pool.query<{ video_a_id: number; video_b_id: number }>(
     `SELECT video_a_id, video_b_id FROM niche_bends WHERE created_at > NOW() - INTERVAL '30 days'`,

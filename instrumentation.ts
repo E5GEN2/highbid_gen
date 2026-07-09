@@ -366,11 +366,9 @@ export async function register() {
       // + interval, so they're cheap no-ops until enabled.
       await runNoveltyRecomputeTick();
       await runSeedSchedulerLoop();
-      // Niche Bending baker — pre-bakes a buffer of cross-niche synthetic ideas
-      // (+ their thumbnails) so /niche/bending is never empty. Gated by
-      // niche_bend_baker_enabled (ships OFF) + a ~2min interval. Also runs the
-      // shared imagegen tick so baked thumbnails download server-side.
-      await runBendBakerTick2();
+      // NOTE: the Niche Bending baker runs on its OWN dedicated interval (below),
+      // NOT here — its candidate refresh can take ~13s and it must not be
+      // serialized behind (or delayed by) the other ticks in this runAll.
     }
 
     async function runBendBakerTick2() {
@@ -410,6 +408,18 @@ export async function register() {
 
     // Initial check after 30s startup delay
     setTimeout(runAll, 30 * 1000);
+
+    // Niche Bending baker on its OWN interval (every 30s) with a re-entrancy
+    // guard, so a slow candidate refresh (~13s) can't overlap itself and slow
+    // sibling ticks in runAll can't delay continuous generation.
+    let bendBaking = false;
+    const bendTick = async () => {
+      if (bendBaking) return;
+      bendBaking = true;
+      try { await runBendBakerTick2(); } finally { bendBaking = false; }
+    };
+    setInterval(bendTick, 30 * 1000);
+    setTimeout(bendTick, 20 * 1000);
 
     // Start the agent thermostat (maintains thread targets per keyword)
     const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
