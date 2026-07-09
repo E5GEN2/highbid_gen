@@ -469,7 +469,9 @@ export async function getBend(id: number): Promise<BendRow | null> {
     const ig = await pool.query<{ local_path: string | null }>(
       `SELECT local_path FROM imagegen_tasks WHERE id=$1`, [row.imagegen_task_id]);
     if (ig.rows[0]?.local_path) {
-      thumbnailUrl = `/api/admin/imagegen/file?id=${row.imagegen_task_id}`;
+      // non-admin, niche_bend-scoped serve route (Niche Finder is open to
+      // Google-authed users; the admin file route would 403 them)
+      thumbnailUrl = `/api/niche-bend/thumb/${row.imagegen_task_id}`;
       if (status === 'rendering') {
         status = 'done';
         pool.query(`UPDATE niche_bends SET status='done', updated_at=NOW() WHERE id=$1`, [id]).catch(() => {});
