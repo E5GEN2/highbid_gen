@@ -274,6 +274,77 @@ export async function register() {
       }
     }
 
+    /**
+     * Channel-stats enricher watchdog. The indefinite enricher (Phase 2 subs
+     * fill — the content-gen KPI dependency) keeps dying: a deploy orphans it,
+     * a transient shared-mem error exhausts its retries, or it exits cleanly on
+     * an idle window and then fresh backlog arrives. The boot hook only RESUMES
+     * jobs still in 'running' state, so one that already flipped to 'error'
+     * before a deploy stays dark (cost 35 min on 2026-07-09). This tick is the
+     * catch-all: if nothing is running but the enricher is meant to be
+     * indefinite AND real backlog exists, restart it — throttled to once / 5min
+     * so a job that dies on start can't spin the API. Idle-safe: one cheap
+     * SELECT per minute when the enricher is healthy.
+     */
+    async function runEnrichWatchdogTick() {
+      try {
+        const pool = await getPool();
+        const cfg = await pool.query<{ key: string; value: string }>(
+          `SELECT key, value FROM admin_config WHERE key IN ('enrich_watchdog_enabled','last_enrich_watchdog_restart_at')`,
+        );
+        const c: Record<string, string> = {};
+        for (const r of cfg.rows) c[r.key] = r.value;
+        if (c.enrich_watchdog_enabled === 'false') return;    // kill switch (default ON)
+
+        // Healthy? A running job means the enricher is alive — nothing to do.
+        const running = await pool.query(`SELECT 1 FROM niche_yt_enrich_jobs WHERE status = 'running' LIMIT 1`);
+        if (running.rows.length > 0) return;
+
+        // Only auto-restart something that was configured to run indefinitely.
+        const latest = await pool.query<{ indefinite: boolean; threads: number | null; keyword: string | null }>(
+          `SELECT indefinite, threads, keyword FROM niche_yt_enrich_jobs ORDER BY id DESC LIMIT 1`,
+        );
+        const job = latest.rows[0];
+        if (!job || !job.indefinite) return;
+
+        // Only when there's meaningful backlog — a clean idle exit with nothing
+        // to do should stay exited.
+        const backlog = await pool.query<{ n: string }>(
+          `SELECT COUNT(*) AS n FROM niche_spy_channels WHERE subscriber_count IS NULL`,
+        );
+        if ((parseInt(backlog.rows[0]?.n) || 0) < 50) return;
+
+        // Throttle restarts (a crash-looping job can't spin faster than 1/5min).
+        const last = c.last_enrich_watchdog_restart_at ? new Date(c.last_enrich_watchdog_restart_at).getTime() : 0;
+        if (Date.now() - last < 5 * 60 * 1000) return;
+        await pool.query(
+          `INSERT INTO admin_config (key, value) VALUES ('last_enrich_watchdog_restart_at', NOW()::text)
+             ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
+        ).catch(() => {});
+
+        const { POST: enrichPost } = await import('./app/api/niche-spy/enrich/route');
+        const { NextRequest } = await import('next/server');
+        const port = process.env.PORT || '3000';
+        const req = new NextRequest(`http://localhost:${port}/api/niche-spy/enrich`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            keyword: job.keyword || undefined,
+            limit: 10000, batchSize: 50, threads: job.threads || 30,
+            delayMs: 200, indefinite: true,
+          }),
+        });
+        // Fire-and-forget: the POST's count queries can take a few seconds, and
+        // we must not stall the runAll loop behind them. The POST's own
+        // single-flight check makes a redundant call a no-op.
+        void enrichPost(req)
+          .then(async res => console.log('[enrich-watchdog] restarted down indefinite enricher:', (await res.text()).slice(0, 160)))
+          .catch(err => console.error('[enrich-watchdog] restart failed:', err instanceof Error ? err.message : err));
+      } catch (err) {
+        console.error('[enrich-watchdog] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAll() {
       await runAutoSync();
       await runAutoSchedule();
@@ -287,6 +358,10 @@ export async function register() {
       // returns drained=0 when the queue is empty so cost stays at one
       // SELECT FOR UPDATE SKIP LOCKED + one xgodo fetch per tick.
       await runXgVidDownloadTick();
+      // Enricher watchdog — restarts the indefinite channel-stats enricher if
+      // it dies (deploy orphan, transient error, or clean idle exit + new
+      // backlog). Cheap no-op (one SELECT) while it's healthy.
+      await runEnrichWatchdogTick();
       // Niche-discovery flywheel. Both gated by config flags (ship OFF)
       // + interval, so they're cheap no-ops until enabled.
       await runNoveltyRecomputeTick();
