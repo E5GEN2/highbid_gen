@@ -78,14 +78,30 @@ export default function NicheBending() {
   );
 }
 
+// Self-healing thumbnail: retries with a cache-bust on load error so a transient
+// failure (deploy blip, render→done race) never leaves a permanently-broken card.
+function ThumbImg({ src }: { src: string }) {
+  const [attempt, setAttempt] = React.useState(0);
+  const [dead, setDead] = React.useState(false);
+  const url = attempt === 0 ? src : `${src}${src.includes('?') ? '&' : '?'}r=${attempt}`;
+  if (dead) return <div className="text-red-400/60 text-xs">thumbnail unavailable</div>;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={url} alt="" className="w-full h-full object-cover"
+      onError={() => {
+        if (attempt < 6) setTimeout(() => setAttempt(a => a + 1), 1200 * (attempt + 1));
+        else setDead(true);
+      }} />
+  );
+}
+
 function BendCard({ b }: { b: Bend }) {
   return (
     <div className="bg-[#111] border border-[#1f1f1f] rounded-2xl overflow-hidden hover:border-amber-500/40 transition">
       {/* synthetic thumbnail */}
       <div className="aspect-video bg-[#0a0a0a] flex items-center justify-center">
         {b.thumbnailUrl
-          // eslint-disable-next-line @next/next/no-img-element
-          ? <img src={b.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+          ? <ThumbImg src={b.thumbnailUrl} />
           : b.status === 'error'
             ? <div className="text-red-400/70 text-xs">thumbnail failed</div>
             : <div className="text-[#666] text-xs animate-pulse">baking thumbnail…</div>}
