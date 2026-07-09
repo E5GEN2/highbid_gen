@@ -96,6 +96,17 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
       ),
     },
     {
+      // Niche Bending — cross-niche remixing surface (vision being defined).
+      label: 'Niche Bending',
+      href: '/niche/bending',
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M4 17c4 0 5-10 9-10h3m0 0l-3-3m3 3l-3 3M4 7c2.5 0 3.7 2.9 5 5.5M13 17h3m0 0l-3-3m3 3l-3 3" />
+        </svg>
+      ),
+    },
+    {
       label: 'Favourites',
       href: '/niche/favourites',
       icon: (
@@ -120,6 +131,8 @@ function NicheLayoutInner({ children }: { children: React.ReactNode }) {
       else if (pathname.includes('/channels')) segments.push({ label: 'Channels' });
       else if (pathname.includes('/insights')) segments.push({ label: 'Insights' });
     }
+  } else if (pathname.startsWith('/niche/bending')) {
+    segments.push({ label: 'Niche Bending' });
   } else if (pathname.startsWith('/niche/favourites')) {
     segments.push({ label: 'Favourites' });
   } else if (pathname.startsWith('/niche/videos')) {
