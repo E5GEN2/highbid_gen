@@ -418,6 +418,15 @@ export async function runBendBakerTick(
       WHERE t.id = b.imagegen_task_id AND b.status='rendering' AND t.local_path IS NOT NULL`,
   ).catch(() => {});
 
+  // 0c. Self-heal: drop any bend whose parent is (now) confirmed a Short. The
+  //     inline pick-time check is bounded + fail-open, so a Short can slip
+  //     through; once its is_short flag lands, remove the bend from the feed.
+  await pool.query(
+    `DELETE FROM niche_bends b
+      WHERE EXISTS (SELECT 1 FROM niche_spy_videos v
+                     WHERE v.id IN (b.video_a_id, b.video_b_id) AND v.is_short = true)`,
+  ).catch(() => {});
+
   // 1. Retry timed-out thumbnails (reuse the title+prompt — no new Gemini call).
   //    One retry per tick keeps the imagegen tick from being drowned.
   let retried = 0;
