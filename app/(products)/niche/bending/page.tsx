@@ -12,6 +12,11 @@ interface Bend {
   status: string; error: string | null; thumbnailUrl: string | null;
   parents: { a: { title: string; thumb: string; niche: string }; b: { title: string; thumb: string; niche: string } };
 }
+interface ParentVideo {
+  videoId: number; url: string | null; title: string; thumb: string; niche: string;
+  viewCount: number | null; channelName: string | null; subscriberCount: number | null; peerOutlierScore: number | null;
+}
+interface BendDetail extends Omit<Bend, 'parents'> { parents: { a: ParentVideo; b: ParentVideo } }
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
@@ -23,6 +28,7 @@ export default function NicheBending() {
   const [bends, setBends] = React.useState<Bend[]>([]);
   const [feedLoading, setFeedLoading] = React.useState(true);
   const [showMaker, setShowMaker] = React.useState(false);
+  const [openId, setOpenId] = React.useState<number | null>(null);
 
   const loadFeed = React.useCallback(async () => {
     try {
@@ -71,9 +77,93 @@ export default function NicheBending() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {bends.map(b => <BendCard key={b.id} b={b} />)}
+          {bends.map(b => <BendCard key={b.id} b={b} onOpen={() => setOpenId(b.id)} />)}
         </div>
       )}
+
+      {openId != null && <BendModal id={openId} onClose={() => setOpenId(null)} />}
+    </div>
+  );
+}
+
+function BendModal({ id, onClose }: { id: number; onClose: () => void }) {
+  const [d, setD] = React.useState<BendDetail | null>(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let live = true;
+    (async () => {
+      try { const r = await fetch(`/api/niche-bend/${id}`); const j = await r.json(); if (live) setD(j); }
+      catch { /* ignore */ }
+      if (live) setLoading(false);
+    })();
+    return () => { live = false; };
+  }, [id]);
+
+  // close on Escape
+  React.useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 backdrop-blur-sm p-4 sm:p-8" onClick={onClose}>
+      <div className="w-full max-w-4xl bg-[#0e0e0e] border border-[#2a2a2a] rounded-2xl overflow-hidden my-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[#1f1f1f]">
+          <span className="text-[10px] uppercase tracking-wide text-amber-400/80">Bent idea · fused from two proven outliers</span>
+          <button onClick={onClose} className="text-[#888] hover:text-white text-lg leading-none">✕</button>
+        </div>
+
+        {loading || !d ? (
+          <div className="p-10 text-center text-[#666] text-sm animate-pulse">loading…</div>
+        ) : (
+          <div className="p-5">
+            {/* synthetic idea */}
+            <div className="rounded-xl overflow-hidden border border-amber-500/30 bg-[#0a0a0a] mb-5">
+              <div className="aspect-video bg-[#0a0a0a] flex items-center justify-center">
+                {d.thumbnailUrl
+                  ? <ThumbImg src={d.thumbnailUrl} />
+                  : <div className="text-[#666] text-xs animate-pulse">baking thumbnail…</div>}
+              </div>
+              <div className="p-4">
+                <div className="text-[10px] uppercase tracking-wide text-amber-400/80 mb-1">Synthetic idea</div>
+                <div className="text-white font-bold text-lg leading-snug">{d.bentTitle}</div>
+              </div>
+            </div>
+
+            <div className="text-[11px] uppercase tracking-wide text-[#777] mb-2">Fused from</div>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-3 items-stretch">
+              <ParentDetail p={d.parents.a} />
+              <div className="flex items-center justify-center text-amber-500 text-2xl font-bold">×</div>
+              <ParentDetail p={d.parents.b} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ParentDetail({ p }: { p: ParentVideo }) {
+  return (
+    <div className="bg-[#141414] border border-[#222] rounded-xl overflow-hidden flex flex-col">
+      <a href={p.url || undefined} target="_blank" rel="noreferrer" className="relative block aspect-video bg-[#0a0a0a] group">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={p.thumb} alt="" className="w-full h-full object-cover" />
+        {p.peerOutlierScore != null && (
+          <span className="absolute top-2 right-2 text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-emerald-400">{p.peerOutlierScore.toFixed(1)}×</span>
+        )}
+        {p.url && <span className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/40 text-white text-xs font-medium">Watch on YouTube ↗</span>}
+      </a>
+      <div className="p-3 flex-1 flex flex-col gap-1.5">
+        <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 self-start">{p.niche}</span>
+        <div className="text-sm text-white leading-snug line-clamp-2">{p.title}</div>
+        <div className="mt-auto flex items-center justify-between text-[11px] text-[#888]">
+          <span className="truncate max-w-[60%]">{p.channelName || '—'}</span>
+          <span>{p.viewCount != null ? fmt(p.viewCount) + ' views' : ''}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -95,9 +185,10 @@ function ThumbImg({ src }: { src: string }) {
   );
 }
 
-function BendCard({ b }: { b: Bend }) {
+function BendCard({ b, onOpen }: { b: Bend; onOpen: () => void }) {
   return (
-    <div className="bg-[#111] border border-[#1f1f1f] rounded-2xl overflow-hidden hover:border-amber-500/40 transition">
+    <div onClick={onOpen}
+      className="bg-[#111] border border-[#1f1f1f] rounded-2xl overflow-hidden hover:border-amber-500/40 transition cursor-pointer">
       {/* synthetic thumbnail */}
       <div className="aspect-video bg-[#0a0a0a] flex items-center justify-center">
         {b.thumbnailUrl

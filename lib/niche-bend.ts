@@ -416,22 +416,36 @@ async function pickFreshPair(): Promise<{ a: BendCandidate; b: BendCandidate } |
   return null;
 }
 
-/** The feed: recent baked bends (ready first, then still-rendering). */
+/**
+ * The feed: recent baked bends (ready first, then still-rendering). ONE query —
+ * all feed data (title + parent snapshots) lives on niche_bends, so no niche_spy
+ * joins. The rich parent details are fetched only on click via getBend.
+ */
 export async function listBends(limit = 60): Promise<BendRow[]> {
   const pool = await getPool();
-  const r = await pool.query<{ id: number }>(
-    `SELECT id FROM niche_bends
-      WHERE status IN ('done','rendering')
-      ORDER BY (status='done') DESC, created_at DESC
+  const r = await pool.query(
+    `SELECT b.id, b.bent_title, b.thumbnail_prompt, b.status, b.error, b.imagegen_task_id,
+            b.title_a, b.thumb_a, b.niche_a_label, b.title_b, b.thumb_b, b.niche_b_label,
+            (t.local_path IS NOT NULL) AS downloaded
+       FROM niche_bends b
+       LEFT JOIN imagegen_tasks t ON t.id = b.imagegen_task_id
+      WHERE b.status IN ('done','rendering')
+      ORDER BY (b.status='done') DESC, b.created_at DESC
       LIMIT $1`,
     [Math.min(limit, 200)],
   );
-  const out: BendRow[] = [];
-  for (const row of r.rows) {
-    const b = await getBend(row.id);
-    if (b) out.push(b);
-  }
-  return out;
+  return r.rows.map(row => ({
+    id: row.id,
+    bentTitle: row.bent_title,
+    thumbnailPrompt: row.thumbnail_prompt,
+    status: row.downloaded && row.status === 'rendering' ? 'done' : row.status,
+    error: row.error,
+    thumbnailUrl: row.downloaded ? `/api/niche-bend/thumb/${row.imagegen_task_id}` : null,
+    parents: {
+      a: { title: row.title_a, thumb: row.thumb_a, niche: row.niche_a_label },
+      b: { title: row.title_b, thumb: row.thumb_b, niche: row.niche_b_label },
+    },
+  }));
 }
 
 /** Auto-pick: top candidate + first below it in a DIFFERENT L1 niche. */
@@ -443,6 +457,8 @@ export function autoPickPair(cands: BendCandidate[]): { a: BendCandidate; b: Ben
   return { a, b };
 }
 
+/** Light parent shape used in the feed. */
+interface FeedParent { title: string; thumb: string; niche: string }
 export interface BendRow {
   id: number;
   bentTitle: string | null;
@@ -450,35 +466,61 @@ export interface BendRow {
   status: string;
   error: string | null;
   thumbnailUrl: string | null;   // final synthetic thumbnail once downloaded
-  parents: {
-    a: { title: string; thumb: string; niche: string };
-    b: { title: string; thumb: string; niche: string };
-  };
+  parents: { a: FeedParent; b: FeedParent };
 }
 
-/** Read a bend + resolve its generated-thumbnail URL from imagegen_tasks. */
-export async function getBend(id: number): Promise<BendRow | null> {
+/** Rich parent shape for the detail modal — joined back to the live video/channel. */
+export interface ParentVideo {
+  videoId: number;
+  url: string | null;
+  title: string;
+  thumb: string;
+  niche: string;
+  viewCount: number | null;
+  channelName: string | null;
+  subscriberCount: number | null;
+  peerOutlierScore: number | null;
+}
+export interface BendDetail extends Omit<BendRow, 'parents'> {
+  parents: { a: ParentVideo; b: ParentVideo };
+}
+
+/**
+ * Detail read (for the modal): one query joins both parent videos + channels
+ * so each parent card can show views/channel/outlier + a YouTube link. Falls
+ * back to the snapshot stored on the bend if a source video was since deleted.
+ */
+export async function getBend(id: number): Promise<BendDetail | null> {
   const pool = await getPool();
-  const r = await pool.query(`SELECT * FROM niche_bends WHERE id=$1`, [id]);
+  const r = await pool.query(
+    `SELECT b.*,
+       (t.local_path IS NOT NULL) AS downloaded,
+       va.url a_url, COALESCE(va.title, b.title_a) a_title, COALESCE(va.thumbnail, b.thumb_a) a_thumb,
+       va.view_count a_views, va.channel_name a_channel, ca.subscriber_count a_subs, ca.peer_outlier_score a_score,
+       vb.url b_url, COALESCE(vb.title, b.title_b) b_title, COALESCE(vb.thumbnail, b.thumb_b) b_thumb,
+       vb.view_count b_views, vb.channel_name b_channel, cb.subscriber_count b_subs, cb.peer_outlier_score b_score
+     FROM niche_bends b
+     LEFT JOIN imagegen_tasks t   ON t.id = b.imagegen_task_id
+     LEFT JOIN niche_spy_videos va ON va.id = b.video_a_id
+     LEFT JOIN niche_spy_channels ca ON ca.channel_id = va.channel_id
+     LEFT JOIN niche_spy_videos vb ON vb.id = b.video_b_id
+     LEFT JOIN niche_spy_channels cb ON cb.channel_id = vb.channel_id
+     WHERE b.id = $1`,
+    [id],
+  );
   if (!r.rows.length) return null;
   const row = r.rows[0];
 
   let thumbnailUrl: string | null = null;
   let status: string = row.status;
-  if (row.imagegen_task_id) {
-    const ig = await pool.query<{ local_path: string | null }>(
-      `SELECT local_path FROM imagegen_tasks WHERE id=$1`, [row.imagegen_task_id]);
-    if (ig.rows[0]?.local_path) {
-      // non-admin, niche_bend-scoped serve route (Niche Finder is open to
-      // Google-authed users; the admin file route would 403 them)
-      thumbnailUrl = `/api/niche-bend/thumb/${row.imagegen_task_id}`;
-      if (status === 'rendering') {
-        status = 'done';
-        pool.query(`UPDATE niche_bends SET status='done', updated_at=NOW() WHERE id=$1`, [id]).catch(() => {});
-      }
+  if (row.imagegen_task_id && row.downloaded) {
+    thumbnailUrl = `/api/niche-bend/thumb/${row.imagegen_task_id}`;
+    if (status === 'rendering') {
+      status = 'done';
+      pool.query(`UPDATE niche_bends SET status='done', updated_at=NOW() WHERE id=$1`, [id]).catch(() => {});
     }
   }
-
+  const num = (v: unknown): number | null => (v == null ? null : Number(v));
   return {
     id: row.id,
     bentTitle: row.bent_title,
@@ -487,8 +529,10 @@ export async function getBend(id: number): Promise<BendRow | null> {
     error: row.error,
     thumbnailUrl,
     parents: {
-      a: { title: row.title_a, thumb: row.thumb_a, niche: row.niche_a_label },
-      b: { title: row.title_b, thumb: row.thumb_b, niche: row.niche_b_label },
+      a: { videoId: row.video_a_id, url: row.a_url, title: row.a_title, thumb: row.a_thumb, niche: row.niche_a_label,
+           viewCount: num(row.a_views), channelName: row.a_channel, subscriberCount: num(row.a_subs), peerOutlierScore: num(row.a_score) },
+      b: { videoId: row.video_b_id, url: row.b_url, title: row.b_title, thumb: row.b_thumb, niche: row.niche_b_label,
+           viewCount: num(row.b_views), channelName: row.b_channel, subscriberCount: num(row.b_subs), peerOutlierScore: num(row.b_score) },
     },
   };
 }
