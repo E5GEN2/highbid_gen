@@ -132,6 +132,10 @@ async function batchEmbedGroupedViaProxy(
       // service account, revoked key) — never transient. Without this the
       // key stays 'active' and the random picker re-burns it forever.
       invalidateAiKey(keyId, `gemini_401: ${errBody.slice(0, 80)}`);
+    } else if (res.status === 400 && /API_KEY_INVALID|API key not valid|API key expired/i.test(errBody)) {
+      // 400 with a key-specific message is a revoked/expired key; plain
+      // INVALID_ARGUMENT 400s (request-shape issues) are left alone.
+      invalidateAiKey(keyId, `gemini_400: ${errBody.slice(0, 80)}`);
     } else if (res.status === 429) {
       cooloffAiKey(keyId, 90);
     }
@@ -373,18 +377,19 @@ async function resolveBatch(
   if (validIds.length === 0) return urls.map(() => null);
 
   // 1) Check which ones we already have in niche_spy_videos.
-  //    We key on the URL match — niche_spy_videos.url is the canonical
-  //    "https://youtu.be/<id>" form for inserted rows.
+  //    niche_spy_videos.url is ALWAYS the canonical "https://youtu.be/<id>"
+  //    form on insert (verified: 2.46M/2.46M rows canonical, 0 legacy forms),
+  //    so an equality match on url hits the UNIQUE idx_niche_spy_url index.
+  //    A prior `OR url ~ ANY($2)` regex fallback for legacy non-canonical
+  //    URLs defeated that index — the OR forced a full 2.46M-row seq scan on
+  //    every resolve (108 concurrent, ~155s each, exhausting the DB pool).
+  //    Dropped: it matched nothing the equality branch didn't already catch.
   const existRes = await pool.query<{ id: number; url: string; title: string | null; thumbnail: string | null; has_v2: boolean }>(
     `SELECT id, url, title, thumbnail,
             (combined_embedding_v2 IS NOT NULL) AS has_v2
        FROM niche_spy_videos
-      WHERE url = ANY($1::text[])
-         OR url ~ ANY($2::text[])`,
-    [
-      validIds.map(id => `https://youtu.be/${id}`),
-      validIds.map(id => `[?&]v=${id}\\b|/${id}\\b`),
-    ],
+      WHERE url = ANY($1::text[])`,
+    [validIds.map(id => `https://youtu.be/${id}`)],
   );
   // wasNew tracks whether this resolve is the one that created the
   // niche_spy_videos row: false for anything found in step 1, true for
