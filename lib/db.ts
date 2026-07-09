@@ -2010,6 +2010,39 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_status ON imagegen_tasks(status)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_imagegen_purpose ON imagegen_tasks(purpose)`).catch(() => {});
 
+    // niche_bends — Niche Bending: fuse two proven-outlier videos from DISTINCT
+    // top-level niches into one synthetic idea (bent title + generated thumbnail).
+    // video_a/b_id -> niche_spy_videos.id; l1_a/b_id -> the two source L1 clusters
+    // (guaranteed distinct). imagegen_task_id -> imagegen_tasks.id for the synthetic
+    // thumbnail; poll it via GET /api/admin/imagegen?purpose=niche_bend:{id}.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_bends (
+        id                SERIAL PRIMARY KEY,
+        video_a_id        INTEGER NOT NULL,
+        video_b_id        INTEGER NOT NULL,
+        title_a           TEXT,
+        title_b           TEXT,
+        thumb_a           TEXT,
+        thumb_b           TEXT,
+        niche_a_label     TEXT,
+        niche_b_label     TEXT,
+        l1_a_id           INTEGER,
+        l1_b_id           INTEGER,
+        bent_title        TEXT,
+        thumbnail_prompt  TEXT,
+        imagegen_task_id  INTEGER,
+        status            TEXT NOT NULL DEFAULT 'pending',  -- pending | rendering | done | error
+        error             TEXT,
+        render_attempts   INTEGER NOT NULL DEFAULT 0,       -- thumbnail-render retries (nanobanana2 ~80%/attempt)
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `).catch(() => {});
+    // added after the test run created the table without it
+    await client.query(`ALTER TABLE niche_bends ADD COLUMN IF NOT EXISTS render_attempts INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_bends_created ON niche_bends(created_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_bends_status ON niche_bends(status)`).catch(() => {});
+
     // yt_video_summaries — WATCHED-content evidence from the Gemini app's
     // YouTube ingestion, automated via the xgodo "Gemini app api" job
     // (lib/xgodo-ytsummary.ts). Feeds classifyRelationship with observed

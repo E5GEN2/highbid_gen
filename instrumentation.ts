@@ -366,6 +366,40 @@ export async function register() {
       // + interval, so they're cheap no-ops until enabled.
       await runNoveltyRecomputeTick();
       await runSeedSchedulerLoop();
+      // Niche Bending baker — pre-bakes a buffer of cross-niche synthetic ideas
+      // (+ their thumbnails) so /niche/bending is never empty. Gated by
+      // niche_bend_baker_enabled (ships OFF) + a ~2min interval. Also runs the
+      // shared imagegen tick so baked thumbnails download server-side.
+      await runBendBakerTick2();
+    }
+
+    async function runBendBakerTick2() {
+      try {
+        const pool = await getPool();
+        const cfg = await pool.query<{ key: string; value: string }>(
+          `SELECT key, value FROM admin_config WHERE key IN ('niche_bend_baker_enabled','niche_bend_target','last_niche_bend_bake_at')`,
+        );
+        const c: Record<string, string> = {};
+        for (const r of cfg.rows) c[r.key] = r.value;
+        if (c.niche_bend_baker_enabled !== 'true') return;   // ships OFF
+
+        // Throttle to ~2 min between bakes so Gemini + imagegen never churn.
+        const last = c.last_niche_bend_bake_at ? new Date(c.last_niche_bend_bake_at).getTime() : 0;
+        if (Date.now() - last < 2 * 60 * 1000) return;
+        await pool.query(
+          `INSERT INTO admin_config (key, value) VALUES ('last_niche_bend_bake_at', NOW()::text)
+             ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
+        ).catch(() => {});
+
+        const { runBendBakerTick } = await import('./lib/niche-bend');
+        const target = parseInt(c.niche_bend_target) || 24;
+        const r = await runBendBakerTick({ target });
+        if (r.baked || r.retried) {
+          console.log(`[niche-bend] baked=${r.baked} retried=${r.retried} ready=${r.ready} rendering=${r.rendering}/${target}`);
+        }
+      } catch (err) {
+        console.error('[niche-bend] baker error:', err instanceof Error ? err.message : err);
+      }
     }
 
     // Check every 60 seconds whether a sync/schedule is due
