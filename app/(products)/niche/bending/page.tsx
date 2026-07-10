@@ -27,25 +27,75 @@ function fmt(n: number): string {
 export default function NicheBending() {
   const [bends, setBends] = React.useState<Bend[]>([]);
   const [feedLoading, setFeedLoading] = React.useState(true);
+  const [loadingMore, setLoadingMore] = React.useState(false);
+  const [hasMore, setHasMore] = React.useState(true);
   const [showMaker, setShowMaker] = React.useState(false);
   const [openId, setOpenId] = React.useState<number | null>(null);
+  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+  const loadingMoreRef = React.useRef(false);
 
-  const loadFeed = React.useCallback(async () => {
+  const PAGE = 60;
+
+  // Refresh the TOP (newest) page and merge: update statuses/thumbnails of items
+  // already loaded, and prepend any brand-new ideas baked since. Keeps deeper
+  // scrolled-in pages intact.
+  const refreshTop = React.useCallback(async () => {
     try {
-      const r = await fetch('/api/niche-bend/list?limit=60');
+      const r = await fetch(`/api/niche-bend/list?limit=${PAGE}`);
       const d = await r.json();
-      setBends(d.bends || []);
+      const fetched: Bend[] = d.bends || [];
+      setBends(prev => {
+        if (!prev.length) return fetched;
+        const fetchedById = new Map(fetched.map(b => [b.id, b]));
+        const prevIds = new Set(prev.map(b => b.id));
+        const updated = prev.map(b => fetchedById.get(b.id) ?? b);
+        const fresh = fetched.filter(b => !prevIds.has(b.id));  // newly baked (newest-first)
+        return [...fresh, ...updated];
+      });
+      if (!bends.length) setHasMore(d.hasMore);
     } catch { /* keep old */ }
     setFeedLoading(false);
-  }, []);
+  }, [bends.length]);
 
-  React.useEffect(() => { loadFeed(); }, [loadFeed]);
-  // Poll while anything is still rendering so thumbnails fill in live.
+  // Load the next OLDER page via id cursor (stable while the top grows).
+  const loadMore = React.useCallback(async () => {
+    if (loadingMoreRef.current || !hasMore) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const oldest = bends[bends.length - 1]?.id;
+      const r = await fetch(`/api/niche-bend/list?limit=${PAGE}${oldest ? `&before=${oldest}` : ''}`);
+      const d = await r.json();
+      const more: Bend[] = d.bends || [];
+      setBends(prev => {
+        const ids = new Set(prev.map(b => b.id));
+        return [...prev, ...more.filter(b => !ids.has(b.id))];
+      });
+      setHasMore(d.hasMore);
+    } catch { /* ignore */ }
+    loadingMoreRef.current = false;
+    setLoadingMore(false);
+  }, [bends, hasMore]);
+
+  React.useEffect(() => { refreshTop(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll the top while anything is still rendering so thumbnails fill in live.
   React.useEffect(() => {
     if (!bends.some(b => b.status === 'rendering')) return;
-    const t = setInterval(loadFeed, 5000);
+    const t = setInterval(refreshTop, 5000);
     return () => clearInterval(t);
-  }, [bends, loadFeed]);
+  }, [bends, refreshTop]);
+
+  // Infinite scroll: load the next page when the sentinel scrolls into view.
+  React.useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting) loadMore();
+    }, { rootMargin: '600px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [loadMore]);
 
   return (
     <div className="p-8 max-w-[1500px]">
@@ -57,7 +107,7 @@ export default function NicheBending() {
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button onClick={loadFeed} className="px-3 py-2 bg-[#141414] border border-[#2a2a2a] text-white text-sm rounded-xl hover:border-[#555] transition">Refresh</button>
+          <button onClick={refreshTop} className="px-3 py-2 bg-[#141414] border border-[#2a2a2a] text-white text-sm rounded-xl hover:border-[#555] transition">Refresh</button>
           <button onClick={() => setShowMaker(s => !s)}
             className={`px-4 py-2 text-sm font-medium rounded-xl transition ${showMaker ? 'bg-[#141414] border border-amber-500 text-amber-400' : 'bg-amber-500 text-black hover:bg-amber-400'}`}>
             {showMaker ? 'Close maker' : '+ Make your own'}
@@ -65,7 +115,7 @@ export default function NicheBending() {
         </div>
       </div>
 
-      {showMaker && <Maker onDone={loadFeed} />}
+      {showMaker && <Maker onDone={refreshTop} />}
 
       {/* Feed */}
       {feedLoading ? (
@@ -76,9 +126,16 @@ export default function NicheBending() {
           <div className="text-sm">The background baker fills this in once enabled — or hit <span className="text-amber-400">Make your own</span> to bend a pair now.</div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {bends.map(b => <BendCard key={b.id} b={b} onOpen={() => setOpenId(b.id)} />)}
-        </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {bends.map(b => <BendCard key={b.id} b={b} onOpen={() => setOpenId(b.id)} />)}
+          </div>
+          {/* Infinite-scroll sentinel + status */}
+          <div ref={sentinelRef} className="h-12" />
+          <div className="text-center py-4 text-[#666] text-sm">
+            {loadingMore ? 'Loading more ideas…' : hasMore ? '' : `That's all ${bends.length} ideas — more are baking.`}
+          </div>
+        </>
       )}
 
       {openId != null && <BendModal id={openId} onClose={() => setOpenId(null)} />}

@@ -559,18 +559,24 @@ async function pickFreshPair(): Promise<{ a: BendCandidate; b: BendCandidate } |
  * all feed data (title + parent snapshots) lives on niche_bends, so no niche_spy
  * joins. The rich parent details are fetched only on click via getBend.
  */
-export async function listBends(limit = 60): Promise<BendRow[]> {
+export async function listBends(limit = 60, beforeId?: number): Promise<BendRow[]> {
   const pool = await getPool();
+  // id-cursor pagination (id is monotonic with time): newest-first, load older
+  // pages via beforeId. Stable even as new ideas bake at the top — no offset
+  // drift, no dup/skip on infinite scroll.
+  const params: number[] = [Math.min(limit, 200)];
+  let cursor = '';
+  if (beforeId && Number.isFinite(beforeId)) { params.push(beforeId); cursor = `AND b.id < $2`; }
   const r = await pool.query(
     `SELECT b.id, b.bent_title, b.thumbnail_prompt, b.status, b.error, b.imagegen_task_id,
             b.title_a, b.thumb_a, b.niche_a_label, b.title_b, b.thumb_b, b.niche_b_label,
             (t.local_path IS NOT NULL) AS downloaded
        FROM niche_bends b
        LEFT JOIN imagegen_tasks t ON t.id = b.imagegen_task_id
-      WHERE b.status IN ('done','rendering')
-      ORDER BY (b.status='done') DESC, b.created_at DESC
+      WHERE b.status IN ('done','rendering') ${cursor}
+      ORDER BY b.id DESC
       LIMIT $1`,
-    [Math.min(limit, 200)],
+    params,
   );
   return r.rows.map(row => ({
     id: row.id,
