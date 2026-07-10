@@ -415,8 +415,22 @@ export async function runBendBakerTick(
   await pool.query(
     `UPDATE niche_bends b SET status='done', updated_at=NOW()
        FROM imagegen_tasks t
-      WHERE t.id = b.imagegen_task_id AND b.status='rendering' AND t.local_path IS NOT NULL`,
+      WHERE t.id = b.imagegen_task_id AND b.status='rendering'
+        AND t.local_path IS NOT NULL AND t.local_path NOT LIKE '/tmp/%'`,
   ).catch(() => {});
+
+  // 0b2. Self-heal ephemeral downloads: a thumbnail on /tmp (not the /data
+  //      volume) is unservable on prod and shows as a broken image. Re-render it
+  //      to /data — a few per tick, keyed off render_attempts, no churn.
+  const badPath = await pool.query<{ id: number; thumbnail_prompt: string; thumb_a: string }>(
+    `SELECT b.id, b.thumbnail_prompt, b.thumb_a
+       FROM niche_bends b JOIN imagegen_tasks t ON t.id = b.imagegen_task_id
+      WHERE b.status IN ('done','rendering') AND t.local_path LIKE '/tmp/%'
+        AND b.render_attempts < $1
+      ORDER BY b.id DESC LIMIT 3`,
+    [MAX_RENDER_ATTEMPTS + 4],
+  );
+  for (const row of badPath.rows) await renderThumbnail(row.id, row.thumbnail_prompt, row.thumb_a);
 
   // 0c. Self-heal: drop any bend whose parent is (now) confirmed a Short. The
   //     inline pick-time check is bounded + fail-open, so a Short can slip
@@ -570,7 +584,9 @@ export async function listBends(limit = 60, beforeId?: number): Promise<BendRow[
   const r = await pool.query(
     `SELECT b.id, b.bent_title, b.thumbnail_prompt, b.status, b.error, b.imagegen_task_id,
             b.title_a, b.thumb_a, b.niche_a_label, b.title_b, b.thumb_b, b.niche_b_label,
-            (t.local_path IS NOT NULL) AS downloaded
+            -- /tmp = an ephemeral download (not on the /data volume) -> unservable on
+            -- prod, would render as a broken image; treat as not-yet-ready instead.
+            (t.local_path IS NOT NULL AND t.local_path NOT LIKE '/tmp/%') AS downloaded
        FROM niche_bends b
        LEFT JOIN imagegen_tasks t ON t.id = b.imagegen_task_id
       WHERE b.status IN ('done','rendering') ${cursor}
