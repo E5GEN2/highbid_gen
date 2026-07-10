@@ -304,21 +304,33 @@ export async function testKey(key: string, proxy?: { url: string; deviceId: stri
 /** Matches Google's "Quota exceeded ... Request limit per minute for a region"
  *  (RESOURCE_EXHAUSTED / 429). */
 const RATE_LIMIT_RE = /\b429\b|RESOURCE_EXHAUSTED|Quota exceeded/i;
+/** A transient proxy/network failure (dead/flaky SOCKS5 hop) — testKey tags
+ *  these `proxy/network: ...`. A fresh proxy almost always works, so these are
+ *  retriable, not a property of the key. */
+const PROXY_ERR_RE = /^proxy\/network:/i;
 
 /**
- * Test a key with retry-on-429. A 429 is NOT a property of the key — it's the
- * shared per-region per-minute rate limit, which also 429s known-good keys when
- * the test out-runs the region budget (verified: good keys 200 in isolation,
- * 429 under load; restricted keys 429 in BOTH). So a single 429 can't decide
- * anything. We retry through fresh proxies, spaced, to give a good key a chance
- * at an un-saturated window:
- *   - any attempt valid/invalid  → decisive, return immediately
- *   - non-rate-limit error       → return (don't hammer proxy/net failures)
- *   - 429 on every attempt       → genuinely restricted (project quota throttled
- *                                  to ~0, i.e. shadowbanned); labelled as such for
- *                                  visibility but STILL left 'error'/inconclusive,
- *                                  never declined — a definitive prune belongs in a
- *                                  separate low-rate sweep, not under import load.
+ * Test a key with retry on TRANSIENT failures (429 + proxy/network). Neither is
+ * a property of the key:
+ *   - 429 is the shared per-region per-minute rate limit, which also 429s
+ *     known-good keys when the test out-runs the region budget (verified: good
+ *     keys 200 in isolation, 429 under load; restricted keys 429 in BOTH).
+ *   - a `proxy/network: curl exit 7|97` is a dead proxy draw. The 42-entry
+ *     static SOCKS5 pool fails ~1-in-5 single draws, so WITHOUT rotation ~20% of
+ *     probes surfaced as "curl exit" noise even though the key is fine. getRandom-
+ *     Proxy re-draws at the top of the loop, so retrying just routes around it —
+ *     3 attempts collapses that ~20% to ~1% (matches video-seed, which rotates 6x).
+ * Decision rules:
+ *   - any attempt valid/invalid        → decisive, return immediately
+ *   - other inconclusive error         → return (subprocess crash / non-JSON /
+ *                                        unexpected Google output won't improve)
+ *   - 429 on every attempt             → genuinely restricted (project quota ~0,
+ *                                        i.e. shadowbanned); labelled for visibility
+ *                                        but left 'error', never declined.
+ *   - proxy error on every attempt     → the pool is momentarily starved; left
+ *                                        'error' (never declined — not the key's fault).
+ * A 429 waits DELAY_MS for a fresh region window; a proxy error retries
+ * immediately (just needs a different IP).
  */
 async function testKeyResilient(key: string): Promise<Awaited<ReturnType<typeof testKey>>> {
   const MAX_ATTEMPTS = 3;
@@ -329,10 +341,22 @@ async function testKeyResilient(key: string): Promise<Awaited<ReturnType<typeof 
     const test = await testKey(key, proxy ? { url: proxy.url, deviceId: proxy.deviceId } : undefined);
     last = test;
     if (test.verdict === 'valid' || test.verdict === 'invalid') return test;
-    if (!RATE_LIMIT_RE.test(test.reason)) return test;
-    if (attempt < MAX_ATTEMPTS - 1) await new Promise(r => setTimeout(r, DELAY_MS));
+    const isRateLimit = RATE_LIMIT_RE.test(test.reason);
+    const isProxyErr = PROXY_ERR_RE.test(test.reason);
+    if (!isRateLimit && !isProxyErr) return test;   // some other error — retrying won't help
+    // 429 needs a cooloff window; a dead proxy just needs a fresh IP (re-drawn
+    // at the top of the next iteration) so retry it immediately.
+    if (attempt < MAX_ATTEMPTS - 1 && isRateLimit) await new Promise(r => setTimeout(r, DELAY_MS));
   }
-  if (last) last.reason = `restricted (persistent 429 ×${MAX_ATTEMPTS}): ${last.reason.replace(/^inconclusive:\s*/, '').slice(0, 120)}`;
+  // Exhausted — label by what actually persisted so a proxy-starved run isn't
+  // mislabelled as a 429 shadowban.
+  if (last) {
+    if (RATE_LIMIT_RE.test(last.reason)) {
+      last.reason = `restricted (persistent 429 ×${MAX_ATTEMPTS}): ${last.reason.replace(/^inconclusive:\s*/, '').slice(0, 120)}`;
+    } else if (PROXY_ERR_RE.test(last.reason)) {
+      last.reason = `proxy/network (${MAX_ATTEMPTS} proxies tried): ${last.reason.replace(/^proxy\/network:\s*/, '').slice(0, 120)}`;
+    }
+  }
   return last!;
 }
 
