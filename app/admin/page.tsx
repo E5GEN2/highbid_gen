@@ -7929,14 +7929,14 @@ interface SeedSupplyData {
   pools: { fresh80: number; fresh65: number; fresh50: number; total50: number };
   byFloor: { pct80: FloorStat; pct65: FloorStat; pct50: FloorStat };
   currentFloorKey: 'pct80' | 'pct65' | 'pct50';
-  inflow: { per24h: number; per7d: number; perHr: number };
-  consumption: { dispatch1h: number; dispatch24h: number; perThreadPerHr: number; avgTaskMin: number };
+  inflow: { per24h: number; per7d: number; perHr: number; recycled24h: number };
+  consumption: { dispatch1h: number; dispatch24h: number; perThreadPerHr: number; perThreadSource: string; currentThreads: number; avgTaskMin: number };
   floor: number;
   freshAtFloor: number;
-  derived: { sustainableThreads: number; sustainableAtFloor50: number; bufferHoursAt20: number | null; bufferHoursAt40: number | null };
+  derived: { sustainableThreads: number; sustainableAtFloor50: number; bufferHoursAtCurrent: number | null; bufferHoursAt20: number | null; bufferHoursAt40: number | null };
   computedAt: string; cached: boolean; ageSec: number;
 }
-interface FloorStat { fresh: number; inflowPerDay: number; inflowPerHr: number; sustains: number; }
+interface FloorStat { fresh: number; inflowPerDay: number; recycledPerDay: number; replenishPerDay: number; inflowPerHr: number; sustains: number; }
 
 /** Seed-supply gauge — eligible novelty pool vs consumption vs replenishment; answers "will supply hold N threads?". */
 function VideoSeedSupplyGauge({ active }: { active: boolean }) {
@@ -7949,7 +7949,13 @@ function VideoSeedSupplyGauge({ active }: { active: boolean }) {
   if (!d?.ok) return null;
 
   const sus = d.derived.sustainableThreads;
-  const susColor = sus >= 40 ? 'text-emerald-400' : sus >= 20 ? 'text-amber-400' : 'text-red-400';
+  const curThreads = d.consumption.currentThreads;
+  // Green when replenishment alone sustains the current thread count; amber when
+  // running off the buffer (consuming faster than replenishment); red only if the
+  // buffer is short too.
+  const bufCur = d.derived.bufferHoursAtCurrent;
+  const susColor = sus >= curThreads ? 'text-emerald-400' : (bufCur == null || bufCur >= 72) ? 'text-amber-400' : 'text-red-400';
+  const hoursFmt = (h: number | null) => h == null ? '∞' : h >= 48 ? `${Math.round(h / 24)}d` : `${h}h`;
   const floors = [
     { pct: 80, label: 'top 20%', stat: d.byFloor.pct80 },
     { pct: 65, label: 'top 35%', stat: d.byFloor.pct65 },
@@ -7964,23 +7970,23 @@ function VideoSeedSupplyGauge({ active }: { active: boolean }) {
         <span className="text-[10px] text-[#555]">{d.cached ? `cached ${Math.round(d.ageSec / 60)}m ago` : 'fresh'} · recompute ~10m</span>
       </div>
 
-      {/* Headline: sustainable threads */}
+      {/* Headline: sustainable threads (steady-state) + buffer runway */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
           <div className={`text-2xl font-bold ${susColor}`}>~{sus}</div>
-          <div className="text-[10px] text-[#666] uppercase">threads sustained · at floor pct {d.floor}</div>
+          <div className="text-[10px] text-[#666] uppercase">threads sustainable · steady-state</div>
         </div>
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
-          <div className="text-lg font-bold text-blue-400">{d.inflow.perHr}/hr<span className="text-[#555] text-xs"> · {d.byFloor[d.currentFloorKey].inflowPerDay}/d</span></div>
-          <div className="text-[10px] text-[#666] uppercase">replenishment @ pct {d.floor}</div>
+          <div className="text-lg font-bold text-blue-400">{d.inflow.perHr}/hr<span className="text-[#555] text-xs"> · {d.byFloor[d.currentFloorKey].replenishPerDay}/d</span></div>
+          <div className="text-[10px] text-[#666] uppercase">replenishment{d.inflow.recycled24h > 0 ? ` (+${d.inflow.recycled24h} recycled)` : ''}</div>
         </div>
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
-          <div className="text-lg font-bold text-[#ccc]">{Math.round(d.consumption.dispatch24h / 24 * 10) / 10}/hr<span className="text-[#555] text-xs"> · {d.consumption.dispatch24h}/d</span></div>
+          <div className="text-lg font-bold text-[#ccc]">{Math.round(d.consumption.dispatch24h / 24 * 10) / 10}/hr<span className="text-[#555] text-xs"> · {curThreads} thr</span></div>
           <div className="text-[10px] text-[#666] uppercase">consumption (now)</div>
         </div>
         <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
-          <div className="text-lg font-bold text-white">{d.derived.bufferHoursAt40 == null ? '∞' : `${d.derived.bufferHoursAt40}h`}</div>
-          <div className="text-[10px] text-[#666] uppercase">buffer @ 40 threads</div>
+          <div className="text-lg font-bold text-white">{hoursFmt(bufCur)}<span className="text-[#555] text-xs"> · {hoursFmt(d.derived.bufferHoursAt40)} @40</span></div>
+          <div className="text-[10px] text-[#666] uppercase">buffer runway @ {curThreads} thr</div>
         </div>
       </div>
 
@@ -7997,13 +8003,15 @@ function VideoSeedSupplyGauge({ active }: { active: boolean }) {
                   <div className={`h-full ${isCurrent ? 'bg-emerald-500/70' : 'bg-[#3a3a3a]'}`} style={{ width: `${(f.stat.fresh / maxFresh) * 100}%` }} />
                 </div>
                 <span className={`text-xs w-14 text-right ${isCurrent ? 'text-emerald-400 font-semibold' : 'text-[#999]'}`}>{f.stat.fresh.toLocaleString()}</span>
-                <span className={`text-[10px] w-28 text-right ${isCurrent ? 'text-amber-300' : 'text-[#666]'}`}>{f.stat.inflowPerDay}/d &rarr; ~{f.stat.sustains} thr</span>
+                <span className={`text-[10px] w-28 text-right ${isCurrent ? 'text-amber-300' : 'text-[#666]'}`}>{f.stat.replenishPerDay}/d &rarr; ~{f.stat.sustains} thr</span>
               </div>
             );
           })}
         </div>
         <div className="text-[10px] text-[#555] mt-2">
-          At the current floor (pct {d.floor}) replenishment (~{d.inflow.perHr}/hr) sustains <span className="text-[#999]">~{sus} threads</span>. Dropping to pct 50 (less-novel) sustains ~{d.derived.sustainableAtFloor50}; {d.derived.bufferHoursAt40 ? `the pct-50 pool then buffers ~${d.derived.bufferHoursAt40}h at 40 threads before the floor pins there.` : 'beyond that the floor pins at pct 50 to stay fed.'}
+          Replenishment (~{d.byFloor[d.currentFloorKey].replenishPerDay}/d = new embeddings + {d.inflow.recycled24h} recycled) sustains <span className="text-[#999]">~{sus} threads indefinitely</span> at the current floor
+          {sus < curThreads ? <> — you&apos;re running <span className="text-amber-300">{curThreads}</span>, drawing down the {d.pools.fresh50.toLocaleString()}-seed pool (~{hoursFmt(bufCur)} runway; ~{hoursFmt(d.derived.bufferHoursAt40)} at 40 threads).</> : <> and the {d.pools.fresh50.toLocaleString()}-seed pool is a buffer on top.</>}
+          {' '}Per-thread consumption is <span className="text-[#777]">{d.consumption.perThreadSource}</span> ({d.consumption.perThreadPerHr}/hr); the pool counts re-queued seeds as recyclable supply.
         </div>
       </div>
     </div>

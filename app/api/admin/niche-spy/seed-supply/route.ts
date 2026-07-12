@@ -84,8 +84,8 @@ export async function GET(req: NextRequest) {
      FROM eligible`,
   );
 
-  // ── Cheap: consumption, current floor, avg task duration ─────────────────
-  const [dispRes, floorRes, durRes] = await Promise.all([
+  // ── Cheap: consumption, current floor, thread count, recycling ───────────
+  const [dispRes, floorRes, durRes, threadsRes, recycleRes] = await Promise.all([
     pool.query<{ d1h: string; d24h: string }>(
       `SELECT COUNT(*) FILTER (WHERE dispatched_at > NOW()-INTERVAL '1 hour') AS d1h,
               COUNT(*) FILTER (WHERE dispatched_at > NOW()-INTERVAL '24 hours') AS d24h
@@ -95,6 +95,14 @@ export async function GET(req: NextRequest) {
       `SELECT AVG(EXTRACT(EPOCH FROM (last_seen_at - first_seen_at))/60.0) AS avg_min
          FROM agent_task_log
         WHERE (kind='seed' OR keyword LIKE 'nd\\_%') AND status='completed' AND last_seen_at > NOW()-INTERVAL '12 hours'`),
+    pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='auto_seed_max_threads'`),
+    // Recycling inflow: distinct seeds re-queued (became re-eligible via the
+    // 0-scored re-queue) in 24h — supply the new-embedding inflow misses.
+    pool.query<{ recycled: string }>(
+      `SELECT COUNT(DISTINCT s.seed_video_id) AS recycled
+         FROM niche_discovery_seeds s
+        WHERE s.status='failed' AND s.completed_at > NOW()-INTERVAL '24 hours'
+          AND NOT EXISTS (SELECT 1 FROM niche_discovery_seeds s2 WHERE s2.seed_video_id=s.seed_video_id AND s2.status<>'failed')`),
   ]);
 
   const p = poolRes.rows[0];
@@ -109,18 +117,32 @@ export async function GET(req: NextRequest) {
   const dispatch1h = parseInt(dispRes.rows[0]?.d1h) || 0;
   const floor = parseInt(floorRes.rows[0]?.value || '65') || 65;
   const avgTaskMin = Math.max(1, parseFloat(durRes.rows[0]?.avg_min || '43') || 43);
+  const currentThreads = Math.max(1, parseInt(threadsRes.rows[0]?.value || '28') || 28);
+  const recycled24h = parseInt(recycleRes.rows[0]?.recycled) || 0;
 
   // ── Derived thread math, PER novelty floor ───────────────────────────────
-  // Each floor has its own replenishment (stricter floor → far less inflow), so
-  // sustainable threads must be computed per floor, not once at the most-inclusive
-  // pct=50. The headline uses the CURRENT operating floor (honest), and pct=50 is
-  // the floor-pinned best case the scheduler falls back to under starvation.
-  const perThreadPerHr = 60 / avgTaskMin;                   // seed dispatches per thread per hr
+  // PER-THREAD CONSUMPTION is EMPIRICAL: actual novelty dispatch ÷ current threads.
+  // The old model (60/avgTaskMin) over-counted ~4.8× because avgTaskMin is the task
+  // DURATION, not the seed-dispatch cadence — which made "threads sustained" ~5×
+  // too low. Fall back to the model only when there's no recent dispatch to measure.
+  const perThreadPerHrEmpirical = dispatch24h / currentThreads / 24;
+  const perThreadPerHr = perThreadPerHrEmpirical > 0.05 ? perThreadPerHrEmpirical : 60 / avgTaskMin;
+  const perThreadSource = perThreadPerHrEmpirical > 0.05 ? 'empirical' : 'modeled';
+
+  // REPLENISHMENT = new-embedding inflow + the re-queue recycling stream (0-scored
+  // seeds coming back re-eligible) that the inflow misses. NOTE: this still
+  // undercounts novelty-churn (videos crossing the floor as scores shift, un-
+  // measured), so sustains is a conservative FLOOR. Each floor has its own inflow;
+  // recycling is small and applied uniformly.
   const r1 = (n: number) => Math.round(n * 10) / 10;
-  const mkFloor = (fresh: number, inflow24: number) => ({
-    fresh, inflowPerDay: inflow24, inflowPerHr: r1(inflow24 / 24),
-    sustains: Math.round((inflow24 / 24) / perThreadPerHr),
-  });
+  const mkFloor = (fresh: number, inflow24: number) => {
+    const replenishPerDay = inflow24 + recycled24h;
+    return {
+      fresh, inflowPerDay: inflow24, recycledPerDay: recycled24h, replenishPerDay,
+      inflowPerHr: r1(replenishPerDay / 24),                // total replenishment/hr
+      sustains: Math.round((replenishPerDay / 24) / perThreadPerHr),
+    };
+  };
   const byFloor = {
     pct80: mkFloor(fresh80, inflow24_80),
     pct65: mkFloor(fresh65, inflow24_65),
@@ -128,28 +150,30 @@ export async function GET(req: NextRequest) {
   };
   const currentFloorKey = floor >= 80 ? 'pct80' : floor >= 65 ? 'pct65' : 'pct50';
   const current = byFloor[currentFloorKey as keyof typeof byFloor];
-  const sustainableThreads = current.sustains;             // at the CURRENT floor (honest)
+  const sustainableThreads = current.sustains;             // at the CURRENT floor (conservative)
   const inflowPerHr = current.inflowPerHr;
   const freshAtFloor = current.fresh;
   const bufferHoursAt = (threads: number) => {
     // Running this many threads pins the floor to pct=50, so the buffer is the
-    // pct=50 pool draining at (consumption − pct=50 inflow).
+    // pct=50 pool draining at (consumption − pct=50 replenishment).
     const net = threads * perThreadPerHr - byFloor.pct50.inflowPerHr;
     return net <= 0 ? null : Math.round(fresh50 / net);
   };
+  const bufferHoursAtCurrent = bufferHoursAt(currentThreads);
 
   const data = {
     ok: true,
     pools: { fresh80, fresh65, fresh50, total50: parseInt(p.total_50) || 0 },
     byFloor,                                                // per-floor fresh + inflow + sustainable threads
     currentFloorKey,
-    inflow: { per24h: inflow24_50, per7d: inflow7d, perHr: inflowPerHr },  // perHr = current floor's replenishment
-    consumption: { dispatch1h, dispatch24h, perThreadPerHr: Math.round(perThreadPerHr * 100) / 100, avgTaskMin: Math.round(avgTaskMin * 10) / 10 },
+    inflow: { per24h: inflow24_50, per7d: inflow7d, perHr: inflowPerHr, recycled24h },  // perHr = current floor's total replenishment
+    consumption: { dispatch1h, dispatch24h, perThreadPerHr: Math.round(perThreadPerHr * 100) / 100, perThreadSource, currentThreads, avgTaskMin: Math.round(avgTaskMin * 10) / 10 },
     floor,
     freshAtFloor,
     derived: {
-      sustainableThreads,                                  // at the CURRENT floor
+      sustainableThreads,                                  // at the CURRENT floor (empirical per-thread + recycling)
       sustainableAtFloor50: byFloor.pct50.sustains,        // best case (floor pinned to pct 50)
+      bufferHoursAtCurrent,                                // runway at the CURRENT thread count
       bufferHoursAt20: bufferHoursAt(20),
       bufferHoursAt40: bufferHoursAt(40),
     },
