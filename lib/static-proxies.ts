@@ -3,17 +3,18 @@
  * while its TCP-dead rate (~78% per last sweep) makes its "online"
  * proxies useless for embedding traffic.
  *
- * Input format the operator supplies: `socks5://HOST:PORT:USER:PASS`
- * (one per line). We parse into a standard SOCKS5 URL
- * (`socks5://USER:PASS@HOST:PORT`) on load. This transport is SOCKS-only
- * (SocksProxyAgent + the checker's `curl --proxy socks5h`), so any
- * `http://` endpoints the provider gives are intentionally NOT included —
- * they would fail every call.
+ * Input format the operator supplies: `socks5://HOST:PORT:USER:PASS` or
+ * `http://HOST:PORT:USER:PASS` (one per line). BOTH schemes work end-to-end:
+ * video-seed routes SOCKS via SocksProxyAgent and HTTP via undici ProxyAgent
+ * (proxy-dispatcher.ts fetchViaProxy), and the key-checker's `curl -x` accepts
+ * both (embed-batch.py). We parse into a proxy URL with embedded auth on load:
+ * socks5 → `socks5h://USER:PASS@HOST:PORT` (proxy-side DNS, required by the
+ * provider — host-side DNS gets NetworkUnreachable), http → `http://USER:PASS@HOST:PORT`.
  *
  * Drop the list back to empty (or remove this file) once xgodo is
  * healthy again.
  *
- * Last refreshed 2026-07-10 (operator-supplied): 63 socks5 nodes.
+ * Last refreshed 2026-07-10 (operator-supplied): 66 nodes (63 socks5 + 3 http).
  */
 
 const RAW = `
@@ -80,6 +81,9 @@ socks5://108.61.224.176:15875:xGdo026034156:7KJgO6nGI1Vy
 socks5://108.61.224.176:17127:xGdo026034559:cAoWMy5qEMc6
 socks5://157.230.227.47:16679:xGdo026052634:bD1zG9c85NMY
 socks5://66.135.17.126:17404:xGdo026081627:yA0gmM4wsKLs
+http://207.246.85.39:16928:highbid25102618:2rQRlk6JQnVd
+http://45.63.17.144:16223:highbid25165940:sOhFTSAA6LHq
+http://45.63.5.159:19464:xGdo026081351:V9A4pjx1Wldl
 `;
 
 export interface StaticProxy {
@@ -97,18 +101,20 @@ function parse(): StaticProxy[] {
   for (const raw of RAW.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
-    // Format: socks5://HOST:PORT:USER:PASS
-    const m = line.match(/^socks5:\/\/([^:]+):(\d+):([^:]+):(.+)$/);
+    // Format: <socks5|http>://HOST:PORT:USER:PASS
+    const m = line.match(/^(socks5|http):\/\/([^:]+):(\d+):([^:]+):(.+)$/);
     if (!m) {
       console.warn('[static-proxies] unparseable line:', line);
       continue;
     }
-    const [, host, port, user, pass] = m;
+    const [, scheme, host, port, user, pass] = m;
+    // socks5 → socks5h:// (DNS resolved by the proxy; the provider's nodes
+    // reject host-side DNS with NetworkUnreachable — verified via local
+    // probe — so plain socks5:// would fail every call). http proxies
+    // tunnel via CONNECT, so DNS is proxy-side already.
+    const outScheme = scheme === 'socks5' ? 'socks5h' : 'http';
     out.push({
-      // socks5h:// (DNS resolved by the proxy). The provider's nodes
-      // reject host-side DNS with NetworkUnreachable — verified via
-      // local probe — so plain socks5:// would fail every call.
-      url: `socks5h://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`,
+      url: `${outScheme}://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`,
       host,
       port: parseInt(port, 10),
       id: `${host}:${port}`,
