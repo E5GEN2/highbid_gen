@@ -1015,6 +1015,34 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_task ON niche_seed_expansions(task_id, detected_at DESC)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_seed ON niche_seed_expansions(seed_video_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_matched ON niche_seed_expansions(matched, detected_at DESC)`).catch(() => {});
+    // niche_spy_videos.channel_id → channel lineage lookups need this in the sweep.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_cand_vid ON niche_seed_expansions(candidate_video_id)`).catch(() => {});
+
+    // channel_cg_status — the stamped content-gen-eligibility KPI (the output
+    // the YT-niche-spy flywheel exists to produce). One row per channel: the
+    // sweep (instrumentation runEnrichWatchdogTick sibling) evaluates each
+    // newly-enriched channel via lib/content-gen/cg-eligibility.ts and stamps
+    // the verdict + which seed discovered it (first-touch). Powers the KPI
+    // panel, funnel, per-seed leaderboard, and alerting. Brand-new + starts
+    // empty, so plain CREATE INDEX is instant (no CONCURRENTLY needed).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS channel_cg_status (
+        channel_id TEXT PRIMARY KEY,
+        discovered_at TIMESTAMPTZ,                 -- first sighting of this channel (fixes missing first_seen_at)
+        discovered_by_seed_video_id INTEGER,       -- first-touch: the seed whose expansion first surfaced this channel
+        discovered_by_task_id TEXT,                -- xgodo task of that first-touch seed
+        discovered_source TEXT,                    -- novelty | content_gen | burst | other
+        cg_evaluated_at TIMESTAMPTZ,               -- when the eligibility verdict was last stamped
+        cg_eligible BOOLEAN,                       -- passes hard gates + English gate
+        cg_fail_reasons TEXT[],                    -- which gate(s) killed it (see CgFailReason)
+        cg_eval_version INTEGER                    -- gate-logic version; sweep re-stamps stale rows
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ccs_eligible_eval ON channel_cg_status(cg_eligible, cg_evaluated_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ccs_discovered_at ON channel_cg_status(discovered_at)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ccs_seed ON channel_cg_status(discovered_by_seed_video_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ccs_source ON channel_cg_status(discovered_source)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ccs_evalver ON channel_cg_status(cg_eval_version)`).catch(() => {});
 
     // candidate_was_new — true if this candidate row was created BY the
     // expand call that logged this expansion; false if it was already in

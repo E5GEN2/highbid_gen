@@ -140,8 +140,10 @@ const FOREIGN_LANG_LABEL =
   /\b(?:en\s+)?(?:espa[nñ]ol|portugu[eê]s|fran[cç]ais|italiano|deutsch|t[uü]rk[cç]e|bahasa|polski|nederlands|svenska|tagalog)\b/iu;
 
 /** The English-only pool decision used to filter draft/hero candidates that
- *  the SQL language gate misses (no/empty analysis). */
-function isNonEnglishChannel(name: string | null | undefined, title: string | null | undefined): boolean {
+ *  the SQL language gate misses (no/empty analysis). Exported so the
+ *  cg-eligibility tracker (lib/content-gen/cg-eligibility.ts) reuses the EXACT
+ *  same script gate rather than re-implementing it (single source of truth). */
+export function isNonEnglishChannel(name: string | null | undefined, title: string | null | undefined): boolean {
   return looksNonEnglishByScript(name)
       || looksNonEnglishByScript(title)
       || FOREIGN_LANG_LABEL.test(name ?? '');

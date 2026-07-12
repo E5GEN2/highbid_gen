@@ -345,6 +345,22 @@ export async function register() {
       }
     }
 
+    // CG-eligibility KPI sweep — stamps channel_cg_status (discovered_at +
+    // first-touch seed lineage + eligibility verdict) incrementally so the
+    // KPI is a cheap pre-stamped read. Bounded/indexed batches; kill switch
+    // admin_config cg_sweep_enabled='false'. Only logs when it did work.
+    async function runCgKpiSweepTick() {
+      try {
+        const { runCgSweepTick } = await import('./lib/content-gen/cg-sweep');
+        const r = await runCgSweepTick();
+        if (r.enabled && (r.discovered > 0 || r.evaluated > 0 || r.reevaluated > 0)) {
+          console.log('[cg-sweep]', `discovered=${r.discovered} evaluated=${r.evaluated} reeval=${r.reevaluated} eligible=${r.eligibleInBatch} ${r.ms}ms`);
+        }
+      } catch (err) {
+        console.error('[cg-sweep] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAll() {
       await runAutoSync();
       await runAutoSchedule();
@@ -362,6 +378,9 @@ export async function register() {
       // it dies (deploy orphan, transient error, or clean idle exit + new
       // backlog). Cheap no-op (one SELECT) while it's healthy.
       await runEnrichWatchdogTick();
+      // CG-eligibility KPI sweep — incremental stamp of the flywheel's OUTPUT
+      // metric (cg-eligible channels). Bounded batches, no-op-cheap.
+      await runCgKpiSweepTick();
       // Niche-discovery flywheel. Both gated by config flags (ship OFF)
       // + interval, so they're cheap no-ops until enabled.
       await runNoveltyRecomputeTick();
