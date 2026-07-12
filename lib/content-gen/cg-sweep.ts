@@ -27,6 +27,7 @@ const REEVAL_AFTER_DAYS = 21;
 
 export interface CgSweepResult {
   enabled: boolean;
+  skipped: boolean;     // true = another sweep held the lock (NOT "nothing to do")
   discovered: number;   // rows newly inserted
   evaluated: number;    // rows freshly stamped
   reevaluated: number;  // stale rows refreshed
@@ -44,7 +45,12 @@ async function isEnabled(): Promise<boolean> {
 }
 
 /** Insert channel_cg_status rows (discovered_at + first-touch lineage) for
- *  channels not yet tracked. Returns count inserted. */
+ *  channels not yet tracked. SET-BASED: discovered_at and first-touch lineage
+ *  are computed as batch CTEs (GROUP BY / DISTINCT ON), NOT per-channel LATERALs
+ *  — the per-channel LATERAL over the 1.7M-row niche_seed_expansions was O(batch)
+ *  slow queries that timed out + lock-contended (incident 2026-07-12). The
+ *  first-touch join now rides idx_nse_cand_vid. Only the tiny niche_discovery_seeds
+ *  source lookup stays a LATERAL (that table is ~thousands of rows). */
 async function discoverStamp(batch: number): Promise<number> {
   const pool = await getPool();
   const res = await pool.query(
@@ -53,24 +59,26 @@ async function discoverStamp(batch: number): Promise<number> {
          FROM niche_spy_channels sc
         WHERE NOT EXISTS (SELECT 1 FROM channel_cg_status s WHERE s.channel_id = sc.channel_id)
         LIMIT $1
+     ),
+     disc AS (
+       SELECT v.channel_id, MIN(COALESCE(v.fetched_at, v.synced_at)) AS discovered_at
+         FROM niche_spy_videos v
+        WHERE v.channel_id IN (SELECT channel_id FROM todo)
+        GROUP BY v.channel_id
+     ),
+     ft AS (
+       SELECT DISTINCT ON (v.channel_id) v.channel_id, nse.seed_video_id, nse.task_id
+         FROM niche_seed_expansions nse
+         JOIN niche_spy_videos v ON v.id = nse.candidate_video_id
+        WHERE v.channel_id IN (SELECT channel_id FROM todo)
+        ORDER BY v.channel_id, nse.detected_at ASC
      )
      INSERT INTO channel_cg_status
        (channel_id, discovered_at, discovered_by_seed_video_id, discovered_by_task_id, discovered_source)
      SELECT t.channel_id, disc.discovered_at, ft.seed_video_id, ft.task_id, COALESCE(ds.source, 'other')
        FROM todo t
-       LEFT JOIN LATERAL (
-         SELECT MIN(COALESCE(v.fetched_at, v.synced_at)) AS discovered_at
-           FROM niche_spy_videos v WHERE v.channel_id = t.channel_id
-       ) disc ON true
-       LEFT JOIN LATERAL (
-         -- first-touch: earliest expansion whose candidate video belongs to this channel
-         SELECT nse.seed_video_id, nse.task_id
-           FROM niche_seed_expansions nse
-           JOIN niche_spy_videos v ON v.id = nse.candidate_video_id
-          WHERE v.channel_id = t.channel_id
-          ORDER BY nse.detected_at ASC
-          LIMIT 1
-       ) ft ON true
+       LEFT JOIN disc ON disc.channel_id = t.channel_id
+       LEFT JOIN ft   ON ft.channel_id = t.channel_id
        LEFT JOIN LATERAL (
          SELECT source FROM niche_discovery_seeds WHERE seed_video_id = ft.seed_video_id LIMIT 1
        ) ds ON true
@@ -130,26 +138,42 @@ async function reEvalStamp(batch: number): Promise<{ evaluated: number; eligible
   return stampEval(r.rows.map(x => x.channel_id));
 }
 
+// Cluster-wide mutex: a dedicated pooled client holds pg_try_advisory_lock for
+// the whole tick, so two runCgSweepTick calls (auto tick + manual backfill, or
+// two app instances during a deploy swap) can never BOTH stamp at once — the
+// loser returns immediately. Held on a dedicated client (session advisory locks
+// are per-connection; unlock must be the same connection).
+const CG_SWEEP_LOCK = 728412001;
+
 /**
  * One sweep tick. Safe to call every 60s. `mult` scales the batch sizes for
- * on-demand backfill (the admin endpoint passes a higher value).
+ * on-demand backfill (the admin endpoint passes a higher value). No-op if the
+ * advisory lock is already held by another sweep.
  */
 export async function runCgSweepTick(mult = 1): Promise<CgSweepResult> {
   const t0 = Date.now();
-  if (!(await isEnabled())) {
-    return { enabled: false, discovered: 0, evaluated: 0, reevaluated: 0, eligibleInBatch: 0, ms: Date.now() - t0 };
+  const base: CgSweepResult = { enabled: true, skipped: false, discovered: 0, evaluated: 0, reevaluated: 0, eligibleInBatch: 0, ms: 0 };
+  if (!(await isEnabled())) return { ...base, enabled: false };
+
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    const lock = await client.query<{ locked: boolean }>(`SELECT pg_try_advisory_lock($1) AS locked`, [CG_SWEEP_LOCK]);
+    if (!lock.rows[0]?.locked) return { ...base, skipped: true, ms: Date.now() - t0 };  // another sweep is running
+    try {
+      const discovered = await discoverStamp(DISCOVER_BATCH * mult).catch(() => 0);
+      const ev = await evalStamp(EVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
+      const re = await reEvalStamp(REEVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
+      return {
+        enabled: true, skipped: false, discovered, evaluated: ev.evaluated, reevaluated: re.evaluated,
+        eligibleInBatch: ev.eligible + re.eligible, ms: Date.now() - t0,
+      };
+    } finally {
+      await client.query(`SELECT pg_advisory_unlock($1)`, [CG_SWEEP_LOCK]).catch(() => {});
+    }
+  } finally {
+    client.release();
   }
-  const discovered = await discoverStamp(DISCOVER_BATCH * mult).catch(() => 0);
-  const ev = await evalStamp(EVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
-  const re = await reEvalStamp(REEVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
-  return {
-    enabled: true,
-    discovered,
-    evaluated: ev.evaluated,
-    reevaluated: re.evaluated,
-    eligibleInBatch: ev.eligible + re.eligible,
-    ms: Date.now() - t0,
-  };
 }
 
 export interface CgKpiAlert { level: 'ok' | 'warn' | 'crit'; msg: string; at: string; }

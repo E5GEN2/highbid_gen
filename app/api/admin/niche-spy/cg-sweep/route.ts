@@ -48,18 +48,28 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   if (!(await isAdmin(req))) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   const body = await req.json().catch(() => ({}));
-  const ticks = Math.min(Math.max(parseInt(body.ticks) || 1, 1), 40);
-  const mult = Math.min(Math.max(parseInt(body.mult) || 1, 1), 8);
-  const results = [];
-  for (let i = 0; i < ticks; i++) {
-    const r = await runCgSweepTick(mult);
-    results.push(r);
-    // Stop early once nothing left to do.
-    if (r.enabled && r.discovered === 0 && r.evaluated === 0 && r.reevaluated === 0) break;
-  }
-  const totals = results.reduce(
-    (a, r) => ({ discovered: a.discovered + r.discovered, evaluated: a.evaluated + r.evaluated, reevaluated: a.reevaluated + r.reevaluated }),
-    { discovered: 0, evaluated: 0, reevaluated: 0 },
-  );
-  return NextResponse.json({ ok: true, ranTicks: results.length, mult, totals });
+  const maxTicks = Math.min(Math.max(parseInt(body.ticks) || 200, 1), 2000);
+  const mult = Math.min(Math.max(parseInt(body.mult) || 2, 1), 4);
+  const delayMs = Math.min(Math.max(parseInt(body.delayMs) ?? 400, 0), 5000);
+
+  // FIRE-AND-FORGET: a synchronous backfill loop hits Railway's request timeout
+  // (502) on a 240K-channel table. Run detached and return immediately; poll GET
+  // for progress. The advisory lock inside runCgSweepTick keeps this from
+  // colliding with the 60s auto-sweep. A lock-skip (skipped=true) is NOT "done".
+  void (async () => {
+    let ran = 0;
+    for (let i = 0; i < maxTicks; i++) {
+      const r = await runCgSweepTick(mult).catch(() => null);
+      if (!r) { await new Promise(res => setTimeout(res, 2000)); continue; }
+      if (!r.enabled) break;                                   // sweep disabled
+      if (!r.skipped) {
+        ran++;
+        if (r.discovered === 0 && r.evaluated === 0 && r.reevaluated === 0) break;  // genuinely done
+      }
+      await new Promise(res => setTimeout(res, delayMs));
+    }
+    console.log(`[cg-backfill] finished after ${ran} working ticks`);
+  })();
+
+  return NextResponse.json({ ok: true, started: true, maxTicks, mult, note: 'running in background — poll GET for progress' });
 }

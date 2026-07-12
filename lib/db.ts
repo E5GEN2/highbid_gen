@@ -1015,8 +1015,11 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_task ON niche_seed_expansions(task_id, detected_at DESC)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_seed ON niche_seed_expansions(seed_video_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_matched ON niche_seed_expansions(matched, detected_at DESC)`).catch(() => {});
-    // niche_spy_videos.channel_id → channel lineage lookups need this in the sweep.
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_nse_cand_vid ON niche_seed_expansions(candidate_video_id)`).catch(() => {});
+    // NOTE: idx_nse_cand_vid (niche_seed_expansions.candidate_video_id, needed by
+    // the cg-sweep lineage query) is built CONCURRENTLY out-of-band — a
+    // non-concurrent build here would lock-timeout on the ~1.7M-row table under
+    // the 3s cap every boot and briefly stall crawl writes. It's IF NOT EXISTS
+    // so it persists once created.
 
     // channel_cg_status — the stamped content-gen-eligibility KPI (the output
     // the YT-niche-spy flywheel exists to produce). One row per channel: the
