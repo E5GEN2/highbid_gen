@@ -351,11 +351,13 @@ export async function register() {
     // admin_config cg_sweep_enabled='false'. Only logs when it did work.
     async function runCgKpiSweepTick() {
       try {
-        const { runCgSweepTick } = await import('./lib/content-gen/cg-sweep');
+        const { runCgSweepTick, runCgKpiAlertTick } = await import('./lib/content-gen/cg-sweep');
         const r = await runCgSweepTick();
         if (r.enabled && (r.discovered > 0 || r.evaluated > 0 || r.reevaluated > 0)) {
           console.log('[cg-sweep]', `discovered=${r.discovered} evaluated=${r.evaluated} reeval=${r.reevaluated} eligible=${r.eligibleInBatch} ${r.ms}ms`);
         }
+        // Self-throttled (~hourly) KPI dip alert — cheap no-op the rest of the time.
+        await runCgKpiAlertTick();
       } catch (err) {
         console.error('[cg-sweep] error:', err instanceof Error ? err.message : err);
       }

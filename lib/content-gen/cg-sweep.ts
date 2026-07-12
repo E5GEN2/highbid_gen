@@ -151,3 +151,62 @@ export async function runCgSweepTick(mult = 1): Promise<CgSweepResult> {
     ms: Date.now() - t0,
   };
 }
+
+export interface CgKpiAlert { level: 'ok' | 'warn' | 'crit'; msg: string; at: string; }
+
+/**
+ * KPI alert tick — server-side, so a dip is caught even when nobody's watching
+ * the panel (the 6-day enricher outage happened unwatched). Self-throttled to
+ * ~hourly; persists admin_config.cg_kpi_alert (surfaced by /cg-kpi) and logs on
+ * warn/crit. Thresholds are config-overridable. Kill switch cg_kpi_alert_enabled.
+ */
+export async function runCgKpiAlertTick(): Promise<CgKpiAlert | null> {
+  const pool = await getPool();
+  const cfgRes = await pool.query<{ key: string; value: string }>(
+    `SELECT key, value FROM admin_config WHERE key IN ('cg_kpi_alert_enabled','cg_kpi_alert_min_per_day','last_cg_kpi_alert_check')`,
+  );
+  const c: Record<string, string> = {};
+  for (const r of cfgRes.rows) c[r.key] = r.value;
+  if (c.cg_kpi_alert_enabled === 'false') return null;
+
+  const last = c.last_cg_kpi_alert_check ? new Date(c.last_cg_kpi_alert_check).getTime() : 0;
+  if (Date.now() - last < 55 * 60 * 1000) return null;   // ~hourly
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('last_cg_kpi_alert_check', NOW()::text)
+       ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
+  ).catch(() => {});
+
+  const minPerDay = parseFloat(c.cg_kpi_alert_min_per_day || '8');
+  const m = await pool.query<{ avg_day: string; fetched: string; fetched_subs: string; enrich_status: string | null }>(
+    `SELECT
+       (SELECT COUNT(*) FROM channel_cg_status WHERE cg_eligible AND discovered_at > NOW() - INTERVAL '7 days')::float / 7 AS avg_day,
+       (SELECT COUNT(*) FROM niche_spy_channels WHERE last_channel_fetched_at > NOW() - INTERVAL '24 hours') AS fetched,
+       (SELECT COUNT(*) FROM niche_spy_channels WHERE last_channel_fetched_at > NOW() - INTERVAL '24 hours' AND subscriber_count IS NOT NULL) AS fetched_subs,
+       (SELECT status FROM niche_yt_enrich_jobs ORDER BY id DESC LIMIT 1) AS enrich_status`,
+  );
+  const row = m.rows[0];
+  const avgDay = parseFloat(row.avg_day) || 0;
+  const fetched = parseInt(row.fetched) || 0;
+  const subsFill = fetched > 0 ? (parseInt(row.fetched_subs) || 0) / fetched : 1;
+
+  let level: CgKpiAlert['level'] = 'ok';
+  const reasons: string[] = [];
+  // Leading indicators first (they predict a KPI dip before it shows).
+  if (row.enrich_status !== 'running') { level = 'crit'; reasons.push('enricher not running'); }
+  if (subsFill < 0.8) { level = level === 'crit' ? 'crit' : 'warn'; reasons.push(`subs-fill ${Math.round(subsFill * 100)}%`); }
+  // The KPI itself (only meaningful once the pipeline has matured data).
+  if (avgDay < minPerDay) { level = level === 'crit' ? 'crit' : 'warn'; reasons.push(`eligible/day ${avgDay.toFixed(1)} < ${minPerDay}`); }
+
+  const alert: CgKpiAlert = {
+    level,
+    msg: level === 'ok' ? 'KPI healthy' : reasons.join('; '),
+    at: new Date().toISOString(),
+  };
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('cg_kpi_alert', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+    [JSON.stringify(alert)],
+  ).catch(() => {});
+  if (level !== 'ok') console.error(`[cg-kpi-alert] ${level.toUpperCase()}: ${alert.msg}`);
+  return alert;
+}

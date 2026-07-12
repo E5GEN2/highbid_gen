@@ -7595,6 +7595,228 @@ const ERR_CATS: { key: keyof ErrorCurveBucket; label: string; color: string }[] 
 ];
 
 /** Video-seed error/success curves + key-pool health — observability before scaling threads. */
+interface CgKpiData {
+  eval_version: number;
+  alert: { level: 'ok' | 'warn' | 'crit'; msg: string; at: string } | null;
+  headline: { eligible_1d: number; eligible_7d: number; eligible_prev7d: number; eligible_total: number; avg_per_day_7d: number };
+  series: Array<{ day: string; discovered: number; evaluated: number; eligible: number }>;
+  funnel: { discovered: number; evaluated: number; passed_hard_gates: number; eligible: number };
+  gate_killers: Array<{ reason: string; n: number }>;
+  sources: Array<{ source: string; eligible: number; discovered: number }>;
+  leaderboard: Array<{ seed_video_id: number; seed_url: string | null; seed_title: string | null; source: string | null; channels_discovered: number; cg_eligible: number; yield_pct: number | null }>;
+  golden: Array<{ channel_id: string; channel_name: string | null; channel_handle: string | null; channel_avatar: string | null; subscriber_count: number | null; source: string | null; discovered_at: string | null; evaluated_at: string | null; seed_video_id: number | null }>;
+  health: { subs_fill_rate_24h: number | null; subs_backlog: number; enrich_status: string | null; tracked: number; evaluated: number };
+}
+
+const GATE_LABELS: Record<string, string> = {
+  not_enriched: 'not enriched', subs_band: 'subs 10k–5M', used_channel: 'already used',
+  lang_analysis: 'non-English (analysis)', topview_zero: 'top view = 0', view_sub_ratio: 'views/subs < 5',
+  view_floor: 'below view floor', age: 'older than 2y', recency: 'top video > 12mo',
+  min_videos: '< 5 videos', median_ratio: 'one-hit wonder', english_script: 'non-Latin script', english_gate: 'English gate (franc)',
+};
+
+function fmtN(n: number | null | undefined): string {
+  if (n == null) return '—';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + 'k';
+  return String(n);
+}
+
+/** Discovery KPI — the flywheel's OUTPUT metric: channels passing the hard
+ *  discovery rules + English gate, with the funnel, per-seed leaderboard and
+ *  golden feed. Reads the pre-stamped channel_cg_status via /cg-kpi. */
+function DiscoveryKpiPanel({ active }: { active: boolean }) {
+  const [d, setD] = useState<CgKpiData | null>(null);
+  const [days, setDays] = useState(30);
+  const [tab, setTab] = useState<'seeds' | 'golden'>('seeds');
+  const fetchIt = useCallback(() => {
+    fetch(`/api/admin/niche-spy/cg-kpi?days=${days}`).then(r => r.json()).then(x => { if (!x.error) setD(x); }).catch(() => {});
+  }, [days]);
+  useEffect(() => { if (active) fetchIt(); }, [active, fetchIt]);
+  useEffect(() => { if (!active) return; const t = setInterval(fetchIt, 30000); return () => clearInterval(t); }, [active, fetchIt]);
+  if (!d) return null;
+
+  const trend = d.headline.eligible_7d - d.headline.eligible_prev7d;
+  const trendPct = d.headline.eligible_prev7d > 0 ? Math.round(100 * trend / d.headline.eligible_prev7d) : null;
+  const health = d.health;
+  const stalled = (health.subs_fill_rate_24h != null && health.subs_fill_rate_24h < 80) || health.enrich_status !== 'running';
+  const evalCoverage = health.tracked > 0 ? Math.round(100 * health.evaluated / health.tracked) : 0;
+
+  const maxSeries = Math.max(1, ...d.series.map(s => s.discovered));
+  const maxKiller = Math.max(1, ...d.gate_killers.map(k => k.n));
+  const fun = d.funnel;
+  const funMax = Math.max(1, fun.discovered);
+  const funnelStages = [
+    { label: 'Discovered', v: fun.discovered, c: '#3b82f6' },
+    { label: 'Enriched', v: fun.evaluated, c: '#8b5cf6' },
+    { label: 'Passed hard gates', v: fun.passed_hard_gates, c: '#eab308' },
+    { label: 'Eligible (KPI)', v: fun.eligible, c: '#10b981' },
+  ];
+
+  return (
+    <div className="bg-[#101010] border border-emerald-500/25 rounded-2xl p-4 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="text-sm font-bold text-white">⭐ Discovery KPI <span className="text-[#666] font-normal">— content-gen-eligible channels (hard rules + English gate)</span></h3>
+        <div className="flex items-center gap-1">
+          {[7, 30, 90].map(dd => (
+            <button key={dd} onClick={() => setDays(dd)} className={`px-2 py-0.5 rounded text-[10px] ${days === dd ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#aaa]'}`}>{dd}d</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Alert banner — server-side detection persists here even when unwatched. */}
+      {d.alert && d.alert.level !== 'ok' && (
+        <div className={`rounded-xl p-2.5 border text-[11px] font-medium ${d.alert.level === 'crit' ? 'bg-red-500/15 border-red-500/50 text-red-300' : 'bg-amber-500/15 border-amber-500/50 text-amber-300'}`}>
+          {d.alert.level === 'crit' ? '🔴' : '🟠'} KPI alert: {d.alert.msg}
+        </div>
+      )}
+
+      {/* Headline tiles */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="bg-[#141414] border border-emerald-500/20 rounded-xl p-3 text-center">
+          <div className="text-2xl font-bold text-emerald-400">{d.headline.avg_per_day_7d}</div>
+          <div className="text-[10px] text-[#666] uppercase">eligible / day (7d avg)</div>
+        </div>
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+          <div className="text-2xl font-bold text-white">{d.headline.eligible_1d}</div>
+          <div className="text-[10px] text-[#666] uppercase">eligible (last 24h)</div>
+        </div>
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+          <div className={`text-sm font-bold px-2 py-1 rounded inline-block ${trend > 0 ? 'text-emerald-400 bg-emerald-500/15' : trend < 0 ? 'text-red-400 bg-red-500/15' : 'text-[#aaa] bg-[#222]'}`}>
+            {trend > 0 ? '↑' : trend < 0 ? '↓' : '→'} {trendPct == null ? '—' : `${trendPct > 0 ? '+' : ''}${trendPct}%`}
+          </div>
+          <div className="text-[10px] text-[#666] uppercase mt-1">trend (7d vs prev 7d)</div>
+        </div>
+        <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-3 text-center">
+          <div className="text-2xl font-bold text-white">{fmtN(d.headline.eligible_total)}</div>
+          <div className="text-[10px] text-[#666] uppercase">eligible (all time)</div>
+        </div>
+      </div>
+
+      {/* Health strip — is a low KPI real or a stalled pipeline? */}
+      <div className={`rounded-xl p-3 border ${stalled ? 'bg-red-500/10 border-red-500/40' : 'bg-[#141414] border-[#1f1f1f]'}`}>
+        <div className="flex items-center gap-4 flex-wrap text-[11px]">
+          <span className={stalled ? 'text-red-400 font-bold' : 'text-emerald-400'}>{stalled ? '⚠ pipeline check' : '✓ pipeline healthy'}</span>
+          <span className="text-[#888]">enricher: <span className={health.enrich_status === 'running' ? 'text-emerald-400' : 'text-red-400'}>{health.enrich_status ?? 'unknown'}</span></span>
+          <span className="text-[#888]">subs-fill 24h: <span className={(health.subs_fill_rate_24h ?? 0) >= 90 ? 'text-emerald-400' : 'text-amber-400'}>{health.subs_fill_rate_24h == null ? '—' : health.subs_fill_rate_24h + '%'}</span></span>
+          <span className="text-[#888]">subs backlog: <span className="text-[#ccc]">{fmtN(health.subs_backlog)}</span></span>
+          <span className="text-[#888]">eval coverage: <span className={evalCoverage >= 90 ? 'text-emerald-400' : 'text-amber-400'}>{evalCoverage}%</span> <span className="text-[#555]">({fmtN(health.evaluated)}/{fmtN(health.tracked)})</span></span>
+        </div>
+        {stalled && <div className="text-[10px] text-red-400 mt-1">A stalled enricher makes the KPI under-report — new channels can&apos;t be evaluated until subscriber_count fills.</div>}
+      </div>
+
+      {/* Funnel */}
+      <div className="space-y-1.5">
+        <div className="text-[11px] text-[#888] uppercase tracking-wide">Funnel (last {days}d)</div>
+        {funnelStages.map((st, i) => {
+          const prev = i > 0 ? funnelStages[i - 1].v : st.v;
+          const conv = prev > 0 ? Math.round(100 * st.v / prev) : 0;
+          return (
+            <div key={st.label} className="flex items-center gap-2">
+              <span className="text-[11px] text-[#999] w-32 shrink-0">{st.label}</span>
+              <div className="flex-1 h-4 bg-[#0c0c0c] rounded overflow-hidden">
+                <div className="h-full rounded" style={{ width: `${Math.max(1, 100 * st.v / funMax)}%`, background: st.c }} />
+              </div>
+              <span className="text-[11px] text-white w-16 text-right tabular-nums">{fmtN(st.v)}</span>
+              <span className="text-[10px] text-[#666] w-12 text-right">{i > 0 ? `${conv}%` : ''}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Daily series (discovered = faint, eligible = emerald) + gate killers */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div>
+          <div className="text-[11px] text-[#888] uppercase tracking-wide mb-1">Eligible / day <span className="text-[#555] normal-case">(bar = discovered, green = eligible; latest days provisional)</span></div>
+          <svg viewBox="0 0 360 90" className="w-full" style={{ height: 90 }}>
+            {d.series.map((s, i) => {
+              const n = d.series.length, bw = Math.max(1.5, 360 / n - 1.5), x = i * (360 / n);
+              const dh = (s.discovered / maxSeries) * 74, eh = (s.eligible / maxSeries) * 74;
+              const provisional = s.evaluated < s.discovered * 0.8;
+              return (
+                <g key={s.day}>
+                  <rect x={x} y={80 - dh} width={bw} height={dh} fill={provisional ? '#242424' : '#333'} />
+                  <rect x={x} y={80 - eh} width={bw} height={eh} fill="#10b981" opacity={provisional ? 0.5 : 1} />
+                </g>
+              );
+            })}
+            <line x1={0} y1={80} x2={360} y2={80} stroke="#2a2a2a" />
+          </svg>
+        </div>
+        <div>
+          <div className="text-[11px] text-[#888] uppercase tracking-wide mb-1">What kills eligibility <span className="text-[#555] normal-case">(overlapping)</span></div>
+          <div className="space-y-1">
+            {d.gate_killers.slice(0, 7).map(k => (
+              <div key={k.reason} className="flex items-center gap-2">
+                <span className="text-[10px] text-[#999] w-32 shrink-0 truncate">{GATE_LABELS[k.reason] ?? k.reason}</span>
+                <div className="flex-1 h-3 bg-[#0c0c0c] rounded overflow-hidden">
+                  <div className="h-full bg-red-500/60 rounded" style={{ width: `${100 * k.n / maxKiller}%` }} />
+                </div>
+                <span className="text-[10px] text-[#888] w-12 text-right tabular-nums">{fmtN(k.n)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Source attribution */}
+      <div className="flex items-center gap-3 flex-wrap text-[11px]">
+        <span className="text-[#888] uppercase tracking-wide">Eligible by source:</span>
+        {d.sources.filter(s => s.eligible > 0).map(s => (
+          <span key={s.source} className="text-[#ccc]"><span className="text-emerald-400 font-bold">{s.eligible}</span> {s.source}</span>
+        ))}
+        {d.sources.every(s => s.eligible === 0) && <span className="text-[#555]">none yet</span>}
+      </div>
+
+      {/* Per-seed leaderboard / golden feed toggle */}
+      <div>
+        <div className="flex items-center gap-1 mb-2">
+          <button onClick={() => setTab('seeds')} className={`px-2.5 py-1 rounded text-[11px] ${tab === 'seeds' ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#aaa]'}`}>🏆 Top seeds by yield</button>
+          <button onClick={() => setTab('golden')} className={`px-2.5 py-1 rounded text-[11px] ${tab === 'golden' ? 'bg-white/15 text-white' : 'text-[#666] hover:text-[#aaa]'}`}>✨ Golden channels</button>
+        </div>
+        {tab === 'seeds' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead><tr className="text-[#666] text-left border-b border-[#1f1f1f]">
+                <th className="py-1 font-normal">Seed</th><th className="font-normal">Source</th>
+                <th className="font-normal text-right">Discovered</th><th className="font-normal text-right">Eligible</th><th className="font-normal text-right">Yield</th>
+              </tr></thead>
+              <tbody>
+                {d.leaderboard.length === 0 && <tr><td colSpan={5} className="text-[#555] py-2">No eligible-producing seeds yet (still stamping).</td></tr>}
+                {d.leaderboard.map(s => (
+                  <tr key={s.seed_video_id} className="border-b border-[#161616] hover:bg-white/[0.02]">
+                    <td className="py-1 pr-2 max-w-[280px] truncate">
+                      {s.seed_url ? <a href={s.seed_url} target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">{s.seed_title || s.seed_url}</a> : <span className="text-[#888]">seed #{s.seed_video_id}</span>}
+                    </td>
+                    <td className="text-[#888]">{s.source ?? '—'}</td>
+                    <td className="text-right text-[#aaa] tabular-nums">{s.channels_discovered}</td>
+                    <td className="text-right text-emerald-400 font-bold tabular-nums">{s.cg_eligible}</td>
+                    <td className="text-right text-[#ccc] tabular-nums">{s.yield_pct == null ? '—' : s.yield_pct + '%'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+            {d.golden.length === 0 && <div className="text-[#555] text-[11px] py-2">No eligible channels stamped yet.</div>}
+            {d.golden.map(c => (
+              <div key={c.channel_id} className="flex items-center gap-2 bg-[#141414] border border-[#1f1f1f] rounded-lg p-2">
+                {c.channel_avatar ? <img src={c.channel_avatar} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" /> : <div className="w-7 h-7 rounded-full bg-[#222] shrink-0" />}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] text-white truncate">{c.channel_name || c.channel_handle || c.channel_id}</div>
+                  <div className="text-[10px] text-[#666]">{fmtN(c.subscriber_count)} subs · {c.source ?? '—'}</div>
+                </div>
+                {c.channel_handle && <a href={`https://youtube.com/${c.channel_handle}`} target="_blank" rel="noreferrer" className="text-[10px] text-emerald-400 hover:underline shrink-0">open</a>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function VideoSeedErrorCurves({ active }: { active: boolean }) {
   const [data, setData] = useState<ErrorCurveData | null>(null);
   const [hours, setHours] = useState(6);
@@ -7860,6 +8082,10 @@ function VideoSeedTab({ active }: { active: boolean }) {
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">{error}</div>
       )}
+
+      {/* ⭐ The KPI: content-gen-eligible channels the flywheel produces —
+          headline, funnel, per-seed leaderboard, golden feed, pipeline health. */}
+      <DiscoveryKpiPanel active={active} />
 
       {/* Error/success curves + key-pool health — see if errors are stable or
           growing and which pool (YT keys / AI keys) they come from. */}
