@@ -1,6 +1,6 @@
 'use client';
 
-import { useSession, signIn, signOut } from 'next-auth/react';
+import { useSession, signOut } from 'next-auth/react';
 import { useState, useRef, useEffect } from 'react';
 import Image from 'next/image';
 
@@ -48,7 +48,7 @@ export default function AuthButton({ variant = 'overlay' }: AuthButtonProps) {
 
   if (!session) {
     return (
-      <button onClick={() => signIn('google')} className={btnClass} title="Sign in with Google">
+      <button onClick={() => { window.location.href = '/login'; }} className={btnClass} title="Sign in">
         <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24">
           <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
         </svg>

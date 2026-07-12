@@ -178,18 +178,25 @@ export async function initSchema(): Promise<void> {
       )
     `);
 
-    // Auth: users table
+    // Auth: users table. google_id is nullable (email/password users have
+    // none); password_hash is nullable (Google users have none). email is the
+    // canonical login identity.
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        google_id VARCHAR(128) UNIQUE NOT NULL,
+        google_id VARCHAR(128) UNIQUE,
         email VARCHAR(255) UNIQUE NOT NULL,
         name VARCHAR(255),
         image TEXT,
+        password_hash TEXT,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       )
     `);
+    // Migration for existing DBs: allow email/password users (no google_id)
+    // and store their scrypt hash.
+    await client.query(`ALTER TABLE users ALTER COLUMN google_id DROP NOT NULL`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`).catch(() => {});
 
     // Auth: channels seen by each user
     await client.query(`

@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import { signIn } from 'next-auth/react';
 
 /**
  * Marketing landing page shown to signed-out visitors at the bare
@@ -55,14 +54,14 @@ function Header() {
         <div className="flex items-center gap-2.5">
           <button
             type="button"
-            onClick={() => signIn('google')}
+            onClick={() => { window.location.href = '/login'; }}
             className="hidden sm:inline px-3.5 py-2 text-[13px] text-zinc-700 hover:text-zinc-950 transition"
           >
             Log in
           </button>
           <button
             type="button"
-            onClick={() => signIn('google')}
+            onClick={() => { window.location.href = '/login'; }}
             className="px-4 py-2 rounded-full text-[13px] font-semibold bg-zinc-950 text-white hover:bg-zinc-800 transition"
           >
             Sign up free
@@ -108,15 +107,14 @@ function Hero() {
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-4">
           <button
             type="button"
-            onClick={() => signIn('google')}
+            onClick={() => { window.location.href = '/login'; }}
             className="w-full sm:w-auto px-6 py-3.5 rounded-full bg-zinc-950 text-white font-semibold text-[14.5px] hover:bg-zinc-800 transition flex items-center justify-center gap-2"
           >
-            <GoogleG />
-            Sign up free with Google
+            Sign up free
           </button>
           <button
             type="button"
-            onClick={() => signIn('google')}
+            onClick={() => { window.location.href = '/login'; }}
             className="w-full sm:w-auto px-6 py-3.5 rounded-full bg-white border border-zinc-200 text-zinc-950 font-semibold text-[14.5px] hover:border-zinc-300 hover:bg-zinc-50 transition"
           >
             See what&apos;s trending
@@ -291,14 +289,13 @@ function CtaBridge() {
         </h2>
         <button
           type="button"
-          onClick={() => signIn('google')}
+          onClick={() => { window.location.href = '/login'; }}
           className="inline-flex items-center gap-2 px-6 py-3.5 rounded-full bg-zinc-950 text-white font-semibold text-[14.5px] hover:bg-zinc-800 transition"
         >
-          <GoogleG />
           Get started for free
         </button>
         <p className="text-[12.5px] text-zinc-500 mt-4">
-          One Google sign-in. No credit card.
+          Free to start. No credit card.
         </p>
       </div>
     </section>
@@ -322,16 +319,15 @@ function FinalCta() {
             Start finding niches that work.
           </h2>
           <p className="text-[17px] text-zinc-600 leading-[1.6] mb-9 max-w-md">
-            Free to explore. Sign in with Google and the whole map opens up — every
+            Free to explore. Sign in and the whole map opens up — every
             niche, every video, every sort, every filter.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
-              onClick={() => signIn('google')}
+              onClick={() => { window.location.href = '/login'; }}
               className="px-6 py-3.5 rounded-full bg-zinc-950 text-white font-semibold text-[14.5px] hover:bg-zinc-800 transition flex items-center gap-2"
             >
-              <GoogleG />
               Get started
             </button>
             <span className="text-[13px] text-zinc-500">2 minutes to first niche</span>
@@ -381,17 +377,6 @@ function Footer() {
 /* ─────────────────────────────────────────────────────────────────
  *  Google G
  * ──────────────────────────────────────────────────────────────── */
-
-function GoogleG() {
-  return (
-    <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden>
-      <path fill="#fff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" opacity="0.95"/>
-      <path fill="#fff" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.99.66-2.25 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A10.99 10.99 0 0012 23z" opacity="0.95"/>
-      <path fill="#fff" d="M5.84 14.1A6.6 6.6 0 015.5 12c0-.73.13-1.45.34-2.1V7.07H2.18A11 11 0 001 12c0 1.77.42 3.45 1.18 4.93l3.66-2.83z" opacity="0.95"/>
-      <path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.83C6.71 7.31 9.14 5.38 12 5.38z" opacity="0.95"/>
-    </svg>
-  );
-}
 
 /* ─────────────────────────────────────────────────────────────────
  *  Hero mockup — faux niches grid (browser chrome + 3 cluster rows)
