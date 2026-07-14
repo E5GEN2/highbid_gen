@@ -23,6 +23,7 @@ import { evaluateChannelEligibility, CG_EVAL_VERSION } from './cg-eligibility';
 const DISCOVER_BATCH = 600;
 const EVAL_BATCH = 400;
 const REEVAL_BATCH = 100;
+const REFRESH_REEVAL_BATCH = 300;
 const REEVAL_AFTER_DAYS = 21;
 
 export interface CgSweepResult {
@@ -138,6 +139,34 @@ async function reEvalStamp(batch: number): Promise<{ evaluated: number; eligible
   return stampEval(r.rows.map(x => x.channel_id));
 }
 
+/**
+ * DATA-REFRESH re-eval — self-heals channels scored on INCOMPLETE data. The
+ * enricher's Phase 4 sets niche_spy_channels.last_recent_videos_fetched_at when
+ * it pulls a channel's uploads; a channel whose videos were refreshed AFTER we
+ * last scored it can now clear the data-completeness gates (min_videos /
+ * view_floor / topview_zero) that failed when it had 1-2 videos and no view
+ * counts. Re-evaluate it. This recovers the ~3.5-day enricher-outage cohort
+ * (2026-07-14) as the enricher catches up, and handles any future enrichment
+ * lag automatically — no manual re-eval or 21-day wait. Bounded to the last
+ * 5 days of refreshes so it rides idx_nsc_recent_fetched (no seq scan).
+ */
+async function refreshedReEval(batch: number): Promise<{ evaluated: number; eligible: number }> {
+  const pool = await getPool();
+  const r = await pool.query<{ channel_id: string }>(
+    `SELECT s.channel_id
+       FROM niche_spy_channels sc
+       JOIN channel_cg_status s ON s.channel_id = sc.channel_id
+      WHERE sc.last_recent_videos_fetched_at > NOW() - INTERVAL '5 days'
+        AND sc.subscriber_count IS NOT NULL
+        AND s.cg_evaluated_at IS NOT NULL
+        AND sc.last_recent_videos_fetched_at > s.cg_evaluated_at
+      ORDER BY sc.last_recent_videos_fetched_at DESC
+      LIMIT $1`,
+    [batch],
+  );
+  return stampEval(r.rows.map(x => x.channel_id));
+}
+
 // Cluster-wide mutex: a dedicated pooled client holds pg_try_advisory_lock for
 // the whole tick, so two runCgSweepTick calls (auto tick + manual backfill, or
 // two app instances during a deploy swap) can never BOTH stamp at once — the
@@ -164,9 +193,10 @@ export async function runCgSweepTick(mult = 1): Promise<CgSweepResult> {
       const discovered = await discoverStamp(DISCOVER_BATCH * mult).catch(() => 0);
       const ev = await evalStamp(EVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
       const re = await reEvalStamp(REEVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
+      const rr = await refreshedReEval(REFRESH_REEVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
       return {
-        enabled: true, skipped: false, discovered, evaluated: ev.evaluated, reevaluated: re.evaluated,
-        eligibleInBatch: ev.eligible + re.eligible, ms: Date.now() - t0,
+        enabled: true, skipped: false, discovered, evaluated: ev.evaluated, reevaluated: re.evaluated + rr.evaluated,
+        eligibleInBatch: ev.eligible + re.eligible + rr.eligible, ms: Date.now() - t0,
       };
     } finally {
       await client.query(`SELECT pg_advisory_unlock($1)`, [CG_SWEEP_LOCK]).catch(() => {});
