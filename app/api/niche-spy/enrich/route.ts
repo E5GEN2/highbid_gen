@@ -477,9 +477,13 @@ async function runEnrichJob(
               title = COALESCE(NULLIF(title, ''), $1),
               channel_name = COALESCE(NULLIF(channel_name, ''), $2),
               posted_at = COALESCE($3, posted_at),
-              view_count = CASE WHEN $4 > 0 THEN $4 ELSE view_count END,
-              like_count = CASE WHEN $5 > 0 THEN $5 ELSE like_count END,
-              comment_count = CASE WHEN $6 > 0 THEN $6 ELSE comment_count END,
+              -- $4/$5/$6 cast to bigint: comparing a bare param to the int literal
+              -- 0 makes Postgres infer it as int4, so a video with >2.147B views
+              -- overflowed the PARAMETER (not the column) and crash-looped the
+              -- enricher for ~3.5 days (2026-07-14). view_count is already bigint.
+              view_count = CASE WHEN $4::bigint > 0 THEN $4::bigint ELSE view_count END,
+              like_count = CASE WHEN $5::bigint > 0 THEN $5::bigint ELSE like_count END,
+              comment_count = CASE WHEN $6::bigint > 0 THEN $6::bigint ELSE comment_count END,
               thumbnail = COALESCE(NULLIF(thumbnail, ''), $7),
               channel_id = COALESCE(channel_id, $9)
             WHERE id = $8`,
@@ -494,7 +498,11 @@ async function runEnrichJob(
               dbEntry.dbId,
               channelId || null,
             ]
-          );
+          ).catch(err => {
+            // Defense-in-depth: a single bad-value video must not throw and crash
+            // the whole 200-batch pass (that's what looped for 3.5 days). Skip it.
+            console.warn('[yt-enrich] video update failed:', (err as Error).message);
+          });
           enrichedVideos++;
           wroteInBatch++;
         }
@@ -631,7 +639,7 @@ async function runEnrichJob(
             if (videoIds && videoIds.size > 0) {
               await pool.query(
                 `UPDATE niche_spy_videos SET
-                  subscriber_count   = CASE WHEN $1 > 0 THEN $1 ELSE subscriber_count END,
+                  subscriber_count   = CASE WHEN $1::bigint > 0 THEN $1::bigint ELSE subscriber_count END,
                   channel_created_at = COALESCE($2, channel_created_at),
                   channel_avatar     = COALESCE(NULLIF($4, ''), channel_avatar)
                 WHERE id = ANY($3::int[])`,
