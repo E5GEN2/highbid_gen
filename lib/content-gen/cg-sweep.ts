@@ -95,8 +95,17 @@ async function stampEval(channelIds: string[]): Promise<{ evaluated: number; eli
   if (channelIds.length === 0) return { evaluated: 0, eligible: 0 };
   const pool = await getPool();
   const evals = await evaluateChannelEligibility(channelIds);
-  if (evals.length === 0) return { evaluated: 0, eligible: 0 };
-  const payload = evals.map(e => ({ c: e.channel_id, e: e.eligible, f: e.fail_reasons }));
+  // CRITICAL: evaluateChannelEligibility only returns channels that have at least
+  // one view-enriched video (its per_channel CTE). A channel that got its
+  // subscriber_count (Phase 2) but whose videos aren't view-enriched yet (Phase 1
+  // lagging) yields NO row → without this it never gets stamped, stays
+  // cg_evaluated_at=NULL, and CLOGS the eval queue forever, stalling the whole
+  // sweep (incident 2026-07-15). Stamp those as not_enriched so they leave the
+  // queue; refreshedReEval re-scores them once Phase 1 fills their videos.
+  const scored = new Set(evals.map(e => e.channel_id));
+  const payload: Array<{ c: string; e: boolean; f: string[] }> = evals.map(e => ({ c: e.channel_id, e: e.eligible, f: e.fail_reasons }));
+  for (const c of channelIds) if (!scored.has(c)) payload.push({ c, e: false, f: ['not_enriched'] });
+  if (payload.length === 0) return { evaluated: 0, eligible: 0 };
   await pool.query(
     `UPDATE channel_cg_status s
         SET cg_eligible = (x->>'e')::boolean,
@@ -107,7 +116,7 @@ async function stampEval(channelIds: string[]): Promise<{ evaluated: number; eli
       WHERE s.channel_id = x->>'c'`,
     [JSON.stringify(payload), CG_EVAL_VERSION],
   );
-  return { evaluated: evals.length, eligible: evals.filter(e => e.eligible).length };
+  return { evaluated: payload.length, eligible: evals.filter(e => e.eligible).length };
 }
 
 async function evalStamp(batch: number): Promise<{ evaluated: number; eligible: number }> {
@@ -140,29 +149,30 @@ async function reEvalStamp(batch: number): Promise<{ evaluated: number; eligible
 }
 
 /**
- * DATA-REFRESH re-eval — self-heals channels scored on INCOMPLETE data. The
- * enricher's Phase 4 sets niche_spy_channels.last_recent_videos_fetched_at when
- * it pulls a channel's uploads; a channel whose videos were refreshed AFTER we
- * last scored it can now clear the data-completeness gates (min_videos /
- * view_floor / topview_zero) that failed when it had 1-2 videos and no view
- * counts. Re-evaluate it. This recovers the ~3.5-day enricher-outage cohort
- * (2026-07-14) as the enricher catches up, and handles any future enrichment
- * lag automatically — no manual re-eval or 21-day wait. Bounded to the last
- * 5 days of refreshes so it rides idx_nsc_recent_fetched (no seq scan).
+ * DATA-COMPLETENESS re-eval — self-heals channels scored before Phase 1 filled
+ * their video view-counts. Such channels fail on data-completeness gates
+ * (not_enriched = no scoreable videos, topview_zero = top video 0 views,
+ * min_videos = <5 view-enriched videos); once Phase 1 catches up, re-scoring
+ * flips the ones that now qualify. (Superseded the old Phase-4
+ * last_recent_videos_fetched_at signal — that field has been dead since 6-28, so
+ * it never fired.) A cooldown (evaluated >REEVAL_DATA_COOLDOWN ago, oldest first)
+ * gives Phase 1 time to fill the videos and stops us re-scoring the same channel
+ * every tick; genuinely-complete failures (subs_band/age/view_floor with real
+ * data) are excluded, so this doesn't churn the whole table.
  */
+const REEVAL_DATA_COOLDOWN_H = 4;
 async function refreshedReEval(batch: number): Promise<{ evaluated: number; eligible: number }> {
   const pool = await getPool();
   const r = await pool.query<{ channel_id: string }>(
     `SELECT s.channel_id
-       FROM niche_spy_channels sc
-       JOIN channel_cg_status s ON s.channel_id = sc.channel_id
-      WHERE sc.last_recent_videos_fetched_at > NOW() - INTERVAL '5 days'
-        AND sc.subscriber_count IS NOT NULL
-        AND s.cg_evaluated_at IS NOT NULL
-        AND sc.last_recent_videos_fetched_at > s.cg_evaluated_at
-      ORDER BY sc.last_recent_videos_fetched_at DESC
+       FROM channel_cg_status s
+       JOIN niche_spy_channels sc ON sc.channel_id = s.channel_id AND sc.subscriber_count IS NOT NULL
+      WHERE NOT s.cg_eligible
+        AND s.cg_fail_reasons && ARRAY['not_enriched','topview_zero','min_videos']
+        AND s.cg_evaluated_at < NOW() - ($2 || ' hours')::interval
+      ORDER BY s.cg_evaluated_at ASC
       LIMIT $1`,
-    [batch],
+    [batch, String(REEVAL_DATA_COOLDOWN_H)],
   );
   return stampEval(r.rows.map(x => x.channel_id));
 }
@@ -173,6 +183,7 @@ async function refreshedReEval(batch: number): Promise<{ evaluated: number; elig
 // loser returns immediately. Held on a dedicated client (session advisory locks
 // are per-connection; unlock must be the same connection).
 const CG_SWEEP_LOCK = 728412001;
+let cgTickCounter = 0;  // throttles the (heavier) data-completeness recovery pass to ~every 10th auto-tick
 
 /**
  * One sweep tick. Safe to call every 60s. `mult` scales the batch sizes for
@@ -193,7 +204,13 @@ export async function runCgSweepTick(mult = 1): Promise<CgSweepResult> {
       const discovered = await discoverStamp(DISCOVER_BATCH * mult).catch(() => 0);
       const ev = await evalStamp(EVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
       const re = await reEvalStamp(REEVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
-      const rr = await refreshedReEval(REFRESH_REEVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }));
+      // refreshedReEval scans a large fail-reason set (~2s) and isn't time-critical
+      // (channels recover within hours), so throttle it to ~every 10th auto-tick;
+      // run it every tick during a manual backfill (mult>1) so recovery drains fast.
+      cgTickCounter++;
+      const rr = (mult > 1 || cgTickCounter % 10 === 0)
+        ? await refreshedReEval(REFRESH_REEVAL_BATCH * mult).catch(() => ({ evaluated: 0, eligible: 0 }))
+        : { evaluated: 0, eligible: 0 };
       return {
         enabled: true, skipped: false, discovered, evaluated: ev.evaluated, reevaluated: re.evaluated + rr.evaluated,
         eligibleInBatch: ev.eligible + re.eligible + rr.eligible, ms: Date.now() - t0,
