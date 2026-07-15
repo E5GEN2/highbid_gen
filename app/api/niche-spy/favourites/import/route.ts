@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getPool } from '@/lib/db';
+import { auth } from '@/lib/auth';
 import { extractYtVideoId } from '@/lib/video-seed';
 import { pickRandomActiveYtPair } from '@/lib/yt-keys';
 import { ytFetchViaProxy } from '@/lib/yt-proxy-fetch';
@@ -77,6 +78,9 @@ async function fetchThumbBase64(url: string): Promise<{ mimeType: string; data: 
 }
 
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) return new Response('Unauthorized', { status: 401 });
+  const userId = session.user.id;
   const body = await req.json().catch(() => ({})) as { url?: string };
   const rawUrl = (body.url || '').trim();
 
@@ -254,10 +258,10 @@ export async function POST(req: NextRequest) {
       // ── 6. Star ────────────────────────────────────────
       await send({ stage: 'starring', message: 'Adding to Favourites…' });
       const starInsert = await pool.query<{ video_id: number }>(
-        `INSERT INTO niche_spy_favourites (video_id) VALUES ($1)
-         ON CONFLICT (video_id) DO NOTHING
+        `INSERT INTO niche_spy_favourites (user_id, video_id) VALUES ($1, $2)
+         ON CONFLICT (user_id, video_id) DO NOTHING
          RETURNING video_id`,
-        [videoId],
+        [userId, videoId],
       );
       const alreadyStarred = (starInsert.rowCount ?? 0) === 0;
 

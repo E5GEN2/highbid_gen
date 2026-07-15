@@ -612,26 +612,31 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS total_views BIGINT`).catch(() => {});
     await client.query(`ALTER TABLE niche_spy_channels ADD COLUMN IF NOT EXISTS stats_refreshed_at TIMESTAMPTZ`).catch(() => {});
 
-    // Favourites — a single global list (no per-user scoping). One row per
-    // starred video. Deleting a video cascades to remove its favourite.
+    // Favourites — PER-USER starred videos (scoped by user_id since 2026-07-14;
+    // was a single global list). Uniqueness via the composite index. Deleting a
+    // video cascades. (Existing prod tables migrated separately: add user_id +
+    // backfill to the operator + drop the old single-col PK.)
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_spy_favourites (
-        video_id INTEGER PRIMARY KEY REFERENCES niche_spy_videos(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL,
+        video_id INTEGER NOT NULL REFERENCES niche_spy_videos(id) ON DELETE CASCADE,
         added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsf_added ON niche_spy_favourites(added_at DESC)`).catch(() => {});
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nsf_user_video ON niche_spy_favourites(user_id, video_id)`).catch(() => {});
 
-    // Niche-level favourites — parallel to niche_spy_favourites but
-    // keyed on cluster_id. The star button on each NicheClusterCard
-    // writes here. Cluster row delete cascades a row delete here.
+    // Niche-level favourites — PER-USER (scoped by user_id). Star button on each
+    // NicheClusterCard writes here. Cluster delete cascades.
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_spy_favourite_clusters (
-        cluster_id INTEGER PRIMARY KEY REFERENCES niche_tree_clusters(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL,
+        cluster_id INTEGER NOT NULL REFERENCES niche_tree_clusters(id) ON DELETE CASCADE,
         added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsfc_added ON niche_spy_favourite_clusters(added_at DESC)`).catch(() => {});
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nsfc_user_cluster ON niche_spy_favourite_clusters(user_id, cluster_id)`).catch(() => {});
 
     // Custom niches — user-defined collections of videos. Unlike the
     // auto-discovered niche_tree_clusters these are manually curated:

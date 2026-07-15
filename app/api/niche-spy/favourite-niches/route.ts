@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
+import { auth } from '@/lib/auth';
 import { fetchUploadHistograms, fetchClusterOpportunities } from '@/lib/niche-tree';
 
 /**
@@ -19,12 +20,20 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: NextRequest) {
+  const session = await auth();
+  const userId = session?.user?.id;
   const pool = await getPool();
   const onlyIds = req.nextUrl.searchParams.get('onlyIds') === '1';
 
+  if (!userId) {
+    // Logged out → no favourites (don't 401 a GET; let the page render empty).
+    return onlyIds ? NextResponse.json({ ids: [] }) : NextResponse.json({ niches: [], total: 0 });
+  }
+
   if (onlyIds) {
     const r = await pool.query(
-      `SELECT cluster_id FROM niche_spy_favourite_clusters ORDER BY added_at DESC`,
+      `SELECT cluster_id FROM niche_spy_favourite_clusters WHERE user_id = $1 ORDER BY added_at DESC`,
+      [userId],
     );
     return NextResponse.json({ ids: r.rows.map((row: { cluster_id: number }) => row.cluster_id) });
   }
@@ -55,7 +64,9 @@ export async function GET(req: NextRequest) {
      FROM niche_spy_favourite_clusters f
      JOIN niche_tree_clusters c ON c.id = f.cluster_id
      LEFT JOIN niche_spy_videos v ON v.id = c.representative_video_id AND v.thumbnail_dead_at IS NULL
+     WHERE f.user_id = $1
      ORDER BY f.added_at DESC`,
+    [userId],
   );
   if (clRes.rows.length === 0) {
     return NextResponse.json({ niches: [], total: 0 });
@@ -162,6 +173,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const pool = await getPool();
   const { clusterId } = await req.json().catch(() => ({}));
   if (!clusterId || typeof clusterId !== 'number') {
@@ -172,18 +185,20 @@ export async function POST(req: NextRequest) {
   if (check.rows.length === 0) return NextResponse.json({ error: 'Cluster not found' }, { status: 404 });
 
   await pool.query(
-    `INSERT INTO niche_spy_favourite_clusters (cluster_id) VALUES ($1) ON CONFLICT (cluster_id) DO NOTHING`,
-    [clusterId],
+    `INSERT INTO niche_spy_favourite_clusters (user_id, cluster_id) VALUES ($1, $2) ON CONFLICT (user_id, cluster_id) DO NOTHING`,
+    [session.user.id, clusterId],
   );
   return NextResponse.json({ ok: true, starred: true });
 }
 
 export async function DELETE(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const pool = await getPool();
   const { clusterId } = await req.json().catch(() => ({}));
   if (!clusterId || typeof clusterId !== 'number') {
     return NextResponse.json({ error: 'clusterId (number) required' }, { status: 400 });
   }
-  await pool.query(`DELETE FROM niche_spy_favourite_clusters WHERE cluster_id = $1`, [clusterId]);
+  await pool.query(`DELETE FROM niche_spy_favourite_clusters WHERE user_id = $1 AND cluster_id = $2`, [session.user.id, clusterId]);
   return NextResponse.json({ ok: true, starred: false });
 }
