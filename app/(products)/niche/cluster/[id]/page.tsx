@@ -96,6 +96,13 @@ export default function ClusterDetailPage() {
   const [freshVideos, setFreshVideos] = useState<NicheVideoCardData[]>([]);
   const [freshLoading, setFreshLoading] = useState(true);
   const [freshNewCount, setFreshNewCount] = useState(0);
+  // Guard so the seen-mark fires at most once per cluster (survives React
+  // strict-mode double-invoke). Depend ONLY on clusterId — NOT `watching` —
+  // because isNew/watching come from the server (DB), so a single GET is
+  // correct regardless of the client's hydration state, and re-firing on the
+  // provider's false->true `watching` flip could read a just-advanced
+  // watermark and wipe the NEW badges.
+  const seenMarkedRef = useRef<number | null>(null);
   useEffect(() => {
     if (!clusterId) return;
     setFreshLoading(true);
@@ -104,11 +111,20 @@ export default function ClusterDetailPage() {
       .then(d => {
         setFreshVideos((d.videos || []) as NicheVideoCardData[]);
         setFreshNewCount(d.newCount || 0);
+        // Mark seen ONCE per cluster, after we have the data — a separate
+        // idempotent POST so the GET stays a pure read (no self-wipe on refetch).
+        if (d.watching && d.cursor && seenMarkedRef.current !== clusterId) {
+          seenMarkedRef.current = clusterId;
+          fetch(`/api/niche-spy/tree-clusters/${clusterId}/fresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cursor: d.cursor }),
+          }).catch(() => {});
+        }
       })
       .catch(() => setFreshVideos([]))
       .finally(() => setFreshLoading(false));
-    // Refetch when the user toggles Watch so the section starts/stops tracking.
-  }, [clusterId, watching]);
+  }, [clusterId]);
 
   // First page (resets when clusterId / sort / pageSize change).
   useEffect(() => {

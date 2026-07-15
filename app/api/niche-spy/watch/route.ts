@@ -46,37 +46,64 @@ export async function POST(req: NextRequest) {
   const type = watchType === 'discover' ? 'discover' : 'cheap';
   const pool = await getPool();
 
-  const chk = await pool.query('SELECT 1 FROM niche_tree_clusters WHERE id = $1', [clusterId]);
-  if (chk.rows.length === 0) return NextResponse.json({ error: 'Cluster not found' }, { status: 404 });
+  // The count-then-insert slot cap must be atomic, else two concurrent POSTs
+  // for different clusters both read count<3 and both insert (>3 watches). A
+  // per-user advisory xact lock serializes this user's watch writes; it auto-
+  // releases on COMMIT/ROLLBACK. Watch writes are rare (a click) so contention
+  // is nil.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`niche-watch:${userId}`]);
 
-  // Slot cap — only enforced for a NEW watch (re-watching an existing one just
-  // updates its type, doesn't consume a slot).
-  const already = await pool.query('SELECT 1 FROM user_niche_watches WHERE user_id = $1 AND cluster_id = $2', [userId, clusterId]);
-  if (already.rows.length === 0) {
-    const cnt = await pool.query<{ n: string }>('SELECT COUNT(*) AS n FROM user_niche_watches WHERE user_id = $1', [userId]);
-    if ((parseInt(cnt.rows[0].n) || 0) >= MAX_WATCH_SLOTS) {
-      return NextResponse.json(
-        { error: `Watch limit reached (${MAX_WATCH_SLOTS}). Unwatch a niche to free a slot.`, slotsTotal: MAX_WATCH_SLOTS },
-        { status: 409 },
+    const chk = await client.query('SELECT 1 FROM niche_tree_clusters WHERE id = $1', [clusterId]);
+    if (chk.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return NextResponse.json({ error: 'Cluster not found' }, { status: 404 });
+    }
+
+    // Slot cap — only enforced for a NEW watch (re-watching an existing one
+    // just updates its type, doesn't consume a slot).
+    const already = await client.query('SELECT 1 FROM user_niche_watches WHERE user_id = $1 AND cluster_id = $2', [userId, clusterId]);
+    const isNew = already.rows.length === 0;
+    if (isNew) {
+      const cnt = await client.query<{ n: string }>('SELECT COUNT(*) AS n FROM user_niche_watches WHERE user_id = $1', [userId]);
+      if ((parseInt(cnt.rows[0].n) || 0) >= MAX_WATCH_SLOTS) {
+        await client.query('ROLLBACK');
+        return NextResponse.json(
+          { error: `Watch limit reached (${MAX_WATCH_SLOTS}). Unwatch a niche to free a slot.`, slotsTotal: MAX_WATCH_SLOTS },
+          { status: 409 },
+        );
+      }
+    }
+
+    await client.query(
+      `INSERT INTO user_niche_watches (user_id, cluster_id, watch_type) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, cluster_id) DO UPDATE SET watch_type = EXCLUDED.watch_type`,
+      [userId, clusterId, type],
+    );
+    // Seed the per-niche cadence row so the watcher picks it up on the next tick.
+    await client.query(`INSERT INTO niche_watch_state (cluster_id) VALUES ($1) ON CONFLICT (cluster_id) DO NOTHING`, [clusterId]);
+    // Baseline the seen-watermark to NOW() ONLY for a genuinely new watch — so
+    // videos the watcher found while this user WASN'T watching aren't dumped on
+    // them as NEW. DO UPDATE (not DO NOTHING) overwrites a stale watermark left
+    // by a prior watch→unwatch cycle. An existing active watch keeps its
+    // progress (no reset).
+    if (isNew) {
+      await client.query(
+        `INSERT INTO user_niche_seen (user_id, cluster_id, last_viewed_at) VALUES ($1, $2, NOW())
+           ON CONFLICT (user_id, cluster_id) DO UPDATE SET last_viewed_at = NOW()`,
+        [userId, clusterId],
       );
     }
+    await client.query('COMMIT');
+    return NextResponse.json({ ok: true, watching: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+  } finally {
+    client.release();
   }
-
-  await pool.query(
-    `INSERT INTO user_niche_watches (user_id, cluster_id, watch_type) VALUES ($1, $2, $3)
-       ON CONFLICT (user_id, cluster_id) DO UPDATE SET watch_type = EXCLUDED.watch_type`,
-    [userId, clusterId, type],
-  );
-  // Seed the per-niche cadence row so the watcher picks it up on the next tick.
-  await pool.query(`INSERT INTO niche_watch_state (cluster_id) VALUES ($1) ON CONFLICT (cluster_id) DO NOTHING`, [clusterId]);
-  // Baseline the user's seen-watermark at watch time — anything the watcher
-  // discovers AFTER now is flagged NEW; pre-existing fresh videos aren't.
-  await pool.query(
-    `INSERT INTO user_niche_seen (user_id, cluster_id, last_viewed_at) VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id, cluster_id) DO NOTHING`,
-    [userId, clusterId],
-  ).catch(() => {});
-  return NextResponse.json({ ok: true, watching: true });
 }
 
 export async function DELETE(req: NextRequest) {
@@ -88,5 +115,8 @@ export async function DELETE(req: NextRequest) {
   }
   const pool = await getPool();
   await pool.query(`DELETE FROM user_niche_watches WHERE user_id = $1 AND cluster_id = $2`, [session.user.id, clusterId]);
+  // Drop the seen-watermark too so a later re-watch baselines cleanly (no stale
+  // last_viewed_at that would wall the user with NEW for the gap period).
+  await pool.query(`DELETE FROM user_niche_seen WHERE user_id = $1 AND cluster_id = $2`, [session.user.id, clusterId]).catch(() => {});
   return NextResponse.json({ ok: true, watching: false });
 }

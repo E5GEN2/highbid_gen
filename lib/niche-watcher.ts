@@ -100,11 +100,25 @@ export async function runNicheWatcherTick(): Promise<NicheWatcherResult> {
           params.push(runId, clusterId, nv.videoId);
         }
         if (vals.length > 0) {
-          await pool.query(
-            `INSERT INTO niche_tree_assignments (run_id, cluster_id, video_id, cluster_index, assigned_at)
-             VALUES ${vals.join(', ')}`,
-            params,
-          ).then(() => { base.newVideos = vals.length; }).catch(() => {});
+          const sql = `INSERT INTO niche_tree_assignments (run_id, cluster_id, video_id, cluster_index, assigned_at)
+             VALUES ${vals.join(', ')}`;
+          // Retry once on a transient blip (deadlock / timeout under crawl load).
+          // Detection is one-shot (xmax=0 on the video's first insert), so a
+          // swallowed failure would drop these videos from /fresh forever with
+          // no re-detection — log loudly if the retry also fails.
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              await pool.query(sql, params);
+              base.newVideos = vals.length;
+              break;
+            } catch (e) {
+              if (attempt === 1) {
+                console.error('[niche-watcher] fresh-assignment INSERT failed after retry — these new videos will not surface as fresh:', (e as Error).message);
+              } else {
+                await new Promise(r => setTimeout(r, 500));
+              }
+            }
+          }
         }
       }
 

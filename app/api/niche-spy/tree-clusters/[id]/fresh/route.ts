@@ -89,16 +89,47 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   }));
 
   const newCount = videos.filter(v => v.isNew).length;
+  // cursor = newest assigned_at shown (rows are assigned_at DESC). The client
+  // marks these seen via the POST below AFTER render. Keeping GET a pure,
+  // idempotent read is deliberate: the client effect can fire more than once
+  // (provider hydration flips `watching`, prefetch, strict mode) and a
+  // side-effecting GET would advance the watermark on the first call and make
+  // the second call return newCount=0 — silently wiping the NEW badges.
+  const cursor = vres.rows[0]?.assigned_at ?? null;
 
-  // Advance the watermark AFTER computing isNew — the highlight fires once.
-  if (watching && userId) {
-    await pool.query(
-      `INSERT INTO user_niche_seen (user_id, cluster_id, last_viewed_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id, cluster_id) DO UPDATE SET last_viewed_at = NOW()`,
-      [userId, clusterId],
-    ).catch(() => {});
-  }
+  return NextResponse.json({ videos, watching, total: videos.length, newCount, cursor });
+}
 
-  return NextResponse.json({ videos, watching, total: videos.length, newCount });
+/**
+ * POST /api/niche-spy/tree-clusters/[id]/fresh   body { cursor }
+ *
+ * Marks watcher-discovered videos up to `cursor` as seen for this user. The
+ * client calls this once, after rendering the fresh feed. Advances the
+ * watermark FORWARD-ONLY (GREATEST) to `cursor` — the max assigned_at of rows
+ * actually shown — NOT wall-clock NOW(): a video assigned between the read and
+ * this call, or beyond the feed limit, keeps a later assigned_at and still
+ * surfaces as NEW next time. Idempotent; a no-op for non-watchers / logged-out.
+ */
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const { id: rawId } = await ctx.params;
+  const clusterId = parseInt(rawId);
+  if (!clusterId) return NextResponse.json({ error: 'invalid cluster id' }, { status: 400 });
+  const session = await auth();
+  const userId = session?.user?.id;
+  if (!userId) return NextResponse.json({ ok: true, seen: false });
+  const { cursor } = await req.json().catch(() => ({}));
+  if (!cursor) return NextResponse.json({ ok: true, seen: false });
+
+  const pool = await getPool();
+  const w = await pool.query('SELECT 1 FROM user_niche_watches WHERE user_id = $1 AND cluster_id = $2', [userId, clusterId]);
+  if (w.rows.length === 0) return NextResponse.json({ ok: true, seen: false });
+
+  await pool.query(
+    `INSERT INTO user_niche_seen (user_id, cluster_id, last_viewed_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, cluster_id)
+       DO UPDATE SET last_viewed_at = GREATEST(user_niche_seen.last_viewed_at, EXCLUDED.last_viewed_at)`,
+    [userId, clusterId, cursor],
+  ).catch(() => {});
+  return NextResponse.json({ ok: true, seen: true });
 }

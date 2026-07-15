@@ -135,7 +135,7 @@ export function NicheClusterCard({
       role="link"
       tabIndex={0}
       onClick={onCardClick}
-      onKeyDown={e => { if (e.key === 'Enter') router.push(href); }}
+      onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) router.push(href); }}
       className="bg-[#141414] border border-[#1f1f1f] rounded-xl hover:border-amber-500/60 transition block group cursor-pointer"
     >
       {/* Header strip: cluster meta on the left, opportunity pills on
