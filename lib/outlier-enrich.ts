@@ -385,12 +385,19 @@ async function markJobCancelled(
  * channel_name is read from the channels row so the row matches the
  * grouping key used by /api/niche-spy/channels.
  */
+/**
+ * Upsert a channel's recent uploads. Returns the ids of rows that were
+ * BRAND-NEW inserts (not conflict-updates) — the `xmax = 0` trick
+ * distinguishes a fresh INSERT from an ON CONFLICT UPDATE. The Niche
+ * Watcher uses this to assign genuinely-new videos into the watched
+ * cluster; existing callers ignore the return and are unaffected.
+ */
 export async function upsertRecentVideos(
   pool: import('pg').Pool,
   channelId: string,
   videos: RecentUploadVideo[],
-): Promise<void> {
-  if (videos.length === 0) return;
+): Promise<number[]> {
+  if (videos.length === 0) return [];
 
   // Pull the channel's display info once so all the rows we insert
   // share the same channel_name + avatar (the channels.list pass that
@@ -436,7 +443,7 @@ export async function upsertRecentVideos(
   // (views/likes/comments + thumbnail in case it changed) and mark
   // enriched_at, but DON'T overwrite keyword / score / posted_date /
   // top_comment because those came from richer scrape sources.
-  await pool.query(
+  const res = await pool.query<{ id: number; inserted: boolean }>(
     `INSERT INTO niche_spy_videos
        (url, title, thumbnail, channel_id, channel_name, channel_avatar,
         channel_created_at, posted_at, view_count, like_count, comment_count,
@@ -450,7 +457,9 @@ export async function upsertRecentVideos(
        channel_id    = COALESCE(niche_spy_videos.channel_id, EXCLUDED.channel_id),
        channel_name  = COALESCE(niche_spy_videos.channel_name, EXCLUDED.channel_name),
        channel_avatar = COALESCE(niche_spy_videos.channel_avatar, EXCLUDED.channel_avatar),
-       enriched_at   = NOW()`,
+       enriched_at   = NOW()
+     RETURNING id, (xmax = 0) AS inserted`,
     params,
   );
+  return res.rows.filter(r => r.inserted).map(r => r.id);
 }

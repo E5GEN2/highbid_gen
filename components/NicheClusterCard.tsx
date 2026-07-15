@@ -3,7 +3,7 @@
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import { fmtYT } from '@/lib/format';
-import { NicheStarButton } from './FavouritesProvider';
+import { NicheStarButton, NicheWatchButton } from './FavouritesProvider';
 
 /**
  * Wide-row cluster card — mirrors the admin Niche Tree layout. Picked
@@ -186,6 +186,7 @@ export function NicheClusterCard({
             same across surfaces. Custom niches hide the star (the
             niche IS the saved object). */}
         <div className="flex items-center gap-2">
+          {kind === 'auto' && <NicheWatchButton clusterId={c.id} />}
           {kind === 'auto' && <NicheStarButton clusterId={c.id} />}
           {onFindSimilar && (
             <button

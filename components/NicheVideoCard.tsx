@@ -36,6 +36,9 @@ export interface NicheVideoCardData {
   score: number | null;
   similarity?: number;
   distanceToCentroid?: number | null;
+  /** Set by the watched-niche Fresh-uploads feed: this video appeared in the
+   *  niche after the user's last visit. Paints a NEW pill + emerald ring. */
+  isNew?: boolean;
 }
 
 export function NicheVideoCard({ video: v }: { video: NicheVideoCardData }) {
@@ -46,7 +49,9 @@ export function NicheVideoCard({ video: v }: { video: NicheVideoCardData }) {
     : 'bg-red-500 text-white';
 
   return (
-    <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden flex flex-col">
+    <div className={`bg-[#141414] rounded-xl overflow-hidden flex flex-col ${
+      v.isNew ? 'border border-emerald-400/60 ring-1 ring-emerald-400/40' : 'border border-[#1f1f1f]'
+    }`}>
       <div className="relative aspect-video bg-[#0a0a0a]">
         {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -55,7 +60,12 @@ export function NicheVideoCard({ video: v }: { video: NicheVideoCardData }) {
         <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${scoreBand}`}>
           ⚡ {score}
         </div>
-        {v.similarity !== undefined ? (
+        {v.isNew ? (
+          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-black flex items-center gap-1 shadow">
+            <span className="w-1.5 h-1.5 rounded-full bg-black/70 animate-pulse" />
+            NEW
+          </div>
+        ) : v.similarity !== undefined ? (
           <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-xs font-bold bg-purple-600 text-white">
             {Math.round(v.similarity * 100)}% match
           </div>

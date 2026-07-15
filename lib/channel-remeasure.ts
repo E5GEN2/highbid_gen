@@ -31,6 +31,11 @@ export interface ReMeasureResult {
   statsUpdated: number;    // channels whose stats row was upserted
   recentPulled: number;    // channels whose recent uploads were refreshed
   errors: number;
+  /** Videos that were BRAND-NEW to the corpus this run (fresh inserts, not
+   *  conflict-updates), tagged with their channel. The Watcher uses these to
+   *  assign genuinely-new videos into the watched cluster. Empty when
+   *  recentUploads is off or nothing new was found. */
+  newVideos: Array<{ channelId: string; videoId: number }>;
 }
 
 export async function reMeasureChannels(
@@ -38,7 +43,7 @@ export async function reMeasureChannels(
   opts: { recentUploads?: boolean; maxRecent?: number } = {},
 ): Promise<ReMeasureResult> {
   const pool = await getPool();
-  const result: ReMeasureResult = { requested: channelIds.length, statsUpdated: 0, recentPulled: 0, errors: 0 };
+  const result: ReMeasureResult = { requested: channelIds.length, statsUpdated: 0, recentPulled: 0, errors: 0, newVideos: [] };
   if (channelIds.length === 0) return result;
   const recentUploads = opts.recentUploads ?? true;
 
@@ -107,7 +112,8 @@ export async function reMeasureChannels(
       const r = await fetchChannelRecentUploads(row.uploads_playlist_id!, pair, { maxVideos: opts.maxRecent ?? 10 });
       if (r.error) { result.errors++; continue; }
       if (r.videos && r.videos.length > 0) {
-        await upsertRecentVideos(pool, row.channel_id, r.videos);
+        const insertedIds = await upsertRecentVideos(pool, row.channel_id, r.videos);
+        for (const videoId of insertedIds) result.newVideos.push({ channelId: row.channel_id, videoId });
         await pool.query(
           `UPDATE niche_spy_channels SET
              recent_videos_avg_views = $1, recent_videos_median_views = $2, recent_videos_max_views = $3,

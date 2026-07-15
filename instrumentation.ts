@@ -454,7 +454,7 @@ export async function register() {
         const { runNicheWatcherTick } = await import('./lib/niche-watcher');
         const r = await runNicheWatcherTick();
         if (r.enabled && !r.skipped && r.channels > 0) {
-          console.log('[niche-watcher]', `channels=${r.channels} stats=${r.statsUpdated} recent=${r.recentPulled}`);
+          console.log('[niche-watcher]', `channels=${r.channels} stats=${r.statsUpdated} recent=${r.recentPulled} newVids=${r.newVideos}`);
         }
       } catch (err) {
         console.error('[niche-watcher] error:', err instanceof Error ? err.message : err);

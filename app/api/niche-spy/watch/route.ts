@@ -69,6 +69,13 @@ export async function POST(req: NextRequest) {
   );
   // Seed the per-niche cadence row so the watcher picks it up on the next tick.
   await pool.query(`INSERT INTO niche_watch_state (cluster_id) VALUES ($1) ON CONFLICT (cluster_id) DO NOTHING`, [clusterId]);
+  // Baseline the user's seen-watermark at watch time — anything the watcher
+  // discovers AFTER now is flagged NEW; pre-existing fresh videos aren't.
+  await pool.query(
+    `INSERT INTO user_niche_seen (user_id, cluster_id, last_viewed_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id, cluster_id) DO NOTHING`,
+    [userId, clusterId],
+  ).catch(() => {});
   return NextResponse.json({ ok: true, watching: true });
 }
 

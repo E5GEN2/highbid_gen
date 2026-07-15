@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { NicheVideoCard, type NicheVideoCardData } from '@/components/NicheVideoCard';
 import { ClusterTabs } from '@/components/ClusterTabs';
 import { ClusterHeader } from '@/components/ClusterHeader';
+import { NicheWatchButton, useFavourites } from '@/components/FavouritesProvider';
 
 interface PopularVideo {
   videoId: number;
@@ -86,6 +87,28 @@ export default function ClusterDetailPage() {
   // hard cap with no "load more" UI. Now we fetch this many at a time
   // and append on scroll until totalVideos is reached.
   const [pageSize, setPageSize] = useState(60);
+
+  // Fresh uploads — the Niche Watcher's payoff surface. The /fresh endpoint
+  // returns videos the agent discovered in this niche, flags isNew per video
+  // (since the watcher's last visit), and advances the seen-watermark.
+  const { isWatching, watchSlotsUsed, watchSlotsTotal } = useFavourites();
+  const watching = isWatching(clusterId);
+  const [freshVideos, setFreshVideos] = useState<NicheVideoCardData[]>([]);
+  const [freshLoading, setFreshLoading] = useState(true);
+  const [freshNewCount, setFreshNewCount] = useState(0);
+  useEffect(() => {
+    if (!clusterId) return;
+    setFreshLoading(true);
+    fetch(`/api/niche-spy/tree-clusters/${clusterId}/fresh`)
+      .then(r => r.json())
+      .then(d => {
+        setFreshVideos((d.videos || []) as NicheVideoCardData[]);
+        setFreshNewCount(d.newCount || 0);
+      })
+      .catch(() => setFreshVideos([]))
+      .finally(() => setFreshLoading(false));
+    // Refetch when the user toggles Watch so the section starts/stops tracking.
+  }, [clusterId, watching]);
 
   // First page (resets when clusterId / sort / pageSize change).
   useEffect(() => {
@@ -175,6 +198,48 @@ export default function ClusterDetailPage() {
       />
 
       <ClusterTabs clusterId={clusterId} active="videos" childrenCount={children.length} />
+
+      {/* Fresh uploads — Niche Watcher payoff. Videos the agent discovered in
+          this niche; NEW-badged for watchers since their last visit. Shown to
+          everyone (a preview of the watcher's value); NEW highlights + tracking
+          are the watch perk. */}
+      <div className="mb-8 bg-gradient-to-br from-cyan-500/[0.04] to-transparent border border-cyan-500/20 rounded-xl p-4">
+        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-1.5">
+              <span className="text-cyan-400 text-base leading-none">◉</span> Fresh uploads
+            </h2>
+            {freshNewCount > 0 && (
+              <span className="text-[10px] font-bold bg-emerald-500 text-black rounded-full px-2 py-0.5">{freshNewCount} NEW</span>
+            )}
+            <span className="text-[11px] text-[#666]">
+              {watching ? `Watching · ${watchSlotsUsed}/${watchSlotsTotal} slots` : 'discovered by the niche agent'}
+            </span>
+          </div>
+          <NicheWatchButton clusterId={clusterId} />
+        </div>
+
+        {freshLoading ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="bg-[#141414] border border-[#1f1f1f] rounded-xl overflow-hidden animate-pulse">
+                <div className="aspect-video bg-[#1a1a1a]" />
+                <div className="p-3 space-y-2"><div className="h-3 w-3/4 bg-[#1f1f1f] rounded" /></div>
+              </div>
+            ))}
+          </div>
+        ) : freshVideos.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {freshVideos.map(v => <NicheVideoCard key={v.id} video={v} />)}
+          </div>
+        ) : (
+          <div className="text-sm text-[#888] py-4 text-center">
+            {watching
+              ? 'The agent is watching this niche. New uploads from its channels will appear here as they’re discovered — check back soon.'
+              : 'Watch this niche to have the agent pulse its channels and highlight new uploads here the moment they appear.'}
+          </div>
+        )}
+      </div>
 
       {/* Videos in this cluster */}
       <div>

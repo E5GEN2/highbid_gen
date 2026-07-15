@@ -1133,6 +1133,15 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_run     ON niche_tree_assignments(run_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_cluster ON niche_tree_assignments(cluster_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_video   ON niche_tree_assignments(video_id)`).catch(() => {});
+    // Niche Watcher — when the cheap watcher discovers a brand-new video in a
+    // watched cluster it inserts an assignment stamped with assigned_at=NOW().
+    // Batch-recluster rows leave this NULL (they represent the frozen tree, not
+    // a fresh appearance). "New since you last looked" = assigned_at > the
+    // user's last visit; the /fresh feed reads only assigned_at IS NOT NULL rows.
+    // ADD COLUMN nullable = instant metadata-only; the partial index has 0 rows
+    // at creation (column all-NULL) so it builds instantly with a negligible lock.
+    await client.query(`ALTER TABLE niche_tree_assignments ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nta_cluster_fresh ON niche_tree_assignments(cluster_id, assigned_at DESC) WHERE assigned_at IS NOT NULL`).catch(() => {});
 
     // Google API key inventory — sourced from xgodo workers (the
     // youtubeApiKeyJob / googleAiStudioKeyJob proofs) plus any legacy

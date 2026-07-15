@@ -77,6 +77,15 @@ interface FavouritesContextType {
   toggleNicheStar: (clusterId: number) => Promise<void>;
   nicheCount: number;
 
+  // Niche watches (Watcher slots) — a limited quota of niches the user
+  // forces the cheap watcher to pulse + notify on. Distinct from a
+  // favourite (unlimited): watching spends one of watchSlotsTotal.
+  watchIds: Set<number>;
+  isWatching: (clusterId: number) => boolean;
+  toggleWatch: (clusterId: number) => Promise<{ ok: boolean; error?: string }>;
+  watchSlotsUsed: number;
+  watchSlotsTotal: number;
+
   // Custom niches (collections)
   customNiches: CustomNiche[];
   customNichesLoading: boolean;
@@ -114,6 +123,8 @@ export function useFavourites() {
 export function FavouritesProvider({ children }: { children: React.ReactNode }) {
   const [ids, setIds] = useState<Set<number>>(new Set());
   const [nicheIds, setNicheIds] = useState<Set<number>>(new Set());
+  const [watchIds, setWatchIds] = useState<Set<number>>(new Set());
+  const [watchSlotsTotal, setWatchSlotsTotal] = useState(3);
   const [customNiches, setCustomNiches] = useState<CustomNiche[]>([]);
   const [customNichesLoading, setCustomNichesLoading] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -136,14 +147,17 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
     // Pull video + niche favourite ids + custom-niche list in
     // parallel. None of them depend on each other.
     try {
-      const [vRes, nRes, cRes] = await Promise.all([
+      const [vRes, nRes, cRes, wRes] = await Promise.all([
         fetch('/api/niche-spy/favourites?onlyIds=1').then(r => r.json()).catch(() => ({ ids: [] })),
         fetch('/api/niche-spy/favourite-niches?onlyIds=1').then(r => r.json()).catch(() => ({ ids: [] })),
         fetch('/api/niche-spy/custom-niches').then(r => r.json()).catch(() => ({ niches: [] })),
+        fetch('/api/niche-spy/watch').then(r => r.json()).catch(() => ({ watches: [], slotsTotal: 3 })),
       ]);
       setIds(new Set<number>(vRes.ids || []));
       setNicheIds(new Set<number>(nRes.ids || []));
       setCustomNiches(cRes.niches || []);
+      setWatchIds(new Set<number>((wRes.watches || []).map((w: { clusterId: number }) => w.clusterId)));
+      if (typeof wRes.slotsTotal === 'number') setWatchSlotsTotal(wRes.slotsTotal);
     } catch { /* ignore */ }
     finally { setLoading(false); setCustomNichesLoading(false); }
   }, []);
@@ -152,6 +166,43 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
 
   const isStarred = useCallback((videoId: number) => ids.has(videoId), [ids]);
   const isNicheStarred = useCallback((clusterId: number) => nicheIds.has(clusterId), [nicheIds]);
+  const isWatching = useCallback((clusterId: number) => watchIds.has(clusterId), [watchIds]);
+
+  // Toggle a Watcher slot. Optimistic; rolls back + surfaces the error string
+  // on failure (e.g. 409 slot-limit, 401 logged-out) so the button can flash a
+  // message. Client-side slot guard avoids a doomed round-trip.
+  const toggleWatch = useCallback(async (clusterId: number): Promise<{ ok: boolean; error?: string }> => {
+    const wasWatching = watchIds.has(clusterId);
+    if (!wasWatching && watchIds.size >= watchSlotsTotal) {
+      return { ok: false, error: `Watch limit reached (${watchSlotsTotal}). Unwatch a niche to free a slot.` };
+    }
+    setWatchIds(prev => {
+      const next = new Set(prev);
+      if (wasWatching) next.delete(clusterId); else next.add(clusterId);
+      return next;
+    });
+    const rollback = () => setWatchIds(prev => {
+      const next = new Set(prev);
+      if (wasWatching) next.add(clusterId); else next.delete(clusterId);
+      return next;
+    });
+    try {
+      const res = await fetch('/api/niche-spy/watch', {
+        method: wasWatching ? 'DELETE' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clusterId }),
+      });
+      if (!res.ok) {
+        rollback();
+        const d = await res.json().catch(() => ({}));
+        return { ok: false, error: d.error || (res.status === 401 ? 'Sign in to watch niches.' : `HTTP ${res.status}`) };
+      }
+      return { ok: true };
+    } catch (e) {
+      rollback();
+      return { ok: false, error: (e as Error).message };
+    }
+  }, [watchIds, watchSlotsTotal]);
 
   // Direct toggle (used by chooser modal save + niche cards). The
   // chooser uses this for the Favourites checkbox; we still expose
@@ -232,6 +283,8 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
     isStarred, isNicheStarred,
     toggleStar, toggleNicheStar,
     count: ids.size, nicheCount: nicheIds.size,
+    watchIds, isWatching, toggleWatch,
+    watchSlotsUsed: watchIds.size, watchSlotsTotal,
     customNiches, customNichesLoading,
     refreshCustomNiches, createCustomNiche,
     activeChooserVideoId, openStarChooser, closeStarChooser,
@@ -239,6 +292,7 @@ export function FavouritesProvider({ children }: { children: React.ReactNode }) 
     loading, refresh,
   }), [
     ids, nicheIds, isStarred, isNicheStarred, toggleStar, toggleNicheStar,
+    watchIds, isWatching, toggleWatch, watchSlotsTotal,
     customNiches, customNichesLoading, refreshCustomNiches, createCustomNiche,
     activeChooserVideoId, openStarChooser, closeStarChooser,
     membershipNonce, bumpMembership,
@@ -326,5 +380,55 @@ export function NicheStarButton({ clusterId, className = '' }: { clusterId: numb
           d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
       </svg>
     </button>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ *  NicheWatchButton — spends a Watcher slot on a niche so the cheap
+ *  watcher pulses it and NEW uploads get highlighted for this user.
+ *  Distinct look from the star (cyan eye) since it's a stronger,
+ *  quota-limited commitment. Flashes the slot-limit / auth error
+ *  inline for a few seconds instead of silently no-op'ing.
+ * ──────────────────────────────────────────────────────────────── */
+export function NicheWatchButton({ clusterId, className = '' }: { clusterId: number; className?: string }) {
+  const { isWatching, toggleWatch, watchSlotsUsed, watchSlotsTotal } = useFavourites();
+  const watching = isWatching(clusterId);
+  const [err, setErr] = useState<string | null>(null);
+  const onClick = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setErr(null);
+    const res = await toggleWatch(clusterId);
+    if (!res.ok && res.error) {
+      setErr(res.error);
+      setTimeout(() => setErr(null), 4000);
+    }
+  };
+  return (
+    <span className="relative flex-shrink-0" onClick={e => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={onClick}
+        title={watching
+          ? 'Watching — the agent pulses this niche and highlights new uploads. Click to stop.'
+          : `Watch this niche (${watchSlotsUsed}/${watchSlotsTotal} slots used) — agent pulse + NEW-upload highlights`}
+        className={`flex items-center gap-1 text-xs rounded-full px-2 py-0.5 transition font-medium ${
+          watching
+            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/30'
+            : 'bg-[#1f1f1f] text-[#888] border border-[#2a2a2a] hover:bg-[#2a2a2a] hover:text-white hover:border-[#3a3a3a]'
+        } ${className}`}
+      >
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1 1 0 010-.644C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178a1 1 0 010 .644C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        {watching ? 'Watching' : 'Watch'}
+      </button>
+      {err && (
+        <span className="absolute right-0 top-full mt-1 z-50 w-52 text-[10px] leading-snug bg-[#0a0a0a] border border-red-500/40 text-red-300 rounded-md px-2 py-1 shadow-xl">
+          {err}
+        </span>
+      )}
+    </span>
   );
 }
