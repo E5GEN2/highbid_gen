@@ -442,6 +442,27 @@ export async function register() {
     setInterval(bendTick, 30 * 1000);
     setTimeout(bendTick, 20 * 1000);
 
+    // Niche Watcher (cheap YT-key pulse) on its OWN interval — re-measures the
+    // most-stale channels in watched niches via the shared reMeasureChannels
+    // engine. Sequential over a bounded batch (~10-20s), so it runs off runAll
+    // with a re-entrancy guard. No-op-cheap when nothing is watched/due.
+    let watcherRunning = false;
+    const watcherTick = async () => {
+      if (watcherRunning) return;
+      watcherRunning = true;
+      try {
+        const { runNicheWatcherTick } = await import('./lib/niche-watcher');
+        const r = await runNicheWatcherTick();
+        if (r.enabled && !r.skipped && r.channels > 0) {
+          console.log('[niche-watcher]', `channels=${r.channels} stats=${r.statsUpdated} recent=${r.recentPulled}`);
+        }
+      } catch (err) {
+        console.error('[niche-watcher] error:', err instanceof Error ? err.message : err);
+      } finally { watcherRunning = false; }
+    };
+    setInterval(watcherTick, 60 * 1000);
+    setTimeout(watcherTick, 45 * 1000);
+
     // Start the agent thermostat (maintains thread targets per keyword)
     const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
     ensureThermostatRunning();

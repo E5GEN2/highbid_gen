@@ -638,6 +638,41 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nsfc_added ON niche_spy_favourite_clusters(added_at DESC)`).catch(() => {});
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_nsfc_user_cluster ON niche_spy_favourite_clusters(user_id, cluster_id)`).catch(() => {});
 
+    // Niche Watcher — per-user watch slots. A user spends a slot (≤N) to force
+    // extra pulse + notifications on a niche they favourited. watch_type 'cheap'
+    // = YT-key re-measure of the niche's KNOWN channels; 'discover' (xgodo) later.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_niche_watches (
+        user_id UUID NOT NULL,
+        cluster_id INTEGER NOT NULL REFERENCES niche_tree_clusters(id) ON DELETE CASCADE,
+        watch_type TEXT NOT NULL DEFAULT 'cheap',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, cluster_id)
+      )
+    `).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_unw_cluster ON user_niche_watches(cluster_id)`).catch(() => {});
+
+    // Per-niche watcher cadence state (the re-measure is per-NICHE, shared across
+    // everyone watching it — not per-user). Drives the "due for a pulse?" gate.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_watch_state (
+        cluster_id INTEGER PRIMARY KEY,
+        last_watched_at TIMESTAMPTZ,
+        channels_remeasured INTEGER NOT NULL DEFAULT 0
+      )
+    `).catch(() => {});
+
+    // Per-user, per-niche last-viewed timestamp — powers the "NEW since you last
+    // looked" badge on video cards in a watched niche.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_niche_seen (
+        user_id UUID NOT NULL,
+        cluster_id INTEGER NOT NULL,
+        last_viewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, cluster_id)
+      )
+    `).catch(() => {});
+
     // Custom niches — user-defined collections of videos. Unlike the
     // auto-discovered niche_tree_clusters these are manually curated:
     // give it a name + optional description, then star videos into it
