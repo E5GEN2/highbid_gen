@@ -26,6 +26,47 @@ interface YtChannelItem {
   contentDetails?: { relatedPlaylists?: { uploads?: string } };
 }
 
+export interface RecentUploadPullResult {
+  newVideoIds: number[];   // brand-new-to-corpus video ids (xmax=0 fresh inserts)
+  videoCount: number;      // recent videos returned by YT (0 if none)
+  error?: string;          // set on fetch failure — the channel is NOT stamped (retried sooner)
+  rateLimited?: boolean;   // error looks like 429/403/quota → caller should ban the key
+}
+
+/**
+ * Pull one channel's recent uploads — the shared "essence" run by BOTH the
+ * niche Watcher / corpus enricher (Phase 4) and reMeasureChannels. Fetches via
+ * the caller-supplied YT pair, upserts new videos, and on ANY successful fetch
+ * (even zero videos) stamps last_recent_videos_fetched_at=NOW() so the caller's
+ * recency cooldown works — matching the outlier pipeline's convention. On error
+ * the channel is left un-stamped (retried sooner). The caller owns key
+ * selection + ban/retry policy (this fn just reports rateLimited).
+ */
+export async function pullRecentUploadsForChannel(
+  pool: import('pg').Pool,
+  channelId: string,
+  uploadsPlaylistId: string,
+  pair: Parameters<typeof fetchChannelRecentUploads>[1],
+  maxVideos: number,
+): Promise<RecentUploadPullResult> {
+  const r = await fetchChannelRecentUploads(uploadsPlaylistId, pair, { maxVideos });
+  if (r.error) {
+    const rateLimited = /429|403|quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(r.error);
+    return { newVideoIds: [], videoCount: 0, error: r.error, rateLimited };
+  }
+  const newVideoIds = (r.videos && r.videos.length > 0)
+    ? await upsertRecentVideos(pool, channelId, r.videos)
+    : [];
+  await pool.query(
+    `UPDATE niche_spy_channels SET
+       recent_videos_avg_views = $1, recent_videos_median_views = $2, recent_videos_max_views = $3,
+       recent_videos_count = $4, last_recent_videos_fetched_at = NOW()
+     WHERE channel_id = $5`,
+    [r.avgViews, r.medianViews, r.maxViews, r.count, channelId],
+  ).catch(() => {});
+  return { newVideoIds, videoCount: r.count ?? 0 };
+}
+
 export interface ReMeasureResult {
   requested: number;
   statsUpdated: number;    // channels whose stats row was upserted
@@ -109,20 +150,14 @@ export async function reMeasureChannels(
     const pair = await pickRandomActiveYtPair();
     if (!pair) { result.errors++; continue; }
     try {
-      const r = await fetchChannelRecentUploads(row.uploads_playlist_id!, pair, { maxVideos: opts.maxRecent ?? 10 });
-      if (r.error) { result.errors++; continue; }
-      if (r.videos && r.videos.length > 0) {
-        const insertedIds = await upsertRecentVideos(pool, row.channel_id, r.videos);
-        for (const videoId of insertedIds) result.newVideos.push({ channelId: row.channel_id, videoId });
-        await pool.query(
-          `UPDATE niche_spy_channels SET
-             recent_videos_avg_views = $1, recent_videos_median_views = $2, recent_videos_max_views = $3,
-             recent_videos_count = $4, last_recent_videos_fetched_at = NOW()
-           WHERE channel_id = $5`,
-          [r.avgViews, r.medianViews, r.maxViews, r.count, row.channel_id],
-        ).catch(() => {});
-        result.recentPulled++;
+      const pull = await pullRecentUploadsForChannel(pool, row.channel_id, row.uploads_playlist_id!, pair, opts.maxRecent ?? 10);
+      if (pull.error) {
+        if (pull.rateLimited) banYtKey(pair.key);
+        result.errors++;
+        continue;
       }
+      for (const videoId of pull.newVideoIds) result.newVideos.push({ channelId: row.channel_id, videoId });
+      result.recentPulled++;
     } catch { result.errors++; }
   }
 

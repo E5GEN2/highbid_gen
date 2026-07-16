@@ -4,8 +4,15 @@ import { getProxyStats } from '@/lib/xgodo-proxy';
 import { ytFetchViaProxy } from '@/lib/yt-proxy-fetch';
 import { getYtPairForThread, getYtKeyStatus, banYtKey } from '@/lib/yt-keys';
 import { fetchChannelFirstUpload } from '@/lib/yt-channel-age';
-import { fetchChannelRecentUploads } from '@/lib/yt-recent-uploads';
-import { upsertRecentVideos } from '@/lib/outlier-enrich';
+import { pullRecentUploadsForChannel } from '@/lib/channel-remeasure';
+
+// Phase 4 (recent uploads for <4-video channels) recency cooldown. Without it
+// Phase 4 re-pulled the SAME ~8.8K channels EVERY pass, starving Phase 2
+// (subscriber_count — the KPI input) during long Phase-4 windows and producing
+// the bursty subs-fill. The shared pullRecentUploadsForChannel primitive stamps
+// last_recent_videos_fetched_at on every successful fetch so this guard
+// self-throttles (matches the outlier pipeline's staleDays convention).
+const PHASE4_COOLDOWN_HOURS = 24;
 
 /**
  * YouTube Data API enrichment — fire-and-forget parallel job.
@@ -123,6 +130,8 @@ export async function POST(req: NextRequest) {
     LEFT JOIN ch_video_counts cvc ON cvc.channel_id = c.channel_id
     WHERE c.uploads_playlist_id IS NOT NULL
       AND COALESCE(cvc.cnt, 0) < 4
+      AND (c.last_recent_videos_fetched_at IS NULL
+           OR c.last_recent_videos_fetched_at < NOW() - INTERVAL '${PHASE4_COOLDOWN_HOURS} hours')
     LIMIT $${vIdx2}
   `, vidParams2);
   const phase4Count = Math.min(parseInt(phase4CntRes.rows[0].cnt), limit);
@@ -340,6 +349,8 @@ async function countPendingForEnrich(
     LEFT JOIN ch_video_counts cvc ON cvc.channel_id = c.channel_id
     WHERE c.uploads_playlist_id IS NOT NULL
       AND COALESCE(cvc.cnt, 0) < 4
+      AND (c.last_recent_videos_fetched_at IS NULL
+           OR c.last_recent_videos_fetched_at < NOW() - INTERVAL '${PHASE4_COOLDOWN_HOURS} hours')
     LIMIT $${vIdx2}
   `, vidParams2);
   const phase4Count = Math.min(parseInt(phase4CntRes.rows[0].cnt), limit);
@@ -744,10 +755,12 @@ async function runEnrichJob(
   // Without this step the /niche/channels grid renders sparse cards
   // (most channels show 0–1 thumbs) even though they're "fully
   // enriched" by the Phase 1/2/3 metadata pass. We pull 10 most-
-  // recent uploads per under-supplied channel via fetchChannelRecent
-  // Uploads + upsertRecentVideos (the same helpers the Outlier
-  // Pipeline uses), so the card's 4-thumb strip can be drawn from
-  // real videos.
+  // recent uploads per under-supplied channel via the shared
+  // pullRecentUploadsForChannel primitive (same "essence" the Watcher
+  // runs), so the card's 4-thumb strip can be drawn from real videos.
+  // Gated by PHASE4_COOLDOWN_HOURS + the primitive's stamp so it no
+  // longer re-pulls the same ~8.8K channels every pass (which starved
+  // Phase 2 / subscriber_count).
   if (!(await isCancelled())) {
     const vidParams: (string | number)[] = [];
     let pIdx = 1;
@@ -770,6 +783,8 @@ async function runEnrichJob(
       LEFT JOIN ch_video_counts cvc ON cvc.channel_id = c.channel_id
       WHERE c.uploads_playlist_id IS NOT NULL
         AND COALESCE(cvc.cnt, 0) < 4
+        AND (c.last_recent_videos_fetched_at IS NULL
+             OR c.last_recent_videos_fetched_at < NOW() - INTERVAL '${PHASE4_COOLDOWN_HOURS} hours')
       ORDER BY vid_cnt ASC
       LIMIT $${pIdx}
     `, vidParams);
@@ -788,14 +803,15 @@ async function runEnrichJob(
           const pair = await getYtPairForThread(threadId - 1);
           if (!pair) break;
           try {
-            const result = await fetchChannelRecentUploads(t.uploads_playlist_id, pair, { maxVideos: 10 });
-            if (result.error) {
-              const isRateLimited = /429|403|quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(result.error);
-              if (isRateLimited) banYtKey(pair.key);
+            // Shared primitive — same recent-uploads "essence" the Watcher /
+            // reMeasureChannels run. Stamps last_recent_videos_fetched_at so the
+            // PHASE4_COOLDOWN_HOURS guard above self-throttles.
+            const pull = await pullRecentUploadsForChannel(pool, t.channel_id, t.uploads_playlist_id, pair, 10);
+            if (pull.error) {
+              if (pull.rateLimited) banYtKey(pair.key);
               globalErrors++;
-            } else if (result.videos.length > 0) {
-              await upsertRecentVideos(pool, t.channel_id, result.videos);
-              enrichedVideos += result.videos.length;
+            } else {
+              enrichedVideos += pull.videoCount;
             }
           } catch (err) {
             console.warn('[yt-enrich] Phase 4 error:', (err as Error).message);
