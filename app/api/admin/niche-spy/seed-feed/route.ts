@@ -5,6 +5,16 @@ import { isAdmin } from '@/lib/admin-auth';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+interface CachedStats {
+  total: number;
+  errors: number;
+  avgSimilarity: number | null;
+  distinctSeeds: number;
+  distinctTasks: number;
+}
+const STATS_TTL_MS = 60_000;
+const statsCache = new Map<string, { at: number; stats: CachedStats }>();
+
 /**
  * GET /api/admin/niche-spy/seed-feed
  *
@@ -87,24 +97,48 @@ export async function GET(req: NextRequest) {
   );
 
   // Aggregate stats — useful for the header "X matches, Y rejected,
-  // Z errors" tiles when polling for since=<ts>.
-  const statsRes = await pool.query<{
-    total: string;
-    error_count: string;
-    avg_sim: number | null;
-    distinct_seeds: string;
-    distinct_tasks: string;
-  }>(
-    `SELECT
-       COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE e.error_message IS NOT NULL) AS error_count,
-       AVG(e.similarity) FILTER (WHERE e.similarity IS NOT NULL) AS avg_sim,
-       COUNT(DISTINCT e.seed_video_id) AS distinct_seeds,
-       COUNT(DISTINCT e.task_id) FILTER (WHERE e.task_id IS NOT NULL) AS distinct_tasks
-     FROM niche_seed_expansions e
-     ${where}`,
-    args.slice(0, -1),
-  );
+  // Z errors" tiles when polling for since=<ts>. This aggregation full-scans
+  // the multi-M-row table (~7s: COUNT(DISTINCT) can't use an index), while the
+  // panel polls every 3s — uncached, the polls pile onto each other and the
+  // feed starves (found 2026-07-20 when the Video Seed tab sat empty). The
+  // rows query above stays live; the stats tiles only need to be fresh-ish,
+  // so cache them per filter-combination for 60s.
+  const statsCacheKey = JSON.stringify([since, taskId, keyword, matched, minSim]);
+  const cached = statsCache.get(statsCacheKey);
+  let stats: CachedStats;
+  if (cached && Date.now() - cached.at < STATS_TTL_MS) {
+    stats = cached.stats;
+  } else {
+    const statsRes = await pool.query<{
+      total: string;
+      error_count: string;
+      avg_sim: number | null;
+      distinct_seeds: string;
+      distinct_tasks: string;
+    }>(
+      `SELECT
+         COUNT(*) AS total,
+         COUNT(*) FILTER (WHERE e.error_message IS NOT NULL) AS error_count,
+         AVG(e.similarity) FILTER (WHERE e.similarity IS NOT NULL) AS avg_sim,
+         COUNT(DISTINCT e.seed_video_id) AS distinct_seeds,
+         COUNT(DISTINCT e.task_id) FILTER (WHERE e.task_id IS NOT NULL) AS distinct_tasks
+       FROM niche_seed_expansions e
+       ${where}`,
+      args.slice(0, -1),
+    );
+    stats = {
+      total:           parseInt(statsRes.rows[0].total),
+      errors:          parseInt(statsRes.rows[0].error_count),
+      avgSimilarity:   statsRes.rows[0].avg_sim != null ? parseFloat(String(statsRes.rows[0].avg_sim)) : null,
+      distinctSeeds:   parseInt(statsRes.rows[0].distinct_seeds),
+      distinctTasks:   parseInt(statsRes.rows[0].distinct_tasks),
+    };
+    statsCache.set(statsCacheKey, { at: Date.now(), stats });
+    // Bounded: drop stale entries so filter churn can't grow the map forever.
+    if (statsCache.size > 50) {
+      for (const [k, v] of statsCache) if (Date.now() - v.at >= STATS_TTL_MS) statsCache.delete(k);
+    }
+  }
 
   return NextResponse.json({
     rows: res.rows.map(r => ({
@@ -127,12 +161,6 @@ export async function GET(req: NextRequest) {
       candidateWasNew: r.candidate_was_new,
       detectedAt: r.detected_at?.toISOString() ?? null,
     })),
-    stats: {
-      total:           parseInt(statsRes.rows[0].total),
-      errors:          parseInt(statsRes.rows[0].error_count),
-      avgSimilarity:   statsRes.rows[0].avg_sim != null ? parseFloat(String(statsRes.rows[0].avg_sim)) : null,
-      distinctSeeds:   parseInt(statsRes.rows[0].distinct_seeds),
-      distinctTasks:   parseInt(statsRes.rows[0].distinct_tasks),
-    },
+    stats,
   });
 }
