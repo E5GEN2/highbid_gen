@@ -5,15 +5,31 @@ import { isAdmin } from '@/lib/admin-auth';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-interface CachedStats {
+/**
+ * LIVE incremental stats. The header tiles want all-time totals that tick on
+ * every 3s poll, but the naive aggregation (COUNT(DISTINCT) over the multi-M-row
+ * append-only table) costs ~7s — polls piled up and starved the feed
+ * (2026-07-20). niche_seed_expansions is APPEND-ONLY with a monotonic id, so:
+ * one full aggregation seeds the state per filter-combination, then each poll
+ * only aggregates rows with id > lastMaxId (a handful, via the pkey index) and
+ * folds them into the running totals — exact, live, ~1ms per poll.
+ */
+interface StatsState {
   total: number;
   errors: number;
-  avgSimilarity: number | null;
-  distinctSeeds: number;
-  distinctTasks: number;
+  simSum: number;
+  simCount: number;
+  seeds: Set<number>;
+  tasks: Set<string>;
+  maxId: string;       // bigint as string
+  lastUsed: number;
+  seededAt: number;    // when the full aggregation ran — hourly re-seed guards
+                       // against drift if an old row is ever UPDATEd (the
+                       // incremental fold only sees appends)
 }
-const STATS_TTL_MS = 60_000;
-const statsCache = new Map<string, { at: number; stats: CachedStats }>();
+const statsState = new Map<string, StatsState>();
+const MAX_STATS_COMBOS = 20;
+const RESEED_AFTER_MS = 60 * 60 * 1000;
 
 /**
  * GET /api/admin/niche-spy/seed-feed
@@ -96,49 +112,82 @@ export async function GET(req: NextRequest) {
     args,
   );
 
-  // Aggregate stats — useful for the header "X matches, Y rejected,
-  // Z errors" tiles when polling for since=<ts>. This aggregation full-scans
-  // the multi-M-row table (~7s: COUNT(DISTINCT) can't use an index), while the
-  // panel polls every 3s — uncached, the polls pile onto each other and the
-  // feed starves (found 2026-07-20 when the Video Seed tab sat empty). The
-  // rows query above stays live; the stats tiles only need to be fresh-ish,
-  // so cache them per filter-combination for 60s.
-  const statsCacheKey = JSON.stringify([since, taskId, keyword, matched, minSim]);
-  const cached = statsCache.get(statsCacheKey);
-  let stats: CachedStats;
-  if (cached && Date.now() - cached.at < STATS_TTL_MS) {
-    stats = cached.stats;
-  } else {
-    const statsRes = await pool.query<{
-      total: string;
-      error_count: string;
-      avg_sim: number | null;
-      distinct_seeds: string;
-      distinct_tasks: string;
-    }>(
-      `SELECT
-         COUNT(*) AS total,
-         COUNT(*) FILTER (WHERE e.error_message IS NOT NULL) AS error_count,
-         AVG(e.similarity) FILTER (WHERE e.similarity IS NOT NULL) AS avg_sim,
-         COUNT(DISTINCT e.seed_video_id) AS distinct_seeds,
-         COUNT(DISTINCT e.task_id) FILTER (WHERE e.task_id IS NOT NULL) AS distinct_tasks
-       FROM niche_seed_expansions e
-       ${where}`,
-      args.slice(0, -1),
+  // LIVE stats, incrementally maintained (see StatsState above): tiles tick on
+  // every poll, but each poll only aggregates the rows added since the last one.
+  const filterArgs = args.slice(0, -1) as (string | number | boolean)[];
+  const andWhere = (extra: string) => (where ? `${where} AND ${extra}` : `WHERE ${extra}`);
+  const statsKey = JSON.stringify([since, taskId, keyword, matched, minSim]);
+  let st = statsState.get(statsKey);
+  if (st && Date.now() - st.seededAt > RESEED_AFTER_MS) { statsState.delete(statsKey); st = undefined; }
+  if (!st) {
+    // Seed the state: one aggregation pass (no COUNT(DISTINCT) — the distinct
+    // id lists come from their own index-driven DISTINCT scans) per
+    // filter-combination per process. Every later poll is incremental.
+    const fullRes = await pool.query<{ total: string; error_count: string; sim_sum: string | null; sim_count: string; max_id: string | null }>(
+      `SELECT COUNT(*) AS total,
+              COUNT(*) FILTER (WHERE e.error_message IS NOT NULL) AS error_count,
+              SUM(e.similarity) FILTER (WHERE e.similarity IS NOT NULL) AS sim_sum,
+              COUNT(e.similarity) AS sim_count,
+              MAX(e.id) AS max_id
+         FROM niche_seed_expansions e ${where}`,
+      filterArgs,
     );
-    stats = {
-      total:           parseInt(statsRes.rows[0].total),
-      errors:          parseInt(statsRes.rows[0].error_count),
-      avgSimilarity:   statsRes.rows[0].avg_sim != null ? parseFloat(String(statsRes.rows[0].avg_sim)) : null,
-      distinctSeeds:   parseInt(statsRes.rows[0].distinct_seeds),
-      distinctTasks:   parseInt(statsRes.rows[0].distinct_tasks),
+    const seedsRes = await pool.query<{ seed_video_id: number }>(
+      `SELECT DISTINCT e.seed_video_id FROM niche_seed_expansions e ${andWhere('e.seed_video_id IS NOT NULL')}`,
+      filterArgs,
+    );
+    const tasksRes = await pool.query<{ task_id: string }>(
+      `SELECT DISTINCT e.task_id FROM niche_seed_expansions e ${andWhere('e.task_id IS NOT NULL')}`,
+      filterArgs,
+    );
+    const f = fullRes.rows[0];
+    st = {
+      total: parseInt(f.total),
+      errors: parseInt(f.error_count),
+      simSum: f.sim_sum != null ? parseFloat(f.sim_sum) : 0,
+      simCount: parseInt(f.sim_count),
+      seeds: new Set(seedsRes.rows.map(r => r.seed_video_id)),
+      tasks: new Set(tasksRes.rows.map(r => r.task_id)),
+      maxId: f.max_id ?? '0',
+      lastUsed: Date.now(),
+      seededAt: Date.now(),
     };
-    statsCache.set(statsCacheKey, { at: Date.now(), stats });
-    // Bounded: drop stale entries so filter churn can't grow the map forever.
-    if (statsCache.size > 50) {
-      for (const [k, v] of statsCache) if (Date.now() - v.at >= STATS_TTL_MS) statsCache.delete(k);
+    statsState.set(statsKey, st);
+    // Bounded: evict the least-recently-used combo when filter churn piles up.
+    if (statsState.size > MAX_STATS_COMBOS) {
+      let lruKey: string | null = null; let lruAt = Infinity;
+      for (const [k, v] of statsState) if (v.lastUsed < lruAt) { lruAt = v.lastUsed; lruKey = k; }
+      if (lruKey && lruKey !== statsKey) statsState.delete(lruKey);
     }
+  } else {
+    // Fold in only what's new since the last poll (pkey range scan, ~ms). The
+    // LIMIT bounds a big catch-up after idle; if we hit it, the next poll
+    // continues from where this one stopped — self-healing, never unbounded.
+    const deltaRes = await pool.query<{ id: string; seed_video_id: number | null; task_id: string | null; similarity: number | null; is_err: boolean }>(
+      `SELECT e.id, e.seed_video_id, e.task_id, e.similarity,
+              (e.error_message IS NOT NULL) AS is_err
+         FROM niche_seed_expansions e ${andWhere(`e.id > $${filterArgs.length + 1}`)}
+        ORDER BY e.id ASC
+        LIMIT 5000`,
+      [...filterArgs, st.maxId],
+    );
+    for (const r of deltaRes.rows) {
+      st.total++;
+      if (r.is_err) st.errors++;
+      if (r.similarity != null) { st.simSum += Number(r.similarity); st.simCount++; }
+      if (r.seed_video_id != null) st.seeds.add(r.seed_video_id);
+      if (r.task_id != null) st.tasks.add(r.task_id);
+      st.maxId = r.id;
+    }
+    st.lastUsed = Date.now();
   }
+  const stats = {
+    total: st.total,
+    errors: st.errors,
+    avgSimilarity: st.simCount > 0 ? st.simSum / st.simCount : null,
+    distinctSeeds: st.seeds.size,
+    distinctTasks: st.tasks.size,
+  };
 
   return NextResponse.json({
     rows: res.rows.map(r => ({
