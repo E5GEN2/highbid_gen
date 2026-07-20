@@ -399,6 +399,13 @@ export async function upsertRecentVideos(
 ): Promise<number[]> {
   if (videos.length === 0) return [];
 
+  // YT titles can contain literal NUL (\u0000), which Postgres text rejects
+  // ("invalid byte sequence for encoding UTF8: 0x00") — one poison title killed
+  // the whole multi-row INSERT, and since the channel is only stamped after a
+  // successful upsert, Phase 4 re-picked the same channel forever (2026-07-20).
+  const noNul = (s: string | null | undefined): string | null =>
+    s == null ? null : s.replace(/\u0000/g, '');
+
   // Pull the channel's display info once so all the rows we insert
   // share the same channel_name + avatar (the channels.list pass that
   // populated niche_spy_channels already has these).
@@ -422,11 +429,11 @@ export async function upsertRecentVideos(
     const postedAt = v.publishedAt ? new Date(v.publishedAt) : null;
     const row = [
       url,                                  // 1 url (unique conflict target)
-      v.title,                              // 2 title
-      v.thumbnail,                          // 3 thumbnail
+      noNul(v.title),                       // 2 title
+      noNul(v.thumbnail),                   // 3 thumbnail
       channelId,                            // 4 channel_id
-      channelName,                          // 5 channel_name
-      channelAvatar,                        // 6 channel_avatar
+      noNul(channelName),                   // 5 channel_name
+      noNul(channelAvatar),                 // 6 channel_avatar
       channelCreatedAt,                     // 7 channel_created_at
       postedAt,                             // 8 posted_at
       v.viewCount,                          // 9 view_count
