@@ -101,3 +101,28 @@ export async function deleteApiKey(
     return false;
   }
 }
+
+/** Reaper: hard-delete rows already marked status='invalid'. Consumers flag a
+ *  terminally-dead key 'invalid' (which drops it from the active picker
+ *  immediately, WHERE status='active'); this sweeps those dead rows so the pool
+ *  self-cleans instead of accumulating a graveyard — 7k+ dead rows had dragged
+ *  the "% active" gauge to a misleading 5%. There are ~10 scattered consumer
+ *  sites that mark-invalid; a single central reaper covers them all (and any
+ *  added later) with no per-site surgery. Bounded per call so a large backlog
+ *  drains over several ticks rather than one giant DELETE. Returns rows removed. */
+export async function pruneInvalidKeys(batch = 2000): Promise<number> {
+  try {
+    const pool = await getPool();
+    const r = await pool.query(
+      `DELETE FROM xgodo_api_keys
+        WHERE ctid IN (
+          SELECT ctid FROM xgodo_api_keys WHERE status = 'invalid' LIMIT $1
+        )`,
+      [batch],
+    );
+    return r.rowCount ?? 0;
+  } catch (err) {
+    console.error('[api-key] pruneInvalidKeys failed:', (err as Error).message);
+    return 0;
+  }
+}

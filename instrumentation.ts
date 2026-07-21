@@ -363,6 +363,25 @@ export async function register() {
       }
     }
 
+    // Key-pool reaper — deletes rows consumers marked 'invalid' (terminally-dead
+    // keys) so the pool self-cleans instead of piling up a graveyard that skews
+    // the "% active" gauge. Bounded (2000/tick) so a big backlog drains over a
+    // few ticks. Kill switch admin_config key_prune_enabled='false'.
+    async function runKeyPruneTick() {
+      try {
+        const pool = await getPool();
+        const cfg = await pool.query<{ value: string }>(
+          `SELECT value FROM admin_config WHERE key = 'key_prune_enabled'`,
+        );
+        if (cfg.rows[0]?.value === 'false') return;   // default ON
+        const { pruneInvalidKeys } = await import('./lib/api-key-validation');
+        const n = await pruneInvalidKeys(2000);
+        if (n > 0) console.log(`[key-prune] deleted ${n} invalid keys`);
+      } catch (err) {
+        console.error('[key-prune] error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAll() {
       await runAutoSync();
       await runAutoSchedule();
@@ -380,6 +399,8 @@ export async function register() {
       // it dies (deploy orphan, transient error, or clean idle exit + new
       // backlog). Cheap no-op (one SELECT) while it's healthy.
       await runEnrichWatchdogTick();
+      // Key-pool reaper — sweep terminally-dead keys so the pool self-cleans.
+      await runKeyPruneTick();
       // CG-eligibility KPI sweep — incremental stamp of the flywheel's OUTPUT
       // metric (cg-eligible channels). Bounded batches, no-op-cheap.
       await runCgKpiSweepTick();
