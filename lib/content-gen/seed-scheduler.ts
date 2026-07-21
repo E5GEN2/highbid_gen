@@ -46,6 +46,13 @@ interface SchedulerConfig {
   maxSuggested: number;
   token: string;
   englishOnly: boolean;
+  // Embed kill-switch (the EXPAND flow ranks candidates by embedding them, so a
+  // dead google_ai_studio pool makes every dispatched crawl unusable → pause).
+  killOnDeadEmbeds: boolean;
+  embedKillMinKeys: number;    // pause if fewer pickable embed keys than this
+  embedKillWindowMin: number;  // fail-rate look-back window
+  embedKillThreshold: number;  // pause if embed-fail fraction >= this over the window
+  embedKillMinSample: number;  // ...only once the window has this many expansions
 }
 
 async function loadConfig(): Promise<SchedulerConfig> {
@@ -67,7 +74,57 @@ async function loadConfig(): Promise<SchedulerConfig> {
     // Default ON — filter seeds to English/Latin-script titles. Off only if the
     // operator explicitly sets seed_english_only='false'.
     englishOnly:    c.seed_english_only !== 'false',
+    killOnDeadEmbeds:   c.seed_kill_on_dead_embeds !== 'false',    // default ON
+    embedKillMinKeys:   parseInt(c.seed_embed_kill_min_keys) || 1,
+    embedKillWindowMin: parseInt(c.seed_embed_kill_window_min) || 30,
+    embedKillThreshold: parseFloat(c.seed_embed_kill_threshold) || 0.9,
+    embedKillMinSample: parseInt(c.seed_embed_kill_min_sample) || 25,
   };
+}
+
+/**
+ * Kill-switch signal — is the embed pipeline effectively dead? The video-seed
+ * EXPAND flow embeds every candidate to rank it against the seed; with no
+ * working google_ai_studio keys those calls fail (no_active_ai_keys) and the
+ * dispatched agent work is wasted. Two OR'd signals: a LEADING pool check (0
+ * pickable keys → trip BEFORE wasting a dispatch wave) and an OUTCOME fail-rate
+ * over a window (the operator's "90%+ failing" criterion) once there's sample.
+ * Re-checked every tick, so dispatch AUTO-RESUMES the moment embeds recover.
+ */
+async function embedPipelineDead(cfg: SchedulerConfig): Promise<{ dead: boolean; reason: string }> {
+  const pool = await getPool();
+  const k = await pool.query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM xgodo_api_keys
+      WHERE service = 'google_ai_studio' AND status = 'active'
+        AND (banned_until IS NULL OR banned_until < NOW())`,
+  );
+  const pickable = parseInt(k.rows[0]?.n ?? '0');
+  if (pickable < cfg.embedKillMinKeys) return { dead: true, reason: `embed_pool_empty (${pickable} pickable keys)` };
+  const r = await pool.query<{ total: string; embed_err: string }>(
+    `SELECT COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE error_message ~* '(no_active_ai|ai_key|embed)') AS embed_err
+       FROM niche_seed_expansions
+      WHERE detected_at > NOW() - ($1 || ' minutes')::interval`,
+    [String(cfg.embedKillWindowMin)],
+  );
+  const total = parseInt(r.rows[0]?.total ?? '0');
+  const err = parseInt(r.rows[0]?.embed_err ?? '0');
+  if (total >= cfg.embedKillMinSample && err / total >= cfg.embedKillThreshold) {
+    return { dead: true, reason: `embed_fail ${Math.round((100 * err) / total)}% over ${cfg.embedKillWindowMin}m (${err}/${total})` };
+  }
+  return { dead: false, reason: '' };
+}
+
+/** Persist the kill-switch state to admin_config so the UI/operator can see
+ *  WHY dispatch is paused (key: seed_embed_killswitch). Fire-and-forget. */
+async function recordKillswitch(tripped: boolean, reason: string): Promise<void> {
+  const pool = await getPool();
+  const payload = JSON.stringify({ tripped, reason, at: new Date().toISOString() });
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('seed_embed_killswitch', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+    [payload],
+  ).catch(() => {});
 }
 
 /** Try to grab an advisory lock; returns false if another tick holds it. */
@@ -224,6 +281,20 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
   const cfg = await loadConfig();
   if (!cfg.enabled) return { ...empty, reason: 'disabled' };
   if (!cfg.token)   return { ...empty, reason: 'no_xgodo_token' };
+
+  // EMBED KILL-SWITCH — the spy fleet only produces usable work when the expand
+  // flow can embed candidates. If the embed pool is dead, dispatching more seeds
+  // just burns xgodo agent time on un-rankable crawls, so pause the whole fleet
+  // (content-gen + novelty) until embeds recover. Auto-resumes next tick.
+  if (cfg.killOnDeadEmbeds) {
+    const ks = await embedPipelineDead(cfg);
+    if (ks.dead) {
+      await recordKillswitch(true, ks.reason);
+      console.warn(`[scheduler] embed kill-switch TRIPPED — pausing dispatch: ${ks.reason}`);
+      return { ...empty, ran: true, reason: `embed_killswitch: ${ks.reason}` };
+    }
+    await recordKillswitch(false, '');
+  }
 
   if (!(await tryLock(SCHEDULER_LOCK_KEY))) return { ...empty, reason: 'locked' };
   try {
