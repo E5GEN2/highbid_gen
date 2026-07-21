@@ -432,7 +432,7 @@ export function startKeyImport(opts: RunImportOpts = {}): { started: boolean; jo
 
 async function runImport(opts: RunImportOpts): Promise<void> {
   const jobId = opts.jobId ?? DEFAULT_AI_STUDIO_KEY_JOB_ID;
-  const limit = Math.min(opts.limit ?? 100, 500);
+  const limit = Math.min(opts.limit ?? 100, 5000);
   const concurrency = Math.max(1, Math.min(opts.concurrency ?? 5, 20));
   const dryRun = !!opts.dryRun;
 

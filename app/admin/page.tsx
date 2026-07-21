@@ -7317,7 +7317,7 @@ function KeyImportCard({ active, cfg }: { active: boolean; cfg: KeyServiceConfig
           <div>
             <label className="block text-[10px] uppercase tracking-wider text-[#666] mb-1">limit</label>
             <input
-              type="number" min={1} max={500} value={limit} onChange={e => setLimit(parseInt(e.target.value) || 50)}
+              type="number" min={1} max={5000} value={limit} onChange={e => setLimit(parseInt(e.target.value) || 50)}
               className="w-full px-2 h-8 bg-[#0a0a0a] border border-[#1f1f1f] text-white text-xs rounded focus:outline-none focus:border-yellow-500"
             />
           </div>
