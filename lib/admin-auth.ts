@@ -20,8 +20,8 @@ export async function isAdmin(req: NextRequest): Promise<boolean> {
       [token]
     );
     if (result.rows.length > 0) {
-      // Update last_used_at
-      pool.query(`UPDATE api_tokens SET last_used_at = NOW() WHERE token = $1`, [token]).catch(() => {});
+      // Update last_used_at, throttled ≤once/min (hot-row lock contention, see api-auth.ts).
+      pool.query(`UPDATE api_tokens SET last_used_at = NOW() WHERE token = $1 AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '60 seconds')`, [token]).catch(() => {});
       return true;
     }
   }
@@ -35,7 +35,7 @@ export async function isAdmin(req: NextRequest): Promise<boolean> {
       [headerToken]
     );
     if (result.rows.length > 0) {
-      pool.query(`UPDATE api_tokens SET last_used_at = NOW() WHERE token = $1`, [headerToken]).catch(() => {});
+      pool.query(`UPDATE api_tokens SET last_used_at = NOW() WHERE token = $1 AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '60 seconds')`, [headerToken]).catch(() => {});
       return true;
     }
   }

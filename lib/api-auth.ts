@@ -54,8 +54,16 @@ export async function getApiUser(req: NextRequest): Promise<ApiUser | null> {
 
     const row = result.rows[0];
 
-    // Update last_used_at (fire-and-forget)
-    pool.query(`UPDATE api_tokens SET last_used_at = NOW() WHERE id = $1`, [row.token_id]).catch(() => {});
+    // Update last_used_at (fire-and-forget), THROTTLED to ≤once/min per token.
+    // A shared agent token is hit thousands of times/min and every request
+    // rewrote the same row → row-lock serialization (149-deep pileup at 2×
+    // discovery load, 2026-07-21). The staleness guard makes 99% of requests
+    // match 0 rows (no write, no lock), keeping last_used_at minute-accurate.
+    pool.query(
+      `UPDATE api_tokens SET last_used_at = NOW()
+        WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '60 seconds')`,
+      [row.token_id],
+    ).catch(() => {});
 
     return {
       id: row.user_id,
