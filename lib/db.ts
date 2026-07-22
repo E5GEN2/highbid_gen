@@ -897,6 +897,29 @@ export async function initSchema(): Promise<void> {
     // UNIQUE(channel_id, day) = idempotent daily capture (ON CONFLICT DO NOTHING).
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cgs_chan_day ON channel_growth_snapshots(channel_id, day)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cgs_chan_captured ON channel_growth_snapshots(channel_id, captured_at DESC)`).catch(() => {});
+    // (day, source) powers the deep-track daily budget count.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgs_day_source ON channel_growth_snapshots(day, source)`).catch(() => {});
+
+    // Phase 2 (staging ladder) columns — promotion/demotion counters.
+    await client.query(`ALTER TABLE growth_tracked_channels ADD COLUMN IF NOT EXISTS dead_scans INTEGER DEFAULT 0`).catch(() => {});
+    await client.query(`ALTER TABLE growth_tracked_channels ADD COLUMN IF NOT EXISTS up_days INTEGER DEFAULT 0`).catch(() => {});
+
+    // Per-video daily view history — written for traction/documented channels
+    // only (the deep-track tiers), so video-level growth curves exist for the
+    // channels that earn documentation. Same idempotent day-key pattern.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS video_growth_snapshots (
+        id SERIAL PRIMARY KEY,
+        video_id INTEGER REFERENCES niche_spy_videos(id) ON DELETE CASCADE,
+        day DATE NOT NULL DEFAULT CURRENT_DATE,
+        captured_at TIMESTAMPTZ DEFAULT NOW(),
+        view_count BIGINT,
+        like_count BIGINT,
+        comment_count BIGINT
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vgs_vid_day ON video_growth_snapshots(video_id, day)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vgs_vid_captured ON video_growth_snapshots(video_id, captured_at DESC)`).catch(() => {});
 
     // Niche saturation runs — server-side A/B/C model (authoritative)
     await client.query(`

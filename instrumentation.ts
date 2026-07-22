@@ -497,7 +497,7 @@ export async function register() {
         const { runGrowthWatcherTick } = await import('./lib/growth-watcher');
         const r = await runGrowthWatcherTick();
         if (r.enabled && !r.skipped && (r.enrolled > 0 || r.snapshotted > 0)) {
-          console.log('[growth-watcher]', `enrolled=${r.enrolled} scanned=${r.scanned} snapshots=${r.snapshotted} lives=${r.lives} ${r.ms}ms`);
+          console.log('[growth-watcher]', `enrolled=${r.enrolled} scanned=${r.scanned} deep=${r.deepScanned} snapshots=${r.snapshotted} vidSnaps=${r.videoSnaps} lives=${r.lives} up=${r.promoted} down=${r.demoted} ${r.ms}ms`);
         }
       } catch (err) {
         console.error('[growth-watcher] error:', err instanceof Error ? err.message : err);
