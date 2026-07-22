@@ -199,13 +199,25 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
   }
 
   if (snapVals.length > 0) {
+    // One row per channel per day. On conflict, UPGRADE it: a deep scan later in
+    // the day must overwrite a liveness row's source (so source='deep' correctly
+    // marks the day's deep scans — deepSpentToday counts these for the budget)
+    // and refresh with the latest values. Liveness re-scans of an existing deep
+    // row keep source='deep'.
     const res = await pool.query(
       `INSERT INTO channel_growth_snapshots
          (channel_id, subscriber_count, total_views, video_count, recent_avg_views, stage, source)
        VALUES ${snapVals.join(', ')}
-       ON CONFLICT (channel_id, day) DO NOTHING`,
+       ON CONFLICT (channel_id, day) DO UPDATE SET
+         subscriber_count = EXCLUDED.subscriber_count,
+         total_views      = COALESCE(EXCLUDED.total_views, channel_growth_snapshots.total_views),
+         video_count      = EXCLUDED.video_count,
+         recent_avg_views = COALESCE(EXCLUDED.recent_avg_views, channel_growth_snapshots.recent_avg_views),
+         stage            = EXCLUDED.stage,
+         source           = CASE WHEN EXCLUDED.source = 'deep' THEN 'deep' ELSE channel_growth_snapshots.source END,
+         captured_at      = NOW()`,
       snapParams,
-    ).catch((e) => { console.error('[growth-watcher] snapshot insert failed:', (e as Error).message); return { rowCount: 0 }; });
+    ).catch((e) => { console.error('[growth-watcher] snapshot upsert failed:', (e as Error).message); return { rowCount: 0 }; });
     out.snapshotted = res.rowCount ?? 0;
   }
 
