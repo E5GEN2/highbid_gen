@@ -484,6 +484,28 @@ export async function register() {
     setInterval(watcherTick, 60 * 1000);
     setTimeout(watcherTick, 45 * 1000);
 
+    // Channel Growth Watcher (docs/growth-watcher/spec.md) on its OWN interval —
+    // enrolls small channels + captures a daily subs/video snapshot via the
+    // shared reMeasureChannels engine (stats-only, ~free). Sequential over a
+    // bounded batch, so it runs off runAll with a re-entrancy guard. Kill switch:
+    // admin_config growth_watcher_enabled.
+    let growthRunning = false;
+    const growthTick = async () => {
+      if (growthRunning) return;
+      growthRunning = true;
+      try {
+        const { runGrowthWatcherTick } = await import('./lib/growth-watcher');
+        const r = await runGrowthWatcherTick();
+        if (r.enabled && !r.skipped && (r.enrolled > 0 || r.snapshotted > 0)) {
+          console.log('[growth-watcher]', `enrolled=${r.enrolled} scanned=${r.scanned} snapshots=${r.snapshotted} lives=${r.lives} ${r.ms}ms`);
+        }
+      } catch (err) {
+        console.error('[growth-watcher] error:', err instanceof Error ? err.message : err);
+      } finally { growthRunning = false; }
+    };
+    setInterval(growthTick, 60 * 1000);
+    setTimeout(growthTick, 50 * 1000);
+
     // Start the agent thermostat (maintains thread targets per keyword)
     const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
     ensureThermostatRunning();

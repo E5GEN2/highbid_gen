@@ -850,6 +850,54 @@ export async function initSchema(): Promise<void> {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_niche_saturation_kw ON niche_spy_saturation(keyword, recorded_at DESC)`).catch(() => {});
 
+    // ── Channel Growth Watcher (docs/growth-watcher/spec.md) ────────────────
+    // Longitudinal growth tracking for small channels caught early. The rest of
+    // the schema keeps only LATEST stats (niche_spy_channels overwrites in
+    // place); these two tables add the missing time-series so subs/video growth
+    // can be documented over time. growth_tracked_channels is the stage state
+    // machine; channel_growth_snapshots is the append-only daily history.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS growth_tracked_channels (
+        channel_id TEXT PRIMARY KEY,
+        stage TEXT NOT NULL DEFAULT 'liveness',   -- liveness|pulse|traction|documented|dormant
+        next_due_at TIMESTAMPTZ DEFAULT NOW(),    -- staleness gate (per-stage cadence)
+        first_caught_at TIMESTAMPTZ DEFAULT NOW(),
+        first_caught_subs BIGINT,                 -- subs at catch ("caught at N")
+        first_caught_video_count INTEGER,
+        last_subs BIGINT,                         -- prev-pass values, for delta detection
+        last_video_count INTEGER,
+        last_scanned_at TIMESTAMPTZ,
+        growth_score DOUBLE PRECISION DEFAULT 0,  -- Phase 1: abs subs gained since catch
+        showed_life BOOLEAN DEFAULT FALSE,        -- ever grew since catch (Phase 2 promotion input)
+        promoted_at TIMESTAMPTZ,
+        enrolled_source TEXT DEFAULT 'auto_small',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_gtc_stage_due ON growth_tracked_channels(stage, next_due_at)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_gtc_score ON growth_tracked_channels(growth_score DESC)`).catch(() => {});
+    // Partial index powers the enrollment anti-join (small channels only) so it
+    // never seq-scans the ~328K-row niche_spy_channels table.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nsc_small_subs ON niche_spy_channels(subscriber_count) WHERE subscriber_count < 1000`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS channel_growth_snapshots (
+        id SERIAL PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        day DATE NOT NULL DEFAULT CURRENT_DATE,
+        captured_at TIMESTAMPTZ DEFAULT NOW(),
+        subscriber_count BIGINT,
+        total_views BIGINT,
+        video_count INTEGER,
+        recent_avg_views BIGINT,
+        stage TEXT,
+        source TEXT DEFAULT 'liveness'
+      )
+    `);
+    // UNIQUE(channel_id, day) = idempotent daily capture (ON CONFLICT DO NOTHING).
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cgs_chan_day ON channel_growth_snapshots(channel_id, day)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cgs_chan_captured ON channel_growth_snapshots(channel_id, captured_at DESC)`).catch(() => {});
+
     // Niche saturation runs — server-side A/B/C model (authoritative)
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_saturation_runs (
