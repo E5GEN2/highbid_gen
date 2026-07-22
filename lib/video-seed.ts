@@ -86,10 +86,32 @@ function cooloffAiKey(keyId: number, seconds: number = 90): void {
   })();
 }
 
+// ── Global embed-concurrency limiter ─────────────────────────────────────
+// Google rate-limits embeddings per key/project. Firing many concurrent
+// batchEmbedContents (parallel /expand calls + novelty-recompute workers)
+// overruns the aggregate quota → 429s cascade, and each 429 cools its key for
+// 90s, so a burst drains the whole pickable pool → `no_active_ai` starvation.
+// Capping *concurrency* paces the request rate so keys aren't mass-cooled.
+// RULE: pace, don't saturate (see reference_gemini_throttle_resilience).
+// Env-tunable; ~4 keeps throughput healthy while staying under the quota.
+const EMBED_MAX_CONCURRENCY = Math.max(1, parseInt(process.env.HB_EMBED_CONCURRENCY || '4', 10));
+let embedSlots = EMBED_MAX_CONCURRENCY;
+const embedQueue: Array<() => void> = [];
+async function acquireEmbedSlot(): Promise<void> {
+  if (embedSlots > 0) { embedSlots--; return; }
+  return new Promise<void>(resolve => embedQueue.push(resolve));
+}
+function releaseEmbedSlot(): void {
+  const next = embedQueue.shift();
+  if (next) next();        // hand the slot straight to the next waiter
+  else embedSlots++;       // no waiter — return it to the pool
+}
+
 /** One Gemini batchEmbedContents call, routed through a specific
  *  (key, proxy) pair. Proxy is required — we never go direct so we
  *  don't pile load against Railway's single egress IP. Throws on any
- *  failure so the chunk loop can swap to a fresh pair. */
+ *  failure so the chunk loop can swap to a fresh pair. Serialized behind
+ *  the global embed limiter so concurrent callers can't saturate the pool. */
 async function batchEmbedGroupedViaProxy(
   groups: EmbedInput[][],
   modelName: string,
@@ -116,12 +138,21 @@ async function batchEmbedGroupedViaProxy(
   // fetchViaProxy handles both HTTP (undici) and SOCKS5 (https.request)
   // transports — see lib/proxy-dispatcher.ts. 20s timeout keeps the
   // outer per-call retry loop snappy.
-  const res = await fetchViaProxy(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requests }),
-    timeoutMs: 20_000,
-  }, proxyUrl);
+  // Serialize the actual Google request behind the global limiter (release as
+  // soon as the response is in — the rate-limited leg is the HTTP call itself).
+  await acquireEmbedSlot();
+  const res = await (async () => {
+    try {
+      return await fetchViaProxy(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests }),
+        timeoutMs: 20_000,
+      }, proxyUrl);
+    } finally {
+      releaseEmbedSlot();
+    }
+  })();
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
@@ -165,6 +196,7 @@ async function batchEmbedGroupedDirect(
 ): Promise<number[][]> {
   if (groups.length === 0) return [];
   let lastErr = 'no_attempts';
+  let rateLimited = 0;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const keyRow = await pickHealthyAiKey();
     if (!keyRow) { lastErr = 'no_active_ai_keys'; break; }
@@ -179,6 +211,15 @@ async function batchEmbedGroupedDirect(
       return await batchEmbedGroupedViaProxy(groups, modelName, keyRow.key, keyRow.id, proxy.url);
     } catch (err) {
       lastErr = (err as Error).message?.slice(0, 200) || 'unknown';
+      // A 429 is a pool-wide quota throttle, NOT a bad key — retrying with a
+      // fresh key just spreads the 90s cooloff across the pool and drains it.
+      // Cap 429 retries and back off (jittered) so a rate-limit blip can't burn
+      // through every pickable key. Non-429 errors (dead proxy/key) keep the
+      // full fast rotation.
+      if (/HTTP 429/.test(lastErr)) {
+        if (++rateLimited >= 2) break;
+        await new Promise(r => setTimeout(r, 800 + Math.floor(Math.random() * 600)));
+      }
     }
   }
   throw new Error(lastErr);
