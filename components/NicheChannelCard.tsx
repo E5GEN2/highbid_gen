@@ -153,11 +153,23 @@ export function NicheChannelCard({ channel: ch }: { channel: ChannelCardData }) 
       <div className="px-4 pb-4">
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-[11px] text-[#666] uppercase tracking-wider">Most popular videos</h4>
-          {ch.popularVideos.length > 0 && (
-            <span className="text-[10px] text-[#666]" title="Top videos by view count from this channel.">
-              top {ch.popularVideos.length} by views
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {ch.channelId && (
+              <a
+                href={`/niche/channels/${ch.channelId}/growth`}
+                className="text-[10px] text-emerald-400/80 hover:text-emerald-300 transition inline-flex items-center gap-1"
+                title="Growth history — subs over time + caught-early story"
+                onClick={e => e.stopPropagation()}
+              >
+                📈 Growth
+              </a>
+            )}
+            {ch.popularVideos.length > 0 && (
+              <span className="text-[10px] text-[#666]" title="Top videos by view count from this channel.">
+                top {ch.popularVideos.length} by views
+              </span>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {slots.map((v, i) => {
