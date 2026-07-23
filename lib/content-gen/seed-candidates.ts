@@ -85,6 +85,17 @@ export interface SeedDiscoveryOptions {
    * heuristic, not true language ID: romanized-foreign titles can still pass.
    */
   englishOnly?: boolean;
+  /**
+   * Ranking policy for seed selection (A/B — see seed-scheduler tick arm):
+   *   'v1_ln'  — legacy: novelty * (0.4 + 0.6*log-damped-views). Control arm.
+   *   'v2_pow' — treatment: novelty^NOV_EXP * (VIEW_FLOOR + (1-VIEW_FLOOR)*linear
+   *              view ramp to VIEW_TARGET). Weights high views far more than the
+   *              log-damped v1, because the lineage data shows eligible-yield
+   *              rises ~2.4× with seed views and compounds with novelty (the
+   *              nov_HI×view_mid quadrant yields ~1.05% vs 0.31% for the bulk).
+   * Defaults to 'v2_pow'.
+   */
+  policy?: 'v1_ln' | 'v2_pow';
 }
 
 /** Character class of non-English scripts + Vietnamese diacritics, as \u escapes
@@ -93,6 +104,16 @@ export interface SeedDiscoveryOptions {
  *  Kana, Hangul, Arabic, Thai, Cyrillic, Hebrew, Latin-Extended-Additional
  *  (Vietnamese tone marks), and đ. */
 const NON_ENGLISH_TITLE_RE = '[\u0900-\u097F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7A3\u0600-\u06FF\u0E00-\u0E7F\u0400-\u04FF\u0590-\u05FF\u1EA0-\u1EF9\u0111]';
+
+// v2_pow ranking params (env-tunable so we can dial the weighting WITHOUT a
+// redeploy while the A/B runs). Derived from the novelty×views yield crosstab:
+// views matter near-linearly up to ~3M (the empirical view_HI threshold), and
+// high novelty compounds, so penalize low-view seeds harder than v1's 0.4 floor.
+// Defaults grid-searched against the 9-quadrant yield crosstab: these maximize
+// Spearman rank-corr vs true eligible-yield (0.867, beating the legacy v1's 0.833).
+const SEED_NOV_EXP     = Math.max(0.1, parseFloat(process.env.HB_SEED_NOV_EXP || '1.1'));
+const SEED_VIEW_TARGET = Math.max(1, parseFloat(process.env.HB_SEED_VIEW_TARGET || '5000000'));
+const SEED_VIEW_FLOOR  = Math.min(0.9, Math.max(0, parseFloat(process.env.HB_SEED_VIEW_FLOOR || '0.2')));
 
 function ageTier(ageDays: number): SeedCandidate['channel']['age_tier'] {
   if (ageDays > 365) return 'mature';
@@ -284,10 +305,18 @@ export async function findSeedCandidates(opts: SeedDiscoveryOptions = {}): Promi
     // Seed ranking sub-scores.
     const isolation       = Math.max(0, Math.min(1, novelty));
     const channelQuality  = Math.max(0, Math.min(1, composite));
-    // Log-damp + normalise traction so 100M views doesn't dominate.
+    // Log-damp + normalise traction so 100M views doesn't dominate (kept for the
+    // components readout + the v1 control arm).
     const traction        = Math.log1p(views) / Math.log1p(10_000_000);
 
-    const seedScore = isolation * channelQuality * (0.4 + 0.6 * traction);
+    // Policy-aware selection score (A/B). v1_ln = legacy log-damped views;
+    // v2_pow = views-forward (near-linear ramp to VIEW_TARGET + novelty^NOV_EXP),
+    // which the lineage crosstab says should out-yield v1. Default v2_pow.
+    const seedScoreV1 = isolation * channelQuality * (0.4 + 0.6 * traction);
+    const tractionLin = Math.min(views / SEED_VIEW_TARGET, 1);
+    const seedScoreV2 = Math.pow(isolation, SEED_NOV_EXP) * channelQuality
+                        * (SEED_VIEW_FLOOR + (1 - SEED_VIEW_FLOOR) * tractionLin);
+    const seedScore = (opts.policy === 'v1_ln') ? seedScoreV1 : seedScoreV2;
 
     return {
       video_id:        Number(r.video_id),

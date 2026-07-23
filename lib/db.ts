@@ -1650,6 +1650,16 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'novelty'`).catch(() => {});
     await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS channel_id TEXT`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_source ON niche_discovery_seeds(source, status)`).catch(() => {});
+    // Seed-selection experiment tracking (so we can later verify whether the
+    // yield-weighting hypothesis was REAL): which ranking policy picked this seed
+    // ('v2_pow' treatment | 'v1_ln' control | 'content_gen'), the seed video's
+    // view count AT dispatch (current view_count drifts upward, so stamp it), and
+    // the computed selection score. Join to channel_cg_status.discovered_by_seed_video_id
+    // to compare eligible-yield per policy within the same time window (A/B).
+    await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS view_count_at_dispatch BIGINT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS select_policy TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS select_score DOUBLE PRECISION`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_policy ON niche_discovery_seeds(select_policy, dispatched_at)`).catch(() => {});
 
     // Content Gen "used" channels — a channel marked as already consumed into a
     // produced video. discoverChannels() excludes these so the used group

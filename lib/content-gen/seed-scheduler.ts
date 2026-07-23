@@ -239,11 +239,11 @@ async function dispatchContentGenSeeds(
     if (deployed > 0) {
       await pool.query(
         `INSERT INTO niche_discovery_seeds
-           (seed_video_id, seed_url, niche_id, origin_cluster_id, status, source, channel_id)
-         VALUES ($1, $2, $3, NULL, 'crawling', 'content_gen', $4)
+           (seed_video_id, seed_url, niche_id, origin_cluster_id, status, source, channel_id, select_policy)
+         VALUES ($1, $2, $3, NULL, 'crawling', 'content_gen', $4, 'content_gen')
          ON CONFLICT (seed_video_id) DO UPDATE
            SET status='crawling', niche_id=EXCLUDED.niche_id, source='content_gen',
-               channel_id=EXCLUDED.channel_id, dispatched_at=NOW()`,
+               channel_id=EXCLUDED.channel_id, dispatched_at=NOW(), select_policy='content_gen'`,
         [s.top_video_id, s.top_video_url, nicheId, s.channel_id],
       ).catch((e) => console.error('[scheduler] cg ledger write failed:', (e as Error).message));
       await addSeedUrlToNiche(nicheId, s.top_video_url).catch(() => {});
@@ -271,6 +271,13 @@ async function dispatchContentGenSeeds(
  * One auto-seed scheduler tick. Safe to call frequently — gated by the
  * enabled flag, the advisory lock, and the fleet budget.
  */
+// Seed-selection A/B: 1-in-N ticks run the legacy 'v1_ln' ranking (control), the
+// rest run 'v2_pow' (treatment, views-forward). Interleaving the arms tick-by-tick
+// controls for time/quota confounds so the eligible-yield comparison is causal,
+// not a before/after guess. Env-tunable (HB_SEED_HOLDOUT_EVERY=1 → all treatment).
+const SEED_HOLDOUT_EVERY = Math.max(1, parseInt(process.env.HB_SEED_HOLDOUT_EVERY || '6', 10));
+let seedSchedTick = 0;
+
 export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
   const empty: SchedulerTickResult = {
     ran: false, candidates_considered: 0, after_video_dedup: 0,
@@ -329,8 +336,11 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
     // excludeSeeded:true is CRITICAL — without it the top-K saturates with
     // already-crawled videos and the loop starves even with 100K+ fresh
     // candidates below them.
+    // A/B arm for this tick (every Nth tick = v1_ln control, else v2_pow).
+    const policy: 'v1_ln' | 'v2_pow' = (seedSchedTick++ % SEED_HOLDOUT_EVERY === 0) ? 'v1_ln' : 'v2_pow';
+
     let pct = cfg.minNoveltyPct;
-    let candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true, englishOnly: cfg.englishOnly });
+    let candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true, englishOnly: cfg.englishOnly, policy });
     let starvationNote: string | undefined;
 
     // Already-seeded video_ids (permanent unless failed).
@@ -358,7 +368,7 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
         `UPDATE admin_config SET value = $1 WHERE key = 'auto_seed_min_novelty_pct'`,
         [String(pct)],
       ).catch(() => {});
-      candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true, englishOnly: cfg.englishOnly });
+      candidates = await findSeedCandidates({ topK: 60, minNoveltyPct: pct, excludeSeeded: true, englishOnly: cfg.englishOnly, policy });
       afterVideoDedup = candidates.filter(c => !seededVideos.has(c.video_id));
     }
 
@@ -430,12 +440,16 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
       if (deployed > 0) {
         await pool.query(
           `INSERT INTO niche_discovery_seeds
-             (seed_video_id, seed_url, niche_id, origin_cluster_id, status, novelty_at_dispatch)
-           VALUES ($1, $2, $3, $4, 'crawling', $5)
+             (seed_video_id, seed_url, niche_id, origin_cluster_id, status, novelty_at_dispatch,
+              view_count_at_dispatch, select_policy, select_score)
+           VALUES ($1, $2, $3, $4, 'crawling', $5, $6, $7, $8)
            ON CONFLICT (seed_video_id) DO UPDATE
              SET status = 'crawling', niche_id = EXCLUDED.niche_id,
-                 dispatched_at = NOW(), origin_cluster_id = EXCLUDED.origin_cluster_id`,
-          [seed.video_id, seed.video_url, nicheId, g.clusterId, seed.novelty_score],
+                 dispatched_at = NOW(), origin_cluster_id = EXCLUDED.origin_cluster_id,
+                 view_count_at_dispatch = EXCLUDED.view_count_at_dispatch,
+                 select_policy = EXCLUDED.select_policy, select_score = EXCLUDED.select_score`,
+          [seed.video_id, seed.video_url, nicheId, g.clusterId, seed.novelty_score,
+           seed.view_count, policy, seed.seed_score],
         ).catch(() => {});
         await addSeedUrlToNiche(nicheId, seed.video_url).catch(() => {});
         nichesDispatched++;
