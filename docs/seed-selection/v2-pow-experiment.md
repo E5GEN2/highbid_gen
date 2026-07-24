@@ -1,8 +1,26 @@
 # Seed-selection experiment: `v2_pow` views-forward ranking (A/B)
 
-**Status:** LIVE on the Hetzner box since 2026-07-23 (commit `6c7287a`). Collecting A/B
-data. **Verdict due ~2026-07-26/27** (cohorts need ~2–4 days to enrich + cg-evaluate).
-**Owner action pending:** run the verdict query (below), decide keep / retune / revert.
+**Status:** LIVE on the Hetzner box since 2026-07-23 (commit `6c7287a`). Collecting A/B data.
+
+**⚠️ WINDOW EXTENDED → verdict due ~2026-07-30** (was 07-26). Reason: the channel-stats
+**enricher was DOWN ~2026-07-23 evening → 2026-07-24 07:40 UTC** (wedged on dead pinned
+proxies; recovered when the watchdog cycled to a fresh job that re-paired to live proxies —
+see [[reference_spy_key_pools]]). cg-eligibility REQUIRES enrichment, so during the outage
+eligibility was starved for **both** arms (as of 2026-07-24 the eligible counts were a
+meaningless 1 vs 3). It's not a policy bias (the outage hit both arms), but it starves the
+target metric, so any verdict resting on pre-recovery data is contaminated.
+
+**CLEAN-WINDOW CUTOFF for the verdict: only count seeds dispatched AFTER `2026-07-24 08:00 UTC`**
+(post-recovery; the outage backlog `missing_subs` 4534→738 is draining, retro-resolving
+outage-window seeds, but the cleanest signal is post-recovery seeds given ~3–4 days to mature).
+Run the verdict on/after **2026-07-30**.
+
+**Owner action pending (on/after 2026-07-30):** run the verdict query (below, clean-window
+variant), decide keep / retune / revert.
+
+**Note on arm ratio:** dispatch is ~5:1 v2_pow:v1_ln (v2_pow is the weighted treatment, v1_ln
+the sampled control) — appears by-design, not a bug; both arms are time-interleaved tick-by-tick
+so it stays time-controlled. Confirm the ratio is intended when reading the verdict.
 
 ---
 
