@@ -20,9 +20,11 @@ const toolMap = new Map(TOOLS.map(t => [t.name, t]));
 
 export async function POST(req: NextRequest) {
   if (!(await isAuthorized(req.headers.get('authorization')))) {
+    // RFC 9728: point the client at the protected-resource metadata so it can
+    // discover the auth server and start the OAuth flow.
     return NextResponse.json(
       { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'unauthorized' } },
-      { status: 401, headers: { 'WWW-Authenticate': 'Bearer' } },
+      { status: 401, headers: { 'WWW-Authenticate': 'Bearer realm="mcp", resource_metadata="https://rofe.ai/.well-known/oauth-protected-resource"' } },
     );
   }
 

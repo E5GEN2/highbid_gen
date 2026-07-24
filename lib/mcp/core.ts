@@ -23,6 +23,12 @@ export interface McpTool {
 export async function isAuthorized(authHeader: string | null): Promise<boolean> {
   const token = authHeader?.replace(/^Bearer\s+/i, '').trim();
   if (!token) return false;
+  // OAuth-issued access token (the connector path).
+  if (token.startsWith('mcpat_')) {
+    const { validateAccessToken } = await import('./oauth');
+    return (await validateAccessToken(token)) !== null;
+  }
+  // Direct shared token (curl / internal testing).
   let expected = process.env.MCP_API_TOKEN || '';
   if (!expected) {
     try {

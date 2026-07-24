@@ -25,6 +25,17 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  // MCP connector OAuth discovery — map the RFC 9728 / RFC 8414 well-known
+  // paths (which Next's app router can't serve from a dot-folder) onto real
+  // API routes. Both root and path-scoped variants (clients probe either).
+  async rewrites() {
+    return [
+      { source: '/.well-known/oauth-protected-resource', destination: '/api/oauth/protected-resource' },
+      { source: '/.well-known/oauth-protected-resource/api/mcp', destination: '/api/oauth/protected-resource' },
+      { source: '/.well-known/oauth-authorization-server', destination: '/api/oauth/authorization-server' },
+      { source: '/.well-known/oauth-authorization-server/api/mcp', destination: '/api/oauth/authorization-server' },
+    ];
+  },
 };
 
 export default nextConfig;
