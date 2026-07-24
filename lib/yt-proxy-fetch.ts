@@ -31,26 +31,37 @@ interface YtFetchResult {
  * the proxy will use pair.proxyUrl. Otherwise we pick any available proxy.
  */
 export async function ytFetchViaProxy(url: string, pair?: YtKeyProxyPair): Promise<YtFetchResult> {
-  const proxyUrl = pair?.proxyUrl;
-  const proxyDeviceId = pair?.proxyDeviceId;
+  // Try the pinned proxy first, then ROTATE to fresh proxies on a proxy-LEVEL
+  // failure (curl 97 = SOCKS5 auth-reject "User rejected (1 1)", curl 7 =
+  // connect refused). Without this, a thread pinned to a degraded proxy hammers
+  // it forever and fast-fails (~90ms) through the whole shared batch queue,
+  // marking everything errored faster than good-proxy threads can enrich → net
+  // ZERO enrichment (root cause of the 2026-07-24 enricher stall; ~23/66 static
+  // proxies had degraded provider-side). Mirrors the embed path's rotate+retry.
+  // NEVER direct: a keyed URL must fail rather than leak the key from the box IP.
+  const PROXY_ROTATE_TRIES = 5;
+  let proxyUrl: string | null = pair?.proxyUrl || null;
+  let usedId: string = pair?.proxyDeviceId || 'pinned';
+  let last: YtFetchResult | null = null;
 
-  if (!proxyUrl) {
-    // No pinned pair — fall back to picking any free proxy
-    const anyProxy = await getProxy();
-    if (!anyProxy) {
-      // Direct fetch fallback
-      try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-        const data = await res.json();
-        return { ok: res.ok, status: res.status, data, proxyUsed: 'direct' };
-      } catch (err) {
-        return { ok: false, status: 0, data: null, error: (err as Error).message, proxyUsed: 'direct' };
+  for (let attempt = 0; attempt < PROXY_ROTATE_TRIES; attempt++) {
+    if (!proxyUrl) {
+      const anyProxy = await getProxy();   // round-robin: each call advances to a different node
+      if (!anyProxy) {
+        return last ?? { ok: false, status: 0, data: null, error: 'no proxy available — refusing a direct keyed fetch', proxyUsed: 'none' };
       }
+      proxyUrl = anyProxy.url;
+      usedId = anyProxy.deviceId;
     }
-    return ytFetchWithProxy(url, anyProxy.url, anyProxy.deviceId);
+    const res = await ytFetchWithProxy(url, proxyUrl, usedId);
+    // Only proxy-transport failures rotate; a real HTTP response (200/403/429/…)
+    // returns immediately so key-level handling (ban/quota) works as before.
+    const isProxyErr = !res.ok && res.status === 0 && /curl exit (97|7)\b/.test(res.error || '');
+    if (!isProxyErr) return res;
+    last = res;
+    proxyUrl = null;   // force a fresh proxy next iteration
   }
-
-  return ytFetchWithProxy(url, proxyUrl, proxyDeviceId || 'pinned');
+  return last as YtFetchResult;
 }
 
 async function ytFetchWithProxy(url: string, proxyUrl: string, proxyDeviceId: string): Promise<YtFetchResult> {
