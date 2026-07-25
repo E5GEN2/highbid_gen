@@ -1041,6 +1041,25 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_parent ON niche_tree_runs(parent_cluster_id)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ntr_custom_niche ON niche_tree_runs(custom_niche_id, started_at DESC) WHERE custom_niche_id IS NOT NULL`).catch(() => {});
 
+    // ── Distributed pull-based clustering (cluster_pull runs) ────────────
+    // A NEW clustering path: fleet of Colab T4s builds the exact kNN graph
+    // via /api/cluster-worker (claim/submit tiles), the box merges + solves
+    // with ParHAC, and the result finalizes into niche_tree_* atomically.
+    // is_active = the single live tree (additive tie-breaker; the kind/status
+    // flip is what actually cuts over — see cluster finalize). phase = the
+    // cluster_pull build sub-state (snapshot|knn|merge|solve|writeback|done),
+    // SEPARATE from status which stays 'running'|'done'|'error'|'building'.
+    // A build sits in status='building' (NOT 'running') so the niche-tree
+    // single-flight guard + boot orphan-sweep (both key on status='running')
+    // never see it, and kind='cluster_pull' (NOT 'global') keeps it out of
+    // getLatestGlobalRun until finalize flips it. All additive + guarded.
+    await client.query(`ALTER TABLE niche_tree_runs ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    await client.query(`ALTER TABLE niche_tree_runs ADD COLUMN IF NOT EXISTS phase TEXT`).catch(() => {});
+    // The 3 scratch tables (cluster_run_index / cluster_knn_tiles /
+    // cluster_knn_edges) live in ensureClusterTables() in lib/cluster-worker.ts
+    // (self-provisioned per-request + at boot), mirroring how the qwen scratch
+    // table lives in ensureQwenTables() rather than here.
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS niche_tree_clusters (
         id SERIAL PRIMARY KEY,
