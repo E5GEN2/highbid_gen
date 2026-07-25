@@ -81,7 +81,7 @@ export interface ReMeasureResult {
 
 export async function reMeasureChannels(
   channelIds: string[],
-  opts: { recentUploads?: boolean; maxRecent?: number } = {},
+  opts: { recentUploads?: boolean; maxRecent?: number; recentConcurrency?: number } = {},
 ): Promise<ReMeasureResult> {
   const pool = await getPool();
   const result: ReMeasureResult = { requested: channelIds.length, statsUpdated: 0, recentPulled: 0, errors: 0, newVideos: [] };
@@ -146,20 +146,33 @@ export async function reMeasureChannels(
       WHERE channel_id = ANY($1::text[]) AND uploads_playlist_id IS NOT NULL`,
     [channelIds],
   );
-  for (const row of upRes.rows) {
-    const pair = await pickRandomActiveYtPair();
-    if (!pair) { result.errors++; continue; }
-    try {
-      const pull = await pullRecentUploadsForChannel(pool, row.channel_id, row.uploads_playlist_id!, pair, opts.maxRecent ?? 10);
-      if (pull.error) {
-        if (pull.rateLimited) banYtKey(pair.key);
-        result.errors++;
-        continue;
-      }
-      for (const videoId of pull.newVideoIds) result.newVideos.push({ channelId: row.channel_id, videoId });
-      result.recentPulled++;
-    } catch { result.errors++; }
-  }
+  // Recent-uploads pulls are per-channel (2 YT calls each, NOT batchable), so a
+  // large deep wave is the slow leg. Run them with bounded concurrency:
+  // recentConcurrency defaults to 1 = the original sequential behaviour (the
+  // niche-watcher/enricher are unchanged); the growth-watcher deep wave passes a
+  // higher value. JS is single-threaded, so the shared result counters/arrays
+  // mutate race-free; each worker picks its own (key,proxy) pair.
+  const conc = Math.max(1, opts.recentConcurrency ?? 1);
+  const queue = [...upRes.rows];
+  const worker = async () => {
+    for (;;) {
+      const row = queue.shift();
+      if (!row) return;
+      const pair = await pickRandomActiveYtPair();
+      if (!pair) { result.errors++; continue; }
+      try {
+        const pull = await pullRecentUploadsForChannel(pool, row.channel_id, row.uploads_playlist_id!, pair, opts.maxRecent ?? 10);
+        if (pull.error) {
+          if (pull.rateLimited) banYtKey(pair.key);
+          result.errors++;
+          continue;
+        }
+        for (const videoId of pull.newVideoIds) result.newVideos.push({ channelId: row.channel_id, videoId });
+        result.recentPulled++;
+      } catch { result.errors++; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(conc, upRes.rows.length || 1) }, () => worker()));
 
   return result;
 }

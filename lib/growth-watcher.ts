@@ -32,6 +32,7 @@ const LIVE_CADENCE_H = 20;             // ~daily re-scan for every active stage 
 const DORMANT_CADENCE_H = 168;         // dormant channels re-checked weekly
 const MAX_SUBS_ENROLL = 100;           // catch net: < 100 subs
 const VIDEOS_PER_CHANNEL_SNAP = 30;    // newest N videos snapshotted per deep channel
+const DEEP_CONCURRENCY = 8;            // parallel recent-uploads pulls in the deep wave (2u each, per-channel) — cuts the tick from ~150s to ~25s; well within the 11K-key pool
 
 /** Tunables (admin_config key → default). All read each tick. */
 interface GrowthCfg {
@@ -121,7 +122,7 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
   const ids = rows.map(r => r.channel_id);
   const prev = new Map(rows.map(r => [r.channel_id, r]));
 
-  await reMeasureChannels(ids, deep ? { recentUploads: true, maxRecent: 15 } : { recentUploads: false });
+  await reMeasureChannels(ids, deep ? { recentUploads: true, maxRecent: 15, recentConcurrency: DEEP_CONCURRENCY } : { recentUploads: false });
 
   const fresh = await pool.query<{ channel_id: string; subscriber_count: string | null; total_views: string | null; video_count: number | null; recent_videos_avg_views: string | null }>(
     `SELECT channel_id, subscriber_count, total_views, video_count, recent_videos_avg_views
