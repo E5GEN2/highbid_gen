@@ -419,19 +419,23 @@ export async function runGrowthWatcherAlertTick(): Promise<GrowthAlert | null> {
   ).catch(() => {});
 
   const watcherOn = (c.growth_watcher_enabled ?? 'true') !== 'false';
-  const m = await pool.query<{ scanned: string; deep: string }>(
-    `SELECT
-       (SELECT COUNT(*) FROM channel_growth_snapshots WHERE captured_at > NOW() - INTERVAL '20 min') AS scanned,
-       (SELECT COUNT(*) FROM channel_growth_snapshots WHERE source = 'deep' AND captured_at > NOW() - INTERVAL '20 min') AS deep`,
+  // FRESHNESS, not volume. The cadence is bursty — channels scanned in a wave all
+  // come due together 20h later — so "channels scanned in the last N min"
+  // legitimately troughs near zero between waves and a count threshold
+  // false-alarms. The robust "is the tick alive" signal is how long since ANY
+  // channel was last scanned (every scan, cheap or deep, stamps last_scanned_at):
+  // a minute or two while the loop runs, unbounded only if the tick truly died.
+  // Also survives budget exhaustion (deep pausing) and low-due troughs.
+  const m = await pool.query<{ scan_age: string | null }>(
+    `SELECT EXTRACT(EPOCH FROM (NOW() - MAX(last_scanned_at))) / 60.0 AS scan_age FROM growth_tracked_channels`,
   );
-  const scanned = parseInt(m.rows[0]?.scanned ?? '0');
-  const deep = parseInt(m.rows[0]?.deep ?? '0');
+  const scanAgeMin = m.rows[0]?.scan_age != null ? parseFloat(m.rows[0].scan_age) : 9999;
 
   let level: GrowthAlert['level'] = 'ok';
   const reasons: string[] = [];
-  if (watcherOn) {   // an intentional pause is not a fault
-    if (scanned < 500) { level = 'crit'; reasons.push(`tick stalled (${scanned} channels scanned/20m)`); }
-    if (deep < 50) { level = level === 'crit' ? 'crit' : 'warn'; reasons.push(`deep/video-pulse stalled (${deep}/20m)`); }
+  if (watcherOn && scanAgeMin > 30) {   // an intentional pause is not a fault
+    level = 'crit';
+    reasons.push(`tick stalled — no channel scanned in ${Math.round(scanAgeMin)}min`);
   }
 
   const alert: GrowthAlert = {
