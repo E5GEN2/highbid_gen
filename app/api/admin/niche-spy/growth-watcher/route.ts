@@ -16,8 +16,8 @@ export async function GET(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   const pool = await getPool();
 
-  const [enabled, byStage, tracked, snaps, growers] = await Promise.all([
-    pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='growth_watcher_enabled'`),
+  const [cfg, byStage, tracked, snaps, growers] = await Promise.all([
+    pool.query<{ key: string; value: string }>(`SELECT key, value FROM admin_config WHERE key IN ('growth_watcher_enabled','growth_watcher_alert')`),
     pool.query<{ stage: string; n: string; showed_life: string }>(
       `SELECT stage, COUNT(*)::text n, COUNT(*) FILTER (WHERE showed_life)::text showed_life
          FROM growth_tracked_channels GROUP BY stage ORDER BY COUNT(*) DESC`),
@@ -38,8 +38,14 @@ export async function GET(req: NextRequest) {
         ORDER BY growth_score DESC LIMIT 15`),
   ]);
 
+  const cfgMap: Record<string, string> = {};
+  for (const r of cfg.rows) cfgMap[r.key] = r.value;
+  let alert: unknown = null;
+  try { alert = cfgMap.growth_watcher_alert ? JSON.parse(cfgMap.growth_watcher_alert) : null; } catch { alert = null; }
+
   return NextResponse.json({
-    enabled: (enabled.rows[0]?.value ?? 'true') !== 'false',
+    enabled: (cfgMap.growth_watcher_enabled ?? 'true') !== 'false',
+    alert,   // durable server-side health verdict {level,msg,at} — updated ~15min by runGrowthWatcherAlertTick
     tracked: { total: parseInt(tracked.rows[0]?.total ?? '0'), due: parseInt(tracked.rows[0]?.due ?? '0'), byStage: byStage.rows },
     snapshots: {
       total: parseInt(snaps.rows[0]?.total ?? '0'),

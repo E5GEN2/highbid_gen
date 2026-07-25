@@ -388,3 +388,62 @@ export async function runGrowthWatcherTick(opts: { force?: boolean } = {}): Prom
     client.release();
   }
 }
+
+export interface GrowthAlert { level: 'ok' | 'warn' | 'crit'; msg: string; at: string; }
+
+/**
+ * Server-side health alert — the DURABLE watchdog. Runs inside the 60s
+ * instrumentation loop (survives session/process restarts, unlike a client-side
+ * Monitor), so a stalled watcher is caught even when nobody's looking. Signals:
+ * channels snapshotted in the last 20min (whole tick) + deep-source snapshots
+ * (deep/video-pulse wave). Self-throttled ~15min; persists
+ * admin_config.growth_watcher_alert (surfaced by the admin route) + logs on
+ * warn/crit so it lands in docker logs. Doesn't alert when the watcher is
+ * intentionally disabled. Kill switch: growth_watcher_alert_enabled='false'.
+ */
+export async function runGrowthWatcherAlertTick(): Promise<GrowthAlert | null> {
+  const pool = await getPool();
+  const cfgRes = await pool.query<{ key: string; value: string }>(
+    `SELECT key, value FROM admin_config
+      WHERE key IN ('growth_watcher_alert_enabled','last_growth_watcher_alert_check','growth_watcher_enabled')`,
+  );
+  const c: Record<string, string> = {};
+  for (const r of cfgRes.rows) c[r.key] = r.value;
+  if (c.growth_watcher_alert_enabled === 'false') return null;
+
+  const last = c.last_growth_watcher_alert_check ? new Date(c.last_growth_watcher_alert_check).getTime() : 0;
+  if (Date.now() - last < 14 * 60 * 1000) return null;   // ~15min self-throttle
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('last_growth_watcher_alert_check', NOW()::text)
+       ON CONFLICT (key) DO UPDATE SET value = NOW()::text`,
+  ).catch(() => {});
+
+  const watcherOn = (c.growth_watcher_enabled ?? 'true') !== 'false';
+  const m = await pool.query<{ scanned: string; deep: string }>(
+    `SELECT
+       (SELECT COUNT(*) FROM channel_growth_snapshots WHERE captured_at > NOW() - INTERVAL '20 min') AS scanned,
+       (SELECT COUNT(*) FROM channel_growth_snapshots WHERE source = 'deep' AND captured_at > NOW() - INTERVAL '20 min') AS deep`,
+  );
+  const scanned = parseInt(m.rows[0]?.scanned ?? '0');
+  const deep = parseInt(m.rows[0]?.deep ?? '0');
+
+  let level: GrowthAlert['level'] = 'ok';
+  const reasons: string[] = [];
+  if (watcherOn) {   // an intentional pause is not a fault
+    if (scanned < 500) { level = 'crit'; reasons.push(`tick stalled (${scanned} channels scanned/20m)`); }
+    if (deep < 50) { level = level === 'crit' ? 'crit' : 'warn'; reasons.push(`deep/video-pulse stalled (${deep}/20m)`); }
+  }
+
+  const alert: GrowthAlert = {
+    level,
+    msg: level === 'ok' ? (watcherOn ? 'growth watcher healthy' : 'growth watcher disabled') : reasons.join('; '),
+    at: new Date().toISOString(),
+  };
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('growth_watcher_alert', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+    [JSON.stringify(alert)],
+  ).catch(() => {});
+  if (level !== 'ok') console.error(`[growth-watcher-alert] ${level.toUpperCase()}: ${alert.msg}`);
+  return alert;
+}

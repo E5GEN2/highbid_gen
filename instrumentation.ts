@@ -494,11 +494,14 @@ export async function register() {
       if (growthRunning) return;
       growthRunning = true;
       try {
-        const { runGrowthWatcherTick } = await import('./lib/growth-watcher');
+        const { runGrowthWatcherTick, runGrowthWatcherAlertTick } = await import('./lib/growth-watcher');
         const r = await runGrowthWatcherTick();
         if (r.enabled && !r.skipped && (r.enrolled > 0 || r.snapshotted > 0)) {
           console.log('[growth-watcher]', `enrolled=${r.enrolled} scanned=${r.scanned} deep=${r.deepScanned} snapshots=${r.snapshotted} vidSnaps=${r.videoSnaps} lives=${r.lives} up=${r.promoted} down=${r.demoted} ${r.ms}ms`);
         }
+        // Durable server-side health alert — self-throttled (~15min), so a stalled
+        // watcher is caught even across restarts. Cheap no-op between windows.
+        await runGrowthWatcherAlertTick().catch(() => {});
       } catch (err) {
         console.error('[growth-watcher] error:', err instanceof Error ? err.message : err);
       } finally { growthRunning = false; }
