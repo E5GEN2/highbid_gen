@@ -255,12 +255,14 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
     ).catch(() => {});
   }
 
-  // ── Per-video snapshots (traction/documented only) ─────────────────────
-  // The deep re-measure just refreshed niche_spy_videos view counts for these
-  // channels; capture the newest N per channel into the daily video history.
+  // ── Per-video snapshots = the "view pulse" — for EVERY deep-tracked channel
+  //    (pulse+), so the moment a small channel shows life we capture which
+  //    videos exist and how their views climb day-over-day. That's how we see
+  //    WHERE the growth comes from (which upload is driving it), not just that
+  //    subs rose. Free: the deep re-measure already fetched these view counts.
   if (deep) {
     const deepDocIds = statePayload
-      .filter(x => x.stage === 'traction' || x.stage === 'documented')
+      .filter(x => x.stage === 'pulse' || x.stage === 'traction' || x.stage === 'documented')
       .map(x => x.c);
     if (deepDocIds.length > 0) {
       const res = await pool.query(
@@ -281,16 +283,18 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
   return out;
 }
 
-/** Select due channels for a stage set, oldest-due first. Deep wave orders by
- *  growth_score DESC first so the hottest channels never starve under the cap. */
-async function selectDue(stages: string[], limit: number, hotFirst: boolean): Promise<TrackedRow[]> {
+/** Select due channels for a stage set — TINIEST FIRST. The genesis cohort
+ *  (0-50 subs) is the highest-value early-growth data, so the smallest channels
+ *  scan first and never wait behind the 62K bulk (or starve under the deep cap).
+ *  Tie-break by oldest-due so nothing is perpetually skipped. */
+async function selectDue(stages: string[], limit: number): Promise<TrackedRow[]> {
   const pool = await getPool();
   const r = await pool.query<TrackedRow>(
     `SELECT channel_id, stage, last_subs, last_video_count, first_caught_subs,
             COALESCE(dead_scans, 0) AS dead_scans, COALESCE(up_days, 0) AS up_days
        FROM growth_tracked_channels
       WHERE stage = ANY($1) AND (next_due_at IS NULL OR next_due_at <= NOW())
-      ORDER BY ${hotFirst ? 'growth_score DESC NULLS LAST,' : ''} next_due_at ASC NULLS FIRST
+      ORDER BY last_subs ASC NULLS FIRST, next_due_at ASC NULLS FIRST
       LIMIT $2`,
     [stages, limit],
   );
@@ -327,11 +331,14 @@ export async function runGrowthWatcherTick(opts: { force?: boolean } = {}): Prom
       base.enrolled = await enrollCandidates(ENROLL_BATCH)
         .catch((e) => { console.error('[growth-watcher] enroll failed:', (e as Error).message); return 0; });
 
-      // Deep wave (pulse/traction/documented) — budget-capped per day.
+      // DEEP wave (pulse/traction/documented = showing-life channels) — pulls
+      // recent uploads (upload pulse) + per-video view snapshots (view pulse),
+      // TINIEST FIRST, budget-capped per day. Deep-scanned channels get their
+      // next_due bumped, so the cheap wave below won't re-scan them this tick.
       const spent = await deepSpentToday().catch(() => 0);
       const deepAllowance = Math.max(0, Math.min(DEEP_BATCH, cfg.deepMaxPerDay - spent));
       if (deepAllowance > 0) {
-        const deepRows = await selectDue(['pulse', 'traction', 'documented'], deepAllowance, true);
+        const deepRows = await selectDue(['pulse', 'traction', 'documented'], deepAllowance);
         if (deepRows.length > 0) {
           const r = await scanWave(deepRows, true, cfg)
             .catch((e) => { console.error('[growth-watcher] deep wave failed:', (e as Error).message); return null; });
@@ -343,11 +350,15 @@ export async function runGrowthWatcherTick(opts: { force?: boolean } = {}): Prom
         }
       }
 
-      // Liveness wave (liveness/dormant) — stats-only, the wide net.
-      const liveRows = await selectDue(['liveness', 'dormant'], SCAN_BATCH, false);
+      // CHEAP wave — stats-only daily subs snapshot for EVERY due channel of ANY
+      // stage (tiniest first). This GUARANTEES no channel misses a daily subs
+      // step, even mid-breakout: a pulse+ channel that didn't win a deep slot
+      // (budget exhausted) still lands its cheap subs snapshot here. Channels
+      // just deep-scanned above are no longer due, so they're skipped.
+      const liveRows = await selectDue(['liveness', 'dormant', 'pulse', 'traction', 'documented'], SCAN_BATCH);
       if (liveRows.length > 0) {
         const r = await scanWave(liveRows, false, cfg)
-          .catch((e) => { console.error('[growth-watcher] liveness wave failed:', (e as Error).message); return null; });
+          .catch((e) => { console.error('[growth-watcher] cheap wave failed:', (e as Error).message); return null; });
         if (r) {
           base.scanned = liveRows.length;
           base.snapshotted += r.snapshotted;
