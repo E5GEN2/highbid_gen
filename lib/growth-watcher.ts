@@ -27,12 +27,12 @@ import { reMeasureChannels } from '@/lib/channel-remeasure';
 const GROWTH_LOCK = 728412003;         // distinct from cg-sweep (…001) + niche-watcher (…002)
 const ENROLL_BATCH = 2000;             // new small channels enrolled per tick
 const SCAN_BATCH = 300;                // liveness/dormant channels scanned per tick (stats-only, 50/call)
-const DEEP_BATCH = 40;                 // pulse/traction/documented channels per tick (sequential 2u pulls, ~0.5s each)
+const DEEP_BATCH = 64;                 // deep (2u) channels per tick — covers the genesis + showing-life cohort within the daily budget
 const LIVE_CADENCE_H = 20;             // ~daily re-scan for every active stage (<24h so a daily snapshot always lands)
 const DORMANT_CADENCE_H = 168;         // dormant channels re-checked weekly
 const MAX_SUBS_ENROLL = 100;           // catch net: < 100 subs
 const VIDEOS_PER_CHANNEL_SNAP = 30;    // newest N videos snapshotted per deep channel
-const DEEP_CONCURRENCY = 8;            // parallel recent-uploads pulls in the deep wave (2u each, per-channel) — cuts the tick from ~150s to ~25s; well within the 11K-key pool
+const DEEP_CONCURRENCY = 10;           // parallel recent-uploads pulls in the deep wave (2u each, per-channel) — keeps the tick fast even with the larger deep batch; well within the 11K-key pool
 
 /** Tunables (admin_config key → default). All read each tick. */
 interface GrowthCfg {
@@ -44,6 +44,9 @@ interface GrowthCfg {
   demoteDeadScans: number;     // pulse/traction→down: consecutive lifeless scans (growth_demote_dead_scans)
   dormantDeadScans: number;    // liveness→dormant: consecutive lifeless scans (growth_dormant_dead_scans)
   deepMaxPerDay: number;       // budget cap on deep (2u) scans per day (growth_deep_max_per_day)
+  genesisDeepSubs: number;     // deep-track ANY channel below this many subs regardless of stage —
+                               // the super-early 0-N cohort gets upload+view pulse from video #1
+                               // so we can SEE where the first 100 subs come from (growth_genesis_deep_subs)
 }
 
 async function loadCfg(): Promise<GrowthCfg & { enabled: boolean }> {
@@ -62,7 +65,8 @@ async function loadCfg(): Promise<GrowthCfg & { enabled: boolean }> {
     documentedMinSubs: parseInt(c.growth_documented_min_subs) || 500,
     demoteDeadScans:   parseInt(c.growth_demote_dead_scans) || 7,
     dormantDeadScans:  parseInt(c.growth_dormant_dead_scans) || 14,
-    deepMaxPerDay:     parseInt(c.growth_deep_max_per_day) || 10000,
+    deepMaxPerDay:     parseInt(c.growth_deep_max_per_day) || 40000,
+    genesisDeepSubs:   parseInt(c.growth_genesis_deep_subs) || 25,
   };
 }
 
@@ -261,9 +265,10 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
   //    WHERE the growth comes from (which upload is driving it), not just that
   //    subs rose. Free: the deep re-measure already fetched these view counts.
   if (deep) {
-    const deepDocIds = statePayload
-      .filter(x => x.stage === 'pulse' || x.stage === 'traction' || x.stage === 'documented')
-      .map(x => x.c);
+    // Every channel in the deep wave gets its video pulse — that includes the
+    // genesis-tiny cohort (still at 'liveness' stage) which is deep-tracked
+    // precisely to capture video views from the very start of the 0→100 journey.
+    const deepDocIds = statePayload.map(x => x.c);
     if (deepDocIds.length > 0) {
       const res = await pool.query(
         `INSERT INTO video_growth_snapshots (video_id, view_count, like_count, comment_count)
@@ -287,16 +292,25 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
  *  (0-50 subs) is the highest-value early-growth data, so the smallest channels
  *  scan first and never wait behind the 62K bulk (or starve under the deep cap).
  *  Tie-break by oldest-due so nothing is perpetually skipped. */
-async function selectDue(stages: string[], limit: number): Promise<TrackedRow[]> {
+async function selectDue(stages: string[], limit: number, orGenesisBelow?: number): Promise<TrackedRow[]> {
   const pool = await getPool();
+  const params: unknown[] = [stages, limit];
+  // orGenesisBelow: also include ANY non-dormant channel under N subs, so the
+  // super-early cohort (0-N) is deep-tracked from the start — video pulse from
+  // video #1, before it "shows life" — to document the 0→100 journey's drivers.
+  let where = `stage = ANY($1)`;
+  if (orGenesisBelow != null) {
+    params.push(orGenesisBelow);
+    where = `(stage = ANY($1) OR (last_subs IS NOT NULL AND last_subs < $3)) AND stage <> 'dormant'`;
+  }
   const r = await pool.query<TrackedRow>(
     `SELECT channel_id, stage, last_subs, last_video_count, first_caught_subs,
             COALESCE(dead_scans, 0) AS dead_scans, COALESCE(up_days, 0) AS up_days
        FROM growth_tracked_channels
-      WHERE stage = ANY($1) AND (next_due_at IS NULL OR next_due_at <= NOW())
+      WHERE ${where} AND (next_due_at IS NULL OR next_due_at <= NOW())
       ORDER BY last_subs ASC NULLS FIRST, next_due_at ASC NULLS FIRST
       LIMIT $2`,
-    [stages, limit],
+    params,
   );
   return r.rows;
 }
@@ -338,7 +352,7 @@ export async function runGrowthWatcherTick(opts: { force?: boolean } = {}): Prom
       const spent = await deepSpentToday().catch(() => 0);
       const deepAllowance = Math.max(0, Math.min(DEEP_BATCH, cfg.deepMaxPerDay - spent));
       if (deepAllowance > 0) {
-        const deepRows = await selectDue(['pulse', 'traction', 'documented'], deepAllowance);
+        const deepRows = await selectDue(['pulse', 'traction', 'documented'], deepAllowance, cfg.genesisDeepSubs);
         if (deepRows.length > 0) {
           const r = await scanWave(deepRows, true, cfg)
             .catch((e) => { console.error('[growth-watcher] deep wave failed:', (e as Error).message); return null; });
