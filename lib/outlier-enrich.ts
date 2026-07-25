@@ -420,9 +420,9 @@ export async function upsertRecentVideos(
   // Single multi-row INSERT keeps this to one round trip per channel
   // instead of N. ~10 videos × 12 cols = 120 params, well under
   // pg's 65535 cap.
-  const cols = 13;
+  const cols = 14;
   const placeholders: string[] = [];
-  const params: (string | number | Date | null)[] = [];
+  const params: (string | number | boolean | Date | null)[] = [];
   let idx = 0;
   for (const v of videos) {
     const url = `https://youtu.be/${v.videoId}`;
@@ -441,6 +441,7 @@ export async function upsertRecentVideos(
       v.commentCount,                       // 11 comment_count
       'outlier-enrich',                     // 12 task_id (provenance)
       new Date(),                           // 13 enriched_at
+      v.durationSeconds != null ? (v.durationSeconds <= 61) : null,  // 14 is_short (≤61s ⇒ Short) — lets growth analysis segment Shorts vs long-form (long-form view→sub converts far better)
     ];
     placeholders.push(`(${row.map(() => `$${++idx}`).join(', ')})`);
     params.push(...row);
@@ -454,7 +455,7 @@ export async function upsertRecentVideos(
     `INSERT INTO niche_spy_videos
        (url, title, thumbnail, channel_id, channel_name, channel_avatar,
         channel_created_at, posted_at, view_count, like_count, comment_count,
-        task_id, enriched_at)
+        task_id, enriched_at, is_short)
      VALUES ${placeholders.join(', ')}
      ON CONFLICT (url) DO UPDATE SET
        view_count    = EXCLUDED.view_count,
@@ -464,6 +465,7 @@ export async function upsertRecentVideos(
        channel_id    = COALESCE(niche_spy_videos.channel_id, EXCLUDED.channel_id),
        channel_name  = COALESCE(niche_spy_videos.channel_name, EXCLUDED.channel_name),
        channel_avatar = COALESCE(niche_spy_videos.channel_avatar, EXCLUDED.channel_avatar),
+       is_short      = COALESCE(niche_spy_videos.is_short, EXCLUDED.is_short),
        enriched_at   = NOW()
      RETURNING id, (xmax = 0) AS inserted`,
     params,
