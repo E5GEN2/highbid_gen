@@ -1,7 +1,8 @@
 # BUG: Growth Watcher never records `total_views` (99.97% NULL)
 
 **Severity:** Medium-high — silent, permanent data loss on an ongoing basis.
-**Status:** Open. Found 2026-07-26 while building the Telegram growth-story broadcast.
+**Status:** ✅ **FIXED 2026-07-26** (commit `c9ee473`, deployed + verified same day). Fill rate on freshly-fetched channels jumped 0.03% → **96.5%** (3,942/4,087 in the first post-deploy hour); enricher healthy; 0 int4 `out of range` errors (param cast `::bigint` per the 2026-07-14 incident). Snapshots inherit the column as forecast — view-growth lines become usable ~1 day post-deploy, deep history accrues from today. Historical pre-fix loss remains unrecoverable, as documented below.
+**Found:** 2026-07-26 while building the Telegram growth-story broadcast.
 **Component:** channel-stats enricher (`app/api/niche-spy/enrich/route.ts`) → Growth Watcher (`lib/growth-watcher.ts`)
 
 ---
