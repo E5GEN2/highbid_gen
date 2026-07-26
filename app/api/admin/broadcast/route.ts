@@ -58,11 +58,10 @@ export async function POST(req: NextRequest) {
     const c: Record<string, string> = {};
     for (const r of cfgRes.rows) c[r.key] = r.value;
     if (body.spotlightDry) {
-      const { buildSpotlightCaption } = await import('@/lib/broadcast/spotlight');
-      const ch = await pool.query(`SELECT channel_id, channel_name, subscriber_count, channel_created_at, video_count FROM niche_spy_channels WHERE channel_id=$1`, [cid]);
-      if (!ch.rows[0]) return NextResponse.json({ error: 'channel not found' }, { status: 404 });
-      const vids = await pool.query(`SELECT title, thumbnail, view_count FROM niche_spy_videos WHERE channel_id=$1 AND thumbnail IS NOT NULL ORDER BY view_count DESC NULLS LAST LIMIT 4`, [cid]);
-      return NextResponse.json({ dryRun: true, caption: buildSpotlightCaption(ch.rows[0], vids.rows), thumbs: vids.rows.map(v => v.thumbnail) });
+      const { gatherChannel, buildSpotlightCaption } = await import('@/lib/broadcast/spotlight');
+      const g = await gatherChannel(pool, cid);
+      if (!g) return NextResponse.json({ error: 'channel not found' }, { status: 404 });
+      return NextResponse.json({ dryRun: true, caption: buildSpotlightCaption(g.ch, g.vids, g.format), thumbs: g.vids.map(v => v.thumbnail) });
     }
     const { sendSpotlightFor } = await import('@/lib/broadcast/spotlight');
     const res = await sendSpotlightFor(pool, { token: c.broadcast_telegram_token || '', chat: c.broadcast_telegram_chat || '', since: null, perTick: 1 }, cid, null);

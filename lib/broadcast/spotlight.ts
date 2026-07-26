@@ -35,8 +35,22 @@ async function loadConfig(pool: Pool): Promise<SpotlightConfig> {
 export interface ChannelRow { channel_id: string; channel_name: string | null; subscriber_count: number | null; channel_created_at: Date | null; video_count: number | null }
 export interface VideoRow { title: string | null; thumbnail: string | null; view_count: number | null }
 
-/** Fetch a channel + its top videos (for thumbnails/titles). Null if unknown. */
-export async function gatherChannel(pool: Pool, channelId: string): Promise<{ ch: ChannelRow; vids: VideoRow[] } | null> {
+/** Shorts vs long-form label from the channel's own videos' is_short ratio.
+ *  Empty string when we don't have enough sampled videos to say. */
+export async function channelFormat(pool: Pool, channelId: string): Promise<string> {
+  const r = await pool.query<{ sh: string; tot: string }>(
+    `SELECT COUNT(*) FILTER (WHERE is_short) sh, COUNT(*) tot
+       FROM niche_spy_videos WHERE channel_id = $1 AND is_short IS NOT NULL`, [channelId]);
+  const sh = parseInt(r.rows[0]?.sh) || 0, tot = parseInt(r.rows[0]?.tot) || 0;
+  if (tot < 3) return '';
+  const frac = sh / tot;
+  if (frac >= 0.7) return `📱 Shorts channel`;
+  if (frac <= 0.3) return `🎞 Long-form channel`;
+  return `🔀 Shorts + long-form`;
+}
+
+/** Fetch a channel + its top videos + format label. Null if unknown. */
+export async function gatherChannel(pool: Pool, channelId: string): Promise<{ ch: ChannelRow; vids: VideoRow[]; format: string } | null> {
   const chRes = await pool.query<ChannelRow>(
     `SELECT channel_id, channel_name, subscriber_count, channel_created_at, video_count
        FROM niche_spy_channels WHERE channel_id = $1`, [channelId],
@@ -47,7 +61,8 @@ export async function gatherChannel(pool: Pool, channelId: string): Promise<{ ch
       WHERE channel_id = $1 AND thumbnail IS NOT NULL
       ORDER BY view_count DESC NULLS LAST LIMIT 4`, [channelId],
   );
-  return { ch: chRes.rows[0], vids: vidsRes.rows };
+  const format = await channelFormat(pool, channelId);
+  return { ch: chRes.rows[0], vids: vidsRes.rows, format };
 }
 
 /** Shared rich sender: screenshot (best-effort) + thumbnails + caption, logged
@@ -78,13 +93,14 @@ function ageStr(created: Date | null): string {
   return `~${(months / 12).toFixed(1)} years old`;
 }
 
-export function buildSpotlightCaption(ch: ChannelRow, vids: VideoRow[]): string {
+export function buildSpotlightCaption(ch: ChannelRow, vids: VideoRow[], format = ''): string {
   const name = ch.channel_name ?? ch.channel_id;
   const url = `https://www.youtube.com/channel/${ch.channel_id}`;
   const lines: string[] = [];
   lines.push(`🎯 <b>NEW CHANNEL ON OUR RADAR</b>`);
   lines.push('');
   lines.push(`<a href="${esc(url)}"><b>${esc(name)}</b></a>`);
+  if (format) lines.push(format);
   const bits: string[] = [];
   if (ch.subscriber_count != null) bits.push(`👥 ${fmt(ch.subscriber_count)} subscribers`);
   bits.push(`📅 ${ageStr(ch.channel_created_at)}`);
@@ -134,7 +150,7 @@ export async function sendSpotlightFor(
 ): Promise<SendResult> {
   const g = await gatherChannel(pool, channelId);
   if (!g) return { target: 'telegram', ok: false, error: 'channel not found' };
-  const caption = buildSpotlightCaption(g.ch, g.vids);
+  const caption = buildSpotlightCaption(g.ch, g.vids, g.format);
   return sendRichChannelPost(pool, cfg, channelId, caption, g.vids, dedupKey, 'eligible_spotlight');
 }
 
