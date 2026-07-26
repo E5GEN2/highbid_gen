@@ -15,7 +15,7 @@ import { fmt } from './report';
 import { esc, type SendResult } from './senders';
 import { gatherChannel, sendRichChannelPost, type ChannelPostConfig, type ChannelRow, type VideoRow } from './spotlight';
 
-interface GrowthConfig extends ChannelPostConfig { perTick: number; cooldownDays: number; minMult: number; minSubs0: number }
+interface GrowthConfig extends ChannelPostConfig { perTick: number; cooldownDays: number; minMult: number; minSubs0: number; maxPerDay: number }
 
 export interface GrowthData {
   subs0: number; subs1: number; days: number;
@@ -28,7 +28,8 @@ async function loadConfig(pool: Pool): Promise<GrowthConfig> {
   const r = await pool.query<{ key: string; value: string }>(
     `SELECT key, value FROM admin_config WHERE key IN
        ('broadcast_telegram_token','broadcast_telegram_chat','broadcast_growth_per_tick',
-        'broadcast_growth_cooldown_days','broadcast_growth_min_mult','broadcast_growth_min_subs0')`,
+        'broadcast_growth_cooldown_days','broadcast_growth_min_mult','broadcast_growth_min_subs0',
+        'broadcast_growth_max_per_day')`,
   );
   const c: Record<string, string> = {};
   for (const row of r.rows) c[row.key] = row.value;
@@ -39,6 +40,7 @@ async function loadConfig(pool: Pool): Promise<GrowthConfig> {
     cooldownDays: parseInt(c.broadcast_growth_cooldown_days) || 5,
     minMult: parseFloat(c.broadcast_growth_min_mult) || 1.5,
     minSubs0: parseInt(c.broadcast_growth_min_subs0) || 200,
+    maxPerDay: parseInt(c.broadcast_growth_max_per_day) || 6,
   };
 }
 
@@ -124,6 +126,16 @@ export async function runGrowthStoryTick(): Promise<GrowthTickResult> {
   const pool = await getPool();
   const cfg = await loadConfig(pool);
   if (!cfg.token || !cfg.chat) return { ran: false, reason: 'no_telegram', sent: 0 };
+
+  // FLOOD GUARD: hundreds of tracked channels can satisfy the growth threshold
+  // at once (336 did at launch), and unbounded that's a post every tick for
+  // hours. Cap the daily volume and let the ORDER BY pick the most dramatic
+  // ones — the rest simply age out or qualify another day.
+  const today = await pool.query<{ n: string }>(
+    `SELECT COUNT(*) n FROM broadcast_posts
+      WHERE kind = 'growth_story' AND ok AND posted_at > NOW() - INTERVAL '24 hours'`);
+  const postedToday = parseInt(today.rows[0]?.n ?? '0');
+  if (postedToday >= cfg.maxPerDay) return { ran: true, reason: `daily_cap_reached (${postedToday}/${cfg.maxPerDay})`, sent: 0 };
 
   // Candidate channels: big recent jump, past cooldown.
   const cand = await pool.query<{ channel_id: string }>(

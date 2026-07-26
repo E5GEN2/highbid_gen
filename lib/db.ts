@@ -1200,6 +1200,14 @@ export async function initSchema(): Promise<void> {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_bp_featured ON broadcast_posts(featured_key, posted_at DESC) WHERE featured_key IS NOT NULL`).catch(() => {});
+    // Diagnostics for post-mortems on a bad-looking post: which channel, and a
+    // meta blob (screenshot ok? how many cards composed? durations resolved?
+    // which send path? elapsed ms?) — answers "why did this post look wrong"
+    // without needing the container logs to still be around.
+    await client.query(`ALTER TABLE broadcast_posts ADD COLUMN IF NOT EXISTS channel_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE broadcast_posts ADD COLUMN IF NOT EXISTS meta JSONB`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_bp_posted ON broadcast_posts(posted_at DESC)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_bp_kind_ok ON broadcast_posts(kind, ok, posted_at DESC)`).catch(() => {});
 
     // candidate_was_new — true if this candidate row was created BY the
     // expand call that logged this expansion; false if it was already in

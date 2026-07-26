@@ -9,7 +9,14 @@
  */
 import type { BroadcastReport } from './report';
 
-export interface SendResult { target: 'telegram' | 'discord'; ok: boolean; error?: string }
+export interface SendResult {
+  target: 'telegram' | 'discord';
+  ok: boolean;
+  error?: string;
+  /** Which delivery path actually ran — album / photo / plain text fallback.
+   *  Recorded on the post row so a degraded post is diagnosable after the fact. */
+  via?: 'album' | 'photo' | 'text';
+}
 
 export function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -25,7 +32,7 @@ export async function sendTelegramText(botToken: string, chatId: string, html: s
       signal: AbortSignal.timeout(15_000),
     });
     const body = await res.text().catch(() => '');
-    return res.ok ? { target: 'telegram', ok: true } : { target: 'telegram', ok: false, error: `HTTP ${res.status}: ${body.slice(0, 160)}` };
+    return res.ok ? { target: 'telegram', ok: true, via: 'text' } : { target: 'telegram', ok: false, via: 'text', error: `HTTP ${res.status}: ${body.slice(0, 160)}` };
   } catch (err) {
     return { target: 'telegram', ok: false, error: (err as Error).message?.slice(0, 160) };
   }
@@ -60,14 +67,14 @@ export async function sendTelegramSpotlight(
       form.append('media', JSON.stringify(media));
       imgs.forEach((b, i) => form.append(`img${i}`, new Blob([new Uint8Array(b)], { type: 'image/png' }), `img${i}.png`));
       const res = await fetch(api('sendMediaGroup'), { method: 'POST', body: form, signal: AbortSignal.timeout(60_000) });
-      if (res.ok) return { target: 'telegram', ok: true };
+      if (res.ok) return { target: 'telegram', ok: true, via: 'album' };
       console.warn('[broadcast] sendMediaGroup failed:', (await res.text().catch(() => '')).slice(0, 200));
     } else if (imgs.length === 1) {
       const form = new FormData();
       form.append('chat_id', chatId); form.append('caption', captionHTML); form.append('parse_mode', 'HTML');
       form.append('photo', new Blob([new Uint8Array(imgs[0])], { type: 'image/png' }), 'img.png');
       const res = await fetch(api('sendPhoto'), { method: 'POST', body: form, signal: AbortSignal.timeout(40_000) });
-      if (res.ok) return { target: 'telegram', ok: true };
+      if (res.ok) return { target: 'telegram', ok: true, via: 'photo' };
       console.warn('[broadcast] sendPhoto failed:', (await res.text().catch(() => '')).slice(0, 200));
     }
   } catch (err) {

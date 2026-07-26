@@ -77,31 +77,53 @@ export async function sendRichChannelPost(
   durations?: Map<string, number>,
 ): Promise<SendResult> {
   const { composeVideoCard, extractYtId, heroCrop } = await import('./cards');
+  const t0 = Date.now();
 
   // HERO first: the channel-grid screenshot, cropped wide so Telegram gives it
   // its own full-width row (the raw portrait capture rendered as a small tile).
   const images: Buffer[] = [];
+  const tShot = Date.now();
   const shot = await captureChannelShot(channelId);
+  const shotMs = Date.now() - tShot;
   if (shot) images.push(await heroCrop(shot));
 
   // Then each featured video as a YouTube-style card (thumb + duration badge +
   // title + views/age). Composed in parallel; any failure just drops that card.
-  const cards = await Promise.all(vids.slice(0, 4).map(v => {
+  const tCards = Date.now();
+  const wanted = vids.slice(0, 4);
+  const cards = await Promise.all(wanted.map(v => {
     const ytId = extractYtId(v.url);
     return composeVideoCard(
       { ytId, thumbnail: v.thumbnail, title: v.title, viewCount: v.view_count, postedAt: v.posted_at },
       ytId ? durations?.get(ytId) ?? null : null,
     ).catch(() => null);
   }));
+  const cardsMs = Date.now() - tCards;
   for (const c of cards) if (c) images.push(c);
 
   const res = await sendTelegramSpotlight(cfg.token, cfg.chat, caption, images);
+
+  // Diagnostics for later post-mortems — every degradation is visible here
+  // (no screenshot? cards dropped? durations unresolved? fell back to text?).
+  const meta = {
+    shot_ok: !!shot,
+    shot_ms: shotMs,
+    cards_wanted: wanted.length,
+    cards_built: cards.filter(Boolean).length,
+    cards_ms: cardsMs,
+    durations_resolved: durations ? durations.size : 0,
+    images_sent: images.length,
+    bytes: images.reduce((a, b) => a + b.length, 0),
+    via: res.via ?? null,
+    degraded: res.via === 'text' || cards.filter(Boolean).length < wanted.length || !shot,
+    total_ms: Date.now() - t0,
+  };
   await pool.query(
-    `INSERT INTO broadcast_posts (kind, featured_key, ok, targets, payload, error)
-     VALUES ($1, $2, $3, 'telegram', $4, $5)`,
-    [kind, dedupKey, res.ok, caption.slice(0, 4000), res.ok ? null : res.error ?? null],
+    `INSERT INTO broadcast_posts (kind, featured_key, ok, targets, payload, error, channel_id, meta)
+     VALUES ($1, $2, $3, 'telegram', $4, $5, $6, $7::jsonb)`,
+    [kind, dedupKey, res.ok, caption.slice(0, 4000), res.ok ? null : res.error ?? null, channelId, JSON.stringify(meta)],
   ).catch(err => console.error(`[${kind}] post log failed:`, (err as Error).message));
-  console.log(`[${kind}] chan=${channelId} shot=${shot ? 'yes' : 'no'} cards=${images.length - (shot ? 1 : 0)} -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
+  console.log(`[${kind}] chan=${channelId} via=${res.via} shot=${shot ? 'yes' : 'NO'} cards=${meta.cards_built}/${meta.cards_wanted} durs=${meta.durations_resolved} ${meta.total_ms}ms -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
   return res;
 }
 

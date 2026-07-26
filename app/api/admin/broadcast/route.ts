@@ -24,8 +24,23 @@ export async function GET(req: NextRequest) {
   );
   const c: Record<string, string> = {};
   for (const r of cfg.rows) c[r.key] = r.value;
+  // Debug feed: recent posts WITH their diagnostics blob, plus rolled-up
+  // health per kind (failures + degraded posts in the last 24h) so a problem
+  // is visible without digging through container logs.
   const recent = await pool.query(
-    `SELECT id, posted_at, kind, featured_key, ok, targets, error FROM broadcast_posts ORDER BY id DESC LIMIT 10`,
+    `SELECT id, posted_at, kind, channel_id, featured_key, ok, targets, error, meta
+       FROM broadcast_posts ORDER BY id DESC LIMIT 20`,
+  );
+  const health = await pool.query(
+    `SELECT kind,
+            COUNT(*)                                             AS posts_24h,
+            COUNT(*) FILTER (WHERE NOT ok)                       AS failed,
+            COUNT(*) FILTER (WHERE (meta->>'degraded')::bool)    AS degraded,
+            COUNT(*) FILTER (WHERE meta->>'via' = 'text')        AS text_fallback,
+            ROUND(AVG((meta->>'total_ms')::numeric))             AS avg_ms
+       FROM broadcast_posts
+      WHERE posted_at > NOW() - INTERVAL '24 hours'
+      GROUP BY kind ORDER BY kind`,
   );
   return NextResponse.json({
     enabled: c.broadcast_enabled === 'true',
@@ -36,6 +51,7 @@ export async function GET(req: NextRequest) {
       telegram: !!(c.broadcast_telegram_token && c.broadcast_telegram_chat),
       discord: !!c.broadcast_discord_webhook,
     },
+    health24h: health.rows,
     recentPosts: recent.rows,
   });
 }
