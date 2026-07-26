@@ -11,8 +11,74 @@ import type { BroadcastReport } from './report';
 
 export interface SendResult { target: 'telegram' | 'discord'; ok: boolean; error?: string }
 
-function esc(s: string): string {
+export function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Plain sendMessage (HTML) — the universal text fallback for any post. */
+export async function sendTelegramText(botToken: string, chatId: string, html: string): Promise<SendResult> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: html.slice(0, 4096), parse_mode: 'HTML', disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await res.text().catch(() => '');
+    return res.ok ? { target: 'telegram', ok: true } : { target: 'telegram', ok: false, error: `HTTP ${res.status}: ${body.slice(0, 160)}` };
+  } catch (err) {
+    return { target: 'telegram', ok: false, error: (err as Error).message?.slice(0, 160) };
+  }
+}
+
+/**
+ * Rich spotlight sender with graceful degradation:
+ *   screenshot(bytes) + thumbnail URLs → sendMediaGroup (caption on first)
+ *   1 image                            → sendPhoto
+ *   0 images OR any media send fails   → sendTelegramText (always posts something)
+ * Caption is HTML, capped to Telegram's 1024-char media-caption limit by caller.
+ */
+export async function sendTelegramSpotlight(
+  botToken: string, chatId: string, captionHTML: string,
+  shot: Buffer | null, thumbUrls: string[],
+): Promise<SendResult> {
+  const api = (m: string) => `https://api.telegram.org/bot${botToken}/${m}`;
+  // Assemble the media list: screenshot first (as attached upload), then thumbs (by URL).
+  const media: Array<Record<string, unknown>> = [];
+  let captioned = false;
+  if (shot) { media.push({ type: 'photo', media: 'attach://shot', caption: captionHTML, parse_mode: 'HTML' }); captioned = true; }
+  for (const u of thumbUrls.slice(0, 9)) {
+    const m: Record<string, unknown> = { type: 'photo', media: u };
+    if (!captioned) { m.caption = captionHTML; m.parse_mode = 'HTML'; captioned = true; }
+    media.push(m);
+  }
+
+  try {
+    if (media.length >= 2) {
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append('media', JSON.stringify(media));
+      if (shot) form.append('shot', new Blob([new Uint8Array(shot)], { type: 'image/png' }), 'shot.png');
+      const res = await fetch(api('sendMediaGroup'), { method: 'POST', body: form, signal: AbortSignal.timeout(30_000) });
+      if (res.ok) return { target: 'telegram', ok: true };
+      // fall through to text
+    } else if (media.length === 1 && shot) {
+      const form = new FormData();
+      form.append('chat_id', chatId); form.append('caption', captionHTML); form.append('parse_mode', 'HTML');
+      form.append('photo', new Blob([new Uint8Array(shot)], { type: 'image/png' }), 'shot.png');
+      const res = await fetch(api('sendPhoto'), { method: 'POST', body: form, signal: AbortSignal.timeout(30_000) });
+      if (res.ok) return { target: 'telegram', ok: true };
+    } else if (media.length === 1) {
+      const res = await fetch(api('sendPhoto'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, photo: thumbUrls[0], caption: captionHTML, parse_mode: 'HTML' }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.ok) return { target: 'telegram', ok: true };
+    }
+  } catch { /* fall through to text */ }
+  // Universal fallback — never drop a post.
+  return sendTelegramText(botToken, chatId, captionHTML);
 }
 
 export function renderTelegramHTML(r: BroadcastReport): string {

@@ -23,7 +23,7 @@ export interface BroadcastReport {
   kind: string;           // which insight rotation fired (for logging/rotation)
 }
 
-function fmt(n: number | string | null | undefined): string {
+export function fmt(n: number | string | null | undefined): string {
   const v = typeof n === 'string' ? parseFloat(n) : (n ?? 0);
   if (!isFinite(v)) return '0';
   if (v >= 1_000_000) return (v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1) + 'M';

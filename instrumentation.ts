@@ -419,6 +419,18 @@ export async function register() {
       } catch (err) {
         console.error('[broadcast] tick error:', err instanceof Error ? err.message : err);
       }
+      // Event-driven eligible-channel spotlight (bounded per tick; gated on the
+      // same broadcast_enabled flag + configured Telegram target).
+      try {
+        const pool = await getPool();
+        const en = await pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='broadcast_enabled'`);
+        if (en.rows[0]?.value === 'true') {
+          const { runEligibleSpotlightTick } = await import('./lib/broadcast/spotlight');
+          await runEligibleSpotlightTick();
+        }
+      } catch (err) {
+        console.error('[spotlight] tick error:', err instanceof Error ? err.message : err);
+      }
     }
 
     async function runAll() {
