@@ -8,9 +8,16 @@
  */
 import type { Pool } from 'pg';
 
+export interface BroadcastStats {
+  chans2h: string; vids2h: string; edges2h: string;
+  chans24h: string;
+  vidsTotal: string; chansTotal: string; edgesTotal: string;
+  tracked: string; snapshots: string;
+}
+
 export interface BroadcastReport {
   title: string;          // e.g. "rofe.ai mining pulse"
-  statLines: string[];    // plain-text stat lines (no markup)
+  stats: BroadcastStats;  // pre-formatted display numbers (fmt applied)
   insight: { emoji: string; label: string; text: string } | null;
   featuredKey: string | null;  // dedup key (e.g. 'chan:<id>') recorded on the post
   kind: string;           // which insight rotation fired (for logging/rotation)
@@ -25,7 +32,7 @@ function fmt(n: number | string | null | undefined): string {
 }
 
 /** Live pulse stats — cheap indexed window counts + estimated totals. */
-async function buildStatLines(pool: Pool): Promise<string[]> {
+async function buildStats(pool: Pool): Promise<BroadcastStats> {
   const q = await pool.query<{ k: string; v: string }>(`
     SELECT 'chans_2h' k, COUNT(*)::text v FROM channel_cg_status WHERE discovered_at > NOW()-INTERVAL '2 hours'
     UNION ALL SELECT 'chans_24h', COUNT(*)::text FROM channel_cg_status WHERE discovered_at > NOW()-INTERVAL '24 hours'
@@ -39,12 +46,12 @@ async function buildStatLines(pool: Pool): Promise<string[]> {
   `);
   const m: Record<string, string> = {};
   for (const r of q.rows) m[r.k] = r.v;
-  return [
-    `Last 2h: +${fmt(m.chans_2h)} channels discovered · +${fmt(m.vids_2h)} videos ingested · ${fmt(m.edges_2h)} suggestion edges mapped`,
-    `24h: +${fmt(m.chans_24h)} new channels found`,
-    `Corpus: ${fmt(m.vids_total)} videos · ${fmt(m.chans_total)} channels · ${fmt(m.edges_total)} crawl events`,
-    `Watching ${fmt(m.tracked)} young channels daily (${fmt(m.snapshots)} growth snapshots)`,
-  ];
+  return {
+    chans2h: fmt(m.chans_2h), vids2h: fmt(m.vids_2h), edges2h: fmt(m.edges_2h),
+    chans24h: fmt(m.chans_24h),
+    vidsTotal: fmt(m.vids_total), chansTotal: fmt(m.chans_total), edgesTotal: fmt(m.edges_total),
+    tracked: fmt(m.tracked), snapshots: fmt(m.snapshots),
+  };
 }
 
 /** Rotation slot 0 — discovery spotlight: the most impressive channel found
@@ -140,7 +147,7 @@ const ROTATION: Array<{ kind: string; emoji: string; label: string; fn: (p: Pool
  * to the next so a post always carries SOME insight when possible.
  */
 export async function buildBroadcastReport(pool: Pool, rotationIdx: number): Promise<BroadcastReport> {
-  const statLines = await buildStatLines(pool);
+  const stats = await buildStats(pool);
   for (let i = 0; i < ROTATION.length; i++) {
     const slot = ROTATION[(rotationIdx + i) % ROTATION.length];
     try {
@@ -148,7 +155,7 @@ export async function buildBroadcastReport(pool: Pool, rotationIdx: number): Pro
       if (got) {
         return {
           title: 'rofe.ai mining pulse',
-          statLines,
+          stats,
           insight: { emoji: slot.emoji, label: slot.label, text: got.text },
           featuredKey: got.key,
           kind: slot.kind,
@@ -158,5 +165,5 @@ export async function buildBroadcastReport(pool: Pool, rotationIdx: number): Pro
       console.error(`[broadcast] insight ${slot.kind} failed:`, (err as Error).message);
     }
   }
-  return { title: 'rofe.ai mining pulse', statLines, insight: null, featuredKey: null, kind: 'stats_only' };
+  return { title: 'rofe.ai mining pulse', stats, insight: null, featuredKey: null, kind: 'stats_only' };
 }

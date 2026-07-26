@@ -16,25 +16,51 @@ function esc(s: string): string {
 }
 
 export function renderTelegramHTML(r: BroadcastReport): string {
+  const s = r.stats;
   const lines: string[] = [];
-  lines.push(`⛏️ <b>${esc(r.title)}</b>`);
+  lines.push(`⛏️ <b>ROFE.AI — MINING PULSE</b>`);
   lines.push('');
-  for (const l of r.statLines) lines.push(esc(l));
+  lines.push(`<b>📡 Last 2 hours</b>`);
+  lines.push(`   🆕 <code>+${esc(s.chans2h)}</code> channels discovered`);
+  lines.push(`   🎬 <code>+${esc(s.vids2h)}</code> videos ingested`);
+  lines.push(`   🕸 <code>${esc(s.edges2h)}</code> suggestion edges mapped`);
+  lines.push('');
+  lines.push(`<b>📅 Last 24 hours</b>`);
+  lines.push(`   ✨ <code>+${esc(s.chans24h)}</code> new channels found`);
+  lines.push('');
+  lines.push(`<b>🗄 Total corpus</b>`);
+  lines.push(`   🎬 <code>${esc(s.vidsTotal)}</code> videos  ·  📺 <code>${esc(s.chansTotal)}</code> channels`);
+  lines.push(`   🔗 <code>${esc(s.edgesTotal)}</code> crawl events`);
+  lines.push('');
+  lines.push(`<b>🌱 Growth watch</b>`);
+  lines.push(`   👁 <code>${esc(s.tracked)}</code> young channels tracked daily`);
+  lines.push(`   📸 <code>${esc(s.snapshots)}</code> growth snapshots`);
   if (r.insight) {
     lines.push('');
-    lines.push(`${r.insight.emoji} <b>${esc(r.insight.label)}:</b> ${esc(r.insight.text)}`);
+    lines.push(`${r.insight.emoji} <b>${esc(r.insight.label.toUpperCase())}</b>`);
+    lines.push(`<blockquote>${esc(r.insight.text)}</blockquote>`);
   }
   return lines.join('\n');
 }
 
 export function renderDiscordMarkdown(r: BroadcastReport): string {
+  const s = r.stats;
   const lines: string[] = [];
-  lines.push(`⛏️ **${r.title}**`);
+  lines.push(`⛏️ **ROFE.AI — MINING PULSE**`);
   lines.push('');
-  for (const l of r.statLines) lines.push(l);
+  lines.push(`**📡 Last 2 hours**`);
+  lines.push(`> 🆕 \`+${s.chans2h}\` channels discovered`);
+  lines.push(`> 🎬 \`+${s.vids2h}\` videos ingested`);
+  lines.push(`> 🕸 \`${s.edges2h}\` suggestion edges mapped`);
+  lines.push('');
+  lines.push(`**📅 Last 24h** — ✨ \`+${s.chans24h}\` new channels found`);
+  lines.push('');
+  lines.push(`**🗄 Corpus** — 🎬 \`${s.vidsTotal}\` videos · 📺 \`${s.chansTotal}\` channels · 🔗 \`${s.edgesTotal}\` crawl events`);
+  lines.push(`**🌱 Growth watch** — 👁 \`${s.tracked}\` young channels daily · 📸 \`${s.snapshots}\` snapshots`);
   if (r.insight) {
     lines.push('');
-    lines.push(`${r.insight.emoji} **${r.insight.label}:** ${r.insight.text}`);
+    lines.push(`${r.insight.emoji} **${r.insight.label.toUpperCase()}**`);
+    lines.push(`> ${r.insight.text}`);
   }
   // Discord hard limit 2000 chars.
   return lines.join('\n').slice(0, 1990);
