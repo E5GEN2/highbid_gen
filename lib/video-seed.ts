@@ -847,8 +847,8 @@ export async function runEmbedBackfillTick(batch = 200): Promise<EmbedBackfillRe
     try {
       // Freshest unembedded first — over-fetch 3x so attempt-cooldown filtering
       // still fills the batch.
-      const rows = await pool.query<{ id: number; video_id: string; url: string; title: string | null; thumbnail: string | null }>(
-        `SELECT id, video_id, url, title, thumbnail
+      const rows = await pool.query<{ id: number; url: string; title: string | null; thumbnail: string | null }>(
+        `SELECT id, url, title, thumbnail
            FROM niche_spy_videos
           WHERE combined_embedded_v2_at IS NULL
             AND novelty_score IS NULL
@@ -869,15 +869,22 @@ export async function runEmbedBackfillTick(batch = 200): Promise<EmbedBackfillRe
         for (const [k, v] of backfillAttempted) if (v < now - BACKFILL_RETRY_MS) backfillAttempted.delete(k);
       }
 
-      const resolved: ResolvedVideo[] = targets.map(r => ({
-        videoId: r.id,
-        ytId: r.video_id,
-        url: r.url,
-        title: r.title,
-        thumbnail: r.thumbnail,
-        hadCombinedV2: false,
-        wasNew: false,
-      }));
+      // The table has no yt-id column — the canonical id lives in the url
+      // (resolveBatch derives it the same way).
+      const resolved: ResolvedVideo[] = targets.flatMap(r => {
+        const ytId = extractYtVideoId(r.url);
+        if (!ytId) return [];
+        return [{
+          videoId: r.id,
+          ytId,
+          url: r.url,
+          title: r.title,
+          thumbnail: r.thumbnail,
+          hadCombinedV2: false,
+          wasNew: false,
+        }];
+      });
+      if (resolved.length === 0) return { ...base, picked: targets.length, ms: Date.now() - t0 };
       const outcomes = await ensureCombinedV2(resolved);
       let ok = 0, failed = 0;
       for (const o of outcomes.values()) { if (o.ok) ok++; else failed++; }
