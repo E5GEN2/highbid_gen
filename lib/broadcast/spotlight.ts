@@ -14,7 +14,8 @@ import type { Pool } from 'pg';
 import { fmt } from './report';
 import { esc, sendTelegramSpotlight, type SendResult } from './senders';
 
-interface SpotlightConfig { token: string; chat: string; since: string | null; perTick: number }
+export interface ChannelPostConfig { token: string; chat: string }
+interface SpotlightConfig extends ChannelPostConfig { since: string | null; perTick: number }
 
 async function loadConfig(pool: Pool): Promise<SpotlightConfig> {
   const r = await pool.query<{ key: string; value: string }>(
@@ -31,6 +32,43 @@ async function loadConfig(pool: Pool): Promise<SpotlightConfig> {
   };
 }
 
+export interface ChannelRow { channel_id: string; channel_name: string | null; subscriber_count: number | null; channel_created_at: Date | null; video_count: number | null }
+export interface VideoRow { title: string | null; thumbnail: string | null; view_count: number | null }
+
+/** Fetch a channel + its top videos (for thumbnails/titles). Null if unknown. */
+export async function gatherChannel(pool: Pool, channelId: string): Promise<{ ch: ChannelRow; vids: VideoRow[] } | null> {
+  const chRes = await pool.query<ChannelRow>(
+    `SELECT channel_id, channel_name, subscriber_count, channel_created_at, video_count
+       FROM niche_spy_channels WHERE channel_id = $1`, [channelId],
+  );
+  if (!chRes.rows[0]) return null;
+  const vidsRes = await pool.query<VideoRow>(
+    `SELECT title, thumbnail, view_count FROM niche_spy_videos
+      WHERE channel_id = $1 AND thumbnail IS NOT NULL
+      ORDER BY view_count DESC NULLS LAST LIMIT 4`, [channelId],
+  );
+  return { ch: chRes.rows[0], vids: vidsRes.rows };
+}
+
+/** Shared rich sender: screenshot (best-effort) + thumbnails + caption, logged
+ *  to broadcast_posts with the given kind + dedup key. Used by both spotlight
+ *  and growth-story events. */
+export async function sendRichChannelPost(
+  pool: Pool, cfg: ChannelPostConfig, channelId: string,
+  caption: string, vids: VideoRow[], dedupKey: string | null, kind: string,
+): Promise<SendResult> {
+  const thumbs = vids.map(v => v.thumbnail!).filter(Boolean);
+  const shot = await captureChannelShot(channelId);
+  const res = await sendTelegramSpotlight(cfg.token, cfg.chat, caption, shot, thumbs);
+  await pool.query(
+    `INSERT INTO broadcast_posts (kind, featured_key, ok, targets, payload, error)
+     VALUES ($1, $2, $3, 'telegram', $4, $5)`,
+    [kind, dedupKey, res.ok, caption.slice(0, 4000), res.ok ? null : res.error ?? null],
+  ).catch(err => console.error(`[${kind}] post log failed:`, (err as Error).message));
+  console.log(`[${kind}] chan=${channelId} shot=${shot ? 'yes' : 'no'} thumbs=${thumbs.length} -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
+  return res;
+}
+
 function ageStr(created: Date | null): string {
   if (!created) return 'age unknown';
   const days = Math.max(1, Math.round((Date.now() - new Date(created).getTime()) / 86_400_000));
@@ -39,9 +77,6 @@ function ageStr(created: Date | null): string {
   if (months < 18) return `~${months} months old`;
   return `~${(months / 12).toFixed(1)} years old`;
 }
-
-interface ChannelRow { channel_id: string; channel_name: string | null; subscriber_count: number | null; channel_created_at: Date | null; video_count: number | null }
-interface VideoRow { title: string | null; thumbnail: string | null; view_count: number | null }
 
 export function buildSpotlightCaption(ch: ChannelRow, vids: VideoRow[]): string {
   const name = ch.channel_name ?? ch.channel_id;
@@ -97,33 +132,10 @@ async function captureChannelShot(channelId: string): Promise<Buffer | null> {
 export async function sendSpotlightFor(
   pool: Pool, cfg: SpotlightConfig, channelId: string, dedupKey: string | null,
 ): Promise<SendResult> {
-  const chRes = await pool.query<ChannelRow>(
-    `SELECT channel_id, channel_name, subscriber_count, channel_created_at, video_count
-       FROM niche_spy_channels WHERE channel_id = $1`, [channelId],
-  );
-  const ch = chRes.rows[0];
-  if (!ch) return { target: 'telegram', ok: false, error: 'channel not found' };
-
-  const vidsRes = await pool.query<VideoRow>(
-    `SELECT title, thumbnail, view_count FROM niche_spy_videos
-      WHERE channel_id = $1 AND thumbnail IS NOT NULL
-      ORDER BY view_count DESC NULLS LAST LIMIT 4`, [channelId],
-  );
-  const vids = vidsRes.rows;
-  const caption = buildSpotlightCaption(ch, vids);
-  const thumbs = vids.map(v => v.thumbnail!).filter(Boolean);
-  const shot = await captureChannelShot(channelId);
-
-  const res = await sendTelegramSpotlight(cfg.token, cfg.chat, caption, shot, thumbs);
-
-  await pool.query(
-    `INSERT INTO broadcast_posts (kind, featured_key, ok, targets, payload, error)
-     VALUES ('eligible_spotlight', $1, $2, 'telegram', $3, $4)`,
-    [dedupKey, res.ok, caption.slice(0, 4000), res.ok ? null : res.error ?? null],
-  ).catch(err => console.error('[spotlight] post log failed:', (err as Error).message));
-
-  console.log(`[spotlight] chan=${channelId} shot=${shot ? 'yes' : 'no'} thumbs=${thumbs.length} -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
-  return res;
+  const g = await gatherChannel(pool, channelId);
+  if (!g) return { target: 'telegram', ok: false, error: 'channel not found' };
+  const caption = buildSpotlightCaption(g.ch, g.vids);
+  return sendRichChannelPost(pool, cfg, channelId, caption, g.vids, dedupKey, 'eligible_spotlight');
 }
 
 export interface SpotlightTickResult { ran: boolean; reason?: string; sent: number }

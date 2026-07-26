@@ -427,9 +427,11 @@ export async function register() {
         if (en.rows[0]?.value === 'true') {
           const { runEligibleSpotlightTick } = await import('./lib/broadcast/spotlight');
           await runEligibleSpotlightTick();
+          const { runGrowthStoryTick } = await import('./lib/broadcast/growth');
+          await runGrowthStoryTick();
         }
       } catch (err) {
-        console.error('[spotlight] tick error:', err instanceof Error ? err.message : err);
+        console.error('[spotlight/growth] tick error:', err instanceof Error ? err.message : err);
       }
     }
 

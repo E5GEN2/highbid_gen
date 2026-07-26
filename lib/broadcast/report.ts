@@ -1,10 +1,12 @@
 /**
- * Broadcast report builder — composes the periodic "mining pulse" post:
- * live pipeline stats + one rotating featured insight. All numbers come
- * straight from the DB at compose time (never invented, never cached).
+ * Mining-pulse report — the TIME-triggered heartbeat post: live pipeline stats
+ * + corpus scale. All numbers come straight from the DB at compose time (never
+ * invented, never cached). The "gold insight" posts (discovery spotlight,
+ * growth story) are now their own EVENT-triggered formats — see
+ * lib/broadcast/{spotlight,growth}.ts — so the pulse stays a pure heartbeat.
  *
- * Platform-agnostic output: the senders render Segments per platform
- * (Telegram HTML / Discord markdown).
+ * Platform-agnostic: the senders render it per platform (Telegram HTML /
+ * Discord markdown).
  */
 import type { Pool } from 'pg';
 
@@ -16,11 +18,11 @@ export interface BroadcastStats {
 }
 
 export interface BroadcastReport {
-  title: string;          // e.g. "rofe.ai mining pulse"
-  stats: BroadcastStats;  // pre-formatted display numbers (fmt applied)
-  insight: { emoji: string; label: string; text: string } | null;
-  featuredKey: string | null;  // dedup key (e.g. 'chan:<id>') recorded on the post
-  kind: string;           // which insight rotation fired (for logging/rotation)
+  title: string;
+  stats: BroadcastStats;
+  insight: { emoji: string; label: string; text: string } | null;  // reserved; pulse is stats-only
+  featuredKey: string | null;
+  kind: string;
 }
 
 export function fmt(n: number | string | null | undefined): string {
@@ -54,116 +56,9 @@ async function buildStats(pool: Pool): Promise<BroadcastStats> {
   };
 }
 
-/** Rotation slot 0 — discovery spotlight: the most impressive channel found
- *  in the last 48h (young + already big; ranked by subs-per-day-of-age). */
-async function discoverySpotlight(pool: Pool): Promise<{ text: string; key: string } | null> {
-  const r = await pool.query<{ channel_id: string; channel_name: string | null; subs: string; vids: number; age_days: number }>(
-    `SELECT c.channel_id, c.channel_name, c.subscriber_count::text AS subs, c.video_count AS vids,
-            GREATEST(EXTRACT(day FROM NOW()-c.channel_created_at)::int, 1) AS age_days
-       FROM channel_cg_status s
-       JOIN niche_spy_channels c ON c.channel_id = s.channel_id
-      WHERE s.discovered_at > NOW()-INTERVAL '48 hours'
-        AND c.subscriber_count >= 10000
-        AND c.channel_created_at > NOW()-INTERVAL '18 months'
-        AND NOT EXISTS (SELECT 1 FROM broadcast_posts b
-                         WHERE b.featured_key = 'chan:'||c.channel_id
-                           AND b.posted_at > NOW()-INTERVAL '14 days')
-      ORDER BY c.subscriber_count::float / GREATEST(EXTRACT(day FROM NOW()-c.channel_created_at), 30) DESC
-      LIMIT 1`,
-  );
-  const row = r.rows[0];
-  if (!row) return null;
-  const months = Math.max(1, Math.round(row.age_days / 30));
-  return {
-    text: `Just found: "${row.channel_name ?? row.channel_id}" — ${fmt(row.subs)} subscribers in only ~${months} month${months > 1 ? 's' : ''} (${row.vids} videos). A brand-new channel already taking off.`,
-    key: `chan:${row.channel_id}`,
-  };
-}
-
-/** Rotation slot 1 — growth story: biggest relative subscriber jump among
- *  tracked channels over the last ~week (needs 2+ snapshots, real growth). */
-async function growthStory(pool: Pool): Promise<{ text: string; key: string } | null> {
-  const r = await pool.query<{ channel_id: string; channel_name: string | null; subs0: string; subs1: string; days: number }>(
-    `WITH win AS (
-       SELECT channel_id, MIN(day) d0, MAX(day) d1
-         FROM channel_growth_snapshots
-        WHERE day > CURRENT_DATE - 8 AND subscriber_count IS NOT NULL
-        GROUP BY channel_id
-       HAVING COUNT(DISTINCT day) >= 2 AND MAX(day) > MIN(day)
-     ), pairs AS (
-       SELECT w.channel_id, (w.d1 - w.d0) AS days,
-              (SELECT s.subscriber_count FROM channel_growth_snapshots s
-                WHERE s.channel_id = w.channel_id AND s.day = w.d0
-                ORDER BY s.captured_at ASC LIMIT 1) AS subs0,
-              (SELECT s.subscriber_count FROM channel_growth_snapshots s
-                WHERE s.channel_id = w.channel_id AND s.day = w.d1
-                ORDER BY s.captured_at DESC LIMIT 1) AS subs1
-         FROM win w
-     )
-     SELECT p.channel_id, c.channel_name, p.subs0::text AS subs0, p.subs1::text AS subs1, p.days
-       FROM pairs p
-       JOIN niche_spy_channels c ON c.channel_id = p.channel_id
-      WHERE p.subs0 >= 100 AND p.subs1 > p.subs0 * 1.3
-        AND NOT EXISTS (SELECT 1 FROM broadcast_posts b
-                         WHERE b.featured_key = 'chan:'||p.channel_id
-                           AND b.posted_at > NOW()-INTERVAL '14 days')
-      ORDER BY p.subs1::float / GREATEST(p.subs0::float, 1) DESC
-      LIMIT 1`,
-  );
-  const row = r.rows[0];
-  if (!row) return null;
-  const x = (parseFloat(row.subs1) / Math.max(parseFloat(row.subs0), 1)).toFixed(1);
-  return {
-    text: `"${row.channel_name ?? row.channel_id}" jumped from ${fmt(row.subs0)} to ${fmt(row.subs1)} subscribers in just ${row.days} day${row.days > 1 ? 's' : ''} — that's ${x}× bigger. We spotted it early and have been watching it grow.`,
-    key: `chan:${row.channel_id}`,
-  };
-}
-
-/** Rotation slot 2 — big number: an aggregate flex from the last 24h. */
-async function bigNumber(pool: Pool): Promise<{ text: string; key: null } | null> {
-  const r = await pool.query<{ vids24: string; enr24: string; newborn: string }>(
-    `SELECT
-       (SELECT COUNT(*) FROM niche_spy_videos WHERE COALESCE(fetched_at,synced_at) > NOW()-INTERVAL '24 hours')::text AS vids24,
-       (SELECT COUNT(*) FROM niche_spy_videos WHERE enriched_at > NOW()-INTERVAL '24 hours')::text AS enr24,
-       (SELECT COUNT(*) FROM niche_spy_channels WHERE channel_created_at > NOW()-INTERVAL '30 days')::text AS newborn`,
-  );
-  const row = r.rows[0];
-  if (!row) return null;
-  return {
-    text: `In the last 24 hours we analyzed ${fmt(row.vids24)} videos and updated the stats on ${fmt(row.enr24)} more. We're now tracking ${fmt(row.newborn)} channels that are less than a month old.`,
-    key: null,
-  };
-}
-
-const ROTATION: Array<{ kind: string; emoji: string; label: string; fn: (p: Pool) => Promise<{ text: string; key: string | null } | null> }> = [
-  { kind: 'spotlight', emoji: '🔭', label: 'Discovery spotlight', fn: discoverySpotlight },
-  { kind: 'growth',    emoji: '🌱', label: 'Growth story',        fn: growthStory },
-  { kind: 'bignum',    emoji: '⛏️', label: 'Mining numbers',      fn: bigNumber },
-];
-
-/**
- * Build the full report. `rotationIdx` picks the insight slot; if that slot
- * has nothing fresh (e.g. no un-featured spotlight candidate), fall through
- * to the next so a post always carries SOME insight when possible.
- */
-export async function buildBroadcastReport(pool: Pool, rotationIdx: number): Promise<BroadcastReport> {
+/** Build the heartbeat report (stats only). rotationIdx accepted for caller
+ *  compatibility but no longer used — insights are event-driven now. */
+export async function buildBroadcastReport(pool: Pool, _rotationIdx?: number): Promise<BroadcastReport> {
   const stats = await buildStats(pool);
-  for (let i = 0; i < ROTATION.length; i++) {
-    const slot = ROTATION[(rotationIdx + i) % ROTATION.length];
-    try {
-      const got = await slot.fn(pool);
-      if (got) {
-        return {
-          title: 'rofe.ai mining pulse',
-          stats,
-          insight: { emoji: slot.emoji, label: slot.label, text: got.text },
-          featuredKey: got.key,
-          kind: slot.kind,
-        };
-      }
-    } catch (err) {
-      console.error(`[broadcast] insight ${slot.kind} failed:`, (err as Error).message);
-    }
-  }
-  return { title: 'rofe.ai mining pulse', stats, insight: null, featuredKey: null, kind: 'stats_only' };
+  return { title: 'rofe.ai mining pulse', stats, insight: null, featuredKey: null, kind: 'pulse' };
 }
