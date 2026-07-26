@@ -40,43 +40,39 @@ export async function sendTelegramText(botToken: string, chatId: string, html: s
  */
 export async function sendTelegramSpotlight(
   botToken: string, chatId: string, captionHTML: string,
-  shot: Buffer | null, thumbUrls: string[],
+  images: Buffer[],
 ): Promise<SendResult> {
   const api = (m: string) => `https://api.telegram.org/bot${botToken}/${m}`;
-  // Assemble the media list: screenshot first (as attached upload), then thumbs (by URL).
-  const media: Array<Record<string, unknown>> = [];
-  let captioned = false;
-  if (shot) { media.push({ type: 'photo', media: 'attach://shot', caption: captionHTML, parse_mode: 'HTML' }); captioned = true; }
-  for (const u of thumbUrls.slice(0, 9)) {
-    const m: Record<string, unknown> = { type: 'photo', media: u };
-    if (!captioned) { m.caption = captionHTML; m.parse_mode = 'HTML'; captioned = true; }
-    media.push(m);
-  }
+  const imgs = images.filter(Boolean).slice(0, 10);
+  // Caption rides the FIRST image, so pass images hero-first — Telegram lays an
+  // album out by aspect ratio and gives a wide leading image its own full-width
+  // row (that's what makes the channel grid the biggest element).
+  const media = imgs.map((_, i) => {
+    const m: Record<string, unknown> = { type: 'photo', media: `attach://img${i}` };
+    if (i === 0) { m.caption = captionHTML; m.parse_mode = 'HTML'; }
+    return m;
+  });
 
   try {
-    if (media.length >= 2) {
+    if (imgs.length >= 2) {
       const form = new FormData();
       form.append('chat_id', chatId);
       form.append('media', JSON.stringify(media));
-      if (shot) form.append('shot', new Blob([new Uint8Array(shot)], { type: 'image/png' }), 'shot.png');
-      const res = await fetch(api('sendMediaGroup'), { method: 'POST', body: form, signal: AbortSignal.timeout(30_000) });
+      imgs.forEach((b, i) => form.append(`img${i}`, new Blob([new Uint8Array(b)], { type: 'image/png' }), `img${i}.png`));
+      const res = await fetch(api('sendMediaGroup'), { method: 'POST', body: form, signal: AbortSignal.timeout(60_000) });
       if (res.ok) return { target: 'telegram', ok: true };
-      // fall through to text
-    } else if (media.length === 1 && shot) {
+      console.warn('[broadcast] sendMediaGroup failed:', (await res.text().catch(() => '')).slice(0, 200));
+    } else if (imgs.length === 1) {
       const form = new FormData();
       form.append('chat_id', chatId); form.append('caption', captionHTML); form.append('parse_mode', 'HTML');
-      form.append('photo', new Blob([new Uint8Array(shot)], { type: 'image/png' }), 'shot.png');
-      const res = await fetch(api('sendPhoto'), { method: 'POST', body: form, signal: AbortSignal.timeout(30_000) });
+      form.append('photo', new Blob([new Uint8Array(imgs[0])], { type: 'image/png' }), 'img.png');
+      const res = await fetch(api('sendPhoto'), { method: 'POST', body: form, signal: AbortSignal.timeout(40_000) });
       if (res.ok) return { target: 'telegram', ok: true };
-    } else if (media.length === 1) {
-      const res = await fetch(api('sendPhoto'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, photo: thumbUrls[0], caption: captionHTML, parse_mode: 'HTML' }),
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (res.ok) return { target: 'telegram', ok: true };
+      console.warn('[broadcast] sendPhoto failed:', (await res.text().catch(() => '')).slice(0, 200));
     }
-  } catch { /* fall through to text */ }
+  } catch (err) {
+    console.warn('[broadcast] media send threw:', (err as Error).message);
+  }
   // Universal fallback — never drop a post.
   return sendTelegramText(botToken, chatId, captionHTML);
 }

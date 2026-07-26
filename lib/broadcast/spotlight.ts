@@ -33,36 +33,39 @@ async function loadConfig(pool: Pool): Promise<SpotlightConfig> {
 }
 
 export interface ChannelRow { channel_id: string; channel_name: string | null; subscriber_count: number | null; channel_created_at: Date | null; video_count: number | null }
-export interface VideoRow { title: string | null; thumbnail: string | null; view_count: number | null }
+export interface VideoRow { title: string | null; thumbnail: string | null; view_count: number | null; url: string | null; posted_at: Date | null }
 
-/** Shorts vs long-form label from the channel's own videos' is_short ratio.
- *  Empty string when we don't have enough sampled videos to say. */
-export async function channelFormat(pool: Pool, channelId: string): Promise<string> {
-  const r = await pool.query<{ sh: string; tot: string }>(
-    `SELECT COUNT(*) FILTER (WHERE is_short) sh, COUNT(*) tot
-       FROM niche_spy_videos WHERE channel_id = $1 AND is_short IS NOT NULL`, [channelId]);
-  const sh = parseInt(r.rows[0]?.sh) || 0, tot = parseInt(r.rows[0]?.tot) || 0;
-  if (tot < 3) return '';
-  const frac = sh / tot;
-  if (frac >= 0.7) return `📱 Shorts channel`;
-  if (frac <= 0.3) return `🎞 Long-form channel`;
-  return `🔀 Shorts + long-form`;
+export interface GatheredChannel {
+  ch: ChannelRow;
+  vids: VideoRow[];
+  format: string;
+  durations: Map<string, number>;   // ytId -> seconds (drives badges + format)
 }
 
-/** Fetch a channel + its top videos + format label. Null if unknown. */
-export async function gatherChannel(pool: Pool, channelId: string): Promise<{ ch: ChannelRow; vids: VideoRow[]; format: string } | null> {
+/**
+ * Fetch a channel + its top videos, then resolve real video durations via one
+ * proxied videos.list call. Durations give BOTH the YouTube-style duration
+ * badges and the shorts/long-form label — our stored is_short column is only
+ * ~4% filled, so the old ratio-based label was usually silently absent.
+ */
+export async function gatherChannel(pool: Pool, channelId: string): Promise<GatheredChannel | null> {
   const chRes = await pool.query<ChannelRow>(
     `SELECT channel_id, channel_name, subscriber_count, channel_created_at, video_count
        FROM niche_spy_channels WHERE channel_id = $1`, [channelId],
   );
   if (!chRes.rows[0]) return null;
+  // Pull a few extra so the duration sample (and thus the format label) is
+  // meaningful even when some rows lack a usable id.
   const vidsRes = await pool.query<VideoRow>(
-    `SELECT title, thumbnail, view_count FROM niche_spy_videos
+    `SELECT title, thumbnail, view_count, url, posted_at FROM niche_spy_videos
       WHERE channel_id = $1 AND thumbnail IS NOT NULL
-      ORDER BY view_count DESC NULLS LAST LIMIT 4`, [channelId],
+      ORDER BY view_count DESC NULLS LAST LIMIT 8`, [channelId],
   );
-  const format = await channelFormat(pool, channelId);
-  return { ch: chRes.rows[0], vids: vidsRes.rows, format };
+  const { extractYtId, fetchDurations, formatLabelFromDurations } = await import('./cards');
+  const ids = vidsRes.rows.map(v => extractYtId(v.url)).filter((x): x is string => !!x);
+  const durations = await fetchDurations(ids);
+  const format = formatLabelFromDurations([...durations.values()]);
+  return { ch: chRes.rows[0], vids: vidsRes.rows.slice(0, 4), format, durations };
 }
 
 /** Shared rich sender: screenshot (best-effort) + thumbnails + caption, logged
@@ -71,16 +74,34 @@ export async function gatherChannel(pool: Pool, channelId: string): Promise<{ ch
 export async function sendRichChannelPost(
   pool: Pool, cfg: ChannelPostConfig, channelId: string,
   caption: string, vids: VideoRow[], dedupKey: string | null, kind: string,
+  durations?: Map<string, number>,
 ): Promise<SendResult> {
-  const thumbs = vids.map(v => v.thumbnail!).filter(Boolean);
+  const { composeVideoCard, extractYtId, heroCrop } = await import('./cards');
+
+  // HERO first: the channel-grid screenshot, cropped wide so Telegram gives it
+  // its own full-width row (the raw portrait capture rendered as a small tile).
+  const images: Buffer[] = [];
   const shot = await captureChannelShot(channelId);
-  const res = await sendTelegramSpotlight(cfg.token, cfg.chat, caption, shot, thumbs);
+  if (shot) images.push(await heroCrop(shot));
+
+  // Then each featured video as a YouTube-style card (thumb + duration badge +
+  // title + views/age). Composed in parallel; any failure just drops that card.
+  const cards = await Promise.all(vids.slice(0, 4).map(v => {
+    const ytId = extractYtId(v.url);
+    return composeVideoCard(
+      { ytId, thumbnail: v.thumbnail, title: v.title, viewCount: v.view_count, postedAt: v.posted_at },
+      ytId ? durations?.get(ytId) ?? null : null,
+    ).catch(() => null);
+  }));
+  for (const c of cards) if (c) images.push(c);
+
+  const res = await sendTelegramSpotlight(cfg.token, cfg.chat, caption, images);
   await pool.query(
     `INSERT INTO broadcast_posts (kind, featured_key, ok, targets, payload, error)
      VALUES ($1, $2, $3, 'telegram', $4, $5)`,
     [kind, dedupKey, res.ok, caption.slice(0, 4000), res.ok ? null : res.error ?? null],
   ).catch(err => console.error(`[${kind}] post log failed:`, (err as Error).message));
-  console.log(`[${kind}] chan=${channelId} shot=${shot ? 'yes' : 'no'} thumbs=${thumbs.length} -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
+  console.log(`[${kind}] chan=${channelId} shot=${shot ? 'yes' : 'no'} cards=${images.length - (shot ? 1 : 0)} -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
   return res;
 }
 
@@ -151,7 +172,7 @@ export async function sendSpotlightFor(
   const g = await gatherChannel(pool, channelId);
   if (!g) return { target: 'telegram', ok: false, error: 'channel not found' };
   const caption = buildSpotlightCaption(g.ch, g.vids, g.format);
-  return sendRichChannelPost(pool, cfg, channelId, caption, g.vids, dedupKey, 'eligible_spotlight');
+  return sendRichChannelPost(pool, cfg, channelId, caption, g.vids, dedupKey, 'eligible_spotlight', g.durations);
 }
 
 export interface SpotlightTickResult { ran: boolean; reason?: string; sent: number }

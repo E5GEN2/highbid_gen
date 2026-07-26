@@ -114,7 +114,7 @@ export async function sendGrowthFor(
   const g = await gatherChannel(pool, channelId);
   if (!g) return { target: 'telegram', ok: false, error: 'channel not found' };
   const caption = buildGrowthCaption(g.ch, g.vids, gd, g.format);
-  return sendRichChannelPost(pool, cfg, channelId, caption, g.vids, dedupKey, 'growth_story');
+  return sendRichChannelPost(pool, cfg, channelId, caption, g.vids, dedupKey, 'growth_story', g.durations);
 }
 
 export interface GrowthTickResult { ran: boolean; reason?: string; sent: number }
