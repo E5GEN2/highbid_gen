@@ -177,15 +177,19 @@ export async function runGrowthStoryTick(): Promise<GrowthTickResult> {
                            AND b.posted_at > NOW() - ($3 || ' days')::interval)
       ORDER BY p.subs1::float / GREATEST(p.subs0::float, 1) DESC
       LIMIT $4`,
-    [cfg.minSubs0, cfg.minMult, String(cfg.cooldownDays), cfg.perTick],
+    // Over-fetch: sendGrowthFor returns not-ok when a channel yields no images
+    // (all thumbnails dead + cold capture), so we need fallbacks to still land
+    // perTick real posts instead of starving on a bad top candidate.
+    [cfg.minSubs0, cfg.minMult, String(cfg.cooldownDays), cfg.perTick + 4],
   );
 
   let sent = 0;
   for (const row of cand.rows) {
+    if (sent >= cfg.perTick) break;
     const gd = await gatherGrowthData(pool, row.channel_id);
     if (!gd || gd.subs1 <= gd.subs0 * cfg.minMult) continue;
     const res = await sendGrowthFor(pool, cfg, row.channel_id, gd, `growth:${row.channel_id}`);
-    if (res.ok) sent++;
+    if (res.ok) sent++;   // not-ok (e.g. no_images skip) → fall through to next candidate
   }
   return { ran: true, sent };
 }

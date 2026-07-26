@@ -16,6 +16,19 @@ export interface SendResult {
   /** Which delivery path actually ran — album / photo / plain text fallback.
    *  Recorded on the post row so a degraded post is diagnosable after the fact. */
   via?: 'album' | 'photo' | 'text';
+  /** Telegram message_id(s) of the delivered message(s) — an album returns one
+   *  per media item. Stored on the post row so a bad post can be deleted later
+   *  via deleteMessage (there's no other way to unsend once it's out). */
+  messageIds?: number[];
+}
+
+/** Pull message_id(s) from a Telegram send response body (result may be an
+ *  object for photo/text or an array for a media group). */
+function extractMessageIds(body: unknown): number[] {
+  const r = (body as { result?: unknown })?.result;
+  if (Array.isArray(r)) return r.map(m => (m as { message_id?: number })?.message_id).filter((n): n is number => typeof n === 'number');
+  const one = (r as { message_id?: number })?.message_id;
+  return typeof one === 'number' ? [one] : [];
 }
 
 export function esc(s: string): string {
@@ -32,10 +45,34 @@ export async function sendTelegramText(botToken: string, chatId: string, html: s
       signal: AbortSignal.timeout(15_000),
     });
     const body = await res.text().catch(() => '');
-    return res.ok ? { target: 'telegram', ok: true, via: 'text' } : { target: 'telegram', ok: false, via: 'text', error: `HTTP ${res.status}: ${body.slice(0, 160)}` };
+    return res.ok
+      ? { target: 'telegram', ok: true, via: 'text', messageIds: extractMessageIds(safeJson(body)) }
+      : { target: 'telegram', ok: false, via: 'text', error: `HTTP ${res.status}: ${body.slice(0, 160)}` };
   } catch (err) {
     return { target: 'telegram', ok: false, error: (err as Error).message?.slice(0, 160) };
   }
+}
+
+function safeJson(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+/** Delete previously-sent Telegram messages (best-effort; used to remove a bad
+ *  broadcast post). Telegram allows a bot to delete its own messages. */
+export async function deleteTelegramMessages(botToken: string, chatId: string, messageIds: number[]): Promise<{ deleted: number; failed: number }> {
+  let deleted = 0, failed = 0;
+  for (const id of messageIds) {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/deleteMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: id }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.ok) deleted++; else failed++;
+    } catch { failed++; }
+  }
+  return { deleted, failed };
 }
 
 /**
@@ -67,15 +104,17 @@ export async function sendTelegramSpotlight(
       form.append('media', JSON.stringify(media));
       imgs.forEach((b, i) => form.append(`img${i}`, new Blob([new Uint8Array(b)], { type: 'image/png' }), `img${i}.png`));
       const res = await fetch(api('sendMediaGroup'), { method: 'POST', body: form, signal: AbortSignal.timeout(60_000) });
-      if (res.ok) return { target: 'telegram', ok: true, via: 'album' };
-      console.warn('[broadcast] sendMediaGroup failed:', (await res.text().catch(() => '')).slice(0, 200));
+      const txt = await res.text().catch(() => '');
+      if (res.ok) return { target: 'telegram', ok: true, via: 'album', messageIds: extractMessageIds(safeJson(txt)) };
+      console.warn('[broadcast] sendMediaGroup failed:', txt.slice(0, 200));
     } else if (imgs.length === 1) {
       const form = new FormData();
       form.append('chat_id', chatId); form.append('caption', captionHTML); form.append('parse_mode', 'HTML');
       form.append('photo', new Blob([new Uint8Array(imgs[0])], { type: 'image/png' }), 'img.png');
       const res = await fetch(api('sendPhoto'), { method: 'POST', body: form, signal: AbortSignal.timeout(40_000) });
-      if (res.ok) return { target: 'telegram', ok: true, via: 'photo' };
-      console.warn('[broadcast] sendPhoto failed:', (await res.text().catch(() => '')).slice(0, 200));
+      const txt = await res.text().catch(() => '');
+      if (res.ok) return { target: 'telegram', ok: true, via: 'photo', messageIds: extractMessageIds(safeJson(txt)) };
+      console.warn('[broadcast] sendPhoto failed:', txt.slice(0, 200));
     }
   } catch (err) {
     console.warn('[broadcast] media send threw:', (err as Error).message);

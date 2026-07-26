@@ -60,7 +60,27 @@ export async function POST(req: NextRequest) {
   if (!await isAdmin(req)) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   const body = await req.json().catch(() => ({})) as {
     dryRun?: boolean; force?: boolean; spotlight?: string; spotlightDry?: string; growth?: string;
+    deletePost?: number;
   };
+
+  // Delete a delivered post from Telegram by its broadcast_posts id — reads the
+  // stored message_ids and calls deleteMessage for each. The only way to unsend.
+  if (body.deletePost) {
+    const pool = await getPool();
+    const row = await pool.query<{ meta: { message_ids?: number[] } | null; channel_id: string | null }>(
+      `SELECT meta, channel_id FROM broadcast_posts WHERE id = $1`, [body.deletePost]);
+    if (!row.rows[0]) return NextResponse.json({ error: 'post not found' }, { status: 404 });
+    const ids = row.rows[0].meta?.message_ids ?? [];
+    if (!ids.length) return NextResponse.json({ error: 'no message_ids stored for this post (sent before capture was added)' }, { status: 409 });
+    const cfgRes = await pool.query<{ key: string; value: string }>(
+      `SELECT key, value FROM admin_config WHERE key IN ('broadcast_telegram_token','broadcast_telegram_chat')`);
+    const c: Record<string, string> = {};
+    for (const r of cfgRes.rows) c[r.key] = r.value;
+    const { deleteTelegramMessages } = await import('@/lib/broadcast/senders');
+    const del = await deleteTelegramMessages(c.broadcast_telegram_token || '', c.broadcast_telegram_chat || '', ids);
+    await pool.query(`UPDATE broadcast_posts SET meta = meta || '{"deleted":true}'::jsonb WHERE id = $1`, [body.deletePost]).catch(() => {});
+    return NextResponse.json({ deletePost: body.deletePost, messageIds: ids, ...del });
+  }
 
   // Spotlight test: compose (+optionally send) a rich eligible-channel post for
   // a specific channel_id, WITHOUT the dedup high-water mark. spotlightDry

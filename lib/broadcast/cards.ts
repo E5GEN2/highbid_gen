@@ -112,6 +112,47 @@ async function fetchBuf(url: string, ms = 12_000): Promise<Buffer | null> {
   } catch { return null; }
 }
 
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+/**
+ * Ordered thumbnail-URL candidates for a video. The stored URL is almost always
+ * `maxresdefault.jpg`, which is NOT generated for every video (Shorts, small/new
+ * uploads) and 404s — hq720/hqdefault do exist whenever the video does. Try the
+ * high-res ones first for crispness, then fall back to ones that always exist.
+ */
+function thumbUrls(v: CardInput): string[] {
+  const urls: string[] = [];
+  if (v.ytId) {
+    urls.push(
+      `https://i.ytimg.com/vi/${v.ytId}/hq720.jpg`,
+      `https://i.ytimg.com/vi/${v.ytId}/maxresdefault.jpg`,
+      `https://i.ytimg.com/vi/${v.ytId}/hqdefault.jpg`,
+      `https://i.ytimg.com/vi/${v.ytId}/mqdefault.jpg`,
+      `https://i.ytimg.com/vi/${v.ytId}/sddefault.jpg`,
+    );
+  }
+  if (v.thumbnail && !urls.includes(v.thumbnail)) urls.unshift(v.thumbnail);
+  return [...new Set(urls)];
+}
+
+/**
+ * Fetch a usable thumbnail, walking the resolution fallback chain with one retry
+ * each. YouTube's "no thumbnail" response is a ~1KB placeholder, so anything
+ * under ~2.5KB is treated as absent. i.ytimg.com rate-limits bursts (a parallel
+ * fan-out of 4+ requests all 404), which is why the caller composes cards
+ * sequentially — this function must never be run 4-wide in parallel.
+ */
+async function fetchThumb(v: CardInput): Promise<Buffer | null> {
+  for (const url of thumbUrls(v)) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const buf = await fetchBuf(url);
+      if (buf && buf.length > 2500) return buf;
+      if (attempt === 0) await sleep(120);   // transient 404 under throttle → retry once
+    }
+  }
+  return null;
+}
+
 /** Wrap a title into ≤2 lines of ~42 chars, ellipsised. */
 function wrapTitle(t: string): string[] {
   const words = t.split(/\s+/);
@@ -130,8 +171,8 @@ function wrapTitle(t: string): string[] {
  * thumbnail can't be fetched.
  */
 export async function composeVideoCard(v: CardInput, durationSec: number | null): Promise<Buffer | null> {
-  if (!v.thumbnail) return null;
-  const raw = await fetchBuf(v.thumbnail);
+  if (!v.thumbnail && !v.ytId) return null;
+  const raw = await fetchThumb(v);
   if (!raw) return null;
   try {
     const thumb = await sharp(raw).resize(CARD_W, THUMB_H, { fit: 'cover', position: 'centre' }).toBuffer();

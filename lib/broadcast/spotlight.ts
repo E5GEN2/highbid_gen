@@ -83,7 +83,10 @@ export async function gatherChannel(pool: Pool, channelId: string): Promise<Gath
   const ids = vidsRes.rows.map(v => extractYtId(v.url)).filter((x): x is string => !!x);
   const durations = await fetchDurations(ids);
   const format = formatLabelFromDurations([...durations.values()]);
-  return { ch: chRes.rows[0], vids: vidsRes.rows.slice(0, 4), format, durations };
+  // Return the full pool (up to 8) — sendRichChannelPost composes cards
+  // sequentially and keeps the first 4 that render, so dead thumbnails on the
+  // top videos fall through to the next ones instead of emptying the post.
+  return { ch: chRes.rows[0], vids: vidsRes.rows, format, durations };
 }
 
 /** Shared rich sender: screenshot (best-effort) + thumbnails + caption, logged
@@ -105,19 +108,45 @@ export async function sendRichChannelPost(
   const shotMs = Date.now() - tShot;
   if (shot) images.push(await heroCrop(shot));
 
-  // Then each featured video as a YouTube-style card (thumb + duration badge +
-  // title + views/age). Composed in parallel; any failure just drops that card.
+  // Then YouTube-style cards. Compose SEQUENTIALLY, not in parallel: i.ytimg.com
+  // rate-limits a 4-wide burst to all-404, and each thumbnail needs a resolution
+  // fallback walk (maxresdefault, the stored URL, often 404s). Draw from the full
+  // video pool and keep the first 4 that actually render, so videos with dead or
+  // restricted thumbnails don't leave gaps (or an empty post).
   const tCards = Date.now();
-  const wanted = vids.slice(0, 4);
-  const cards = await Promise.all(wanted.map(v => {
+  let cardsAttempted = 0;
+  for (const v of vids) {
+    if (images.length - (shot ? 1 : 0) >= 4) break;   // 4 cards is enough
+    cardsAttempted++;
     const ytId = extractYtId(v.url);
-    return composeVideoCard(
+    const card = await composeVideoCard(
       { ytId, thumbnail: v.thumbnail, title: v.title, viewCount: v.view_count, postedAt: v.posted_at },
       ytId ? durations?.get(ytId) ?? null : null,
     ).catch(() => null);
-  }));
+    if (card) images.push(card);
+  }
   const cardsMs = Date.now() - tCards;
-  for (const c of cards) if (c) images.push(c);
+  const cardsBuilt = images.length - (shot ? 1 : 0);
+
+  // NEVER publish a bare text-only channel post — that's below the quality bar.
+  // If neither the hero nor any card rendered, skip the send: log a non-ok
+  // 'no_images' row (featured_key NULL, so a growth channel's cooldown is NOT
+  // burned and it's retried on a later tick once thumbnails/capture recover),
+  // and return not-ok so the caller's tick moves on to the next candidate.
+  if (images.length === 0) {
+    const meta = {
+      shot_ok: false, shot_ms: shotMs, cards_attempted: cardsAttempted, cards_built: 0,
+      cards_ms: cardsMs, durations_resolved: durations ? durations.size : 0,
+      images_sent: 0, via: null, skipped: 'no_images', degraded: true, total_ms: Date.now() - t0,
+    };
+    await pool.query(
+      `INSERT INTO broadcast_posts (kind, featured_key, ok, targets, payload, error, channel_id, meta)
+       VALUES ($1, NULL, false, 'telegram', $2, 'no_images', $3, $4::jsonb)`,
+      [kind, caption.slice(0, 4000), channelId, JSON.stringify(meta)],
+    ).catch(() => {});
+    console.warn(`[${kind}] chan=${channelId} SKIPPED no_images (hero+${cardsAttempted} cards all failed) ${meta.total_ms}ms`);
+    return { target: 'telegram', ok: false, error: 'no_images_skipped' };
+  }
 
   const res = await sendTelegramSpotlight(cfg.token, cfg.chat, caption, images);
 
@@ -126,14 +155,15 @@ export async function sendRichChannelPost(
   const meta = {
     shot_ok: !!shot,
     shot_ms: shotMs,
-    cards_wanted: wanted.length,
-    cards_built: cards.filter(Boolean).length,
+    cards_attempted: cardsAttempted,
+    cards_built: cardsBuilt,
     cards_ms: cardsMs,
     durations_resolved: durations ? durations.size : 0,
     images_sent: images.length,
     bytes: images.reduce((a, b) => a + b.length, 0),
     via: res.via ?? null,
-    degraded: res.via === 'text' || cards.filter(Boolean).length < wanted.length || !shot,
+    message_ids: res.messageIds ?? [],   // enables deleteMessage on a bad post
+    degraded: res.via === 'text' || !shot,
     total_ms: Date.now() - t0,
   };
   await pool.query(
@@ -141,7 +171,7 @@ export async function sendRichChannelPost(
      VALUES ($1, $2, $3, 'telegram', $4, $5, $6, $7::jsonb)`,
     [kind, dedupKey, res.ok, caption.slice(0, 4000), res.ok ? null : res.error ?? null, channelId, JSON.stringify(meta)],
   ).catch(err => console.error(`[${kind}] post log failed:`, (err as Error).message));
-  console.log(`[${kind}] chan=${channelId} via=${res.via} shot=${shot ? 'yes' : 'NO'} cards=${meta.cards_built}/${meta.cards_wanted} durs=${meta.durations_resolved} ${meta.total_ms}ms -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
+  console.log(`[${kind}] chan=${channelId} via=${res.via} shot=${shot ? 'yes' : 'NO'} cards=${cardsBuilt}/${cardsAttempted} durs=${meta.durations_resolved} ${meta.total_ms}ms -> ${res.ok ? 'ok' : 'FAIL:' + res.error}`);
   return res;
 }
 
@@ -187,9 +217,12 @@ async function captureChannelShot(channelId: string): Promise<Buffer | null> {
       import('@/lib/content-gen/yt-capture'),
       import('fs/promises'),
     ]);
+    // 25s cap: a warm cache returns in <1s; a cold capture needs multiple proxy
+    // attempts and usually can't finish in time anyway, so a long timeout just
+    // delays the post. The video cards carry the images; the grid is a bonus.
     const res = await Promise.race([
       captureYtScreen(channelId, { kind: 'videos_tab_popular', mode: 'static' }),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('capture timeout')), 40_000)),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('capture timeout')), 25_000)),
     ]);
     const p = (res as { local_path?: string })?.local_path;
     if (!p) return null;
@@ -243,14 +276,17 @@ export async function runEligibleSpotlightTick(): Promise<SpotlightTickResult> {
         AND NOT EXISTS (SELECT 1 FROM broadcast_posts b WHERE b.featured_key = 'chan:'||s.channel_id)
       ORDER BY s.cg_evaluated_at ASC
       LIMIT $2`,
-    [cfg.since, cfg.perTick],
+    // Over-fetch fallbacks: a channel with no usable images returns not-ok and
+    // is skipped, so we need extras to still land perTick real posts.
+    [cfg.since, cfg.perTick + 4],
   );
   if (todo.rows.length === 0) return { ran: true, sent: 0 };
 
   let sent = 0;
   for (const row of todo.rows) {
+    if (sent >= cfg.perTick) break;
     const res = await sendSpotlightFor(pool, cfg, row.channel_id, `chan:${row.channel_id}`);
-    if (res.ok) sent++;
+    if (res.ok) sent++;   // not-ok (no_images skip) → try the next eligible channel
   }
   return { ran: true, sent };
 }
