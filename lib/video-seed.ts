@@ -526,7 +526,7 @@ export type EmbedOutcome =
  * pattern in /api/admin/tools/vid-gen/generate — a single bad key or
  * proxy shouldn't tank an entire seed expansion.
  */
-async function ensureCombinedV2(
+export async function ensureCombinedV2(
   rows: ResolvedVideo[],
   modelName = 'gemini-embedding-2-preview',
 ): Promise<Map<number, EmbedOutcome>> {
@@ -808,4 +808,84 @@ export async function expandFromSeed(opts: ExpandOpts): Promise<SeedExpandResult
     keyword: opts.keyword ?? null,
     timings: { metadataMs, embeddingMs, similarityMs, persistMs },
   };
+}
+
+// ── Embed backfill drainer ───────────────────────────────────────────────
+// Ingest-time embedding (ensureCombinedV2 inside expandFromSeed) only covers
+// candidates as crawls land, and failures (key drought, kill-switch window,
+// thumb fetch blip) are never retried — so unembedded videos accumulate
+// (2026-07-25: 60K unembedded in 24h; embed rate 415/hr vs inflow 1337/hr).
+// Unembedded → invisible to novelty scoring → no fresh high-novelty seeds →
+// the seed scheduler starves at its pct floor and discovery halves. This tick
+// continuously drains the FRESHEST unembedded videos (freshest-first: those
+// are the seed-worthy ones), reusing the exact ingest embed pipeline.
+// Config-gated (embed_backfill_enabled, default ON); advisory-locked;
+// in-memory attempt cooldown so permanently-failing rows can't wedge the
+// freshest-first queue.
+const EMBED_BACKFILL_LOCK = 728412002;
+const backfillAttempted = new Map<number, number>();  // videoId → last attempt ms
+const BACKFILL_RETRY_MS = 2 * 60 * 60 * 1000;         // re-try failures after 2h
+
+export interface EmbedBackfillResult {
+  enabled: boolean; skipped: boolean; picked: number; embedded: number; failed: number; ms: number;
+}
+
+export async function runEmbedBackfillTick(batch = 200): Promise<EmbedBackfillResult> {
+  const t0 = Date.now();
+  const base: EmbedBackfillResult = { enabled: true, skipped: false, picked: 0, embedded: 0, failed: 0, ms: 0 };
+  const pool = await getPool();
+  const cfg = await pool.query<{ value: string }>(
+    `SELECT value FROM admin_config WHERE key = 'embed_backfill_enabled'`,
+  );
+  if (cfg.rows[0]?.value === 'false') return { ...base, enabled: false };
+
+  const client = await pool.connect();
+  try {
+    const lock = await client.query<{ locked: boolean }>(
+      `SELECT pg_try_advisory_lock($1) AS locked`, [EMBED_BACKFILL_LOCK]);
+    if (!lock.rows[0]?.locked) return { ...base, skipped: true, ms: Date.now() - t0 };
+    try {
+      // Freshest unembedded first — over-fetch 3x so attempt-cooldown filtering
+      // still fills the batch.
+      const rows = await pool.query<{ id: number; video_id: string; url: string; title: string | null; thumbnail: string | null }>(
+        `SELECT id, video_id, url, title, thumbnail
+           FROM niche_spy_videos
+          WHERE combined_embedded_v2_at IS NULL
+            AND novelty_score IS NULL
+            AND title IS NOT NULL AND thumbnail IS NOT NULL
+            AND COALESCE(fetched_at, synced_at) > NOW() - INTERVAL '48 hours'
+          ORDER BY COALESCE(fetched_at, synced_at) DESC
+          LIMIT $1`,
+        [batch * 3],
+      );
+      const now = Date.now();
+      const targets = rows.rows
+        .filter(r => (backfillAttempted.get(r.id) ?? 0) < now - BACKFILL_RETRY_MS)
+        .slice(0, batch);
+      if (targets.length === 0) return { ...base, ms: Date.now() - t0 };
+      for (const r of targets) backfillAttempted.set(r.id, now);
+      // Bound the cooldown map (process-lifetime): drop expired entries when large.
+      if (backfillAttempted.size > 60_000) {
+        for (const [k, v] of backfillAttempted) if (v < now - BACKFILL_RETRY_MS) backfillAttempted.delete(k);
+      }
+
+      const resolved: ResolvedVideo[] = targets.map(r => ({
+        videoId: r.id,
+        ytId: r.video_id,
+        url: r.url,
+        title: r.title,
+        thumbnail: r.thumbnail,
+        hadCombinedV2: false,
+        wasNew: false,
+      }));
+      const outcomes = await ensureCombinedV2(resolved);
+      let ok = 0, failed = 0;
+      for (const o of outcomes.values()) { if (o.ok) ok++; else failed++; }
+      return { ...base, picked: targets.length, embedded: ok, failed, ms: Date.now() - t0 };
+    } finally {
+      await client.query(`SELECT pg_advisory_unlock($1)`, [EMBED_BACKFILL_LOCK]).catch(() => {});
+    }
+  } finally {
+    client.release();
+  }
 }

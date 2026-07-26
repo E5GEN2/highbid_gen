@@ -363,6 +363,33 @@ export async function register() {
       }
     }
 
+    // Embed backfill drainer — continuously embeds the freshest unembedded
+    // videos (ingest-time embedding misses candidates during key droughts /
+    // kill-switch windows and never retries → unembedded backlog → novelty
+    // can't score them → seed pool starves → discovery drops; incident
+    // 2026-07-25). Detached with re-entrancy guard: a slow pass (thumb
+    // fetches + Gemini calls) must not stall runAll. Kill switch
+    // admin_config embed_backfill_enabled='false'.
+    let embedBackfillRunning = false;
+    async function runEmbedBackfillTick() {
+      if (embedBackfillRunning) return;
+      embedBackfillRunning = true;
+      try {
+        const { runEmbedBackfillTick: run } = await import('./lib/video-seed');
+        run(200)
+          .then(r => {
+            if (r.enabled && !r.skipped && r.picked > 0) {
+              console.log(`[embed-backfill] picked=${r.picked} embedded=${r.embedded} failed=${r.failed} ${r.ms}ms`);
+            }
+          })
+          .catch(err => console.error('[embed-backfill] error:', err instanceof Error ? err.message : err))
+          .finally(() => { embedBackfillRunning = false; });
+      } catch (err) {
+        console.error('[embed-backfill] tick error:', err instanceof Error ? err.message : err);
+        embedBackfillRunning = false;
+      }
+    }
+
     // Key-pool reaper — deletes rows consumers marked 'invalid' (terminally-dead
     // keys) so the pool self-cleans instead of piling up a graveyard that skews
     // the "% active" gauge. Bounded (2000/tick) so a big backlog drains over a
@@ -401,6 +428,9 @@ export async function register() {
       await runEnrichWatchdogTick();
       // Key-pool reaper — sweep terminally-dead keys so the pool self-cleans.
       await runKeyPruneTick();
+      // Embed backfill — drain unembedded fresh videos so novelty/seed supply
+      // never starves on ingest-time embed misses. Detached internally.
+      await runEmbedBackfillTick();
       // CG-eligibility KPI sweep — incremental stamp of the flywheel's OUTPUT
       // metric (cg-eligible channels). Bounded batches, no-op-cheap.
       await runCgKpiSweepTick();
