@@ -1184,6 +1184,23 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ccs_source ON channel_cg_status(discovered_source)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ccs_evalver ON channel_cg_status(cg_eval_version)`).catch(() => {});
 
+    // broadcast_posts — audit log of every outbound mining-pulse broadcast
+    // (Telegram/Discord). featured_key powers the 14-day no-repeat window on
+    // featured channels; payload keeps the rendered text for the admin UI.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS broadcast_posts (
+        id SERIAL PRIMARY KEY,
+        posted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        kind TEXT NOT NULL,
+        featured_key TEXT,
+        ok BOOLEAN NOT NULL DEFAULT false,
+        targets TEXT,
+        payload TEXT,
+        error TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_bp_featured ON broadcast_posts(featured_key, posted_at DESC) WHERE featured_key IS NOT NULL`).catch(() => {});
+
     // candidate_was_new — true if this candidate row was created BY the
     // expand call that logged this expansion; false if it was already in
     // niche_spy_videos. Lets the admin feed flag "fresh discovery" vs

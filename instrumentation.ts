@@ -409,6 +409,18 @@ export async function register() {
       }
     }
 
+    // Broadcast tick — periodic mining-pulse posts to Telegram/Discord.
+    // Self-gated (broadcast_enabled, ships OFF; interval default 120min;
+    // no-op without configured targets). See lib/broadcast/.
+    async function runBroadcastLoopTick() {
+      try {
+        const { runBroadcastTick } = await import('./lib/broadcast');
+        await runBroadcastTick();
+      } catch (err) {
+        console.error('[broadcast] tick error:', err instanceof Error ? err.message : err);
+      }
+    }
+
     async function runAll() {
       await runAutoSync();
       await runAutoSchedule();
@@ -428,6 +440,8 @@ export async function register() {
       await runEnrichWatchdogTick();
       // Key-pool reaper — sweep terminally-dead keys so the pool self-cleans.
       await runKeyPruneTick();
+      // Mining-pulse broadcast (Telegram/Discord) — cheap no-op when disabled/not due.
+      await runBroadcastLoopTick();
       // Embed backfill — drain unembedded fresh videos so novelty/seed supply
       // never starves on ingest-time embed misses. Detached internally.
       await runEmbedBackfillTick();
