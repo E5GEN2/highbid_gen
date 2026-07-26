@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
       const { gatherChannel, buildSpotlightCaption } = await import('@/lib/broadcast/spotlight');
       const g = await gatherChannel(pool, cid);
       if (!g) return NextResponse.json({ error: 'channel not found' }, { status: 404 });
-      return NextResponse.json({ dryRun: true, caption: buildSpotlightCaption(g.ch, g.vids, g.format), thumbs: g.vids.map(v => v.thumbnail) });
+      return NextResponse.json({ dryRun: true, caption: buildSpotlightCaption(g.ch, g.vids, g.format, g.firstPostedAt), thumbs: g.vids.map(v => v.thumbnail) });
     }
     const { sendSpotlightFor } = await import('@/lib/broadcast/spotlight');
     const res = await sendSpotlightFor(pool, { token: c.broadcast_telegram_token || '', chat: c.broadcast_telegram_chat || '', since: null, perTick: 1 }, cid, null);
