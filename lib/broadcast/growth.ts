@@ -165,7 +165,12 @@ export async function runGrowthStoryTick(): Promise<GrowthTickResult> {
      )
      SELECT p.channel_id FROM pairs p
        JOIN niche_spy_channels c ON c.channel_id = p.channel_id
-      WHERE p.subs0 >= $1 AND p.subs1 > p.subs0 * $2
+      WHERE p.subs0 >= $1::bigint
+        -- Cast the multiplier to float8: 'bigint * $2' makes PG infer $2 as
+        -- bigint, and the fractional 1.5 fails to parse (the same param-type
+        -- trap as the int4 overflow one). This threw on EVERY tick, so auto
+        -- growth stories never fired — only manual test sends worked.
+        AND p.subs1::float8 > p.subs0::float8 * $2::float8
         AND ${NOT_AUTOGEN_SQL}
         AND NOT EXISTS (SELECT 1 FROM broadcast_posts b
                          WHERE b.featured_key = 'growth:'||p.channel_id
