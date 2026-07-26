@@ -75,7 +75,7 @@ async function discoverySpotlight(pool: Pool): Promise<{ text: string; key: stri
   if (!row) return null;
   const months = Math.max(1, Math.round(row.age_days / 30));
   return {
-    text: `Just found: "${row.channel_name ?? row.channel_id}" — ${fmt(row.subs)} subs at only ~${months} month${months > 1 ? 's' : ''} old (${row.vids} videos). The discovery engine caught it via the suggestion graph.`,
+    text: `Just found: "${row.channel_name ?? row.channel_id}" — ${fmt(row.subs)} subscribers in only ~${months} month${months > 1 ? 's' : ''} (${row.vids} videos). A brand-new channel already taking off.`,
     key: `chan:${row.channel_id}`,
   };
 }
@@ -114,7 +114,7 @@ async function growthStory(pool: Pool): Promise<{ text: string; key: string } | 
   if (!row) return null;
   const x = (parseFloat(row.subs1) / Math.max(parseFloat(row.subs0), 1)).toFixed(1);
   return {
-    text: `Growth watch: "${row.channel_name ?? row.channel_id}" went ${fmt(row.subs0)} → ${fmt(row.subs1)} subs in ${row.days} day${row.days > 1 ? 's' : ''} (×${x}). We've been snapshotting it daily since discovery.`,
+    text: `"${row.channel_name ?? row.channel_id}" jumped from ${fmt(row.subs0)} to ${fmt(row.subs1)} subscribers in just ${row.days} day${row.days > 1 ? 's' : ''} — that's ${x}× bigger. We spotted it early and have been watching it grow.`,
     key: `chan:${row.channel_id}`,
   };
 }
@@ -130,7 +130,7 @@ async function bigNumber(pool: Pool): Promise<{ text: string; key: null } | null
   const row = r.rows[0];
   if (!row) return null;
   return {
-    text: `In the last 24h the pipeline ingested ${fmt(row.vids24)} videos and refreshed stats on ${fmt(row.enr24)} more. The corpus now holds ${fmt(row.newborn)} channels that didn't even exist a month ago.`,
+    text: `In the last 24 hours we analyzed ${fmt(row.vids24)} videos and updated the stats on ${fmt(row.enr24)} more. We're now tracking ${fmt(row.newborn)} channels that are less than a month old.`,
     key: null,
   };
 }
