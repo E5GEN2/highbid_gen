@@ -412,26 +412,43 @@ export async function register() {
     // Broadcast tick — periodic mining-pulse posts to Telegram/Discord.
     // Self-gated (broadcast_enabled, ships OFF; interval default 120min;
     // no-op without configured targets). See lib/broadcast/.
+    //
+    // REENTRANCY GUARD (2026-07-26): the per-tick cap/gap/cooldown gates are
+    // read-then-write, so they're only correct if ticks run SERIALLY. A cold
+    // channel-grid screenshot capture blocks a loop cycle ~40s, which can push
+    // runAll past its 60s setInterval — the next cycle then starts while this
+    // one is still awaiting, and two concurrent broadcast ticks both pass every
+    // gate and post the SAME top channel. That shipped 5 duplicate posts of one
+    // channel in 13s. This flag serializes: a cycle that starts while a prior
+    // broadcast tick is still running skips its broadcast work entirely. The app
+    // is a single Node process, so an in-process flag is sufficient.
+    let broadcastTickRunning = false;
     async function runBroadcastLoopTick() {
+      if (broadcastTickRunning) return;
+      broadcastTickRunning = true;
       try {
-        const { runBroadcastTick } = await import('./lib/broadcast');
-        await runBroadcastTick();
-      } catch (err) {
-        console.error('[broadcast] tick error:', err instanceof Error ? err.message : err);
-      }
-      // Event-driven eligible-channel spotlight (bounded per tick; gated on the
-      // same broadcast_enabled flag + configured Telegram target).
-      try {
-        const pool = await getPool();
-        const en = await pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='broadcast_enabled'`);
-        if (en.rows[0]?.value === 'true') {
-          const { runEligibleSpotlightTick } = await import('./lib/broadcast/spotlight');
-          await runEligibleSpotlightTick();
-          const { runGrowthStoryTick } = await import('./lib/broadcast/growth');
-          await runGrowthStoryTick();
+        try {
+          const { runBroadcastTick } = await import('./lib/broadcast');
+          await runBroadcastTick();
+        } catch (err) {
+          console.error('[broadcast] tick error:', err instanceof Error ? err.message : err);
         }
-      } catch (err) {
-        console.error('[spotlight/growth] tick error:', err instanceof Error ? err.message : err);
+        // Event-driven eligible-channel spotlight + growth story (bounded per
+        // tick; gated on broadcast_enabled + configured Telegram target).
+        try {
+          const pool = await getPool();
+          const en = await pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='broadcast_enabled'`);
+          if (en.rows[0]?.value === 'true') {
+            const { runEligibleSpotlightTick } = await import('./lib/broadcast/spotlight');
+            await runEligibleSpotlightTick();
+            const { runGrowthStoryTick } = await import('./lib/broadcast/growth');
+            await runGrowthStoryTick();
+          }
+        } catch (err) {
+          console.error('[spotlight/growth] tick error:', err instanceof Error ? err.message : err);
+        }
+      } finally {
+        broadcastTickRunning = false;
       }
     }
 
