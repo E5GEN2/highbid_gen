@@ -607,13 +607,17 @@ async function runEnrichJob(
             id: string;
             snippet?: { title?: string; publishedAt?: string; customUrl?: string;
               thumbnails?: { default?: { url?: string }; medium?: { url?: string } } };
-            statistics?: { subscriberCount?: string; videoCount?: string };
+            statistics?: { subscriberCount?: string; videoCount?: string; viewCount?: string };
             contentDetails?: { relatedPlaylists?: { uploads?: string } };
           }
           const chData = res.data as { items?: YtChannelItem[] } | null;
           for (const ch of chData?.items || []) {
             const subCount = parseInt(ch.statistics?.subscriberCount || '0') || 0;
             const videoCount = parseInt(ch.statistics?.videoCount || '0') || 0;
+            // Channel lifetime views. bigint territory (channels routinely exceed
+            // the 2.147B int4 ceiling) — param is cast ::bigint in the INSERT per
+            // the 2026-07-14 int4-inference incident.
+            const totalViews = parseInt(ch.statistics?.viewCount || '0') || 0;
             const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
             const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
             const channelName = ch.snippet?.title || null;
@@ -625,8 +629,8 @@ async function runEnrichJob(
               INSERT INTO niche_spy_channels
                 (channel_id, channel_name, channel_handle, channel_avatar,
                  subscriber_count, channel_created_at, video_count, uploads_playlist_id,
-                 last_channel_fetched_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                 total_views, last_channel_fetched_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::bigint, NOW())
               ON CONFLICT (channel_id) DO UPDATE SET
                 channel_name   = COALESCE(NULLIF(EXCLUDED.channel_name, ''),   niche_spy_channels.channel_name),
                 channel_handle = COALESCE(NULLIF(EXCLUDED.channel_handle, ''), niche_spy_channels.channel_handle),
@@ -635,8 +639,9 @@ async function runEnrichJob(
                 channel_created_at = COALESCE(EXCLUDED.channel_created_at,    niche_spy_channels.channel_created_at),
                 video_count        = CASE WHEN EXCLUDED.video_count > 0 THEN EXCLUDED.video_count ELSE niche_spy_channels.video_count END,
                 uploads_playlist_id = COALESCE(EXCLUDED.uploads_playlist_id,  niche_spy_channels.uploads_playlist_id),
+                total_views        = CASE WHEN EXCLUDED.total_views > 0 THEN EXCLUDED.total_views ELSE niche_spy_channels.total_views END,
                 last_channel_fetched_at = NOW()
-            `, [ch.id, channelName, handle, avatar, subCount, channelCreatedAt, videoCount, uploadsId]).catch(err => {
+            `, [ch.id, channelName, handle, avatar, subCount, channelCreatedAt, videoCount, uploadsId, totalViews]).catch(err => {
               console.warn('[yt-enrich] channel upsert failed:', (err as Error).message);
             });
 
