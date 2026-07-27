@@ -22,6 +22,11 @@ import { getPool } from './db';
 export const COLAB_JOB_ID_DEFAULT = '6a4f3e09d3b833d350903c37';
 export const COLAB_NOTEBOOK_URL_DEFAULT = 'http://195.201.198.166:8091/cluster_knn_worker.ipynb';
 const XGODO_API = 'https://xgodo.com/api/v2';
+// xgodo calls MUST be time-capped: the jobs/applicants POST can blackhole for
+// devices_automation jobs (observed 2026-07-27 — hung the admin route for 40s+
+// AND wedged the keeper tick's re-entrancy guard permanently). Node fetch has
+// no default timeout.
+const XG_TIMEOUT = () => AbortSignal.timeout(12_000);
 
 // last_seen fresher than this = "connected". The worker polls at least
 // every ~30s (idle) and heartbeats mid-tile, so 2 min is generous.
@@ -129,6 +134,7 @@ export async function spawnColabInstances(count: number): Promise<{ ok: boolean;
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ job_id: jobId, inputs, run_immediately: true }),
+      signal: XG_TIMEOUT(),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -235,30 +241,40 @@ export interface XgodoColabStatus {
 export async function getXgodoColabStatus(): Promise<XgodoColabStatus> {
   const { jobId, token } = await getColabConfig();
   if (!token) return { running: 0, planned: 0, error: 'xgodo token not configured' };
-  try {
-    const [runRes, planRes] = await Promise.all([
-      fetch(`${XGODO_API}/jobs/applicants`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: jobId, status: 'running', limit: 100 }),
-      }),
-      fetch(`${XGODO_API}/planned_tasks?job_id=${encodeURIComponent(jobId)}&page=1&limit=100`, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${token}` },
-      }),
-    ]);
-    const run = runRes.ok ? await runRes.json() as { tasks?: unknown[]; applicants?: unknown[] } : {};
-    const running = (Array.isArray(run.tasks) ? run.tasks.length : 0)
-      + (Array.isArray(run.applicants) ? run.applicants.length : 0);
-    let planned = 0;
-    if (planRes.ok) {
-      const plan = await planRes.json() as { data?: { plannedTasks?: unknown[]; total?: number } };
-      planned = typeof plan.data?.total === 'number'
-        ? plan.data.total
-        : (plan.data?.plannedTasks?.length ?? 0);
-    }
-    return { running, planned };
-  } catch (err) {
-    return { running: 0, planned: 0, error: (err as Error).message };
+  // Each probe is independently fail-soft: the applicants POST is known to
+  // hang/fail for devices_automation jobs, and it must never take the
+  // planned_tasks probe (which works) down with it.
+  const [runOut, planOut] = await Promise.allSettled([
+    fetch(`${XGODO_API}/jobs/applicants`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId, status: 'running', limit: 100 }),
+      signal: XG_TIMEOUT(),
+    }).then(async r => r.ok ? await r.json() as { tasks?: unknown[]; applicants?: unknown[]; job_tasks?: unknown[] } : {}),
+    fetch(`${XGODO_API}/planned_tasks?job_id=${encodeURIComponent(jobId)}&page=1&limit=100`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: XG_TIMEOUT(),
+    }).then(async r => r.ok ? await r.json() as { data?: { plannedTasks?: unknown[]; total?: number } } : null),
+  ]);
+  let running = 0;
+  let error: string | undefined;
+  if (runOut.status === 'fulfilled') {
+    const run = runOut.value;
+    running = (Array.isArray(run.tasks) ? run.tasks.length : 0)
+      + (Array.isArray(run.applicants) ? run.applicants.length : 0)
+      + (Array.isArray(run.job_tasks) ? run.job_tasks.length : 0);
+  } else {
+    error = `applicants: ${(runOut.reason as Error)?.message ?? 'failed'}`;
   }
+  let planned = 0;
+  if (planOut.status === 'fulfilled' && planOut.value) {
+    const plan = planOut.value;
+    planned = typeof plan.data?.total === 'number'
+      ? plan.data.total
+      : (plan.data?.plannedTasks?.length ?? 0);
+  } else if (planOut.status === 'rejected') {
+    error = (error ? error + '; ' : '') + `planned: ${(planOut.reason as Error)?.message ?? 'failed'}`;
+  }
+  return { running, planned, ...(error ? { error } : {}) };
 }
