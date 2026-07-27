@@ -147,7 +147,10 @@ export interface XgodoColabStatus {
   error?: string;
 }
 
-/** xgodo-side view: how many colab-agent tasks are running / queued. */
+/** xgodo-side view: how many colab-agent tasks are running / queued.
+ *  Running = jobs/applicants status='running'; planned = the SEPARATE
+ *  /planned_tasks queue endpoint (same as the niche-spy scheduler uses —
+ *  applicants status='planned' is a different concept and reads 0). */
 export async function getXgodoColabStatus(): Promise<XgodoColabStatus> {
   const { jobId, token } = await getColabConfig();
   if (!token) return { running: 0, planned: 0, error: 'xgodo token not configured' };
@@ -158,17 +161,22 @@ export async function getXgodoColabStatus(): Promise<XgodoColabStatus> {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId, status: 'running', limit: 100 }),
       }),
-      fetch(`${XGODO_API}/jobs/applicants`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: jobId, status: 'planned', limit: 100 }),
+      fetch(`${XGODO_API}/planned_tasks?job_id=${encodeURIComponent(jobId)}&page=1&limit=100`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}` },
       }),
     ]);
     const run = runRes.ok ? await runRes.json() as { tasks?: unknown[]; applicants?: unknown[] } : {};
-    const plan = planRes.ok ? await planRes.json() as { tasks?: unknown[]; applicants?: unknown[] } : {};
-    const countOf = (d: { tasks?: unknown[]; applicants?: unknown[] }) =>
-      (Array.isArray(d.tasks) ? d.tasks.length : 0) + (Array.isArray(d.applicants) ? d.applicants.length : 0);
-    return { running: countOf(run), planned: countOf(plan) };
+    const running = (Array.isArray(run.tasks) ? run.tasks.length : 0)
+      + (Array.isArray(run.applicants) ? run.applicants.length : 0);
+    let planned = 0;
+    if (planRes.ok) {
+      const plan = await planRes.json() as { data?: { plannedTasks?: unknown[]; total?: number } };
+      planned = typeof plan.data?.total === 'number'
+        ? plan.data.total
+        : (plan.data?.plannedTasks?.length ?? 0);
+    }
+    return { running, planned };
   } catch (err) {
     return { running: 0, planned: 0, error: (err as Error).message };
   }
