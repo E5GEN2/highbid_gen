@@ -65,27 +65,40 @@ export function parseIsoDuration(iso: string | null | undefined): number | null 
   return (parseInt(m[1] || '0') * 86400) + (parseInt(m[2] || '0') * 3600) + (parseInt(m[3] || '0') * 60) + parseInt(m[4] || '0');
 }
 
-/** One proxied videos.list call → Map<ytId, durationSeconds>. Empty map on failure. */
+/**
+ * Proxied videos.list → Map<ytId, durationSeconds>.
+ *
+ * Resilient by design (the old single-attempt version silently returned an
+ * empty map whenever the one key pair it asked for was busy — which stripped
+ * BOTH the duration badges and the shorts/long-form label off a post): tries
+ * up to 3 different key pairs, and logs loudly when resolution still fails so
+ * an imageless/labelless post is always explained in the container logs.
+ */
 export async function fetchDurations(ytIds: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   const ids = ytIds.filter(Boolean).slice(0, 50);
   if (!ids.length) return out;
-  try {
-    const [{ getYtPairForThread }, { ytFetchViaProxy }] = await Promise.all([
-      import('@/lib/yt-keys'), import('@/lib/yt-proxy-fetch'),
-    ]);
-    const pair = await getYtPairForThread(0);
-    if (!pair) return out;
-    const url = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.join(',')}&key=${pair.key}`;
-    const res = await ytFetchViaProxy(url, pair);
-    const items = (res?.data as { items?: Array<{ id?: string; contentDetails?: { duration?: string } }> })?.items ?? [];
-    for (const it of items) {
-      const sec = parseIsoDuration(it.contentDetails?.duration);
-      if (it.id && sec != null) out.set(it.id, sec);
+  const [{ getYtPairForThread }, { ytFetchViaProxy }] = await Promise.all([
+    import('@/lib/yt-keys'), import('@/lib/yt-proxy-fetch'),
+  ]);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const pair = await getYtPairForThread(attempt);
+      if (!pair) { console.warn(`[cards] duration fetch attempt ${attempt + 1}: no key pair available`); continue; }
+      const url = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.join(',')}&key=${pair.key}`;
+      const res = await ytFetchViaProxy(url, pair);
+      const items = (res?.data as { items?: Array<{ id?: string; contentDetails?: { duration?: string } }> })?.items ?? [];
+      for (const it of items) {
+        const sec = parseIsoDuration(it.contentDetails?.duration);
+        if (it.id && sec != null) out.set(it.id, sec);
+      }
+      if (out.size > 0) return out;
+      console.warn(`[cards] duration fetch attempt ${attempt + 1}: 0 items for ${ids.length} ids`);
+    } catch (err) {
+      console.warn(`[cards] duration fetch attempt ${attempt + 1} failed:`, (err as Error).message);
     }
-  } catch (err) {
-    console.warn('[cards] duration fetch failed:', (err as Error).message);
   }
+  if (out.size === 0) console.warn(`[cards] duration resolution FAILED after 3 attempts (${ids.length} ids) — post will lack badges/format unless stored durations cover it`);
   return out;
 }
 
