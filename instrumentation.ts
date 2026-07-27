@@ -584,6 +584,30 @@ export async function register() {
     setInterval(growthTick, 60 * 1000);
     setTimeout(growthTick, 50 * 1000);
 
+    // Colab keeper on its OWN interval — keeps N Colab GPU workers alive for
+    // the distributed clustering fleet: if connected workers < colab_target_alive
+    // and nothing is booting/queued on the xgodo colab job, spawn the shortfall.
+    // One xgodo status call + one COUNT per tick; volley cap + cooldown inside.
+    // Kill switch: admin_config colab_keeper_enabled.
+    let colabKeeping = false;
+    const colabKeeperTick = async () => {
+      if (colabKeeping) return;
+      colabKeeping = true;
+      try {
+        const { runColabKeeperTick } = await import('./lib/colab-fleet');
+        const r = await runColabKeeperTick();
+        if (r.enabled && (r.spawned ?? 0) > 0) {
+          console.log('[colab-keeper]', `connected=${r.connected}/${r.target} pipeline=${r.pipeline} spawned=${r.spawned}`);
+        } else if (r.enabled && r.reason && r.reason.startsWith('spawn failed')) {
+          console.error('[colab-keeper]', r.reason);
+        }
+      } catch (err) {
+        console.error('[colab-keeper] error:', err instanceof Error ? err.message : err);
+      } finally { colabKeeping = false; }
+    };
+    setInterval(colabKeeperTick, 60 * 1000);
+    setTimeout(colabKeeperTick, 40 * 1000);
+
     // Start the agent thermostat (maintains thread targets per keyword)
     const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
     ensureThermostatRunning();

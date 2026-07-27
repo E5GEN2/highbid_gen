@@ -141,6 +141,87 @@ export async function spawnColabInstances(count: number): Promise<{ ok: boolean;
   }
 }
 
+// ── Keeper: always keep N Colab instances alive ──────────────────────────
+// Colab sessions die constantly (idle limits, preemption, daily caps). The
+// keeper closes the loop: if connected workers < target and nothing is
+// already booting/queued on the xgodo side, spawn the shortfall.
+//
+// Config (admin_config, live-read every tick — no deploys):
+//   colab_keeper_enabled      — 'true' to run (kill switch like every tick)
+//   colab_target_alive        — desired connected workers (default 1)
+//   colab_spawn_cooldown_min  — min minutes between spawn volleys (default 7;
+//                               a Colab takes ~3-6 min to boot + connect, so
+//                               the keeper must not double-spawn while one is
+//                               still booting)
+export interface KeeperResult {
+  enabled: boolean;
+  connected?: number;
+  target?: number;
+  pipeline?: number;
+  spawned?: number;
+  reason?: string;
+}
+
+export async function runColabKeeperTick(): Promise<KeeperResult> {
+  const pool = await getPool();
+  const cfgRes = await pool.query<{ key: string; value: string }>(
+    `SELECT key, value FROM admin_config
+      WHERE key IN ('colab_keeper_enabled','colab_target_alive','colab_spawn_cooldown_min','last_colab_spawn_at')`,
+  );
+  const cfg: Record<string, string> = {};
+  for (const r of cfgRes.rows) cfg[r.key] = r.value;
+  if (cfg.colab_keeper_enabled !== 'true') return { enabled: false };
+
+  const target = Math.max(0, Math.min(30, parseInt(cfg.colab_target_alive) || 1));
+  if (target === 0) return { enabled: true, target: 0, reason: 'target 0' };
+
+  await ensureColabTables();
+  const conn = await pool.query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM colab_workers WHERE last_seen > NOW() - INTERVAL '${WORKER_LIVE_WINDOW}'`,
+  );
+  const connected = parseInt(conn.rows[0]?.n) || 0;
+
+  // Heartbeat stamp — the Colab tab + overwatch read this for keeper liveness.
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('last_colab_keeper_at', NOW()::text)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+  ).catch(() => {});
+
+  if (connected >= target) return { enabled: true, connected, target, spawned: 0, reason: 'satisfied' };
+
+  // Booting/queued instances count against the shortfall — a spawned Colab
+  // takes minutes to appear as connected, and spawning again meanwhile would
+  // overshoot (and burn planned tasks).
+  const xg = await getXgodoColabStatus();
+  const pipeline = xg.running + xg.planned;
+  const shortfall = target - connected - pipeline;
+  if (shortfall <= 0) {
+    return { enabled: true, connected, target, pipeline, spawned: 0, reason: 'spawns in flight' };
+  }
+
+  // Spawn-volley cooldown: even if xgodo shows an empty pipeline (e.g. the
+  // task was consumed but the notebook is still booting), don't re-spawn
+  // more often than the cooldown.
+  const cooldownMin = Math.max(2, parseInt(cfg.colab_spawn_cooldown_min) || 7);
+  const lastSpawn = cfg.last_colab_spawn_at ? Date.parse(cfg.last_colab_spawn_at) : 0;
+  if (Number.isFinite(lastSpawn) && lastSpawn > 0 && Date.now() - lastSpawn < cooldownMin * 60_000) {
+    return { enabled: true, connected, target, pipeline, spawned: 0, reason: 'cooldown' };
+  }
+
+  const toSpawn = Math.min(shortfall, 3);   // volley cap — never storm
+  const res = await spawnColabInstances(toSpawn);
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('last_colab_spawn_at', $1)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [new Date().toISOString()],
+  ).catch(() => {});
+  return {
+    enabled: true, connected, target, pipeline,
+    spawned: res.ok ? res.submitted : 0,
+    reason: res.ok ? 'spawned' : `spawn failed: ${res.error}`,
+  };
+}
+
 export interface XgodoColabStatus {
   running: number;
   planned: number;
