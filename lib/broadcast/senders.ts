@@ -148,7 +148,14 @@ export function renderTelegramHTML(r: BroadcastReport): string {
   L.push(`<b>🌱 Young channels we're tracking</b>`);
   L.push(`   👁 <b>${comma(s.tracked)}</b> channels watched every day`);
   L.push(`   📈 <b>${comma(s.trackedGrowing)}</b> (${pct(s.trackedGrowing, s.tracked)}%) already growing since we found them`);
-  L.push(`   <i>by size:</i> 🐣 &lt;100 <code>${comma(s.trkLt100)}</code> · 🌱 100–1K <code>${comma(s.trk100_1k)}</code> · 🌿 1K–10K <code>${comma(s.trk1k_10k)}</code> · 📈 10K+ <code>${comma(s.trk10k)}</code>`);
+  L.push('');
+  // Genesis cohort in depth — growing / stalled / dropped, growth rate, videos.
+  for (const g of s.tinyGroups) {
+    L.push(`   ${g.emoji} <b>${g.label}</b> — <code>${comma(g.n)}</code> tracked`);
+    L.push(`      📈 <code>${comma(g.growing)}</code> growing (${pct(g.growing, g.n)}%, avg +${g.avgGain} subs · ~${g.perDay}/day)  ·  😴 <code>${comma(g.flat)}</code> flat  ·  📉 <code>${comma(g.dropped)}</code> dropped`);
+    L.push(`      🎬 by videos: <code>${comma(g.vids1_5)}</code> have 1–5 · <code>${comma(g.vids6_20)}</code> have 6–20 · <code>${comma(g.vids21)}</code> have 20+`);
+  }
+  L.push(`   <i>larger:</i> 🌱 100–1K <code>${comma(s.trk100_1k)}</code> · 🌿 1K–10K <code>${comma(s.trk1k_10k)}</code> · 📈 10K+ <code>${comma(s.trk10k)}</code>`);
   L.push(`   📅 <b>${s.historyDays}</b> days of daily history so far · avg <b>${s.historyAvgDepth}</b> per channel · <code>${comma(s.historyDeep)}</code> with 5+ days`);
   L.push('');
 
@@ -176,7 +183,10 @@ export function renderDiscordMarkdown(r: BroadcastReport): string {
   L.push(`🎬 \`+${comma(s.vids2h)}\` new videos analyzed · 🧭 \`+${comma(s.edges2h)}\` recommendations explored (2h)`);
   L.push('');
   L.push(`**🌱 Young channels we're tracking** — 👁 \`${comma(s.tracked)}\` watched daily · 📈 \`${comma(s.trackedGrowing)}\` (${pct(s.trackedGrowing, s.tracked)}%) already growing`);
-  L.push(`> by size: 🐣 <100 \`${comma(s.trkLt100)}\` · 🌱 100–1K \`${comma(s.trk100_1k)}\` · 🌿 1K–10K \`${comma(s.trk1k_10k)}\` · 📈 10K+ \`${comma(s.trk10k)}\``);
+  for (const g of s.tinyGroups) {
+    L.push(`> ${g.emoji} ${g.label}: \`${comma(g.n)}\` — 📈 \`${comma(g.growing)}\` (${pct(g.growing, g.n)}%, +${g.avgGain} avg · ~${g.perDay}/day) · 😴 \`${comma(g.flat)}\` flat · 📉 \`${comma(g.dropped)}\` dropped · 🎬 ${comma(g.vids1_5)}/${comma(g.vids6_20)}/${comma(g.vids21)} (1-5/6-20/20+)`);
+  }
+  L.push(`> larger: 🌱 100–1K \`${comma(s.trk100_1k)}\` · 🌿 1K–10K \`${comma(s.trk1k_10k)}\` · 📈 10K+ \`${comma(s.trk10k)}\``);
   L.push(`> 📅 \`${s.historyDays}\` days of history · avg \`${s.historyAvgDepth}\`/channel · \`${comma(s.historyDeep)}\` with 5+ days`);
   L.push('');
   L.push(`**🗄 Database** — 🎬 \`${s.vidsTotal}\` videos · 📺 \`${s.chansTotal}\` channels · 📊 \`${s.edgesTotal}\` connections · 📈 \`${s.measurementsTotal}\` measurements`);

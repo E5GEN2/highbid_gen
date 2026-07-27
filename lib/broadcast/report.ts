@@ -19,9 +19,21 @@ import type { Pool } from 'pg';
 /** One subscriber-size group, with new-discovery counts for 2h + 24h windows. */
 export interface SizeBucket { key: string; emoji: string; label: string; d2h: number; d24h: number }
 
+/** Deep per-group breakdown for the genesis (tiny) cohort — how many are
+ *  growing vs stalled vs shrinking, at what rate, and their content volume. */
+export interface TinyGroupDetail {
+  key: string; emoji: string; label: string;
+  n: number;
+  growing: number; flat: number; dropped: number;
+  avgGain: number;      // avg subs gained since catch, among growers
+  perDay: number;       // avg subs/day, among growers
+  vids1_5: number; vids6_20: number; vids21: number;
+}
+
 /** Canonical subscriber-size groups (shared shape for discovery + tracking). */
 export const SIZE_DEFS: Array<{ key: string; emoji: string; label: string }> = [
-  { key: 'lt100',     emoji: '🐣', label: 'under 100 subs' },
+  { key: 'lt10',      emoji: '🥚', label: '0 – 10 subs' },
+  { key: 's10_100',   emoji: '🐣', label: '10 – 100 subs' },
   { key: 's100_1k',   emoji: '🌱', label: '100 – 1K' },
   { key: 's1k_10k',   emoji: '🌿', label: '1K – 10K' },
   { key: 's10k_100k', emoji: '📈', label: '10K – 100K' },
@@ -38,7 +50,8 @@ export interface BroadcastStats {
   vidsTotal: string; chansTotal: string; edgesTotal: string;
   // Growth-watch cohort
   tracked: number; trackedGrowing: number;
-  trkLt100: number; trk100_1k: number; trk1k_10k: number; trk10k: number;
+  tinyGroups: TinyGroupDetail[];   // 🥚 0-10 and 🐣 10-100, in depth
+  trk100_1k: number; trk1k_10k: number; trk10k: number;
   historyDays: number;       // calendar days of daily history so far
   historyAvgDepth: number;   // avg measurements (days) per tracked channel
   historyDeep: number;       // channels with 5+ days of history
@@ -63,7 +76,8 @@ export function fmt(n: number | string | null | undefined): string {
 
 const SIZE_CASE = `CASE
   WHEN c.subscriber_count IS NULL      THEN 'unknown'
-  WHEN c.subscriber_count < 100        THEN 'lt100'
+  WHEN c.subscriber_count < 10         THEN 'lt10'
+  WHEN c.subscriber_count < 100        THEN 's10_100'
   WHEN c.subscriber_count < 1000       THEN 's100_1k'
   WHEN c.subscriber_count < 10000      THEN 's1k_10k'
   WHEN c.subscriber_count < 100000     THEN 's10k_100k'
@@ -105,15 +119,53 @@ async function buildStats(pool: Pool): Promise<BroadcastStats> {
 
   // Growth-watch cohort: total, how many already grew, size mix. One scan of
   // growth_tracked_channels (~65K rows, ~50ms).
-  const trk = await pool.query<{ total: number; growing: number; lt100: number; s100_1k: number; s1k_10k: number; s10k: number }>(`
+  const trk = await pool.query<{ total: number; growing: number; s100_1k: number; s1k_10k: number; s10k: number }>(`
     SELECT COUNT(*)::int total,
            COUNT(*) FILTER (WHERE showed_life)::int growing,
-           COUNT(*) FILTER (WHERE COALESCE(last_subs,first_caught_subs) < 100)::int lt100,
            COUNT(*) FILTER (WHERE COALESCE(last_subs,first_caught_subs) BETWEEN 100 AND 999)::int s100_1k,
            COUNT(*) FILTER (WHERE COALESCE(last_subs,first_caught_subs) BETWEEN 1000 AND 9999)::int s1k_10k,
            COUNT(*) FILTER (WHERE COALESCE(last_subs,first_caught_subs) >= 10000)::int s10k
       FROM growth_tracked_channels`);
   const t = trk.rows[0];
+
+  // Genesis cohort (subs < 100) in depth, split 0–10 / 10–100: growing vs
+  // stalled vs shrinking, growth rate among growers, and content-volume mix.
+  // Single ~90ms scan of the sub-100 slice.
+  const tinyQ = await pool.query<{
+    grp: string; n: number; growing: number; flat: number; dropped: number;
+    avg_gain: string | null; per_day: string | null; v1_5: number; v6_20: number; v21: number;
+  }>(`
+    WITH t AS (
+      SELECT CASE WHEN COALESCE(last_subs,first_caught_subs) < 10 THEN 'lt10' ELSE 's10_100' END grp,
+             COALESCE(last_subs,first_caught_subs) - COALESCE(first_caught_subs,0) gain,
+             COALESCE(last_video_count, first_caught_video_count, 0) vids,
+             GREATEST(EXTRACT(EPOCH FROM (NOW()-first_caught_at))/86400, 0.5) age_days
+        FROM growth_tracked_channels
+       WHERE COALESCE(last_subs,first_caught_subs) < 100
+    )
+    SELECT grp,
+           COUNT(*)::int n,
+           COUNT(*) FILTER (WHERE gain > 0)::int growing,
+           COUNT(*) FILTER (WHERE gain = 0)::int flat,
+           COUNT(*) FILTER (WHERE gain < 0)::int dropped,
+           ROUND(AVG(gain) FILTER (WHERE gain > 0), 1)          avg_gain,
+           ROUND(AVG(gain / age_days) FILTER (WHERE gain > 0), 2) per_day,
+           COUNT(*) FILTER (WHERE vids BETWEEN 1 AND 5)::int  v1_5,
+           COUNT(*) FILTER (WHERE vids BETWEEN 6 AND 20)::int v6_20,
+           COUNT(*) FILTER (WHERE vids > 20)::int             v21
+      FROM t GROUP BY grp`);
+  const tm: Record<string, typeof tinyQ.rows[number]> = {};
+  for (const r of tinyQ.rows) tm[r.grp] = r;
+  const tinyGroups: TinyGroupDetail[] = SIZE_DEFS.filter(d => d.key === 'lt10' || d.key === 's10_100').map(d => {
+    const r = tm[d.key];
+    return {
+      key: d.key, emoji: d.emoji, label: d.label,
+      n: r?.n ?? 0, growing: r?.growing ?? 0, flat: r?.flat ?? 0, dropped: r?.dropped ?? 0,
+      avgGain: r?.avg_gain ? parseFloat(r.avg_gain) : 0,
+      perDay: r?.per_day ? parseFloat(r.per_day) : 0,
+      vids1_5: r?.v1_5 ?? 0, vids6_20: r?.v6_20 ?? 0, vids21: r?.v21 ?? 0,
+    };
+  });
 
   // History depth: calendar span + per-channel measurement depth. The per-channel
   // GROUP BY scans the snapshots table once (~200ms at current size); grows
@@ -135,7 +187,8 @@ async function buildStats(pool: Pool): Promise<BroadcastStats> {
     vidsTotal: fmt(m.vids_total), chansTotal: fmt(m.chans_total), edgesTotal: fmt(m.edges_total),
     tracked: t?.total ?? 0,
     trackedGrowing: t?.growing ?? 0,
-    trkLt100: t?.lt100 ?? 0, trk100_1k: t?.s100_1k ?? 0, trk1k_10k: t?.s1k_10k ?? 0, trk10k: t?.s10k ?? 0,
+    tinyGroups,
+    trk100_1k: t?.s100_1k ?? 0, trk1k_10k: t?.s1k_10k ?? 0, trk10k: t?.s10k ?? 0,
     historyDays: h?.days ?? 0,
     historyAvgDepth: h?.avg_depth ? parseFloat(h.avg_depth) : 0,
     historyDeep: h?.deep ?? 0,
