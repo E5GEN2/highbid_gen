@@ -35,7 +35,7 @@ export default function AdminPage() {
   const [syncProgress, setSyncProgress] = useState<{ phase: string; message: string; total?: number; processed?: number; synced?: number; skipped?: number; videos?: number; empty?: number; tasksFetched?: number } | null>(null);
 
   // Admin section tabs
-  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen' | 'audiogen' | 'screencap' | 'producer'>('general');
+  const [adminSection, setAdminSection] = useState<'general' | 'niche' | 'enrich' | 'tokens' | 'agents' | 'colab' | 'datacollection' | 'vizard' | 'novelty' | 'tree' | 'lifecycle' | 'seed' | 'docs' | 'tools' | 'vid-gen' | 'embed-reqs' | 'analyze-vids' | 'xg-vid-dl' | 'content-gen' | 'imagegen' | 'audiogen' | 'screencap' | 'producer'>('general');
 
   // Niche Tree tab state — global hierarchical clustering. Sandboxed
   // alongside the existing per-keyword clustering until validated.
@@ -1750,6 +1750,7 @@ export default function AdminPage() {
         <span className="ml-1 text-[10px] bg-green-500/15 text-green-400 border border-green-500/25 rounded-full px-1.5 py-0.5">{agentsData.totalActive}</span>
       ) : null,
       onClick: () => { setAgentsLoading(true); fetch('/api/admin/agents').then(r => r.json()).then(d => { setAgentsData(d); setAgentsLoading(false); }).catch(() => setAgentsLoading(false)); } },
+    { key: 'colab',          label: 'Colab',           dot: 'bg-emerald-500/70' },
     { key: 'vizard',         label: 'Vizard',          dot: 'bg-pink-500/70',
       badge: vizardProjects.some(p => p.status === 'pending' || p.status === 'processing') ? (
         <span className="ml-1 text-[10px] bg-pink-500/15 text-pink-400 border border-pink-500/25 rounded-full px-1.5 py-0.5 animate-pulse">
@@ -3635,6 +3636,13 @@ export default function AdminPage() {
           }}
           active={adminSection === 'agents'}
         />
+        </div>
+
+        {/* Colab Tab — spawn + monitor the Colab GPU worker fleet (distributed
+            kNN / clustering). Spawning = planned tasks on the xgodo colab job;
+            liveness = heartbeats from /api/cluster-worker pulls. */}
+        <div style={{ display: adminSection === 'colab' ? 'block' : 'none' }}>
+          <ColabTab active={adminSection === 'colab'} />
         </div>
 
         {/* Vizard Tab — paste a video URL, get AI-generated clips back.
@@ -8366,6 +8374,160 @@ function VideoSeedTab({ active }: { active: boolean }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ColabTab({ active }: { active: boolean }) {
+  type ColabWorker = {
+    worker_id: string; first_seen: string; last_seen: string; last_action: string | null;
+    gpu: string | null; tiles_done: number; edges_total: string; beats: string;
+    connected: boolean; seconds_since_seen: number;
+  };
+  type ColabData = {
+    workers: ColabWorker[]; connectedCount: number;
+    xgodo: { running: number; planned: number; error?: string };
+    activeRun: { id: number; phase: string | null; totalVideos: number } | null;
+    tiles: { pending: number; claimed: number; done: number } | null;
+    config: { jobId: string; notebookUrl: string; tokenConfigured: boolean };
+  };
+  const [data, setData] = useState<ColabData | null>(null);
+  const [spawnCount, setSpawnCount] = useState(3);
+  const [spawnBusy, setSpawnBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    fetch('/api/admin/colab').then(r => r.json()).then(d => { if (d.workers) setData(d); }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!active) return;
+    refresh();
+    const t = setInterval(refresh, 10000);
+    return () => clearInterval(t);
+  }, [active, refresh]);
+
+  const spawn = async () => {
+    setSpawnBusy(true); setMsg(null);
+    try {
+      const res = await fetch('/api/admin/colab', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'spawn', count: spawnCount }),
+      });
+      const d = await res.json();
+      setMsg(d.ok ? `Spawned ${d.submitted} Colab instance${d.submitted === 1 ? '' : 's'} — they appear below once the notebook connects (~2-8 min incl. model-free kNN boot)` : `Error: ${d.error}`);
+      setTimeout(refresh, 3000);
+    } catch (err) {
+      setMsg(`Error: ${err instanceof Error ? err.message : 'spawn failed'}`);
+    }
+    setSpawnBusy(false);
+    setTimeout(() => setMsg(null), 12000);
+  };
+
+  const fmtAge = (s: number) => s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`;
+
+  return (
+    <div className="space-y-6">
+      {/* Header + spawn controls */}
+      <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-white">Colab Fleet</h2>
+            <p className="text-gray-400 text-sm">Spawn + monitor Colab GPU workers (distributed kNN / clustering)</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`text-2xl font-bold ${data && data.connectedCount > 0 ? 'text-emerald-400' : 'text-gray-500'}`}>
+              {data ? data.connectedCount : '…'}
+            </span>
+            <span className="text-sm text-gray-400">connected</span>
+            <input type="number" min={1} max={30} value={spawnCount}
+              onChange={e => setSpawnCount(Math.max(1, Math.min(30, parseInt(e.target.value) || 1)))}
+              className="w-16 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm text-center" />
+            <button onClick={spawn} disabled={spawnBusy || !data?.config.tokenConfigured}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold rounded-lg text-sm"
+              title="Submit N planned tasks to the xgodo colab job — each opens the worker notebook in a fresh Colab instance">
+              {spawnBusy ? 'Spawning…' : '🚀 Spawn Colabs'}
+            </button>
+          </div>
+        </div>
+        {msg && <div className="text-sm text-emerald-300 mb-3">{msg}</div>}
+
+        {/* Status strip: xgodo side + tile queue + config */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div className="bg-gray-900/60 border border-gray-700 rounded-xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">xgodo colab job</div>
+            <div className="text-white font-mono">{data ? `${data.xgodo.running} running · ${data.xgodo.planned} planned` : '…'}</div>
+            {data?.xgodo.error && <div className="text-[10px] text-red-400 mt-1 truncate" title={data.xgodo.error}>{data.xgodo.error}</div>}
+          </div>
+          <div className="bg-gray-900/60 border border-gray-700 rounded-xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">kNN run</div>
+            <div className="text-white font-mono">
+              {data?.activeRun ? `run ${data.activeRun.id} · ${data.activeRun.phase || '?'}` : 'none active'}
+            </div>
+          </div>
+          <div className="bg-gray-900/60 border border-gray-700 rounded-xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">tile queue</div>
+            <div className="text-white font-mono">
+              {data?.tiles ? `${data.tiles.pending} pend · ${data.tiles.claimed} claim · ${data.tiles.done} done` : '—'}
+            </div>
+          </div>
+          <div className="bg-gray-900/60 border border-gray-700 rounded-xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">notebook</div>
+            <div className="text-white font-mono text-xs truncate" title={data?.config.notebookUrl}>
+              {data ? data.config.notebookUrl.replace(/^https?:\/\//, '') : '…'}
+            </div>
+            {data && !data.config.tokenConfigured && <div className="text-[10px] text-red-400 mt-1">xgodo token missing</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* Worker table */}
+      <div className="bg-gray-800/50 rounded-2xl border border-gray-700 p-6">
+        <h3 className="text-sm font-bold text-white mb-3">Workers <span className="text-gray-500 font-normal">(heartbeats via /api/cluster-worker — a Colab that stops pulling goes stale in 2 min; its claims self-expire)</span></h3>
+        {!data || data.workers.length === 0 ? (
+          <div className="text-gray-500 text-sm py-6 text-center">
+            No workers have connected yet. Spawn Colabs above (or open the notebook manually) — each appears here on its first pull.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-gray-500 text-left">
+                  <th className="py-2 pr-4">worker</th>
+                  <th className="py-2 pr-4">status</th>
+                  <th className="py-2 pr-4">last seen</th>
+                  <th className="py-2 pr-4">last action</th>
+                  <th className="py-2 pr-4">gpu</th>
+                  <th className="py-2 pr-4">tiles</th>
+                  <th className="py-2 pr-4">edges</th>
+                  <th className="py-2">beats</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.workers.map(w => (
+                  <tr key={w.worker_id} className="border-t border-gray-700/60">
+                    <td className="py-2 pr-4 font-mono text-xs text-gray-300">{w.worker_id.slice(0, 14)}</td>
+                    <td className="py-2 pr-4">
+                      <span className={`px-1.5 py-0.5 rounded border text-[10px] font-mono ${
+                        w.connected
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                          : 'bg-gray-700/40 text-gray-400 border-gray-600'
+                      }`}>
+                        {w.connected ? '● connected' : '○ stale'}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4 text-gray-400 font-mono text-xs">{fmtAge(w.seconds_since_seen)} ago</td>
+                    <td className="py-2 pr-4 text-gray-400 font-mono text-xs">{w.last_action || '—'}</td>
+                    <td className="py-2 pr-4 text-gray-400 text-xs">{w.gpu || '—'}</td>
+                    <td className="py-2 pr-4 text-white font-mono">{w.tiles_done}</td>
+                    <td className="py-2 pr-4 text-white font-mono">{parseInt(w.edges_total).toLocaleString()}</td>
+                    <td className="py-2 text-gray-400 font-mono text-xs">{w.beats}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

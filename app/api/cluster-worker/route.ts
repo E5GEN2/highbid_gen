@@ -6,6 +6,7 @@ import {
   getActiveClusterRun,
   checkClusterWorkerAuth,
 } from '@/lib/cluster-worker';
+import { ensureColabTables, recordWorkerBeat } from '@/lib/colab-fleet';
 
 /**
  * PULL-based distributed kNN workers (no ngrok; mirrors /api/qwen-worker).
@@ -60,6 +61,24 @@ export async function POST(req: NextRequest) {
   await ensureClusterTables().catch(() => {});
   const body = await req.json().catch(() => ({}));
   const pool = await getPool();
+
+  // Fleet tracking: every authed call carrying a worker id IS a heartbeat —
+  // Colab VMs are outbound-only, so this is how rofe.ai "pings" them.
+  const workerId = typeof body.worker === 'string' ? body.worker.slice(0, 80) : '';
+  if (workerId) {
+    await ensureColabTables().catch(() => {});
+    await recordWorkerBeat(workerId, String(body.action || 'poll'), {
+      gpu: typeof body.gpu === 'string' ? body.gpu.slice(0, 60) : undefined,
+      tilesDelta: body.action === 'submit' && body.final !== false ? 1 : 0,
+      edgesDelta: body.action === 'submit' && Array.isArray(body.edges) ? body.edges.length : 0,
+    });
+  }
+
+  // Pure liveness ping (idle worker, nothing claimed). Cheap no-op beyond the beat.
+  if (body.action === 'heartbeat') {
+    const run = await getActiveClusterRun();
+    return NextResponse.json({ ok: true, activeRun: run?.id ?? null });
+  }
 
   if (body.action === 'claim') {
     const run = await getActiveClusterRun();
@@ -152,5 +171,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, persisted, rejected, final: isFinal });
   }
 
-  return NextResponse.json({ error: "action must be 'claim' or 'submit'" }, { status: 400 });
+  return NextResponse.json({ error: "action must be 'claim', 'submit' or 'heartbeat'" }, { status: 400 });
 }
