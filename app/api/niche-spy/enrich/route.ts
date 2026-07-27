@@ -703,7 +703,13 @@ async function runEnrichJob(
         AND (c.video_count IS NULL OR c.video_count > 0)
         AND (c.video_count IS NULL OR c.video_count <= 200)
         AND (c.last_uploads_fetched_at IS NULL OR c.last_uploads_fetched_at < NOW() - INTERVAL '14 days')
-      ORDER BY c.video_count ASC NULLS LAST
+      -- Small channels FIRST, then cheapest-walk first. Phase 3 is limit-capped, so
+      -- this ordering decides who actually gets covered. first_upload_at was only
+      -- ~34% populated, which undercut the "fresh tiny" KPI (subs<=100 + recently
+      -- started posting) by ~45% and starves the Growth Watcher's <100-sub cohort —
+      -- both of which care about exactly these channels. Same candidate set, just
+      -- prioritised; video_count ASC still keeps quota cost low within each group.
+      ORDER BY (c.subscriber_count <= 100) DESC NULLS LAST, c.video_count ASC NULLS LAST
       LIMIT $${aIdx}
     `, ageParams);
     const ageTargets = needAgeRes.rows as Array<{

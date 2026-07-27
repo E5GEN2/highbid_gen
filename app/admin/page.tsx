@@ -7598,7 +7598,10 @@ const ERR_CATS: { key: keyof ErrorCurveBucket; label: string; color: string }[] 
 interface CgKpiData {
   eval_version: number;
   alert: { level: 'ok' | 'warn' | 'crit'; msg: string; at: string } | null;
-  headline: { eligible_1d: number; eligible_7d: number; eligible_prev7d: number; eligible_total: number; avg_per_day_7d: number };
+  headline: { eligible_1d: number; eligible_7d: number; eligible_prev7d: number; eligible_total: number; avg_per_day_7d: number;
+    new_channels_1d: number; new_channels_7d: number; new_channels_prev7d: number; new_channels_avg_per_day_7d: number;
+    fresh_tiny_1d: number; fresh_tiny_7d: number; fresh_tiny_prev7d: number; fresh_tiny_avg_per_day_7d: number;
+    fresh_tiny_30d_1d: number; fresh_tiny_30d_7d: number };
   series: Array<{ day: string; discovered: number; evaluated: number; eligible: number }>;
   funnel: { discovered: number; evaluated: number; passed_hard_gates: number; eligible: number };
   gate_killers: Array<{ reason: string; n: number }>;
@@ -7638,6 +7641,12 @@ function DiscoveryKpiPanel({ active }: { active: boolean }) {
 
   const trend = d.headline.eligible_7d - d.headline.eligible_prev7d;
   const trendPct = d.headline.eligible_prev7d > 0 ? Math.round(100 * trend / d.headline.eligible_prev7d) : null;
+  const pctTrend = (cur: number, prev: number) => (prev > 0 ? Math.round((100 * (cur - prev)) / prev) : null);
+  const newTrend = pctTrend(d.headline.new_channels_7d, d.headline.new_channels_prev7d);
+  const tinyTrend = pctTrend(d.headline.fresh_tiny_7d, d.headline.fresh_tiny_prev7d);
+  const trendCls = (t: number | null) =>
+    t == null ? 'text-[#aaa] bg-[#222]' : t > 0 ? 'text-emerald-400 bg-emerald-500/15' : t < 0 ? 'text-red-400 bg-red-500/15' : 'text-[#aaa] bg-[#222]';
+  const trendTxt = (t: number | null) => (t == null ? '—' : `${t > 0 ? '↑ +' : t < 0 ? '↓ ' : '→ '}${t}%`);
   const health = d.health;
   const stalled = (health.subs_fill_rate_24h != null && health.subs_fill_rate_24h < 80) || health.enrich_status !== 'running';
   const evalCoverage = health.tracked > 0 ? Math.round(100 * health.evaluated / health.tracked) : 0;
@@ -7671,7 +7680,41 @@ function DiscoveryKpiPanel({ active }: { active: boolean }) {
         </div>
       )}
 
-      {/* Headline tiles */}
+      {/* THE THREE HEADLINE KPIs. Order = discovery funnel: raw finds → early-stage
+          finds → content-gen ready. `new channels` is the metric we tune crawl/dispatch
+          against; `fresh tiny` is TRACK-ONLY (see below); `cg-eligible` is report-only
+          (too sparse per seed to optimise against). */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <div className="bg-[#141414] border border-sky-500/30 rounded-xl p-3">
+          <div className="flex items-baseline justify-between">
+            <div className="text-2xl font-bold text-sky-400">{fmtN(d.headline.new_channels_avg_per_day_7d)}</div>
+            <div className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${trendCls(newTrend)}`}>{trendTxt(newTrend)}</div>
+          </div>
+          <div className="text-[10px] text-[#666] uppercase mt-0.5">new channels / day (7d avg)</div>
+          <div className="text-[10px] text-[#555] mt-1">{fmtN(d.headline.new_channels_1d)} in last 24h · <span className="text-sky-500/70">optimisation target</span></div>
+        </div>
+        <div className="bg-[#141414] border border-amber-500/30 rounded-xl p-3">
+          <div className="flex items-baseline justify-between">
+            <div className="text-2xl font-bold text-amber-400">{fmtN(d.headline.fresh_tiny_avg_per_day_7d)}</div>
+            <div className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${trendCls(tinyTrend)}`}>{trendTxt(tinyTrend)}</div>
+          </div>
+          <div className="text-[10px] text-[#666] uppercase mt-0.5">fresh tiny / day (≤100 subs, new)</div>
+          <div className="text-[10px] text-[#555] mt-1">
+            {fmtN(d.headline.fresh_tiny_1d)} in 24h · {fmtN(d.headline.fresh_tiny_30d_7d)} started ≤30d ·{' '}
+            <span className="text-amber-500/70" title="Low view counts on a young channel mean 'too early to tell', not 'no demand' — under-1K share is 70% at <14d vs 51% at 60-90d. Gating on traction would filter out the pre-ignition channels this KPI exists to catch, so it is deliberately un-gated and NOT an optimisation target.">track only</span>
+          </div>
+        </div>
+        <div className="bg-[#141414] border border-emerald-500/30 rounded-xl p-3">
+          <div className="flex items-baseline justify-between">
+            <div className="text-2xl font-bold text-emerald-400">{d.headline.avg_per_day_7d}</div>
+            <div className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${trendCls(trendPct)}`}>{trendTxt(trendPct)}</div>
+          </div>
+          <div className="text-[10px] text-[#666] uppercase mt-0.5">cg-eligible / day (7d avg)</div>
+          <div className="text-[10px] text-[#555] mt-1">{d.headline.eligible_1d} in last 24h · {fmtN(d.headline.eligible_total)} all time</div>
+        </div>
+      </div>
+
+      {/* cg-eligible detail tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <div className="bg-[#141414] border border-emerald-500/20 rounded-xl p-3 text-center">
           <div className="text-2xl font-bold text-emerald-400">{d.headline.avg_per_day_7d}</div>

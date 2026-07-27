@@ -27,17 +27,29 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const days = Math.min(Math.max(parseInt(url.searchParams.get('days') || '30'), 7), 90);
 
-  const [series, headline, funnel, killers, sources, leaderboard, golden, health] = await Promise.all([
+  // KPI-3 "fresh tiny" predicate: subs <=100 AND recently started posting.
+  // `first_upload_at` is only ~34% populated (Phase-3 uploads-walk backlog), so we
+  // fall back to channel_created_at (99.99% populated) — a channel created inside
+  // the window that has uploads is necessarily newly posting. WITHOUT the fallback
+  // this KPI undercounts ~45% and drifts with enrichment coverage instead of
+  // tracking real discovery. `win` is an internal literal, never user input.
+  const freshTiny = (win: string) =>
+    `(c.subscriber_count <= 100 AND (c.first_upload_at > NOW() - INTERVAL '${win}'
+       OR (c.first_upload_at IS NULL AND c.channel_created_at > NOW() - INTERVAL '${win}')))`;
+
+  const [series, headline, kpi23, funnel, killers, sources, leaderboard, golden, health] = await Promise.all([
     // Daily discovered vs eligible (by discovered_at). "eligible" counts channels
     // discovered that day that ARE cg_eligible (matured); provisional flagged
     // client-side when that day's eval coverage is still low.
     pool.query(
-      `SELECT to_char(date_trunc('day', discovered_at), 'YYYY-MM-DD') AS day,
+      `SELECT to_char(date_trunc('day', s.discovered_at), 'YYYY-MM-DD') AS day,
               COUNT(*) AS discovered,
-              COUNT(*) FILTER (WHERE cg_evaluated_at IS NOT NULL) AS evaluated,
-              COUNT(*) FILTER (WHERE cg_eligible) AS eligible
-         FROM channel_cg_status
-        WHERE discovered_at > NOW() - ($1 || ' days')::interval
+              COUNT(*) FILTER (WHERE s.cg_evaluated_at IS NOT NULL) AS evaluated,
+              COUNT(*) FILTER (WHERE s.cg_eligible) AS eligible,
+              COUNT(*) FILTER (WHERE ${freshTiny('90 days')}) AS fresh_tiny
+         FROM channel_cg_status s
+         LEFT JOIN niche_spy_channels c ON c.channel_id = s.channel_id
+        WHERE s.discovered_at > NOW() - ($1 || ' days')::interval
         GROUP BY 1 ORDER BY 1`,
       [String(days)],
     ),
@@ -49,6 +61,23 @@ export async function GET(req: NextRequest) {
          COUNT(*) FILTER (WHERE cg_eligible AND discovered_at > NOW() - INTERVAL '14 days' AND discovered_at <= NOW() - INTERVAL '7 days') AS elig_prev7d,
          COUNT(*) FILTER (WHERE cg_eligible) AS elig_total
        FROM channel_cg_status`,
+    ),
+    // KPI-2 (new channels) + KPI-3 (fresh tiny). Separate 14d-windowed query so the
+    // niche_spy_channels join stays cheap — the headline query above needs a full
+    // scan for elig_total and must not carry a 348K-row join with it.
+    pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE s.discovered_at > NOW() - INTERVAL '1 day')   AS new_1d,
+         COUNT(*) FILTER (WHERE s.discovered_at > NOW() - INTERVAL '7 days')  AS new_7d,
+         COUNT(*) FILTER (WHERE s.discovered_at <= NOW() - INTERVAL '7 days') AS new_prev7d,
+         COUNT(*) FILTER (WHERE s.discovered_at > NOW() - INTERVAL '1 day'   AND ${freshTiny('90 days')}) AS tiny_1d,
+         COUNT(*) FILTER (WHERE s.discovered_at > NOW() - INTERVAL '7 days'  AND ${freshTiny('90 days')}) AS tiny_7d,
+         COUNT(*) FILTER (WHERE s.discovered_at <= NOW() - INTERVAL '7 days' AND ${freshTiny('90 days')}) AS tiny_prev7d,
+         COUNT(*) FILTER (WHERE s.discovered_at > NOW() - INTERVAL '1 day'   AND ${freshTiny('30 days')}) AS tiny30_1d,
+         COUNT(*) FILTER (WHERE s.discovered_at > NOW() - INTERVAL '7 days'  AND ${freshTiny('30 days')}) AS tiny30_7d
+       FROM channel_cg_status s
+       JOIN niche_spy_channels c ON c.channel_id = s.channel_id
+      WHERE s.discovered_at > NOW() - INTERVAL '14 days'`,
     ),
     // Funnel over the window. passed_hard_gates = evaluated and failed NO hard
     // gate (may still fail only the English gate); eligible = failed nothing.
@@ -123,6 +152,7 @@ export async function GET(req: NextRequest) {
   ]);
 
   const h = headline.rows[0];
+  const k = kpi23.rows[0];
   const hl = health.rows[0];
   const alertRow = await pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key = 'cg_kpi_alert'`);
   let alert: unknown = null;
@@ -130,14 +160,33 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     eval_version: CG_EVAL_VERSION,
     alert,
+    // THREE headline KPIs (operator framework, 2026-07-27):
+    //  1. cg_eligible  — report only; at 0.02-0.04/seed it's too sparse to tune against.
+    //  2. new_channels — the OPTIMISATION TARGET for crawl/dispatch work.
+    //  3. fresh_tiny   — TRACK ONLY. Deliberately un-gated: low view counts on a young
+    //     channel mean "too early to tell", NOT "no demand" (under-1K share is 70% at
+    //     <14d vs 51% at 60-90d — it tracks age). Gating on traction would filter out
+    //     exactly the pre-ignition channels this KPI exists to catch. Revisit
+    //     optimising it only once Growth Watcher history shows which ones actually grew.
     headline: {
       eligible_1d: parseInt(h.elig_1d), eligible_7d: parseInt(h.elig_7d),
       eligible_prev7d: parseInt(h.elig_prev7d), eligible_total: parseInt(h.elig_total),
       avg_per_day_7d: Math.round((parseInt(h.elig_7d) / 7) * 10) / 10,
+
+      new_channels_1d: parseInt(k.new_1d), new_channels_7d: parseInt(k.new_7d),
+      new_channels_prev7d: parseInt(k.new_prev7d),
+      new_channels_avg_per_day_7d: Math.round((parseInt(k.new_7d) / 7) * 10) / 10,
+
+      fresh_tiny_1d: parseInt(k.tiny_1d), fresh_tiny_7d: parseInt(k.tiny_7d),
+      fresh_tiny_prev7d: parseInt(k.tiny_prev7d),
+      fresh_tiny_avg_per_day_7d: Math.round((parseInt(k.tiny_7d) / 7) * 10) / 10,
+      // tighter "caught at birth" cut (started posting <=30d)
+      fresh_tiny_30d_1d: parseInt(k.tiny30_1d), fresh_tiny_30d_7d: parseInt(k.tiny30_7d),
     },
     series: series.rows.map(r => ({
       day: r.day, discovered: parseInt(r.discovered),
       evaluated: parseInt(r.evaluated), eligible: parseInt(r.eligible),
+      fresh_tiny: parseInt(r.fresh_tiny ?? '0'),
     })),
     funnel: {
       discovered: parseInt(funnel.rows[0].discovered),
