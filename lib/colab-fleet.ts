@@ -199,7 +199,12 @@ export async function runColabKeeperTick(): Promise<KeeperResult> {
   // takes minutes to appear as connected, and spawning again meanwhile would
   // overshoot (and burn planned tasks).
   const xg = await getXgodoColabStatus();
-  const pipeline = xg.running + xg.planned;
+  // Pipeline = QUEUED tasks only. The 'running' state is untrustworthy for
+  // devices_automation jobs: tasks observed stuck 'running' 25+ min past the
+  // job's own 600s limit (never reaped) — counting them would park the keeper
+  // behind zombies forever. The spawn cooldown already absorbs the
+  // boot-latency double-spawn risk that 'running' was meant to cover.
+  const pipeline = xg.planned;
   const shortfall = target - connected - pipeline;
   if (shortfall <= 0) {
     return { enabled: true, connected, target, pipeline, spawned: 0, reason: 'spawns in flight' };
