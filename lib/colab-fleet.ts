@@ -128,7 +128,11 @@ export async function spawnColabInstances(count: number): Promise<{ ok: boolean;
   // Unique query-suffix per input: keeps entries distinct on xgodo's side and
   // is invisible to the static file server that hosts the notebook.
   const stamp = Date.now().toString(36);
-  const inputs = Array.from({ length: n }, (_, i) => `${notebookUrl}?s=${stamp}-${i}`);
+  // xgodo requires each input to be a JSON STRING with the automation's
+  // expected fields ("All inputs must be valid JSON strings" on bare URLs).
+  // The colab automation's field is fileUrl (same as the GUI's CSV column).
+  const inputs = Array.from({ length: n }, (_, i) =>
+    JSON.stringify({ fileUrl: `${notebookUrl}?s=${stamp}-${i}` }));
   try {
     const res = await fetch(`${XGODO_API}/planned_tasks/submit`, {
       method: 'POST',
