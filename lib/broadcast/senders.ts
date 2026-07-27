@@ -123,55 +123,69 @@ export async function sendTelegramSpotlight(
   return sendTelegramText(botToken, chatId, captionHTML);
 }
 
+const comma = (n: number): string => (n ?? 0).toLocaleString('en-US');
+const pct = (num: number, den: number): number => (den > 0 ? Math.round((num / den) * 100) : 0);
+
 export function renderTelegramHTML(r: BroadcastReport): string {
   const s = r.stats;
-  const lines: string[] = [];
-  lines.push(`⛏️ <b>ROFE.AI — MINING PULSE</b>`);
-  lines.push('');
-  lines.push(`<b>📡 Last 2 hours</b>`);
-  lines.push(`   🆕 <code>+${esc(s.chans2h)}</code> YouTube channels discovered`);
-  lines.push(`   🎬 <code>+${esc(s.vids2h)}</code> new videos analyzed`);
-  lines.push(`   🧭 <code>${esc(s.edges2h)}</code> recommendations explored`);
-  lines.push('');
-  lines.push(`<b>📅 Last 24 hours</b>`);
-  lines.push(`   ✨ <code>+${esc(s.chans24h)}</code> new channels found`);
-  lines.push('');
-  lines.push(`<b>🗄 Our database so far</b>`);
-  lines.push(`   🎬 <code>${esc(s.vidsTotal)}</code> videos  ·  📺 <code>${esc(s.chansTotal)}</code> channels`);
-  lines.push(`   📊 <code>${esc(s.edgesTotal)}</code> data points collected`);
-  lines.push('');
-  lines.push(`<b>🌱 Growth watch</b>`);
-  lines.push(`   👁 <code>${esc(s.tracked)}</code> young channels checked daily`);
-  lines.push(`   📈 <code>${esc(s.snapshots)}</code> growth measurements taken`);
-  if (r.insight) {
-    lines.push('');
-    lines.push(`${r.insight.emoji} <b>${esc(r.insight.label.toUpperCase())}</b>`);
-    lines.push(`<blockquote>${esc(r.insight.text)}</blockquote>`);
+  const L: string[] = [];
+  L.push(`⛏️ <b>ROFE.AI — MINING PULSE</b>`);
+  L.push('');
+
+  // New channels found, broken down by subscriber size (the tiny-channel KPI).
+  L.push(`<b>🔭 New channels found</b>`);
+  L.push(`   last 2h: <b>+${comma(s.chans2h)}</b>   ·   last 24h: <b>+${comma(s.chans24h)}</b>`);
+  L.push(`   <i>by channel size (2h · 24h):</i>`);
+  for (const b of s.discBySize) {
+    L.push(`   ${b.emoji} ${b.label} — <code>+${comma(b.d2h)}</code> · <code>+${comma(b.d24h)}</code>`);
   }
-  return lines.join('\n');
+  L.push('');
+  L.push(`   🎬 <code>+${comma(s.vids2h)}</code> new videos analyzed (2h)`);
+  L.push(`   🧭 <code>+${comma(s.edges2h)}</code> recommendations explored (2h)`);
+  L.push('');
+
+  // Growth-watch cohort in depth (size mix + how many already growing + history).
+  L.push(`<b>🌱 Young channels we're tracking</b>`);
+  L.push(`   👁 <b>${comma(s.tracked)}</b> channels watched every day`);
+  L.push(`   📈 <b>${comma(s.trackedGrowing)}</b> (${pct(s.trackedGrowing, s.tracked)}%) already growing since we found them`);
+  L.push(`   <i>by size:</i> 🐣 &lt;100 <code>${comma(s.trkLt100)}</code> · 🌱 100–1K <code>${comma(s.trk100_1k)}</code> · 🌿 1K–10K <code>${comma(s.trk1k_10k)}</code> · 📈 10K+ <code>${comma(s.trk10k)}</code>`);
+  L.push(`   📅 <b>${s.historyDays}</b> days of daily history so far · avg <b>${s.historyAvgDepth}</b> per channel · <code>${comma(s.historyDeep)}</code> with 5+ days`);
+  L.push('');
+
+  L.push(`<b>🗄 Our database so far</b>`);
+  L.push(`   🎬 <code>${esc(s.vidsTotal)}</code> videos  ·  📺 <code>${esc(s.chansTotal)}</code> channels`);
+  L.push(`   📊 <code>${esc(s.edgesTotal)}</code> connections mapped  ·  📈 <code>${esc(s.measurementsTotal)}</code> growth measurements`);
+
+  if (r.insight) {
+    L.push('');
+    L.push(`${r.insight.emoji} <b>${esc(r.insight.label.toUpperCase())}</b>`);
+    L.push(`<blockquote>${esc(r.insight.text)}</blockquote>`);
+  }
+  return L.join('\n');
 }
 
 export function renderDiscordMarkdown(r: BroadcastReport): string {
   const s = r.stats;
-  const lines: string[] = [];
-  lines.push(`⛏️ **ROFE.AI — MINING PULSE**`);
-  lines.push('');
-  lines.push(`**📡 Last 2 hours**`);
-  lines.push(`> 🆕 \`+${s.chans2h}\` YouTube channels discovered`);
-  lines.push(`> 🎬 \`+${s.vids2h}\` new videos analyzed`);
-  lines.push(`> 🧭 \`${s.edges2h}\` recommendations explored`);
-  lines.push('');
-  lines.push(`**📅 Last 24h** — ✨ \`+${s.chans24h}\` new channels found`);
-  lines.push('');
-  lines.push(`**🗄 Database** — 🎬 \`${s.vidsTotal}\` videos · 📺 \`${s.chansTotal}\` channels · 📊 \`${s.edgesTotal}\` data points`);
-  lines.push(`**🌱 Growth watch** — 👁 \`${s.tracked}\` young channels checked daily · 📈 \`${s.snapshots}\` measurements`);
-  if (r.insight) {
-    lines.push('');
-    lines.push(`${r.insight.emoji} **${r.insight.label.toUpperCase()}**`);
-    lines.push(`> ${r.insight.text}`);
+  const L: string[] = [];
+  L.push(`⛏️ **ROFE.AI — MINING PULSE**`);
+  L.push('');
+  L.push(`**🔭 New channels found** — last 2h: \`+${comma(s.chans2h)}\` · last 24h: \`+${comma(s.chans24h)}\``);
+  for (const b of s.discBySize) {
+    L.push(`> ${b.emoji} ${b.label} — \`+${comma(b.d2h)}\` (2h) · \`+${comma(b.d24h)}\` (24h)`);
   }
-  // Discord hard limit 2000 chars.
-  return lines.join('\n').slice(0, 1990);
+  L.push(`🎬 \`+${comma(s.vids2h)}\` new videos analyzed · 🧭 \`+${comma(s.edges2h)}\` recommendations explored (2h)`);
+  L.push('');
+  L.push(`**🌱 Young channels we're tracking** — 👁 \`${comma(s.tracked)}\` watched daily · 📈 \`${comma(s.trackedGrowing)}\` (${pct(s.trackedGrowing, s.tracked)}%) already growing`);
+  L.push(`> by size: 🐣 <100 \`${comma(s.trkLt100)}\` · 🌱 100–1K \`${comma(s.trk100_1k)}\` · 🌿 1K–10K \`${comma(s.trk1k_10k)}\` · 📈 10K+ \`${comma(s.trk10k)}\``);
+  L.push(`> 📅 \`${s.historyDays}\` days of history · avg \`${s.historyAvgDepth}\`/channel · \`${comma(s.historyDeep)}\` with 5+ days`);
+  L.push('');
+  L.push(`**🗄 Database** — 🎬 \`${s.vidsTotal}\` videos · 📺 \`${s.chansTotal}\` channels · 📊 \`${s.edgesTotal}\` connections · 📈 \`${s.measurementsTotal}\` measurements`);
+  if (r.insight) {
+    L.push('');
+    L.push(`${r.insight.emoji} **${r.insight.label.toUpperCase()}**`);
+    L.push(`> ${r.insight.text}`);
+  }
+  return L.join('\n').slice(0, 1990);
 }
 
 export async function sendTelegram(botToken: string, chatId: string, r: BroadcastReport): Promise<SendResult> {
