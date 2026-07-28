@@ -270,6 +270,14 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
     // precisely to capture video views from the very start of the 0→100 journey.
     const deepDocIds = statePayload.map(x => x.c);
     if (deepDocIds.length > 0) {
+      // ON CONFLICT DO UPDATE (not DO NOTHING): a channel can be scanned more
+      // than once a day, and the first write of the day may carry stale
+      // view_counts (e.g. a cheap-wave scan before the deep pull refreshed
+      // niche_spy_videos). DO NOTHING froze that stale first value, so every
+      // per-tick view delta computed to ZERO — the view pulse was silently
+      // useless (found 2026-07-28: snapshot said 377 views while live was 6,477).
+      // GREATEST on view_count because views are monotonic — a failed/stale read
+      // can never drag a recorded peak back down.
       const res = await pool.query(
         `INSERT INTO video_growth_snapshots (video_id, view_count, like_count, comment_count)
          SELECT id, view_count, like_count, comment_count FROM (
@@ -278,7 +286,11 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
              FROM niche_spy_videos v
             WHERE v.channel_id = ANY($1)
          ) t WHERE t.rn <= $2
-         ON CONFLICT (video_id, day) DO NOTHING`,
+         ON CONFLICT (video_id, day) DO UPDATE SET
+           view_count    = GREATEST(COALESCE(video_growth_snapshots.view_count, 0), COALESCE(EXCLUDED.view_count, 0)),
+           like_count    = COALESCE(EXCLUDED.like_count, video_growth_snapshots.like_count),
+           comment_count = COALESCE(EXCLUDED.comment_count, video_growth_snapshots.comment_count),
+           captured_at   = NOW()`,
         [deepDocIds, VIDEOS_PER_CHANNEL_SNAP],
       ).catch((e) => { console.error('[growth-watcher] video snapshot failed:', (e as Error).message); return { rowCount: 0 }; });
       out.videoSnaps = res.rowCount ?? 0;
