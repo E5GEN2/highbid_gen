@@ -72,6 +72,79 @@ function Spark({ series }: { series: Array<{ day: string; views: number }> }) {
   return <svg viewBox={`0 0 ${W} ${H}`} className="w-[120px] h-7 flex-shrink-0"><path d={d} fill="none" stroke="#34d399" strokeWidth="1.5" />{series.length === 1 && <circle cx={W / 2} cy={yOf(series[0].views)} r={2} fill="#34d399" />}</svg>;
 }
 
+// ── Event timeline (upload events + per-video view deltas + sub deltas) ──
+interface TlEvent { at: string; kind: 'upload' | 'discovered' | 'subs' | 'views'; videoId?: number; title?: string | null; isShort?: boolean | null; value?: number | null; delta?: number | null; note?: string }
+interface TimelineData { events: TlEvent[]; coverage: { videosInCorpus: number; videosWithViewPulse: number; daysTracked: number } }
+
+function EventTimeline({ channelId }: { channelId: string }) {
+  const [tl, setTl] = useState<TimelineData | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/niche-spy/channel-timeline?channelId=${encodeURIComponent(channelId)}`)
+      .then(r => r.json()).then(d => { if (alive) setTl(d); })
+      .catch(() => {}).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [channelId]);
+
+  if (loading) return <div className="text-[#666] text-sm">Loading timeline…</div>;
+  if (!tl?.events?.length) return <div className="text-[#666] text-sm">No events recorded yet.</div>;
+
+  // group by day, newest day first
+  const byDay = new Map<string, TlEvent[]>();
+  for (const e of tl.events) { const a = byDay.get(e.at) ?? []; a.push(e); byDay.set(e.at, a); }
+  const days = [...byDay.keys()].sort().reverse();
+
+  return (
+    <div>
+      <div className="text-xs text-[#666] mb-3">
+        {tl.coverage.daysTracked} days · {tl.coverage.videosWithViewPulse}/{tl.coverage.videosInCorpus} videos with view-pulse
+      </div>
+      <div className="space-y-3">
+        {days.map(day => {
+          const evs = byDay.get(day)!;
+          const subEv = evs.find(e => e.kind === 'subs');
+          return (
+            <div key={day} className="border-l-2 border-[#222] pl-3">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[13px] text-[#ddd] font-medium">{fmtDay(day)}</span>
+                {subEv && (
+                  <span className={`text-[11px] px-1.5 py-0.5 rounded ${(subEv.delta ?? 0) > 0 ? 'text-emerald-300 bg-emerald-500/10' : 'text-red-300 bg-red-500/10'}`}>
+                    subs {(subEv.delta ?? 0) > 0 ? '+' : ''}{subEv.delta} → {fmt(subEv.value)}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-0.5">
+                {evs.filter(e => e.kind === 'upload' || e.kind === 'discovered').map((e, i) => (
+                  <div key={`u${i}`} className="text-[12px] text-sky-300/90 flex items-start gap-1.5">
+                    <span>📤</span>
+                    <span className="truncate">
+                      {e.videoId ? <>posted: <span className="text-[#ccc]">{e.title || `video ${e.videoId}`}</span>
+                        {e.isShort != null && <span className="text-[#666] ml-1">[{e.isShort ? 'short' : 'long'}]</span>}</>
+                        : <span className="text-[#888]">{e.note}</span>}
+                    </span>
+                  </div>
+                ))}
+                {evs.filter(e => e.kind === 'views').sort((a, b) => (b.delta ?? 0) - (a.delta ?? 0)).slice(0, 6).map((e, i) => (
+                  <div key={`v${i}`} className="text-[12px] text-[#aaa] flex items-start gap-1.5">
+                    <span className="text-emerald-400/70">▲</span>
+                    <span className="truncate">
+                      <span className="text-emerald-300">+{fmt(e.delta)}</span> views
+                      <span className="text-[#666]"> → {fmt(e.value)}</span>
+                      <span className="text-[#888] ml-1.5">{e.title || `video ${e.videoId}`}</span>
+                      {e.isShort != null && <span className="text-[#555] ml-1">[{e.isShort ? 'short' : 'long'}]</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function ChannelGrowthPage() {
   const params = useParams();
   const channelId = params.channelId as string;
@@ -134,6 +207,12 @@ export default function ChannelGrowthPage() {
       <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
         <div className="text-sm font-medium text-[#ccc] mb-3">Subscribers over time <span className="text-[#666]">· {data.snapshots.length} day{data.snapshots.length === 1 ? '' : 's'}</span></div>
         <LineChart points={data.snapshots.map(s => ({ x: s.day, y: s.subscribers }))} />
+      </div>
+
+      {/* Event timeline — uploads + view deltas + sub deltas on one clock */}
+      <div className="bg-[#141414] border border-[#1f1f1f] rounded-xl p-5">
+        <div className="text-sm font-medium text-[#ccc] mb-3">Event timeline <span className="text-[#666]">· uploads, view gains, sub moves</span></div>
+        <EventTimeline channelId={channelId} />
       </div>
 
       {/* Video trajectories */}

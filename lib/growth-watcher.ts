@@ -27,7 +27,7 @@ import { reMeasureChannels } from '@/lib/channel-remeasure';
 const GROWTH_LOCK = 728412003;         // distinct from cg-sweep (…001) + niche-watcher (…002)
 const ENROLL_BATCH = 2000;             // new small channels enrolled per tick
 const SCAN_BATCH = 300;                // liveness/dormant channels scanned per tick (stats-only, 50/call)
-const DEEP_BATCH = 64;                 // deep (2u) channels per tick — covers the genesis + showing-life cohort within the daily budget
+const DEEP_BATCH = 120;                // deep (2u) channels per tick. Capacity must EXCEED the due-rate or the queue tail starves: ~39K deep pool / 20h cadence ≈ 33 due/min, and 64/tick at ~70s ticks was only ~55/min — too thin once ticks slow. 120 gives real headroom (parallel pulls keep the tick ~30-40s).
 const LIVE_CADENCE_H = 20;             // ~daily re-scan for every active stage (<24h so a daily snapshot always lands)
 const DORMANT_CADENCE_H = 168;         // dormant channels re-checked weekly
 const MAX_SUBS_ENROLL = 100;           // catch net: < 100 subs
@@ -303,12 +303,23 @@ async function selectDue(stages: string[], limit: number, orGenesisBelow?: numbe
     params.push(orGenesisBelow);
     where = `(stage = ANY($1) OR (last_subs IS NOT NULL AND last_subs < $3)) AND stage <> 'dormant'`;
   }
+  // PRIORITY TIERS, then oldest-due within each tier (so nothing starves):
+  //   0. actively GROWING (up_days>0) — a channel mid-journey is the most
+  //      valuable thing to deep-track; pure last_subs ASC starved these (a
+  //      channel that grew to 100-186 sat behind ~54K sub-100 channels and lost
+  //      its video pulse exactly when its journey got interesting, 2026-07-28).
+  //   1. genesis-tiny (<25 subs) — capture the 0→100 drivers from video #1.
+  //   2. everyone else.
+  // Ordering by next_due_at WITHIN a tier keeps it fair/starvation-free.
+  const tierExpr = orGenesisBelow != null
+    ? `CASE WHEN COALESCE(up_days,0) > 0 THEN 0 WHEN last_subs < $3 THEN 1 ELSE 2 END`
+    : `CASE WHEN COALESCE(up_days,0) > 0 THEN 0 ELSE 1 END`;
   const r = await pool.query<TrackedRow>(
     `SELECT channel_id, stage, last_subs, last_video_count, first_caught_subs,
             COALESCE(dead_scans, 0) AS dead_scans, COALESCE(up_days, 0) AS up_days
        FROM growth_tracked_channels
       WHERE ${where} AND (next_due_at IS NULL OR next_due_at <= NOW())
-      ORDER BY last_subs ASC NULLS FIRST, next_due_at ASC NULLS FIRST
+      ORDER BY ${tierExpr}, next_due_at ASC NULLS FIRST, last_subs ASC NULLS FIRST
       LIMIT $2`,
     params,
   );
