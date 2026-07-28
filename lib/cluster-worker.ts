@@ -19,10 +19,12 @@
  */
 import { getPool } from './db';
 
-// A tile (shard-download + cross kNN) runs far longer than a 48-row embed
-// batch, so the claim TTL is 60 min (vs qwen's 15). An expired claim is
-// re-handed to whoever's alive — the drop-off-safety guarantee.
-export const CLUSTER_CLAIM_EXPIRY = '60 minutes';
+// A tile (shard downloads + full index scan) runs minutes, not seconds.
+// 20 min covers a slow first tile (cold shard cache) with margin, while
+// keeping the self-heal window short when a worker dies mid-tile — an
+// expired claim is re-handed to whoever's alive. Workers that FAIL should
+// release explicitly (action:'release'); the TTL is the backstop.
+export const CLUSTER_CLAIM_EXPIRY = '20 minutes';
 
 let clusterTablesReady = false;
 
@@ -61,6 +63,11 @@ export async function ensureClusterTables(): Promise<void> {
     )
   `).catch(() => {});
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ckt_claim ON cluster_knn_tiles(run_id, status, claimed_at)`).catch(() => {});
+  // Diagnosis: Colab consoles are invisible to us, so workers report failures
+  // back via action:'release' and we keep the count + last message per tile.
+  await pool.query(`ALTER TABLE cluster_knn_tiles ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+  await pool.query(`ALTER TABLE cluster_knn_tiles ADD COLUMN IF NOT EXISTS last_error TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE cluster_knn_tiles ADD COLUMN IF NOT EXISTS last_worker TEXT`).catch(() => {});
   // Partial kNN edges (GLOBAL vertex indices; mapped to video_ids at merge).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cluster_knn_edges (

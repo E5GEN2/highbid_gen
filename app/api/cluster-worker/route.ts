@@ -14,6 +14,7 @@ import { ensureColabTables, recordWorkerBeat } from '@/lib/colab-fleet';
  * A Colab T4 worker (cluster_knn_worker.ipynb) makes OUTBOUND calls only:
  *   POST {action:'claim'}                              → one kNN tile (soft-claimed 60 min)
  *   POST {action:'submit', tile_id, edges:[[s,d,w]], final?} → persist partial edges (+ close tile)
+ *   POST {action:'release', tile_id, error} → hand a FAILED tile straight back
  *   GET                                                → queue status for the active run
  *
  * Many workers run in parallel — claims use FOR UPDATE SKIP LOCKED and a claim
@@ -89,7 +90,9 @@ export async function POST(req: NextRequest) {
     const claimed = await pool.query<{
       id: number; tile_index: number; shard_a: number; shard_b: number | null; manifest: Record<string, unknown>;
     }>(
-      `UPDATE cluster_knn_tiles SET status = 'claimed', claimed_at = NOW()
+      `UPDATE cluster_knn_tiles
+          SET status = 'claimed', claimed_at = NOW(),
+              attempts = attempts + 1, last_worker = $2
         WHERE id = (
           SELECT id FROM cluster_knn_tiles
            WHERE run_id = $1
@@ -100,7 +103,7 @@ export async function POST(req: NextRequest) {
            FOR UPDATE SKIP LOCKED
         )
         RETURNING id, tile_index, shard_a, shard_b, manifest`,
-      [run.id],
+      [run.id, workerId || null],
     );
     const t = claimed.rows[0];
     if (!t) return NextResponse.json({ tile: null });     // all in flight / drained
@@ -116,6 +119,24 @@ export async function POST(req: NextRequest) {
         ...t.manifest,
       },
     });
+  }
+
+  // A worker that FAILED a tile hands it straight back instead of stranding
+  // it for the TTL. The error text is stored so Colab-side failures are
+  // diagnosable from the server (we can't see their consoles).
+  if (body.action === 'release') {
+    const run = await getActiveClusterRun();
+    if (!run) return NextResponse.json({ ok: true, released: 0 });
+    const tileId = parseInt(String(body.tile_id));
+    if (!Number.isFinite(tileId)) return NextResponse.json({ error: 'tile_id required' }, { status: 400 });
+    const errText = typeof body.error === 'string' ? body.error.slice(0, 500) : null;
+    const r = await pool.query(
+      `UPDATE cluster_knn_tiles
+          SET status = 'pending', claimed_at = NULL, last_error = $3
+        WHERE id = $1 AND run_id = $2 AND status = 'claimed'`,
+      [tileId, run.id, errText],
+    );
+    return NextResponse.json({ ok: true, released: r.rowCount ?? 0 });
   }
 
   if (body.action === 'submit') {
@@ -144,11 +165,15 @@ export async function POST(req: NextRequest) {
       src.push(s); dst.push(d); w.push(wt);
     }
 
-    // Verify the tile belongs to the active run before writing.
-    const tile = await pool.query<{ id: number }>(
-      `SELECT id FROM cluster_knn_tiles WHERE id = $1 AND run_id = $2`, [tileId, run.id],
+    // Verify the tile belongs to the active run AND isn't already finished —
+    // a TTL re-claim can have two workers holding the same tile; the first
+    // submit wins and the loser is rejected rather than duplicating edges.
+    const tile = await pool.query<{ id: number; status: string }>(
+      `SELECT id, status FROM cluster_knn_tiles WHERE id = $1 AND run_id = $2`, [tileId, run.id],
     );
     if (!tile.rows[0]) return NextResponse.json({ error: 'tile not in active run' }, { status: 409 });
+    if (tile.rows[0].status === 'done')
+      return NextResponse.json({ ok: true, persisted: 0, duplicate: true });
 
     let persisted = 0;
     if (src.length > 0) {
