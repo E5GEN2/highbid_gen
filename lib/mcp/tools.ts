@@ -125,14 +125,20 @@ const start_here: McpTool = {
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
     const pool = await getPool();
-    const r = await pool.query<{ tracked: string; snaps: string; days: string; since: string | null; deep: string }>(
-      `SELECT
-         (SELECT COUNT(*) FROM growth_tracked_channels)::text AS tracked,
-         (SELECT COUNT(*) FROM channel_growth_snapshots)::text AS snaps,
-         (SELECT COUNT(DISTINCT day) FROM channel_growth_snapshots)::text AS days,
-         (SELECT MIN(day)::text FROM channel_growth_snapshots) AS since,
-         (SELECT COUNT(DISTINCT channel_id) FROM video_growth_snapshots)::text AS deep`,
-    );
+    // Split into cheap indexed counts (~70ms total). NOTE: do NOT count deep
+    // channels via video_growth_snapshots -> niche_spy_videos (that join is a
+    // 34s COUNT DISTINCT); the tracker's stage ladder gives the same answer
+    // instantly (anything past 'liveness' gets per-video pulls).
+    const [t, sn] = await Promise.all([
+      pool.query<{ tracked: string; deep: string }>(
+        `SELECT COUNT(*)::text AS tracked,
+                COUNT(*) FILTER (WHERE stage <> 'liveness')::text AS deep
+           FROM growth_tracked_channels`),
+      pool.query<{ snaps: string; days: string; since: string | null }>(
+        `SELECT COUNT(*)::text AS snaps, COUNT(DISTINCT day)::text AS days, MIN(day)::text AS since
+           FROM channel_growth_snapshots`),
+    ]);
+    const r = { rows: [{ tracked: t.rows[0].tracked, deep: t.rows[0].deep, snaps: sn.rows[0].snaps, days: sn.rows[0].days, since: sn.rows[0].since }] };
     const breakouts = await pool.query<{ n: string }>(
       `WITH s AS (
          SELECT channel_id,
