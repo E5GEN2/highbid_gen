@@ -21,10 +21,9 @@ interface ClusterRow {
 const search_niches: McpTool = {
   name: 'search_niches',
   description:
-    'Find YouTube niches by meaning. Give a topic, style, or idea in plain language ' +
-    '(e.g. "survival stories", "AI tool tutorials", "faceless history explainers") and get the ' +
-    'closest niche clusters ranked by semantic similarity. Each niche is a discovered cluster of ' +
-    'real channels/videos. Use the returned niche_id with the other niche_* tools to go deeper.',
+    'Find kinds of YouTube content by describing them in your own words — like "survival stories", "AI tool ' +
+    'tutorials", or "faceless history channels". Returns the closest matching content areas we have found, along with ' +
+    'the channels already making that content and how well it does.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -72,9 +71,9 @@ const search_niches: McpTool = {
 const browse_niches: McpTool = {
   name: 'browse_niches',
   description:
-    'List the top broad (macro) niches in the discovery library, sorted by activity. ' +
-    'Good for open-ended exploration ("what niches are out there?"). Returns niche_id + headline ' +
-    'stats; drill into any with the niche_* tools. For sub-niches inside one, use niche_children (coming).',
+    'Browse the biggest kinds of content we have found on YouTube, most active first. Good for someone just ' +
+    'looking around who asks "what is out there?". Shows how many videos each area has, typical view counts, ' +
+    'and which channels lead it.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -118,10 +117,10 @@ const browse_niches: McpTool = {
 const start_here: McpTool = {
   name: 'start_here',
   description:
-    'THE ENTRY POINT — call this first when the user is new, curious, or asks anything vague. Returns what the ' +
-    'rofe.ai growth observatory is (the idea in one paragraph), live status numbers (channels under daily heartbeat, ' +
-    'days of data, documented breakouts), and the curated learning path with which tool serves each step. ' +
-    'Use it to orient the user and offer them a clear way in.',
+    'START HERE — call this first whenever someone is new, curious, or asks something general. It explains what this ' +
+    'is in plain words, gives the real live numbers (how many channels we check daily, how long we have been recording, ' +
+    'how many have broken out so far), and lays out a simple step-by-step way for the person to start learning. ' +
+    'Use it to welcome someone and give them an obvious first move.',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
     const pool = await getPool();
@@ -154,23 +153,23 @@ const start_here: McpTool = {
     const x = r.rows[0];
     return {
       what_this_is:
-        'rofe.ai watches YouTube channels from the moment they are tiny — often 0-10 subscribers — and records a daily heartbeat of their growth (subs, uploads, per-video views), as if each channel were our own. When one breaks out, its entire journey is documented day by day. You are here to learn from those journeys: what growing channels did, when, and what drove each jump — so you can apply the same patterns yourself. USE THE EXACT live_status NUMBERS below when presenting this — they are live and growing, and they are the credibility.',
+        "We find YouTube channels while they are still tiny — often with fewer than 10 subscribers — and then we check on every one of them once a day and write down what we see: how many subscribers they have, what they posted, and how their videos are doing. We treat them like they were our own channels. So when one of them takes off, we have the whole story, day by day: what they did, and when it started working. You are here to learn from those stories and use the same moves on your own channel. (Tell the user the real numbers below — they are live and they grow every day.)",
       live_status: {
-        channels_under_daily_heartbeat: parseInt(x.tracked, 10),
-        daily_snapshots_recorded: parseInt(x.snaps, 10),
-        days_of_data: parseInt(x.days, 10),
+        channels_we_check_every_day: parseInt(x.tracked, 10),
+        daily_records_collected_so_far: parseInt(x.snaps, 10),
+        days_we_have_been_recording: parseInt(x.days, 10),
         recording_since: x.since,
-        channels_with_per_video_tracking: parseInt(x.deep, 10),
-        documented_breakouts_0_10_to_100plus: parseInt(breakouts.rows[0]?.n ?? '0', 10),
+        channels_where_we_also_track_each_video: parseInt(x.deep, 10),
+        channels_that_grew_from_under_10_to_over_100_subs: parseInt(breakouts.rows[0]?.n ?? '0', 10),
       },
       learning_path: [
-        { step: 1, what: 'See real breakout journeys — day-by-day climbs from ~0 to 100+ subs', tool: 'growth_journeys' },
-        { step: 2, what: "Zoom into one channel's story and what drove each jump", tool: 'channel_growth_series + growth_attribution' },
-        { step: 3, what: 'Learn the playbook — what the winners have in common (cadence, youth, views, niches)', tool: 'growth_playbook' },
-        { step: 4, what: 'Watch it live — channels accelerating right now', tool: 'growth_accelerating' },
-        { step: 5, what: 'Find where to apply it — explore the niche library', tool: 'search_niches / browse_niches' },
+        { step: 1, what: 'See channels that actually made it — the full climb, day by day, from almost nothing to 100+ subscribers', tool: 'growth_journeys' },
+        { step: 2, what: 'Pick one of them and follow its story closely — which video made the subscribers start coming', tool: 'channel_growth_series + growth_attribution' },
+        { step: 3, what: 'Learn what the ones that grew did differently — how often they posted, how new they were, what they made', tool: 'growth_playbook' },
+        { step: 4, what: 'See who is growing right now, today', tool: 'growth_accelerating' },
+        { step: 5, what: 'Find the kind of content worth making, and who is already winning at it', tool: 'search_niches / browse_niches' },
       ],
-      note: 'The study is young and grows every day — numbers above are live.',
+      note: 'We only started recording on 22 July, so this is early days — but the numbers above go up every single day.',
     };
   },
 };

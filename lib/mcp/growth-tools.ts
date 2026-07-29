@@ -24,12 +24,12 @@ function seriesFlag(series: string): { suspicious: boolean; reason?: string } {
   const last = nums[nums.length - 1];
   // spike-then-crash: a peak >=100 that later collapses below 40% of the peak
   if (max >= 100 && maxIdx < nums.length - 1 && last < 0.4 * max) {
-    return { suspicious: true, reason: `spike-then-crash (peaked ${max}, now ${last}) — likely purchased subs or a YouTube purge, NOT organic growth` };
+    return { suspicious: true, reason: `This one is not a real success story. Its subscribers shot up to ${max} and then collapsed back to ${last} — that is the classic signature of bought subscribers being removed by YouTube. Do not copy what this channel did.` };
   }
   // frozen: same value repeated 3+ consecutive scans at a non-trivial level
   let run = 1;
   for (let i = 1; i < nums.length; i++) {
-    if (nums[i] === nums[i - 1]) { run++; if (run >= 3 && nums[i] > 50) return { suspicious: true, reason: `frozen at ${nums[i]} for ${run}+ consecutive scans — organic growth wobbles; a hard freeze is suspicious` }; }
+    if (nums[i] === nums[i - 1]) { run++; if (run >= 3 && nums[i] > 50) return { suspicious: true, reason: `Treat this one with suspicion. The subscriber count sat at exactly ${nums[i]} for ${run} days in a row without moving. Real growth wobbles up and down a little every day; a number frozen this perfectly usually means the count is not genuine.` }; }
     else run = 1;
   }
   return { suspicious: false };
@@ -45,7 +45,7 @@ async function dataWindow(): Promise<{ start: string | null; end: string | null;
   return { start: row?.start ?? null, end: row?.end ?? null, days_of_data: parseInt(row?.days ?? '0', 10) };
 }
 
-const METHOD_NOTE = 'Measured snapshot-to-snapshot (real daily observations); the stale first_caught_subs/growth_score fields are never used. Cohort excludes the stale-baseline correction artifact and auto-generated (-Topic/VEVO) channels.';
+const METHOD_NOTE = 'How we know this is real: we check every one of these channels once a day and write down what we see. So every climb here is growth we actually watched happen, day by day — not a guess, and not a channel that was already big when we found it. Auto-generated music channels are left out.';
 
 interface JourneyRow { channel_id: string; channel_name: string; s1: number; smax: number; s_last: number; days: number; series: string; age_days: number; }
 
@@ -53,11 +53,11 @@ interface JourneyRow { channel_id: string; channel_name: string; s1: number; sma
 const growth_journeys: McpTool = {
   name: 'growth_journeys',
   description:
-    'The core Channel Growth Watcher tool. Returns REAL, artifact-free growth journeys of channels first ' +
-    'observed tiny (0–10 subs) — measured snapshot-to-snapshot, so the day-by-day climb (e.g. "4→6→15→31→48→140") ' +
-    'is genuine, not a stale-baseline illusion. Default surfaces the 0-10 → 100+ breakouts. Each journey includes ' +
-    'the verbatim subscriber series, channel age, and a `suspicious` flag for bot-sub / purge patterns (spike-then-crash, ' +
-    'frozen counts) which must NOT be presented as successes. Always show the series and state the observation window.',
+    'Shows real YouTube channels that started tiny (under 10 subscribers) and actually grew — with the whole climb, ' +
+    'day by day, like "4 → 6 → 15 → 31 → 48 → 140 subscribers". By default it shows the ones that made it past 100 ' +
+    'subscribers. Every channel here is one we have personally checked every single day, so these are climbs we ' +
+    'watched happen. Channels that look like they bought fake subscribers are marked with a warning — never present ' +
+    'those as success stories. Always show the user the actual climb.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -99,15 +99,22 @@ const growth_journeys: McpTool = {
     const journeys = r.rows.map(j => {
       const flag = seriesFlag(j.series);
       return {
-        channel_id: j.channel_id, channel: j.channel_name, age_days: Number(j.age_days),
-        caught_at_subs: j.s1, peak_subs: j.smax, current_subs: j.s_last, days_tracked: j.days,
-        series: j.series, suspicious: flag.suspicious, flag: flag.reason,
+        channel_id: j.channel_id,
+        channel: j.channel_name,
+        channel_age: `${Number(j.age_days)} days old`,
+        started_at: `${j.s1} subscribers when we found it`,
+        highest_reached: j.smax,
+        subscribers_now: j.s_last,
+        we_have_watched_for: `${j.days} days`,
+        the_climb: j.series.split('->').join(' → ') + ' subscribers',
+        looks_fake: flag.suspicious,
+        warning: flag.reason,
       };
     }).filter(j => includeSus || !j.suspicious);
     const window = await dataWindow();
     return {
-      window, methodology: METHOD_NOTE,
-      base_rate_note: '~78% of tiny channels stay flat; escaping 0-10 → 100+ is a rare fat-tail event (~0.1%/week). Report distributions, not averages.',
+      window, how_we_know: METHOD_NOTE,
+      reality_check: 'Most tiny channels never take off — out of every 100 we watch, roughly 78 barely move. Going from under 10 subscribers to over 100 is genuinely rare, so treat these as the lucky few worth studying, not the normal outcome.',
       count: journeys.length, journeys,
     };
   },
@@ -117,9 +124,9 @@ const growth_journeys: McpTool = {
 const channel_growth_series: McpTool = {
   name: 'channel_growth_series',
   description:
-    "A single tracked channel's day-by-day growth: subscriber count each day, the sub delta, and uploads added — " +
-    'the step-by-step story. Pair the sub-jump days with growth_attribution to see which video drove them. Includes a ' +
-    'suspicious-pattern flag (bot subs / purge). Use the channel_id from growth_journeys / growth_accelerating.',
+    'Follows one channel day by day: how many subscribers it had each day, how many it gained that day, and when it ' +
+    'posted new videos. This is how you see exactly when a channel started taking off. Pair it with growth_attribution ' +
+    'to find out which video caused the jump. Use a channel_id from growth_journeys or growth_accelerating.',
   inputSchema: {
     type: 'object',
     properties: { channel_id: { type: 'string', description: 'YouTube channel id (from another growth tool).' } },
@@ -139,14 +146,25 @@ const channel_growth_series: McpTool = {
               video_count      - LAG(video_count)      OVER (ORDER BY day) AS uploads_added
          FROM channel_growth_snapshots WHERE channel_id=$1 ORDER BY day`, [channel_id],
     );
-    if (rows.rows.length === 0) return { channel_id, error: 'no growth snapshots for this channel (not tracked, or caught too recently)' };
+    if (rows.rows.length === 0) return { channel_id, note: "We haven't recorded any daily history for this channel yet — either we aren't watching it, or we only just started." };
     const series = rows.rows.map(r => r.subscriber_count).join('->');
     const flag = seriesFlag(series);
     return {
-      channel_id, channel: meta.rows[0]?.channel_name ?? null, age_days: meta.rows[0] ? Number(meta.rows[0].age_days) : null,
-      days_tracked: rows.rows.length, series, suspicious: flag.suspicious, flag: flag.reason,
-      daily: rows.rows.map(r => ({ day: r.day, subs: r.subscriber_count, subs_delta: r.subs_delta, videos: r.video_count, uploads_added: r.uploads_added })),
-      methodology: METHOD_NOTE,
+      channel_id,
+      channel: meta.rows[0]?.channel_name ?? null,
+      channel_age: meta.rows[0] ? `${Number(meta.rows[0].age_days)} days old` : null,
+      we_have_watched_for: `${rows.rows.length} days`,
+      the_climb: series.split('->').join(' → ') + ' subscribers',
+      looks_fake: flag.suspicious,
+      warning: flag.reason,
+      day_by_day: rows.rows.map(r => ({
+        date: r.day,
+        subscribers: r.subscriber_count,
+        subscribers_gained_that_day: r.subs_delta,
+        videos_on_channel: r.video_count,
+        new_videos_posted: r.uploads_added,
+      })),
+      how_we_know: METHOD_NOTE,
     };
   },
 };
@@ -155,9 +173,10 @@ const channel_growth_series: McpTool = {
 const growth_attribution: McpTool = {
   name: 'growth_attribution',
   description:
-    "For one channel, each video's view trajectory (ranked by views gained) so you can attribute subscriber jumps to " +
-    'the uploads that preceded them. Segments Shorts vs long-form (`is_short`) — long-form converts to subs far better. ' +
-    'Coverage is partial (per-video history exists only for deep-tracked channels); the tool reports how many videos it has.',
+    "Shows how each of a channel's videos performed over time, best first — so you can work out which video actually " +
+    'brought the subscribers in. It also tells you whether each one was a Short or a longer video, which matters a lot: ' +
+    'Shorts rack up cheap views, longer videos turn viewers into subscribers. We only track individual videos for ' +
+    'channels that showed signs of life, so some channels will have nothing here yet.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -182,11 +201,18 @@ const growth_attribution: McpTool = {
         ORDER BY (MAX(vs.view_count) - MIN(vs.view_count)) DESC
         LIMIT $2`, [channel_id, limit],
     );
-    if (r.rows.length === 0) return { channel_id, coverage: 'no per-video history — this channel is not deep-tracked (only pulse+ and the <25-sub genesis cohort get per-video pulls)', videos: [] };
+    if (r.rows.length === 0) return { channel_id, note: "We don't track this channel's individual videos yet — we only do that once a channel starts showing signs of life.", videos: [] };
     return {
-      channel_id, video_count_covered: r.rows.length,
-      shorts_note: 'Shorts views are algorithmically cheap; long-form converts to subs far better. is_short is NULL until backfilled — do not assume.',
-      videos: r.rows.map(v => ({ title: v.title, is_short: v.is_short, posted: v.posted, views_gained: parseInt(v.views_gained, 10), view_series: v.view_series })),
+      channel_id,
+      videos_we_track: r.rows.length,
+      worth_knowing: 'Views on Shorts come cheap from the algorithm; views on longer videos turn into subscribers far more often. If a video is marked "unknown" below, we simply have not checked its length yet.',
+      videos: r.rows.map(v => ({
+        title: v.title,
+        format: v.is_short === true ? 'Short' : v.is_short === false ? 'Long-form video' : 'unknown',
+        posted: v.posted,
+        views_gained_while_watching: parseInt(v.views_gained, 10),
+        view_growth: v.view_series.split('->').join(' → ') + ' views',
+      })),
     };
   },
 };
@@ -195,9 +221,9 @@ const growth_attribution: McpTool = {
 const growth_outcomes: McpTool = {
   name: 'growth_outcomes',
   description:
-    'The outcome distribution for the artifact-free tiny-caught cohort — how many stayed flat, declined, grew a little, ' +
-    'crossed 100, or crossed 1K. This is the honest "what happened to the channels we caught tiny?" answer: a fat-tail ' +
-    'lottery where most stay flat and a rare few explode. Reports the observation window and the base rate.',
+    'The honest answer to "what actually happens to tiny channels?" — of all the small channels we watch, how many ' +
+    'never moved, how many lost subscribers, how many grew a little, and how many broke past 100 or 1,000 subscribers. ' +
+    'Use this to give people a realistic picture instead of only showing the winners.',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
     const pool = await getPool();
@@ -221,13 +247,22 @@ const growth_outcomes: McpTool = {
               COUNT(*)::text AS n
          FROM journeys GROUP BY 1 ORDER BY 1`,
     );
-    const dist = r.rows.map(x => ({ outcome: x.outcome, channels: parseInt(x.n, 10) }));
+    const FRIENDLY: Record<string, string> = {
+      'flat': 'Never grew at all',
+      'declined': 'Lost subscribers',
+      'grew, under 100': 'Grew a bit, still under 100 subscribers',
+      'crossed 100': 'Broke past 100 subscribers',
+      'crossed 1K': 'Broke past 1,000 subscribers',
+    };
+    const dist = r.rows.map(x => ({ outcome: FRIENDLY[x.outcome] ?? x.outcome, channels: parseInt(x.n, 10) }));
     const total = dist.reduce((a, b) => a + b.channels, 0);
     const window = await dataWindow();
     return {
-      window, cohort_size: total, distribution: dist,
-      base_rate: '~78% of tiny channels stay flat; ~0.1%/week escape 0-10 → 100+. Averages mislead — this is a fat-tail phenomenon; report the tail.',
-      methodology: METHOD_NOTE,
+      window,
+      tiny_channels_we_are_watching: total,
+      what_happened_to_them: dist,
+      reality_check: 'This is the honest picture: most tiny channels never really move. A handful climb past 100 subscribers, and a very small number go further. That is why the ones that DO break out are worth studying closely.',
+      how_we_know: METHOD_NOTE,
     };
   },
 };
@@ -236,9 +271,9 @@ const growth_outcomes: McpTool = {
 const growth_accelerating: McpTool = {
   name: 'growth_accelerating',
   description:
-    'Tracked channels gaining subscribers RIGHT NOW — ranked by real subscriber gain over the last N days ' +
-    '(snapshot-to-snapshot, so no stale-baseline illusions). Excludes -Topic/VEVO and flags bot-sub patterns. ' +
-    'Use to answer "which channels are accelerating?" then drill in with channel_growth_series / growth_attribution.',
+    'Shows which channels are gaining subscribers right now, ranked by how many they picked up in the last few days. ' +
+    'This is the live view — who is heating up today. Channels that look like they bought subscribers are marked. ' +
+    'Follow any of them with channel_growth_series to see the full story.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -275,14 +310,21 @@ const growth_accelerating: McpTool = {
     );
     const window = await dataWindow();
     return {
-      window, window_days: win, methodology: METHOD_NOTE,
+      window, window_days: win, how_we_know: METHOD_NOTE,
       count: r.rows.length,
       channels: r.rows.map(c => {
         const flag = seriesFlag(c.series);
         return {
-          channel_id: c.channel_id, channel: c.channel_name, age_days: Number(c.age_days),
-          subs_gained: Number(c.gained), from: c.s_start, to: c.s_end, over: `${c.from_day}…${c.to_day}`,
-          scans: c.pts, series: c.series, suspicious: flag.suspicious, flag: flag.reason,
+          channel_id: c.channel_id,
+          channel: c.channel_name,
+          channel_age: `${Number(c.age_days)} days old`,
+          subscribers_gained: Number(c.gained),
+          went_from: c.s_start,
+          up_to: c.s_end,
+          between: `${c.from_day} and ${c.to_day}`,
+          the_climb: c.series.split('->').join(' → ') + ' subscribers',
+          looks_fake: flag.suspicious,
+          warning: flag.reason,
         };
       }),
     };
@@ -293,11 +335,10 @@ const growth_accelerating: McpTool = {
 const growth_playbook: McpTool = {
   name: 'growth_playbook',
   description:
-    'The learning capstone: what the growing channels have in common, computed live across the artifact-free tracked ' +
-    'cohort. Returns four evidence-backed patterns — (1) upload cadence vs share of channels gaining subs, (2) channel ' +
-    'age (youth advantage / stagnation valley), (3) rising video views → subscriber growth lift, (4) which niches the ' +
-    'breakouts cluster in — each with counts and honest caveats. This is the "what should I do?" answer, grounded in ' +
-    'observed journeys, not advice.',
+    'The big lesson: what the channels that grew did differently from the ones that did not. Worked out fresh every ' +
+    'time from the channels we watch. Covers how often they posted, how new the channel was, whether their videos were ' +
+    'picking up views, and what kind of content they made. This is the closest thing to "what should I actually do?" — ' +
+    'and it comes from watching real channels, not from opinion.',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
     const pool = await getPool();
@@ -389,15 +430,15 @@ const growth_playbook: McpTool = {
       ? Math.round((parseFloat(rising.pct_gaining) / parseFloat(flat.pct_gaining)) * 10) / 10 : null;
 
     return {
-      window, methodology: METHOD_NOTE,
+      window, how_we_know: METHOD_NOTE,
       patterns: {
         upload_cadence: {
-          finding: 'Posting more in the observed window strongly tracks with gaining subscribers.',
+          finding: 'The more videos a channel posted while we watched, the more likely it was to gain subscribers. This is the single strongest pattern we see.',
           buckets: cadence.rows.map(r => ({ bucket: r.bucket, channels: parseInt(r.n, 10), pct_gaining_subs: parseFloat(r.pct_gaining), avg_subs_gained_when_gaining: r.avg_gain ? parseFloat(r.avg_gain) : null })),
-          caveat: 'Partly selection: channels posting nothing are often abandoned. Cadence correlates; it does not guarantee.',
+          caveat: 'One honest catch: channels that post nothing are often abandoned anyway, so some of this gap is simply dead channels. Posting a lot improves your odds — it does not guarantee anything.',
         },
         channel_age: {
-          finding: 'Young channels win — momentum fades into a stagnation valley after ~3 months.',
+          finding: 'Brand-new channels grow far more often than older ones. After roughly three months, most channels that have not taken off settle into a long flat stretch.',
           buckets: youth.rows.map(r => ({ bucket: r.bucket, channels: parseInt(r.n, 10), pct_gaining_subs: parseFloat(r.pct_gaining) })),
         },
         rising_views_to_subs: {
@@ -406,13 +447,13 @@ const growth_playbook: McpTool = {
           flat: flat ? { channels: parseInt(flat.n, 10), pct_gaining_subs: parseFloat(flat.pct_gaining) } : null,
         },
         breakout_niches: {
-          finding: 'Where the 0-10 → 100+ breakouts concentrate (merged cluster + analysis labels).',
+          finding: 'The kinds of content the breakout channels were making.',
           niches: nicheRows.rows.map(r => ({ niche: r.label, breakout_channels: parseInt(r.channels, 10) })),
           label_coverage: `${nicheCoverage.rows[0]?.covered ?? 0}/${nicheCoverage.rows[0]?.total ?? 0} breakout channels have a niche label — brand-new channels often aren't clustered/analyzed yet`,
-          caveat: 'Small n — the breakout cohort is a couple dozen channels; treat as a signal, not a law. Known qualitative signal: faceless short-drama dominates the early breakouts.',
+          caveat: 'Only a couple of dozen channels have broken out so far, so treat this as an early hint rather than proof. What we keep seeing: faceless short-drama channels show up again and again.',
         },
       },
-      base_rate: '~78% of tiny channels stay flat. The playbook shifts odds; it does not defeat the fat tail.',
+      reality_check: 'Doing all of this improves your chances — it does not make growth certain. Roughly 78 out of every 100 tiny channels we watch never really take off, no matter what they do.',
     };
   },
 };
