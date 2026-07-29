@@ -10,7 +10,37 @@
 import { getPool } from '@/lib/db';
 
 export const PROTOCOL_VERSION = '2024-11-05';
-export const SERVER_INFO = { name: 'rofe-niche-intelligence', version: '0.1.0' };
+export const SERVER_INFO = { name: 'rofe-niche-intelligence', version: '0.2.0' };
+
+/** Connector-level guidance injected at initialize — this is what makes the
+ *  experience a curated journey instead of a raw tool list. */
+export const SERVER_INSTRUCTIONS = `You are connected to rofe.ai — a YouTube growth observatory.
+
+THE CORE IDEA (open with this the first time you use these tools in a conversation, in your own words):
+rofe.ai tracks thousands of YouTube channels from the moment they are tiny (often 0-10 subscribers) and records a DAILY heartbeat of their growth — subscribers, uploads, per-video views — as if each channel were our own. When one breaks out, the entire journey is documented step by step. The user is here to LEARN FROM THOSE JOURNEYS: what growing channels did, when, and what actually drove each jump — so they can apply the same patterns to their own channel.
+
+THE CURATED JOURNEY — when the user is new or asks something vague, call start_here first, share the idea + live status, then offer this path (one step at a time, not as a wall):
+ 1. See real breakout journeys (growth_journeys) — day-by-day climbs like 4→6→15→31→48→140.
+ 2. Zoom into one story (channel_growth_series + growth_attribution) — what drove each jump.
+ 3. Learn the playbook (growth_playbook) — what the winners share: upload cadence, channel youth, rising views, hot niches.
+ 4. Watch it happen live (growth_accelerating) — channels rising right now.
+ 5. Explore where to play (search_niches / browse_niches) — find the niche to apply it in.
+
+RULES:
+- Always show the actual day-by-day series (e.g. "4→6→15→31→48→140") — the climb IS the product.
+- Journeys flagged suspicious are bot-subs/purges — call that out, never present them as wins.
+- Always state the observation window; the study is young and grows daily.
+- Growth is a fat-tail lottery (~78% of tiny channels stay flat) — show distributions honestly.
+- End answers by offering the natural next step of the journey.`;
+
+/** Curated starter prompts — surfaced as clickable suggestions in the client. */
+export const PROMPTS = [
+  { name: 'start_learning', description: 'What is this? Explain the growth study and where to start', text: 'Explain what rofe.ai\'s growth observatory is and show me where to start learning from it.' },
+  { name: 'breakout_journeys', description: 'Real channels that went from ~0 subs to 100+ — day by day', text: 'Show me real channels that went from almost zero subscribers to 100+ — with their actual day-by-day climb.' },
+  { name: 'winners_playbook', description: 'What do the breakout channels have in common?', text: 'What do the channels that broke out have in common? Give me the replicable playbook with honest numbers.' },
+  { name: 'one_story', description: 'Walk through one breakout journey and what drove each jump', text: 'Pick one interesting breakout channel and walk me through its journey day by day — what drove each subscriber jump?' },
+  { name: 'rising_now', description: 'Which tracked channels are accelerating right now?', text: 'Which tracked channels are accelerating right now? Show their recent day-by-day series.' },
+] as const;
 
 export interface McpTool {
   name: string;
@@ -60,9 +90,21 @@ export async function dispatch(req: RpcReq, tools: Map<string, McpTool>): Promis
 
   switch (method) {
     case 'initialize':
-      return ok({ protocolVersion: PROTOCOL_VERSION, capabilities: { tools: { listChanged: false } }, serverInfo: SERVER_INFO });
+      return ok({
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
+        serverInfo: SERVER_INFO,
+        instructions: SERVER_INSTRUCTIONS,
+      });
     case 'ping':
       return ok({});
+    case 'prompts/list':
+      return ok({ prompts: PROMPTS.map(p => ({ name: p.name, description: p.description })) });
+    case 'prompts/get': {
+      const p = PROMPTS.find(x => x.name === (params?.name as string));
+      if (!p) return fail(-32602, `unknown prompt: ${params?.name}`);
+      return ok({ description: p.description, messages: [{ role: 'user', content: { type: 'text', text: p.text } }] });
+    }
     case 'tools/list':
       return ok({ tools: [...tools.values()].map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) });
     case 'tools/call': {

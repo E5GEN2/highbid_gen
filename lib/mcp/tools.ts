@@ -115,4 +115,58 @@ const browse_niches: McpTool = {
   },
 };
 
-export const TOOLS: McpTool[] = [search_niches, browse_niches, ...GROWTH_TOOLS];
+const start_here: McpTool = {
+  name: 'start_here',
+  description:
+    'THE ENTRY POINT — call this first when the user is new, curious, or asks anything vague. Returns what the ' +
+    'rofe.ai growth observatory is (the idea in one paragraph), live status numbers (channels under daily heartbeat, ' +
+    'days of data, documented breakouts), and the curated learning path with which tool serves each step. ' +
+    'Use it to orient the user and offer them a clear way in.',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const pool = await getPool();
+    const r = await pool.query<{ tracked: string; snaps: string; days: string; since: string | null; deep: string }>(
+      `SELECT
+         (SELECT COUNT(*) FROM growth_tracked_channels)::text AS tracked,
+         (SELECT COUNT(*) FROM channel_growth_snapshots)::text AS snaps,
+         (SELECT COUNT(DISTINCT day) FROM channel_growth_snapshots)::text AS days,
+         (SELECT MIN(day)::text FROM channel_growth_snapshots) AS since,
+         (SELECT COUNT(DISTINCT channel_id) FROM video_growth_snapshots)::text AS deep`,
+    );
+    const breakouts = await pool.query<{ n: string }>(
+      `WITH s AS (
+         SELECT channel_id,
+                (ARRAY_AGG(subscriber_count ORDER BY day ASC))[1]  AS s1,
+                (ARRAY_AGG(subscriber_count ORDER BY day ASC))[2]  AS s2,
+                MAX(subscriber_count) AS smax
+           FROM channel_growth_snapshots WHERE subscriber_count IS NOT NULL
+          GROUP BY channel_id HAVING COUNT(*) >= 2)
+       SELECT COUNT(*)::text AS n FROM s JOIN niche_spy_channels sc USING (channel_id)
+        WHERE s.s1 BETWEEN 0 AND 10 AND (s.s2 - s.s1) < 50 AND s.smax >= 100
+          AND sc.channel_name NOT ILIKE '% - Topic' AND sc.channel_name NOT ILIKE '%VEVO'`,
+    );
+    const x = r.rows[0];
+    return {
+      what_this_is:
+        'rofe.ai watches thousands of YouTube channels from the moment they are tiny — often 0-10 subscribers — and records a daily heartbeat of their growth (subs, uploads, per-video views), as if each channel were our own. When one breaks out, its entire journey is documented day by day. You are here to learn from those journeys: what growing channels did, when, and what drove each jump — so you can apply the same patterns yourself.',
+      live_status: {
+        channels_under_daily_heartbeat: parseInt(x.tracked, 10),
+        daily_snapshots_recorded: parseInt(x.snaps, 10),
+        days_of_data: parseInt(x.days, 10),
+        recording_since: x.since,
+        channels_with_per_video_tracking: parseInt(x.deep, 10),
+        documented_breakouts_0_10_to_100plus: parseInt(breakouts.rows[0]?.n ?? '0', 10),
+      },
+      learning_path: [
+        { step: 1, what: 'See real breakout journeys — day-by-day climbs from ~0 to 100+ subs', tool: 'growth_journeys' },
+        { step: 2, what: "Zoom into one channel's story and what drove each jump", tool: 'channel_growth_series + growth_attribution' },
+        { step: 3, what: 'Learn the playbook — what the winners have in common (cadence, youth, views, niches)', tool: 'growth_playbook' },
+        { step: 4, what: 'Watch it live — channels accelerating right now', tool: 'growth_accelerating' },
+        { step: 5, what: 'Find where to apply it — explore the niche library', tool: 'search_niches / browse_niches' },
+      ],
+      note: 'The study is young and grows every day — numbers above are live.',
+    };
+  },
+};
+
+export const TOOLS: McpTool[] = [start_here, search_niches, browse_niches, ...GROWTH_TOOLS];

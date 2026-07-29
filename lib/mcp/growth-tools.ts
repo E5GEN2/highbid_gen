@@ -289,4 +289,132 @@ const growth_accelerating: McpTool = {
   },
 };
 
-export const GROWTH_TOOLS: McpTool[] = [growth_journeys, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating];
+// ── 6. growth_playbook — what the winners share, computed LIVE (§5) ────────
+const growth_playbook: McpTool = {
+  name: 'growth_playbook',
+  description:
+    'The learning capstone: what the growing channels have in common, computed live across the artifact-free tracked ' +
+    'cohort. Returns four evidence-backed patterns — (1) upload cadence vs share of channels gaining subs, (2) channel ' +
+    'age (youth advantage / stagnation valley), (3) rising video views → subscriber growth lift, (4) which niches the ' +
+    'breakouts cluster in — each with counts and honest caveats. This is the "what should I do?" answer, grounded in ' +
+    'observed journeys, not advice.',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const pool = await getPool();
+    // Artifact-free per-channel aggregates over each channel's own observed window.
+    const baseCte = `
+      WITH per AS (
+        SELECT channel_id,
+               (ARRAY_AGG(subscriber_count ORDER BY day ASC))[1]  AS s1,
+               (ARRAY_AGG(subscriber_count ORDER BY day ASC))[2]  AS s2,
+               (ARRAY_AGG(subscriber_count ORDER BY day DESC))[1] AS s_last,
+               (ARRAY_AGG(total_views ORDER BY day ASC))[1]       AS v_first,
+               (ARRAY_AGG(total_views ORDER BY day DESC))[1]      AS v_last,
+               (ARRAY_AGG(video_count ORDER BY day DESC))[1]
+                 - (ARRAY_AGG(video_count ORDER BY day ASC))[1]   AS uploads_added,
+               MAX(subscriber_count) AS smax
+          FROM channel_growth_snapshots
+         WHERE subscriber_count IS NOT NULL
+         GROUP BY channel_id
+        HAVING COUNT(*) >= 2),
+      cohort AS (
+        SELECT per.*, sc.channel_created_at
+          FROM per JOIN niche_spy_channels sc USING (channel_id)
+         WHERE (per.s2 - per.s1) < 50
+           AND sc.channel_name NOT ILIKE '% - Topic'
+           AND sc.channel_name NOT ILIKE '%VEVO')`;
+
+    const [cadence, youth, viewsLift] = await Promise.all([
+      pool.query<{ bucket: string; n: string; pct_gaining: string; avg_gain: string | null }>(
+        `${baseCte}
+         SELECT CASE WHEN COALESCE(uploads_added,0) <= 0 THEN '0 uploads'
+                     WHEN uploads_added <= 2 THEN '1-2 uploads'
+                     WHEN uploads_added <= 5 THEN '3-5 uploads'
+                     ELSE '6+ uploads' END AS bucket,
+                COUNT(*)::text AS n,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE s_last > s1) / COUNT(*), 1)::text AS pct_gaining,
+                ROUND(COALESCE(AVG(s_last - s1) FILTER (WHERE s_last > s1), 0), 1)::text AS avg_gain
+           FROM cohort GROUP BY 1 ORDER BY 1`),
+      pool.query<{ bucket: string; n: string; pct_gaining: string }>(
+        `${baseCte}
+         SELECT CASE WHEN channel_created_at IS NULL THEN 'unknown age'
+                     WHEN NOW() - channel_created_at <= INTERVAL '30 days'  THEN '0-30 days old'
+                     WHEN NOW() - channel_created_at <= INTERVAL '90 days'  THEN '31-90 days'
+                     WHEN NOW() - channel_created_at <= INTERVAL '365 days' THEN '91-365 days'
+                     ELSE 'over 1 year' END AS bucket,
+                COUNT(*)::text AS n,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE s_last > s1) / COUNT(*), 1)::text AS pct_gaining
+           FROM cohort GROUP BY 1 ORDER BY 1`),
+      pool.query<{ views_rising: boolean; n: string; pct_gaining: string }>(
+        `${baseCte}
+         SELECT (v_last > v_first) AS views_rising,
+                COUNT(*)::text AS n,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE s_last > s1) / COUNT(*), 1)::text AS pct_gaining
+           FROM cohort WHERE v_first IS NOT NULL AND v_last IS NOT NULL
+           GROUP BY 1 ORDER BY 1`),
+    ]);
+
+    // Breakout niches. Breakout channels are usually brand-new, so their videos
+    // are often not yet in the clustering run's assignments — merge two label
+    // sources (cluster labels + channel_analysis niches) and report coverage.
+    const nicheRows = await pool.query<{ label: string; channels: string }>(
+      `${baseCte},
+       breakouts AS (SELECT channel_id FROM cohort WHERE s1 BETWEEN 0 AND 10 AND smax >= 100),
+       cluster_labels AS (
+         SELECT COALESCE(NULLIF(c.label,''), c.ai_label, c.auto_label) AS label, v.channel_id
+           FROM breakouts b
+           JOIN niche_spy_videos v ON v.channel_id = b.channel_id
+           JOIN niche_tree_assignments ta ON ta.video_id = v.id
+           JOIN niche_tree_clusters c ON c.id = ta.cluster_id AND c.level = 1),
+       analysis_labels AS (
+         SELECT ca.niche AS label, ca.channel_id
+           FROM breakouts b JOIN channel_analysis ca USING (channel_id)
+          WHERE ca.niche IS NOT NULL AND ca.niche <> '')
+       SELECT label, COUNT(DISTINCT channel_id)::text AS channels
+         FROM (SELECT * FROM cluster_labels UNION ALL SELECT * FROM analysis_labels) x
+        GROUP BY 1 ORDER BY COUNT(DISTINCT channel_id) DESC LIMIT 8`,
+    );
+    const nicheCoverage = await pool.query<{ covered: string; total: string }>(
+      `${baseCte},
+       breakouts AS (SELECT channel_id FROM cohort WHERE s1 BETWEEN 0 AND 10 AND smax >= 100)
+       SELECT (SELECT COUNT(*) FROM breakouts b WHERE EXISTS (SELECT 1 FROM channel_analysis ca WHERE ca.channel_id=b.channel_id AND ca.niche IS NOT NULL)
+                  OR EXISTS (SELECT 1 FROM niche_spy_videos v JOIN niche_tree_assignments ta ON ta.video_id=v.id WHERE v.channel_id=b.channel_id))::text AS covered,
+              (SELECT COUNT(*) FROM breakouts)::text AS total`,
+    );
+
+    const window = await dataWindow();
+    const rising = viewsLift.rows.find(x => x.views_rising === true);
+    const flat = viewsLift.rows.find(x => x.views_rising === false);
+    const lift = rising && flat && parseFloat(flat.pct_gaining) > 0
+      ? Math.round((parseFloat(rising.pct_gaining) / parseFloat(flat.pct_gaining)) * 10) / 10 : null;
+
+    return {
+      window, methodology: METHOD_NOTE,
+      patterns: {
+        upload_cadence: {
+          finding: 'Posting more in the observed window strongly tracks with gaining subscribers.',
+          buckets: cadence.rows.map(r => ({ bucket: r.bucket, channels: parseInt(r.n, 10), pct_gaining_subs: parseFloat(r.pct_gaining), avg_subs_gained_when_gaining: r.avg_gain ? parseFloat(r.avg_gain) : null })),
+          caveat: 'Partly selection: channels posting nothing are often abandoned. Cadence correlates; it does not guarantee.',
+        },
+        channel_age: {
+          finding: 'Young channels win — momentum fades into a stagnation valley after ~3 months.',
+          buckets: youth.rows.map(r => ({ bucket: r.bucket, channels: parseInt(r.n, 10), pct_gaining_subs: parseFloat(r.pct_gaining) })),
+        },
+        rising_views_to_subs: {
+          finding: lift ? `Channels whose videos gained views grew subscribers ~${lift}x more often than those with flat views.` : 'Insufficient view data in window.',
+          rising: rising ? { channels: parseInt(rising.n, 10), pct_gaining_subs: parseFloat(rising.pct_gaining) } : null,
+          flat: flat ? { channels: parseInt(flat.n, 10), pct_gaining_subs: parseFloat(flat.pct_gaining) } : null,
+        },
+        breakout_niches: {
+          finding: 'Where the 0-10 → 100+ breakouts concentrate (merged cluster + analysis labels).',
+          niches: nicheRows.rows.map(r => ({ niche: r.label, breakout_channels: parseInt(r.channels, 10) })),
+          label_coverage: `${nicheCoverage.rows[0]?.covered ?? 0}/${nicheCoverage.rows[0]?.total ?? 0} breakout channels have a niche label — brand-new channels often aren't clustered/analyzed yet`,
+          caveat: 'Small n — the breakout cohort is a couple dozen channels; treat as a signal, not a law. Known qualitative signal: faceless short-drama dominates the early breakouts.',
+        },
+      },
+      base_rate: '~78% of tiny channels stay flat. The playbook shifts odds; it does not defeat the fat tail.',
+    };
+  },
+};
+
+export const GROWTH_TOOLS: McpTool[] = [growth_journeys, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating, growth_playbook];
