@@ -148,7 +148,7 @@ const start_here: McpTool = {
     const x = r.rows[0];
     return {
       what_this_is:
-        'rofe.ai watches thousands of YouTube channels from the moment they are tiny — often 0-10 subscribers — and records a daily heartbeat of their growth (subs, uploads, per-video views), as if each channel were our own. When one breaks out, its entire journey is documented day by day. You are here to learn from those journeys: what growing channels did, when, and what drove each jump — so you can apply the same patterns yourself.',
+        'rofe.ai watches YouTube channels from the moment they are tiny — often 0-10 subscribers — and records a daily heartbeat of their growth (subs, uploads, per-video views), as if each channel were our own. When one breaks out, its entire journey is documented day by day. You are here to learn from those journeys: what growing channels did, when, and what drove each jump — so you can apply the same patterns yourself. USE THE EXACT live_status NUMBERS below when presenting this — they are live and growing, and they are the credibility.',
       live_status: {
         channels_under_daily_heartbeat: parseInt(x.tracked, 10),
         daily_snapshots_recorded: parseInt(x.snaps, 10),
