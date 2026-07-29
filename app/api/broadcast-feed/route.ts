@@ -73,7 +73,10 @@ export async function GET(req: NextRequest) {
     if (client) {
       try {
         await client.query(`SET LOCAL statement_timeout = '2500ms'`).catch(() => {});
-        const t = await client.query<{ channel_id: string; thumbs: string[] }>(
+        // NB: no generic on client.query — the `.catch(() => null)` on connect()
+        // widens PoolClient so its query() reads as untyped ("Untyped function
+        // calls may not accept type arguments"); cast the result instead.
+        const t = await client.query(
           `SELECT channel_id, ARRAY_AGG(thumbnail ORDER BY view_count DESC NULLS LAST) AS thumbs
              FROM (
                SELECT v.channel_id, v.thumbnail, v.view_count,
@@ -83,7 +86,7 @@ export async function GET(req: NextRequest) {
              ) s WHERE rn <= 4
             GROUP BY channel_id`,
           [channelIds],
-        );
+        ) as { rows: Array<{ channel_id: string; thumbs: string[] }> };
         for (const row of t.rows) thumbsByChannel.set(row.channel_id, row.thumbs || []);
       } catch { /* timeout / error → avatar-only cards this request */ }
       finally { client.release(); }
