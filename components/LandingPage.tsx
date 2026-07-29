@@ -76,7 +76,10 @@ function PostCard({ p }: { p: Post }) {
         <div className={`grid gap-0.5 px-0.5 ${p.thumbs.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
           {p.thumbs.slice(0, 4).map((t, i) => (
             <div key={i} className="relative bg-[#0f1620] overflow-hidden" style={{ aspectRatio: '16/9' }}>
-              <img src={t} alt="" className="w-full h-full object-cover" loading="lazy" />
+              {/* YouTube maxresdefault 404s on some uploads — drop the tile rather
+                  than leave an empty dark box in the card. */}
+              <img src={t} alt="" className="w-full h-full object-cover" loading="lazy"
+                   onError={e => { const el = e.currentTarget.parentElement; if (el) el.style.display = 'none'; }} />
             </div>
           ))}
         </div>
@@ -171,6 +174,10 @@ export function LandingPage() {
   return (
     <div className="min-h-screen bg-[#0e1621]">
       <style>{`
+        /* Telegram payloads separate lines with \n, which HTML collapses — without
+           this the whole post renders as one run-on blob instead of the
+           line-per-stat layout it has in Telegram. */
+        .tg-body { white-space: pre-wrap; word-break: break-word; }
         .tg-body b, .tg-body strong { color: #fff; font-weight: 600; }
         .tg-body a { color: #6ab3f3; text-decoration: none; }
         .tg-body a:hover { text-decoration: underline; }
