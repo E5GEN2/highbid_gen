@@ -110,7 +110,7 @@ const growth_journeys: McpTool = {
         looks_fake: flag.suspicious,
         warning: flag.reason,
       };
-    }).filter(j => includeSus || !j.suspicious);
+    }).filter(j => includeSus || !j.looks_fake);
     const window = await dataWindow();
     return {
       window, how_we_know: METHOD_NOTE,
