@@ -19,6 +19,35 @@
  */
 import { getPool } from './db';
 
+const FLEET_DIR = process.env.FLEET_DIR || '/data/fleet';
+const FLEET_BASE_URL = process.env.FLEET_BASE_URL || 'http://195.201.198.166:8091';
+
+/** Copy the master notebook to a unique per-spawn filename under fleet/w/,
+ *  so each Colab session owns a distinct Drive document (see spawn comment).
+ *  Also prunes copies older than a day. Returns false if the copy failed —
+ *  callers then fall back to the shared URL rather than not spawning. */
+async function materializeWorkerCopy(name: string): Promise<boolean> {
+  try {
+    const fs = await import('fs');
+    const path = await import('path');
+    const dir = path.join(FLEET_DIR, 'w');
+    fs.mkdirSync(dir, { recursive: true });
+    const master = path.join(FLEET_DIR, 'cluster_knn_worker.ipynb');
+    if (!fs.existsSync(master)) return false;
+    fs.copyFileSync(master, path.join(dir, name));
+    // prune stale copies (>24h) so the dir can't grow without bound
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch { /* ignore */ }
+    }
+    return true;
+  } catch (err) {
+    console.error('[colab] notebook copy failed:', (err as Error).message);
+    return false;
+  }
+}
+
 export const COLAB_JOB_ID_DEFAULT = '6a4f3e09d3b833d350903c37';
 export const COLAB_NOTEBOOK_URL_DEFAULT = 'http://195.201.198.166:8091/cluster_knn_worker.ipynb';
 const XGODO_API = 'https://xgodo.com/api/v2';
@@ -128,11 +157,21 @@ export async function spawnColabInstances(count: number): Promise<{ ok: boolean;
   // Unique query-suffix per input: keeps entries distinct on xgodo's side and
   // is invisible to the static file server that hosts the notebook.
   const stamp = Date.now().toString(36);
-  // xgodo requires each input to be a JSON STRING with the automation's
-  // expected fields ("All inputs must be valid JSON strings" on bare URLs).
-  // The colab automation's field is fileUrl (same as the GUI's CSV column).
-  const inputs = Array.from({ length: n }, (_, i) =>
-    JSON.stringify({ fileUrl: `${notebookUrl}?s=${stamp}-${i}` }));
+  // EVERY spawn gets its OWN notebook FILE, not just a unique query string.
+  // Colab auto-saves the opened notebook to Drive; two sessions holding the
+  // same file collide with "Automatic saving failed - this file was updated
+  // remotely or in another tab", and cell execution dies (observed 2026-07-28,
+  // diagnosed by Christine). Distinct filenames => distinct Drive documents
+  // => parallel instances never fight. A query string is NOT enough: Colab
+  // keys on the filename.
+  const inputs: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const name = `cw_${stamp}_${i}.ipynb`;
+    const copied = await materializeWorkerCopy(name);
+    inputs.push(JSON.stringify({
+      fileUrl: copied ? `${FLEET_BASE_URL}/w/${name}` : `${notebookUrl}?s=${stamp}-${i}`,
+    }));
+  }
   try {
     const res = await fetch(`${XGODO_API}/planned_tasks/submit`, {
       method: 'POST',
