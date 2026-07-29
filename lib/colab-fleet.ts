@@ -56,6 +56,11 @@ const XGODO_API = 'https://xgodo.com/api/v2';
 // AND wedged the keeper tick's re-entrancy guard permanently). Node fetch has
 // no default timeout.
 const XG_TIMEOUT = () => AbortSignal.timeout(12_000);
+// The SUBMIT endpoint is legitimately slow (measured 10.4s on 2026-07-28 while
+// the status GET returned in 0.1s), so a 12s cap aborts real spawns. Give
+// writes their own, longer budget; keep the tight cap on the read probes,
+// which is where the blackhole risk lives.
+const XG_SUBMIT_TIMEOUT = () => AbortSignal.timeout(45_000);
 
 // last_seen fresher than this = "connected". The worker polls at least
 // every ~30s (idle) and heartbeats mid-tile, so 2 min is generous.
@@ -177,7 +182,7 @@ export async function spawnColabInstances(count: number): Promise<{ ok: boolean;
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ job_id: jobId, inputs, run_immediately: true }),
-      signal: XG_TIMEOUT(),
+      signal: XG_SUBMIT_TIMEOUT(),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
