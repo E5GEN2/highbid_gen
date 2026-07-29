@@ -10,6 +10,7 @@
 import { getPool } from '@/lib/db';
 import { searchNichesByText } from '@/lib/niche-search';
 import { type McpTool, NICHE_LABEL_SQL, latestGlobalRunId, clampInt } from './core';
+import { GROWTH_TOOLS } from './growth-tools';
 
 interface ClusterRow {
   id: number; level: number; label: string;
@@ -114,4 +115,4 @@ const browse_niches: McpTool = {
   },
 };
 
-export const TOOLS: McpTool[] = [search_niches, browse_niches];
+export const TOOLS: McpTool[] = [search_niches, browse_niches, ...GROWTH_TOOLS];
