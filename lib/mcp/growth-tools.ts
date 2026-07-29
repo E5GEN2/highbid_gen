@@ -49,26 +49,58 @@ const METHOD_NOTE = 'How we know this is real: we check every one of these chann
 
 interface JourneyRow { channel_id: string; channel_name: string; s1: number; smax: number; s_last: number; days: number; series: string; age_days: number; }
 
-// ── 1. growth_journeys — the artifact-free breakout cohort (§4.1) ──────────
+// ── 1. growth_journeys — climbs at ANY starting size (§4.1 generalised) ────
+// The stale-baseline guard scales with size: a stored count months out of date
+// "corrects" by a large MULTIPLE on the second reading (WALTER 56→49,700), so we
+// drop a channel whose 2nd reading is more than double+50 of its 1st. That keeps
+// real climbs at every size while still excluding the correction artifact.
+const ARTIFACT_GUARD = '(s.s2 <= s.s1 * 2 + 50)';
+
+const BANDS: Record<string, [number, number]> = {
+  any:          [0, 100000000],
+  under_10:     [0, 9],
+  '10_to_100':  [10, 99],
+  '100_to_1k':  [100, 999],
+  '1k_plus':    [1000, 100000000],
+};
+
 const growth_journeys: McpTool = {
   name: 'growth_journeys',
   description:
-    'Shows real YouTube channels that started tiny (under 10 subscribers) and actually grew — with the whole climb, ' +
-    'day by day, like "4 → 6 → 15 → 31 → 48 → 140 subscribers". By default it shows the ones that made it past 100 ' +
-    'subscribers. Every channel here is one we have personally checked every single day, so these are climbs we ' +
-    'watched happen. Channels that look like they bought fake subscribers are marked with a warning — never present ' +
-    'those as success stories. Always show the user the actual climb.',
+    'Shows real YouTube channels we watched actually grow — with the whole climb, day by day, like ' +
+    '"4 → 6 → 15 → 31 → 140 subscribers". You can look at channels of any size: ones that started from nothing, ' +
+    'ones already at a few hundred subscribers, or ones pushing past 1,000 and 10,000. Ask for a milestone ' +
+    '(crossed 100 / 1,000 / 10,000 subscribers) or just the biggest gainers. Every channel here is one we check ' +
+    'every single day, so these are climbs we watched happen. Channels that look like they bought fake subscribers ' +
+    'are marked with a warning — never present those as success stories. Always show the user the actual climb.',
   inputSchema: {
     type: 'object',
     properties: {
-      min_peak_subs: { type: 'integer', description: 'Only journeys whose peak subs reached at least this (default 100 = the classic 0-10→100+ breakout). Set 1 to include all tiny-caught channels.' },
-      limit: { type: 'integer', description: 'Max journeys (default 30, max 100).' },
-      include_suspicious: { type: 'boolean', description: 'Include bot-flagged journeys in the list (still flagged). Default true — they are flagged, not hidden.' },
+      crossed: { type: 'integer', description: 'Only channels that broke through this subscriber milestone while we watched (e.g. 100, 1000, 10000).' },
+      starting_size: { type: 'string', enum: ['any', 'under_10', '10_to_100', '100_to_1k', '1k_plus'], description: 'How big the channel was when we started watching. Default "any".' },
+      min_gained: { type: 'integer', description: 'Only channels that gained at least this many subscribers while we watched.' },
+      sort: { type: 'string', enum: ['most_gained', 'highest_reached', 'fastest_multiple'], description: 'Ranking. "most_gained" = biggest subscriber gain (default), "fastest_multiple" = grew the most times over.' },
+      limit: { type: 'integer', description: 'How many channels (default 20, max 100).' },
+      include_suspicious: { type: 'boolean', description: 'Include channels flagged as likely fake growth (still marked). Default true.' },
     },
   },
   handler: async (args) => {
-    const minPeak = clampInt(args.min_peak_subs, 100, 1, 100_000_000);
-    const limit = clampInt(args.limit, 30, 1, 100);
+    const band = BANDS[String(args.starting_size ?? 'any')] ?? BANDS.any;
+    const crossed = args.crossed != null ? clampInt(args.crossed, 100, 1, 100000000) : null;
+    const minGained = args.min_gained != null ? clampInt(args.min_gained, 0, 0, 100000000) : null;
+    const limit = clampInt(args.limit, 20, 1, 100);
+    const sortKey = String(args.sort ?? 'most_gained');
+    const orderBy = sortKey === 'highest_reached' ? 's.smax DESC'
+      : sortKey === 'fastest_multiple' ? '(s.s_last::float / GREATEST(s.s1,1)) DESC'
+      : '(s.s_last - s.s1) DESC';
+
+    const conds: string[] = [`s.s1 BETWEEN $1 AND $2`, ARTIFACT_GUARD,
+      `sc.channel_name NOT ILIKE '% - Topic'`, `sc.channel_name NOT ILIKE '%VEVO'`];
+    const params: (number | string)[] = [band[0], band[1]];
+    if (crossed != null) { params.push(crossed); conds.push(`(s.s1 < $${params.length} AND s.smax >= $${params.length})`); }
+    if (minGained != null) { params.push(minGained); conds.push(`(s.s_last - s.s1) >= $${params.length}`); }
+    params.push(limit);
+
     const pool = await getPool();
     const r = await pool.query<JourneyRow>(
       `WITH s AS (
@@ -86,25 +118,24 @@ const growth_journeys: McpTool = {
        SELECT s.channel_id, sc.channel_name, s.s1, s.smax, s.s_last, s.days, s.series,
               (NOW()::date - sc.channel_created_at::date) AS age_days
          FROM s JOIN niche_spy_channels sc USING (channel_id)
-        WHERE s.s1 BETWEEN 0 AND 10
-          AND (s.s2 - s.s1) < 50
-          AND sc.channel_name NOT ILIKE '% - Topic'
-          AND sc.channel_name NOT ILIKE '%VEVO'
-          AND s.smax >= $1
-        ORDER BY s.smax DESC
-        LIMIT $2`,
-      [minPeak, limit],
+        WHERE ${conds.join(' AND ')}
+        ORDER BY ${orderBy}
+        LIMIT $${params.length}`,
+      params,
     );
     const includeSus = args.include_suspicious !== false;
     const journeys = r.rows.map(j => {
       const flag = seriesFlag(j.series);
+      const gained = Number(j.s_last) - Number(j.s1);
+      const mult = Number(j.s1) > 0 ? Math.round((Number(j.s_last) / Number(j.s1)) * 10) / 10 : null;
       return {
         channel_id: j.channel_id,
         channel: j.channel_name,
         channel_age: `${Number(j.age_days)} days old`,
-        started_at: `${j.s1} subscribers when we found it`,
-        highest_reached: j.smax,
+        started_at: `${j.s1} subscribers when we started watching`,
         subscribers_now: j.s_last,
+        gained: `+${gained} subscribers${mult && mult >= 2 ? ` (${mult}x)` : ''}`,
+        highest_reached: j.smax,
         we_have_watched_for: `${j.days} days`,
         the_climb: j.series.split('->').join(' → ') + ' subscribers',
         looks_fake: flag.suspicious,
@@ -114,8 +145,63 @@ const growth_journeys: McpTool = {
     const window = await dataWindow();
     return {
       window, how_we_know: METHOD_NOTE,
-      reality_check: 'Most tiny channels never take off — out of every 100 we watch, roughly 78 barely move. Going from under 10 subscribers to over 100 is genuinely rare, so treat these as the lucky few worth studying, not the normal outcome.',
+      showing: crossed ? `Channels that broke past ${crossed} subscribers while we watched` : 'Channels that gained the most subscribers while we watched',
       count: journeys.length, journeys,
+    };
+  },
+};
+
+// ── 1b. growth_milestones — how many crossed each level, by starting size ──
+const growth_milestones: McpTool = {
+  name: 'growth_milestones',
+  description:
+    'The big picture of everything we have watched: how many channels broke past 100, 1,000 and 10,000 subscribers ' +
+    'while we were recording, broken down by how big they were when we found them. Use this to show someone the ' +
+    'real scale of the dataset and to help them pick which kind of journey they want to study.',
+  inputSchema: { type: 'object', properties: {} },
+  handler: async () => {
+    const pool = await getPool();
+    const r = await pool.query<{ band: string; channels: string; grew: string; c100: string; c1k: string; c10k: string; best: string }>(
+      `WITH s AS (
+         SELECT channel_id,
+                (ARRAY_AGG(subscriber_count ORDER BY day ASC))[1]  AS s1,
+                (ARRAY_AGG(subscriber_count ORDER BY day ASC))[2]  AS s2,
+                (ARRAY_AGG(subscriber_count ORDER BY day DESC))[1] AS s_last,
+                MAX(subscriber_count) AS smax
+           FROM channel_growth_snapshots WHERE subscriber_count IS NOT NULL
+          GROUP BY channel_id HAVING COUNT(*) >= 2),
+       c AS (SELECT s.* FROM s JOIN niche_spy_channels sc USING (channel_id)
+              WHERE ${ARTIFACT_GUARD}
+                AND sc.channel_name NOT ILIKE '% - Topic' AND sc.channel_name NOT ILIKE '%VEVO')
+       SELECT CASE WHEN s1 < 10 THEN 'Found with under 10 subscribers'
+                   WHEN s1 < 100 THEN 'Found with 10-100 subscribers'
+                   WHEN s1 < 1000 THEN 'Found with 100-1,000 subscribers'
+                   WHEN s1 < 10000 THEN 'Found with 1,000-10,000 subscribers'
+                   ELSE 'Found with over 10,000 subscribers' END AS band,
+              COUNT(*)::text AS channels,
+              COUNT(*) FILTER (WHERE s_last > s1)::text AS grew,
+              COUNT(*) FILTER (WHERE s1 < 100 AND smax >= 100)::text AS c100,
+              COUNT(*) FILTER (WHERE s1 < 1000 AND smax >= 1000)::text AS c1k,
+              COUNT(*) FILTER (WHERE s1 < 10000 AND smax >= 10000)::text AS c10k,
+              COALESCE(MAX(s_last - s1),0)::text AS best
+         FROM c GROUP BY 1 ORDER BY MIN(s1)`,
+    );
+    const window = await dataWindow();
+    const rows = r.rows.map(x => ({
+      channels_found_at_this_size: x.band,
+      how_many: parseInt(x.channels, 10),
+      how_many_gained_subscribers: parseInt(x.grew, 10),
+      broke_past_100: parseInt(x.c100, 10),
+      broke_past_1000: parseInt(x.c1k, 10),
+      broke_past_10000: parseInt(x.c10k, 10),
+      biggest_single_gain: `+${parseInt(x.best, 10)} subscribers`,
+    }));
+    const tot = (k: 'broke_past_100' | 'broke_past_1000' | 'broke_past_10000') => rows.reduce((a, b) => a + b[k], 0);
+    return {
+      window,
+      headline: `While we have been recording, ${tot('broke_past_100')} channels broke past 100 subscribers, ${tot('broke_past_1000')} broke past 1,000, and ${tot('broke_past_10000')} broke past 10,000 — every one of those climbs captured day by day.`,
+      by_starting_size: rows,
+      how_we_know: METHOD_NOTE,
     };
   },
 };
@@ -458,4 +544,4 @@ const growth_playbook: McpTool = {
   },
 };
 
-export const GROWTH_TOOLS: McpTool[] = [growth_journeys, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating, growth_playbook];
+export const GROWTH_TOOLS: McpTool[] = [growth_journeys, growth_milestones, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating, growth_playbook];

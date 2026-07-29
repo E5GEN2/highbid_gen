@@ -162,14 +162,17 @@ const start_here: McpTool = {
         channels_where_we_also_track_each_video: parseInt(x.deep, 10),
         channels_that_grew_from_under_10_to_over_100_subs: parseInt(breakouts.rows[0]?.n ?? '0', 10),
       },
-      learning_path: [
-        { step: 1, what: 'See channels that actually made it — the full climb, day by day, from almost nothing to 100+ subscribers', tool: 'growth_journeys' },
-        { step: 2, what: 'Pick one of them and follow its story closely — which video made the subscribers start coming', tool: 'channel_growth_series + growth_attribution' },
-        { step: 3, what: 'Learn what the ones that grew did differently — how often they posted, how new they were, what they made', tool: 'growth_playbook' },
-        { step: 4, what: 'See who is growing right now, today', tool: 'growth_accelerating' },
-        { step: 5, what: 'Find the kind of content worth making, and who is already winning at it', tool: 'search_niches / browse_niches' },
+      also_call: 'Call growth_milestones right after this — it gives the how-many-broke-past-100/1,000/10,000 breakdown, which is the most striking thing to show someone first. Present it as a small table.',
+      what_you_can_explore: [
+        'Channels we watched break past 100, 1,000 or even 10,000 subscribers — the whole climb, day by day (we track channels at every size, not just tiny ones)',
+        'One channel followed closely: which exact video made the subscribers start coming, and whether it was a Short or a long video',
+        'What the channels that grew did differently from the ones that went nowhere',
+        'Who is gaining subscribers right now, today',
+        'What kind of content is worth making, and who is already winning at it',
       ],
-      note: 'We only started recording on 22 July, so this is early days — but the numbers above go up every single day.',
+      recommended_first_move:
+        "Do not just list these options to the user. Show them something real straight away — pull up a couple of actual climbs (biggest gainers, or channels that broke past 1,000 subscribers) and put the day-by-day numbers in front of them. Then offer ONE next step: following a single channel to find the video that turned it around.",
+      note: 'We only started recording on 22 July, so this is early days — but the numbers above go up every single day. Mention that honestly; it is a young study, and that is fine.',
     };
   },
 };
