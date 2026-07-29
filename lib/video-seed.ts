@@ -828,7 +828,18 @@ const BACKFILL_RETRY_MS = 2 * 60 * 60 * 1000;         // re-try failures after 2
 
 export interface EmbedBackfillResult {
   enabled: boolean; skipped: boolean; picked: number; embedded: number; failed: number; ms: number;
+  reason?: string;
 }
+
+// Reserve pickable embed keys for LIVE traffic. The agent-facing expand path and
+// this backfill share one google_ai_studio pool, but they are NOT equal priority:
+// a failed expand fails an in-flight crawl (and trips the seed kill-switch), while
+// a deferred backfill costs nothing — it just runs a minute later.
+// Unguarded, the backfill embeds ~200 videos/min (~20-30x the pre-backfill rate) and
+// drains the free-tier pool, which is exactly what happened 2026-07-28/29: pool
+// 1,641 -> 21 keys (18 of them cooling), expand failing 29.7% on no_active_ai_keys,
+// crawl failure 1.4% -> 50%, discovery 4.9K -> 0.4K/day. So: only consume SURPLUS.
+const EMBED_BACKFILL_RESERVE = Math.max(0, parseInt(process.env.HB_EMBED_BACKFILL_RESERVE || '50', 10));
 
 export async function runEmbedBackfillTick(batch = 200): Promise<EmbedBackfillResult> {
   const t0 = Date.now();
@@ -838,6 +849,17 @@ export async function runEmbedBackfillTick(batch = 200): Promise<EmbedBackfillRe
     `SELECT value FROM admin_config WHERE key = 'embed_backfill_enabled'`,
   );
   if (cfg.rows[0]?.value === 'false') return { ...base, enabled: false };
+
+  // Yield to live crawl traffic unless the pool has surplus (see EMBED_BACKFILL_RESERVE).
+  const pk = await pool.query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM xgodo_api_keys
+      WHERE service = 'google_ai_studio' AND status = 'active'
+        AND (banned_until IS NULL OR banned_until < NOW())`,
+  );
+  const pickable = parseInt(pk.rows[0]?.n ?? '0');
+  if (pickable < EMBED_BACKFILL_RESERVE) {
+    return { ...base, skipped: true, reason: `yield_to_live (${pickable} pickable < ${EMBED_BACKFILL_RESERVE} reserve)`, ms: Date.now() - t0 };
+  }
 
   const client = await pool.connect();
   try {
