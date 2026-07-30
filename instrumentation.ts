@@ -627,28 +627,6 @@ export async function register() {
     setInterval(colabKeeperTick, 60 * 1000);
     setTimeout(colabKeeperTick, 40 * 1000);
 
-    // CONTINUOUS clustering: keep newly-embedded videos gaining niches. Each
-    // tick either finalizes a drained incremental run (majority-vote its kNN
-    // onto base clusters) or starts the next batch. New videos are scanned
-    // against the EXISTING base index only (M x N), never all-vs-all — the
-    // O(N^2) rebuild stays a rare, separate job. Own interval + re-entrancy
-    // guard (an export runs minutes). Kill switch: cluster_incremental_enabled.
-    let clusterIncrRunning = false;
-    const clusterIncrTick = async () => {
-      if (clusterIncrRunning) return;
-      clusterIncrRunning = true;
-      try {
-        const { runClusterIncrementalTick } = await import('./lib/cluster-incremental');
-        const r = await runClusterIncrementalTick();
-        if (r.enabled && r.action && r.action !== 'idle' && r.action !== 'waiting') {
-          console.log('[cluster-incr]', r.action, JSON.stringify(r.detail));
-        }
-      } catch (err) {
-        console.error('[cluster-incr] error:', err instanceof Error ? err.message : err);
-      } finally { clusterIncrRunning = false; }
-    };
-    setInterval(clusterIncrTick, 120 * 1000);
-    setTimeout(clusterIncrTick, 75 * 1000);
 
     // Start the agent thermostat (maintains thread targets per keyword)
     const { ensureThermostatRunning } = await import('./lib/agent-thermostat');
