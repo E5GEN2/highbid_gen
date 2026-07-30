@@ -252,6 +252,19 @@ export async function runListenerTick(batch = 60): Promise<ListenerTickResult> {
     if (pull.error) {
       out.errors++;
       if (pull.rateLimited) { banYtKey(pair.key); break; }   // back off rather than burn the shared pool
+      // STAMP ON FAILURE TOO. The error path used to `continue` without touching
+      // last_checked_at, so a permanently-broken channel (stale/deleted uploads
+      // playlist) stayed at the head of the due-queue and was retried EVERY tick —
+      // observed as a constant errors=6-7 with polled=0, burning YT quota once a
+      // minute forever. Same shape as the enricher's deterministic crash-loop.
+      // Stamping backs it off to the normal cadence; consecutive failures are
+      // tracked so a channel that never works can be pruned later.
+      await pool.query(
+        `UPDATE listener_channels
+            SET last_checked_at = NOW(), fail_count = COALESCE(fail_count,0) + 1
+          WHERE listener_id = $1 AND channel_id = $2`,
+        [row.listener_id, row.channel_id],
+      ).catch(() => {});
       continue;
     }
     out.polled++;
@@ -275,7 +288,8 @@ export async function runListenerTick(batch = 60): Promise<ListenerTickResult> {
       `UPDATE listener_channels
           SET last_checked_at = NOW(),
               last_video_count = $3,
-              new_videos_seen = new_videos_seen + $4
+              new_videos_seen = new_videos_seen + $4,
+              fail_count = 0
         WHERE listener_id = $1 AND channel_id = $2`,
       [row.listener_id, row.channel_id, pull.videoCount, pull.newVideoIds.length],
     ).catch(() => {});

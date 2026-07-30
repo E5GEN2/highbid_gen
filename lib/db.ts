@@ -1759,6 +1759,7 @@ export async function initSchema(): Promise<void> {
     `);
     // Poll queue: oldest-checked first within a listener.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_lc_due ON listener_channels(listener_id, last_checked_at NULLS FIRST)`).catch(() => {});
+    await client.query(`ALTER TABLE listener_channels ADD COLUMN IF NOT EXISTS fail_count INTEGER DEFAULT 0`).catch(() => {});
     // Every upload the listener catches — the feed, and the KPI substrate
     // (avg newly-discovered videos per channel).
     await client.query(`
