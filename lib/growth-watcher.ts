@@ -107,6 +107,12 @@ async function enrollCandidates(batch: number, maxSubs: number): Promise<number>
       WHERE sc.subscriber_count IS NOT NULL
         AND sc.subscriber_count < $1
         AND NOT EXISTS (SELECT 1 FROM growth_tracked_channels g WHERE g.channel_id = sc.channel_id)
+      -- SMALLEST FIRST (standing rule): with a large backlog of bigger channels
+      -- (raising the net to 500 created a ~55K one), an unordered LIMIT would let
+      -- newly discovered tiny channels wait behind tens of thousands of 100-500s.
+      -- Enrolling ascending by size means a freshly found 3-sub channel is picked
+      -- up on the very next tick, which is the whole point of the study.
+      ORDER BY sc.subscriber_count ASC
       LIMIT $2
      ON CONFLICT (channel_id) DO NOTHING`,
     [maxSubs, batch],
@@ -312,10 +318,9 @@ async function scanWave(rows: TrackedRow[], deep: boolean, cfg: GrowthCfg): Prom
   return out;
 }
 
-/** Select due channels for a stage set — TINIEST FIRST. The genesis cohort
- *  (0-50 subs) is the highest-value early-growth data, so the smallest channels
- *  scan first and never wait behind the 62K bulk (or starve under the deep cap).
- *  Tie-break by oldest-due so nothing is perpetually skipped. */
+/** Select due channels for a stage set — SMALLEST COHORT FIRST (standing rule).
+ *  Scarce scan/deep budget always goes to the smallest channels first; growth
+ *  ranks only within a cohort. Oldest-due breaks ties so nothing starves. */
 async function selectDue(stages: string[], limit: number, orGenesisBelow?: number): Promise<TrackedRow[]> {
   const pool = await getPool();
   const params: unknown[] = [stages, limit];
@@ -327,17 +332,25 @@ async function selectDue(stages: string[], limit: number, orGenesisBelow?: numbe
     params.push(orGenesisBelow);
     where = `(stage = ANY($1) OR (last_subs IS NOT NULL AND last_subs < $3)) AND stage <> 'dormant'`;
   }
-  // PRIORITY TIERS, then oldest-due within each tier (so nothing starves):
-  //   0. actively GROWING (up_days>0) — a channel mid-journey is the most
-  //      valuable thing to deep-track; pure last_subs ASC starved these (a
-  //      channel that grew to 100-186 sat behind ~54K sub-100 channels and lost
-  //      its video pulse exactly when its journey got interesting, 2026-07-28).
-  //   1. genesis-tiny (<25 subs) — capture the 0→100 drivers from video #1.
-  //   2. everyone else.
-  // Ordering by next_due_at WITHIN a tier keeps it fair/starvation-free.
-  const tierExpr = orGenesisBelow != null
-    ? `CASE WHEN COALESCE(up_days,0) > 0 THEN 0 WHEN last_subs < $3 THEN 1 ELSE 2 END`
-    : `CASE WHEN COALESCE(up_days,0) > 0 THEN 0 ELSE 1 END`;
+  // ── BUDGET PRIORITY: SMALLEST SUBSCRIBER COHORT ALWAYS FIRST ─────────────
+  // STANDING RULE (operator, 2026-07-30): whenever budget/throughput is scarce,
+  // the smaller the channel the higher its claim on it. The cohort band is the
+  // PRIMARY sort key, so a 5-sub channel can never wait behind a 400-sub one.
+  //
+  // This replaced a growing-first ordering that would now starve the tiny cohort:
+  // raising the net to 500 subs flooded the pool with 100-500 channels, ~87% of
+  // which grow, so "up_days>0 first" would have put tens of thousands of larger
+  // growing channels ahead of every genesis channel.
+  // Growth still matters — it just ranks WITHIN a cohort, not across cohorts.
+  //   1st: cohort band ascending (0-10 → 10-100 → 100-200 → 200-500)
+  //   2nd: actively growing first (mid-journey channels lead their own cohort)
+  //   3rd: oldest-due first, so nothing is perpetually skipped
+  const COHORT_RANK = `CASE WHEN last_subs IS NULL THEN 0
+                            WHEN last_subs < 10  THEN 0
+                            WHEN last_subs < 100 THEN 1
+                            WHEN last_subs < 200 THEN 2
+                            ELSE 3 END`;
+  const tierExpr = `${COHORT_RANK}, (CASE WHEN COALESCE(up_days,0) > 0 THEN 0 ELSE 1 END)`;
   const r = await pool.query<TrackedRow>(
     `SELECT channel_id, stage, last_subs, last_video_count, first_caught_subs,
             COALESCE(dead_scans, 0) AS dead_scans, COALESCE(up_days, 0) AS up_days
