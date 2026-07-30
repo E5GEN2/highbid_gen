@@ -30,7 +30,13 @@ const SCAN_BATCH = 300;                // liveness/dormant channels scanned per 
 const DEEP_BATCH = 120;                // deep (2u) channels per tick. Capacity must EXCEED the due-rate or the queue tail starves: ~39K deep pool / 20h cadence ≈ 33 due/min, and 64/tick at ~70s ticks was only ~55/min — too thin once ticks slow. 120 gives real headroom (parallel pulls keep the tick ~30-40s).
 const LIVE_CADENCE_H = 20;             // ~daily re-scan for every active stage (<24h so a daily snapshot always lands)
 const DORMANT_CADENCE_H = 168;         // dormant channels re-checked weekly
-const MAX_SUBS_ENROLL = 100;           // catch net: < 100 subs
+// Discovery net ceiling. Set to the TOP of the highest reporting group
+// (0-10 / 10-100 / 100-200 / 200-500) so every channel that belongs to a group
+// gets tracked — at 100 we were discarding ~74% of everything discovery found,
+// including every 100-200 and 200-500 channel, which left those two report
+// routes only ever populated by channels that grew into range from below.
+// Config-overridable (growth_enroll_max_subs) so it never needs a redeploy.
+const DEFAULT_MAX_SUBS_ENROLL = 500;
 const VIDEOS_PER_CHANNEL_SNAP = 30;    // newest N videos snapshotted per deep channel
 const DEEP_CONCURRENCY = 10;           // parallel recent-uploads pulls in the deep wave (2u each, per-channel) — keeps the tick fast even with the larger deep batch; well within the 11K-key pool
 
@@ -47,6 +53,7 @@ interface GrowthCfg {
   genesisDeepSubs: number;     // deep-track ANY channel below this many subs regardless of stage —
                                // the super-early 0-N cohort gets upload+view pulse from video #1
                                // so we can SEE where the first 100 subs come from (growth_genesis_deep_subs)
+  enrollMaxSubs: number;       // discovery net ceiling = top of the highest reporting group (growth_enroll_max_subs)
 }
 
 async function loadCfg(): Promise<GrowthCfg & { enabled: boolean }> {
@@ -65,8 +72,12 @@ async function loadCfg(): Promise<GrowthCfg & { enabled: boolean }> {
     documentedMinSubs: parseInt(c.growth_documented_min_subs) || 500,
     demoteDeadScans:   parseInt(c.growth_demote_dead_scans) || 7,
     dormantDeadScans:  parseInt(c.growth_dormant_dead_scans) || 14,
-    deepMaxPerDay:     parseInt(c.growth_deep_max_per_day) || 40000,
+    // Raised with the enrollment ceiling: the tracked set roughly doubles, so the
+    // deep pool does too. Quota is not the constraint (2u/channel against an
+    // 11K-key pool ≈ 114M units/day), tick throughput is — see DEEP_BATCH.
+    deepMaxPerDay:     parseInt(c.growth_deep_max_per_day) || 120000,
     genesisDeepSubs:   parseInt(c.growth_genesis_deep_subs) || 25,
+    enrollMaxSubs:     parseInt(c.growth_enroll_max_subs) || DEFAULT_MAX_SUBS_ENROLL,
   };
 }
 
@@ -84,8 +95,9 @@ export interface GrowthWatcherResult {
   ms: number;
 }
 
-/** Enroll small channels not yet tracked (idempotent, bounded, index-driven). */
-async function enrollCandidates(batch: number): Promise<number> {
+/** Enroll small channels not yet tracked (idempotent, bounded, index-driven).
+ *  maxSubs = the discovery net ceiling (top of the highest reporting group). */
+async function enrollCandidates(batch: number, maxSubs: number): Promise<number> {
   const pool = await getPool();
   const r = await pool.query(
     `INSERT INTO growth_tracked_channels
@@ -97,7 +109,7 @@ async function enrollCandidates(batch: number): Promise<number> {
         AND NOT EXISTS (SELECT 1 FROM growth_tracked_channels g WHERE g.channel_id = sc.channel_id)
       LIMIT $2
      ON CONFLICT (channel_id) DO NOTHING`,
-    [MAX_SUBS_ENROLL, batch],
+    [maxSubs, batch],
   );
   return r.rowCount ?? 0;
 }
@@ -365,7 +377,7 @@ export async function runGrowthWatcherTick(opts: { force?: boolean } = {}): Prom
     const lock = await client.query<{ locked: boolean }>(`SELECT pg_try_advisory_lock($1) AS locked`, [GROWTH_LOCK]);
     if (!lock.rows[0]?.locked) return { ...base, skipped: true, ms: Date.now() - t0 };
     try {
-      base.enrolled = await enrollCandidates(ENROLL_BATCH)
+      base.enrolled = await enrollCandidates(ENROLL_BATCH, cfg.enrollMaxSubs)
         .catch((e) => { console.error('[growth-watcher] enroll failed:', (e as Error).message); return 0; });
 
       // DEEP wave (pulse/traction/documented = showing-life channels) — pulls
