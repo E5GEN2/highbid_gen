@@ -1709,6 +1709,17 @@ export async function initSchema(): Promise<void> {
     await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS select_score DOUBLE PRECISION`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_policy ON niche_discovery_seeds(select_policy, dispatched_at)`).catch(() => {});
 
+    // NEW-CHANNEL YIELD (Loop A prioritizer input). `discovered_count` is candidates
+    // SCORED, not new channels FOUND — ranking on it would optimise candidate volume,
+    // the wrong metric. These two are the real signal, stamped by stampSeedYield()
+    // (lib/content-gen/seed-scheduler.ts) on a DELAY: first-touch lineage lands in
+    // channel_cg_status via the async cg-sweep, so counting at reap time undercounts.
+    await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS new_channels INTEGER`).catch(() => {});
+    await client.query(`ALTER TABLE niche_discovery_seeds ADD COLUMN IF NOT EXISTS crawl_minutes REAL`).catch(() => {});
+    // Drives the stamper's "needs measuring" scan and the prioritizer's per-cluster rollup.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_yield_todo ON niche_discovery_seeds(completed_at) WHERE new_channels IS NULL`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_cluster_yield ON niche_discovery_seeds(origin_cluster_id, completed_at) WHERE new_channels IS NOT NULL`).catch(() => {});
+
     // Content Gen "used" channels — a channel marked as already consumed into a
     // produced video. discoverChannels() excludes these so the used group
     // disappears and a fresh group takes its place (keeps the seed pipeline

@@ -484,6 +484,7 @@ export interface ReaperResult {
   ran: boolean;
   reason?: string;
   finished_niches: number;
+  yield_stamped?: number;
   videos_rescored: number;
   clusters_released: number;
 }
@@ -494,6 +495,57 @@ export interface ReaperResult {
  * the crawled region, then release the region lock. This is what makes
  * decay actually happen and what frees a cluster for future seeding.
  */
+/**
+ * Stamp NEW-CHANNEL YIELD onto finished crawls — the Loop A prioritizer's input.
+ *
+ * `discovered_count` is candidates SCORED, not new channels FOUND; ranking on it
+ * would optimise candidate volume, which is not what we want. The real signal is
+ * first-touch lineage: channel_cg_status.discovered_by_seed_video_id names the seed
+ * whose crawl FIRST surfaced each channel.
+ *
+ * DEFERRED on purpose. That lineage is stamped by the async cg-sweep, so counting at
+ * reap time systematically undercounts. We only measure crawls that finished >2h ago,
+ * by which point the sweep has caught up. The same pass therefore does double duty:
+ * it backfills ~3 weeks of existing history AND keeps new crawls measured, with no
+ * separate migration.
+ *
+ * Attribution is windowed to the crawl (discovered_at within dispatch..complete+grace)
+ * so a seed crawled more than once credits each attempt with what IT surfaced, rather
+ * than every attempt inheriting the same seed-level total.
+ */
+async function stampSeedYield(batch = 300): Promise<number> {
+  const pool = await getPool();
+  const res = await pool.query(
+    `WITH todo AS (
+       SELECT niche_id, seed_video_id, dispatched_at, completed_at
+         FROM niche_discovery_seeds
+        WHERE new_channels IS NULL
+          AND completed_at IS NOT NULL
+          AND completed_at < NOW() - INTERVAL '2 hours'
+        ORDER BY completed_at DESC
+        LIMIT $1
+     ), counted AS (
+       SELECT t.niche_id,
+              COUNT(c.channel_id) AS nc,
+              EXTRACT(EPOCH FROM (t.completed_at - t.dispatched_at))/60.0 AS mins
+         FROM todo t
+         LEFT JOIN channel_cg_status c
+                ON c.discovered_by_seed_video_id = t.seed_video_id
+               AND c.discovered_at >= t.dispatched_at
+               AND c.discovered_at <= t.completed_at + INTERVAL '10 minutes'
+        GROUP BY t.niche_id, t.dispatched_at, t.completed_at
+     )
+     UPDATE niche_discovery_seeds s
+        SET new_channels  = counted.nc,
+            crawl_minutes = GREATEST(0, counted.mins)
+       FROM counted
+      WHERE s.niche_id = counted.niche_id
+        AND s.new_channels IS NULL`,
+    [batch],
+  );
+  return res.rowCount ?? 0;
+}
+
 export async function runSeedReaperTick(): Promise<ReaperResult> {
   const empty: ReaperResult = { ran: false, finished_niches: 0, videos_rescored: 0, clusters_released: 0 };
   const cfg = await loadConfig();
@@ -545,7 +597,16 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
         WHERE s.niche_id = sub.niche_id AND s.discovered_count < sub.disc`,
     ).catch((e) => console.error('[seed-reaper] discovered_count self-heal failed:', (e as Error).message));
 
-    if (finished.length === 0) return { ...empty, ran: true };
+    // Yield stamping runs every tick regardless of whether any crawl just finished —
+    // it measures crawls that completed >2h ago (and backfills history), so gating it
+    // on `finished` would stall it whenever the fleet is quiet.
+    const yieldStamped = await stampSeedYield().catch((e) => {
+      console.error('[seed-reaper] yield stamp failed:', (e as Error).message);
+      return 0;
+    });
+    if (yieldStamped > 0) console.log(`[seed-reaper] yield stamped=${yieldStamped}`);
+
+    if (finished.length === 0) return { ...empty, ran: true, yield_stamped: yieldStamped };
 
     let videosRescored = 0;
     let clustersReleased = 0;
@@ -610,7 +671,7 @@ export async function runSeedReaperTick(): Promise<ReaperResult> {
       clustersReleased++;
     }
 
-    return { ran: true, finished_niches: finished.length, videos_rescored: videosRescored, clusters_released: clustersReleased };
+    return { ran: true, finished_niches: finished.length, videos_rescored: videosRescored, clusters_released: clustersReleased, yield_stamped: yieldStamped };
   } finally {
     await unlock(REAPER_LOCK_KEY);
   }
