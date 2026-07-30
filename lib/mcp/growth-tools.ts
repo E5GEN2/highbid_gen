@@ -547,10 +547,11 @@ const growth_playbook: McpTool = {
 // ── ONE-CLICK COHORT ROUTES ───────────────────────────────────────────────
 // growth_journeys is general-purpose (any starting size, any milestone), and its
 // default starting_size='any' returns the biggest absolute gainers — which are
-// usually channels that were ALREADY big when we found them. These two
-// zero-argument tools are the two cohorts we actually report on, so an agent (or
-// a person clicking once) lands on the right set without having to know the
-// parameters. Both are artifact-guarded and exclude auto-generated music channels.
+// usually channels that were ALREADY big when we found them. These zero-argument
+// tools are the four size cohorts we report on, so an agent (or a person clicking
+// once) lands on the right set without knowing any parameters. Each is
+// artifact-guarded, requires real growth, and excludes auto-generated music
+// channels. Cohort stats are computed live — the numbers move every day.
 
 /** Shared cohort query: journeys whose FIRST FRESH reading fell in [lo,hi]. */
 async function cohortJourneys(lo: number, hi: number, limit: number, order: 'reached' | 'gained') {
@@ -599,58 +600,104 @@ async function cohortJourneys(lo: number, hi: number, limit: number, order: 'rea
   });
 }
 
-const journeys_from_zero: McpTool = {
-  name: 'journeys_from_zero',
-  description:
-    'ONE CLICK — the tiny-channel cohort. Channels we found while they had under 10 subscribers, and the whole ' +
-    'day-by-day climb of the ones that actually grew ("4 → 6 → 15 → 31 → 48 → 140 subscribers"). This is the ' +
-    'genesis group: the hardest, most interesting journey, because we were there before anything was happening. ' +
-    'Use this whenever someone asks about tiny channels, brand-new channels, or the 0-to-100 journey. Channels ' +
-    'that look like they bought subscribers are marked — never present those as successes. Always show the climb.',
-  inputSchema: { type: 'object', properties: {
-    limit: { type: 'integer', description: 'How many channels (default 30, max 100).' },
-  } },
-  handler: async (args) => {
-    const limit = clampInt(args.limit, 30, 1, 100);
-    const journeys = await cohortJourneys(0, 9, limit, 'reached');
-    const window = await dataWindow();
-    const crossed100 = journeys.filter(j => j.highest_reached >= 100).length;
-    return {
-      window, how_we_know: METHOD_NOTE,
-      cohort: 'Found at under 10 subscribers (the genesis group)',
-      showing: 'Every one of these grew while we watched — biggest reached first',
-      count: journeys.length,
-      of_these_crossed_100_subs: crossed100,
-      note: 'Only a tiny fraction of the sub-10 channels we watch ever take off — roughly 3 in 10 move at all, and only a couple of dozen have crossed 100 subscribers so far. That is the honest base rate; call growth_outcomes for the full picture.',
-      journeys,
-    };
-  },
-};
+/** Live cohort stats for a band: how big it is and how often it actually grows.
+ *  Computed per call because these move every day — never hardcode them. */
+async function cohortStats(lo: number, hi: number) {
+  const pool = await getPool();
+  const r = await pool.query<{ total: string; grew: string; gained100: string; crossed100: string }>(
+    `WITH s AS (
+       SELECT channel_id,
+              (ARRAY_AGG(subscriber_count ORDER BY day ASC))[1]  AS s1,
+              (ARRAY_AGG(subscriber_count ORDER BY day ASC))[2]  AS s2,
+              (ARRAY_AGG(subscriber_count ORDER BY day DESC))[1] AS s_last,
+              MAX(subscriber_count) AS smax
+         FROM channel_growth_snapshots
+        WHERE subscriber_count IS NOT NULL
+        GROUP BY channel_id
+       HAVING COUNT(*) >= 2)
+     SELECT COUNT(*)::text AS total,
+            COUNT(*) FILTER (WHERE s.s_last > s.s1)::text AS grew,
+            COUNT(*) FILTER (WHERE (s.s_last - s.s1) >= 100)::text AS gained100,
+            COUNT(*) FILTER (WHERE s.s1 < 100 AND s.smax >= 100)::text AS crossed100
+       FROM s WHERE s.s1 BETWEEN $1 AND $2 AND ${ARTIFACT_GUARD}`,
+    [lo, hi],
+  );
+  const row = r.rows[0];
+  const total = parseInt(row?.total ?? '0', 10);
+  const grew = parseInt(row?.grew ?? '0', 10);
+  return {
+    channels_we_watch_in_this_size: total,
+    how_many_grew_at_all: grew,
+    pct_that_grew: total > 0 ? Math.round((grew / total) * 1000) / 10 : 0,
+    how_many_gained_100_plus: parseInt(row?.gained100 ?? '0', 10),
+    how_many_crossed_100_subs: parseInt(row?.crossed100 ?? '0', 10),
+  };
+}
 
-const journeys_past_100: McpTool = {
-  name: 'journeys_past_100',
-  description:
-    'ONE CLICK — the established-small cohort. Channels that were already past 100 subscribers (100-500) when we ' +
-    'found them, and how they have climbed since, day by day. This is the "it is already working, now it compounds" ' +
-    'group — they grow far more reliably than tiny channels, so it is the best place to show what sustained growth ' +
-    'looks like. Use this when someone asks about channels that already have some traction, or wants to compare ' +
-    'small-but-working channels against brand-new ones. Suspected fake growth is marked.',
-  inputSchema: { type: 'object', properties: {
-    limit: { type: 'integer', description: 'How many channels (default 30, max 100).' },
-  } },
-  handler: async (args) => {
-    const limit = clampInt(args.limit, 30, 1, 100);
-    const journeys = await cohortJourneys(100, 500, limit, 'gained');
-    const window = await dataWindow();
-    return {
-      window, how_we_know: METHOD_NOTE,
-      cohort: 'Found at 100-500 subscribers (already had traction)',
-      showing: 'Every one of these grew while we watched — biggest gain first',
-      count: journeys.length,
-      note: 'This group grows far more reliably than the tiny one: about 9 in 10 of these channels gained subscribers while we watched, versus roughly 3 in 10 of the under-10 channels. Compare with journeys_from_zero to show the difference traction makes.',
-      journeys,
-    };
-  },
-};
+interface BandSpec {
+  tool: string; lo: number; hi: number; label: string;
+  order: 'reached' | 'gained'; blurb: string; guidance: string;
+}
 
-export const GROWTH_TOOLS: McpTool[] = [journeys_from_zero, journeys_past_100, growth_journeys, growth_milestones, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating, growth_playbook];
+/** The four size cohorts we report on. */
+const COHORT_BANDS: BandSpec[] = [
+  {
+    tool: 'journeys_0_to_10', lo: 0, hi: 9, label: 'Found at under 10 subscribers (the genesis group)',
+    order: 'reached',
+    blurb: 'ONE CLICK — the genesis cohort. Channels we found while they still had under 10 subscribers, with the whole day-by-day climb of the ones that actually grew ("4 → 6 → 15 → 31 → 48 → 140 subscribers"). This is the hardest and most interesting journey because we were watching before anything was happening.',
+    guidance: 'Use for any question about tiny, brand-new, or from-scratch channels, and for the 0-to-100 journey.',
+  },
+  {
+    tool: 'journeys_10_to_100', lo: 10, hi: 99, label: 'Found at 10-100 subscribers (first signs of life)',
+    order: 'reached',
+    blurb: 'ONE CLICK — the early-traction cohort. Channels that had between 10 and 100 subscribers when we found them, and how they climbed from there. This is the biggest group we watch, and where the first real momentum usually shows up.',
+    guidance: 'Use for questions about channels that just started getting their first subscribers, or the 10-to-100 and 100-plus climb.',
+  },
+  {
+    tool: 'journeys_100_to_200', lo: 100, hi: 199, label: 'Found at 100-200 subscribers (past the first hurdle)',
+    order: 'gained',
+    blurb: 'ONE CLICK — the just-past-100 cohort. Channels sitting between 100 and 200 subscribers when we found them, and their climb since. These have cleared the hardest hurdle and are usually compounding.',
+    guidance: 'Use to show what happens right after a channel breaks 100 — the stretch where growth starts becoming reliable.',
+  },
+  {
+    tool: 'journeys_200_to_500', lo: 200, hi: 500, label: 'Found at 200-500 subscribers (established small)',
+    order: 'gained',
+    blurb: 'ONE CLICK — the established-small cohort. Channels at 200-500 subscribers when we found them, and how far they have climbed. This is the "it is already working, now it compounds" group — the most reliable growers we track.',
+    guidance: 'Use to show sustained growth, and to contrast against the tiny cohort — traction makes an enormous difference.',
+  },
+];
+
+function makeCohortTool(spec: BandSpec): McpTool {
+  return {
+    name: spec.tool,
+    description:
+      `${spec.blurb} ${spec.guidance} Every channel here is one we check once a day, so these are climbs we ` +
+      'watched happen. Channels that look like they bought subscribers are marked with a warning — never present ' +
+      'those as success stories. Always show the user the actual day-by-day climb.',
+    inputSchema: { type: 'object', properties: {
+      limit: { type: 'integer', description: 'How many channels (default 30, max 100).' },
+    } },
+    handler: async (args) => {
+      const limit = clampInt(args.limit, 30, 1, 100);
+      const [journeys, stats, window] = await Promise.all([
+        cohortJourneys(spec.lo, spec.hi, limit, spec.order),
+        cohortStats(spec.lo, spec.hi),
+        dataWindow(),
+      ]);
+      return {
+        window, how_we_know: METHOD_NOTE,
+        cohort: spec.label,
+        size_range: `${spec.lo}-${spec.hi} subscribers when we found them`,
+        cohort_reality: stats,
+        showing: `The ones that grew — ${spec.order === 'reached' ? 'highest reached' : 'biggest gain'} first`,
+        count: journeys.length,
+        note: `Of the ${stats.channels_we_watch_in_this_size} channels we watch in this size range, ${stats.how_many_grew_at_all} (${stats.pct_that_grew}%) gained subscribers while we watched. Compare cohorts to see how much starting traction matters — the smaller the channel, the longer the odds.`,
+        journeys,
+      };
+    },
+  };
+}
+
+const COHORT_TOOLS: McpTool[] = COHORT_BANDS.map(makeCohortTool);
+
+export const GROWTH_TOOLS: McpTool[] = [...COHORT_TOOLS, growth_journeys, growth_milestones, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating, growth_playbook];
