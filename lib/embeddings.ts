@@ -271,6 +271,22 @@ export type EmbedInput =
  * randomises across the active pair set per bench results. Kept in the
  * signature so existing callers don't need updates in lockstep.
  */
+/**
+ * TRANSPORT RETRY. Each key is pinned to a proxy by index (buildPairs:
+ * `proxies[i % proxies.length]`), so when a pair's proxy is dead the call fails
+ * with `curl exit 7`/`97` and NO amount of re-calling the same pair helps.
+ * Roughly a third of the static proxy list is dead at any time, so a single-shot
+ * embed had a large chance of simply failing — which is why bulk embedding looked
+ * healthy (the video-seed path retries 6x across pairs) while embedText()
+ * failed outright, breaking semantic niche search and listener creation.
+ *
+ * Retry on TRANSPORT failures only, each time with a freshly-picked pair.
+ * API-level errors (bad key, quota) still fall through to the classifier below —
+ * rotating on those would just burn keys without fixing anything.
+ */
+const EMBED_TRANSPORT_RETRIES = 4;
+const TRANSPORT_ERR = /curl exit (7|97|28|35|52|56)\b|Failed to connect|Connection refused|proxy|timed out/i;
+
 export async function batchEmbedInputs(
   inputs: EmbedInput[],
   model: string,
@@ -279,6 +295,24 @@ export async function batchEmbedInputs(
   if (inputs.length === 0) return [];
   if (inputs.length > 100) throw new Error('Batch limit is 100 items');
 
+  let lastTransportErr: Error | null = null;
+  for (let attempt = 1; attempt <= EMBED_TRANSPORT_RETRIES; attempt++) {
+    try {
+      return await batchEmbedInputsOnce(inputs, model);
+    } catch (err) {
+      const msg = (err as Error).message || '';
+      if (!TRANSPORT_ERR.test(msg) || attempt === EMBED_TRANSPORT_RETRIES) throw err;
+      lastTransportErr = err as Error;
+      // fresh (key, proxy) pair next go — a dead proxy never recovers in-loop
+    }
+  }
+  throw lastTransportErr ?? new Error('embed failed');
+}
+
+async function batchEmbedInputsOnce(
+  inputs: EmbedInput[],
+  model: string,
+): Promise<number[][]> {
   const pair = await pickRandomActivePair();
 
   const fs = await import('fs');
