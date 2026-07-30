@@ -315,6 +315,12 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
     const seedInFlight = [...running, ...planned].filter(t => t.kind === 'seed').length;
     const freeThreads = Math.max(0, cfg.maxThreads - seedInFlight);
 
+    // Mode budget (novelty vs respy). ADVISORY ONLY for now — it records the split it
+    // would choose so the decision can be validated against real yield data before it
+    // gates any dispatch. Wiring it in is deliberately deferred until source='respy'
+    // exists; with only one mode running there is nothing to balance.
+    await computeModeBudget(cfg.maxThreads).catch(() => null);
+
     // ── PRIORITY: Content-Gen seeds (exclusive) ─────────────────────────
     // Channels shown in the Content Gen draft cards get researched first.
     // While any of their top videos are un-spied, the scheduler dispatches
@@ -495,6 +501,112 @@ export interface ReaperResult {
  * the crawled region, then release the region lock. This is what makes
  * decay actually happen and what frees a cluster for future seeding.
  */
+/**
+ * MODE BUDGET CONTROLLER — split the xgodo fleet between the two discovery modes.
+ *
+ * The two modes do different jobs and must not compete in one queue:
+ *   novelty — opens NEW niches (clusters never crawled). Exploration.
+ *   respy   — revisits KNOWN niches to track their development. Maintenance.
+ *
+ * Allocation rule: **equalize new-channels per THREAD-HOUR**, not per mode total.
+ * Equalising totals would push threads toward the weaker mode to lift its sum —
+ * backwards. Equalising the marginal rate maximises total new channels, and it is
+ * self-correcting: as novelty exhausts unexplored clusters its rate decays and the
+ * budget slides to respy automatically, with no manual retuning.
+ *
+ * FLOORS matter, and not merely for safety. Novelty has option value beyond its
+ * immediate channel count — it is the only mode that opens new territory, and per
+ * the clustering engine only a base rebuild can discover genuinely new niches. A
+ * pure rate-maximiser would happily starve it during a lean week and leave us blind
+ * long-term. So each mode keeps a floor share regardless of measured rate.
+ *
+ * Reports its recommendation even while disabled, so the decision can be watched on
+ * real data before it is allowed to control anything.
+ */
+export interface ModeBudget {
+  novelty_threads: number;
+  respy_threads: number;
+  novelty_rate: number;   // new channels per thread-hour
+  respy_rate: number;
+  applied: boolean;       // false = advisory only (flag off / insufficient data)
+  reason: string;
+}
+
+async function measureModeRate(source: string, windowHours: number): Promise<{ rate: number; crawls: number }> {
+  const pool = await getPool();
+  // new_channels / crawl_minutes come from stampSeedYield(); only measure crawls it
+  // has already stamped, so a fresh crawl doesn't read as zero-yield.
+  const r = await pool.query<{ chans: string; hours: string; n: string }>(
+    `SELECT COALESCE(SUM(new_channels),0) AS chans,
+            COALESCE(SUM(crawl_minutes)/60.0,0) AS hours,
+            COUNT(*) AS n
+       FROM niche_discovery_seeds
+      WHERE source = $1
+        AND new_channels IS NOT NULL
+        AND crawl_minutes > 0
+        AND completed_at > NOW() - ($2 || ' hours')::interval`,
+    [source, String(windowHours)],
+  );
+  const chans = parseFloat(r.rows[0]?.chans ?? '0');
+  const hours = parseFloat(r.rows[0]?.hours ?? '0');
+  const n = parseInt(r.rows[0]?.n ?? '0');
+  return { rate: hours > 0 ? chans / hours : 0, crawls: n };
+}
+
+export async function computeModeBudget(totalThreads: number): Promise<ModeBudget> {
+  const pool = await getPool();
+  const cfgRes = await pool.query<{ key: string; value: string }>(
+    `SELECT key, value FROM admin_config WHERE key IN
+       ('seed_mode_split_enabled','seed_mode_floor_share','seed_mode_window_hours','seed_mode_default_respy_share')`,
+  );
+  const c: Record<string, string> = {};
+  for (const r of cfgRes.rows) c[r.key] = r.value;
+  const enabled     = c.seed_mode_split_enabled === 'true';       // ships OFF
+  const floor       = Math.min(0.4, Math.max(0.05, parseFloat(c.seed_mode_floor_share || '0.15')));
+  const windowHours = Math.max(6, parseInt(c.seed_mode_window_hours || '72'));
+  const defRespy    = Math.min(0.9, Math.max(0.1, parseFloat(c.seed_mode_default_respy_share || '0.4')));
+
+  const [nov, res] = await Promise.all([
+    measureModeRate('novelty', windowHours),
+    measureModeRate('respy', windowHours),
+  ]);
+
+  // Need real measurements on BOTH arms to rate-balance; until then use the
+  // configured default split rather than inferring a rate from an empty arm
+  // (a mode with no crawls reads 0/hr and would be starved into never recovering).
+  const MIN_CRAWLS = 5;
+  let respyShare: number;
+  let reason: string;
+  if (nov.crawls < MIN_CRAWLS || res.crawls < MIN_CRAWLS) {
+    respyShare = defRespy;
+    reason = `default split (novelty ${nov.crawls} / respy ${res.crawls} crawls < ${MIN_CRAWLS} measured)`;
+  } else {
+    // Proportional-to-rate allocation converges on equal marginal rate: the
+    // higher-yield mode gets more threads until its rate decays to meet the other.
+    const total = nov.rate + res.rate;
+    respyShare = total > 0 ? res.rate / total : defRespy;
+    respyShare = Math.min(1 - floor, Math.max(floor, respyShare));
+    reason = `rate-balanced: novelty ${nov.rate.toFixed(1)}/thr-hr vs respy ${res.rate.toFixed(1)}/thr-hr`;
+  }
+
+  const respyThreads = Math.max(1, Math.round(totalThreads * respyShare));
+  const budget: ModeBudget = {
+    novelty_threads: Math.max(1, totalThreads - respyThreads),
+    respy_threads: respyThreads,
+    novelty_rate: nov.rate,
+    respy_rate: res.rate,
+    applied: enabled,
+    reason,
+  };
+  // Persist so the split is observable (and auditable) even while advisory-only.
+  await pool.query(
+    `INSERT INTO admin_config (key, value) VALUES ('seed_mode_budget', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+    [JSON.stringify({ ...budget, at: new Date().toISOString() })],
+  ).catch(() => {});
+  return budget;
+}
+
 /**
  * Stamp NEW-CHANNEL YIELD onto finished crawls — the Loop A prioritizer's input.
  *
