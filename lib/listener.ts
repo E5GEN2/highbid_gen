@@ -94,7 +94,7 @@ export async function refreshListenerMembers(listenerId: number): Promise<number
         ORDER BY started_at DESC NULLS LAST LIMIT 1
      )
      INSERT INTO listener_channels (listener_id, channel_id)
-     SELECT DISTINCT $1, v.channel_id
+     SELECT DISTINCT $1::int, v.channel_id
        FROM niche_tree_assignments a
        JOIN niche_spy_videos v ON v.id = a.video_id
        JOIN niche_spy_channels c ON c.channel_id = v.channel_id
@@ -173,7 +173,7 @@ export async function runListenerTick(batch = 60): Promise<ListenerTickResult> {
       for (const vid of pull.newVideoIds) {
         await pool.query(
           `INSERT INTO listener_videos (listener_id, channel_id, video_id, yt_video_id)
-           SELECT $1, $2, v.id, regexp_replace(v.url, '^.*/', '')
+           SELECT $1::int, $2::text, v.id, regexp_replace(v.url, '^.*/', '')
              FROM niche_spy_videos v WHERE v.id = $3
            ON CONFLICT (listener_id, yt_video_id) DO NOTHING`,
           [row.listener_id, row.channel_id, vid],
