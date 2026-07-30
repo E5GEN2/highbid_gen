@@ -1720,6 +1720,60 @@ export async function initSchema(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_yield_todo ON niche_discovery_seeds(completed_at) WHERE new_channels IS NULL`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_nds_cluster_yield ON niche_discovery_seeds(origin_cluster_id, completed_at) WHERE new_channels IS NOT NULL`).catch(() => {});
 
+    // ── LISTENER ────────────────────────────────────────────────────────────
+    // Watch NEW UPLOADS from every channel inside a semantically-chosen niche
+    // bucket (e.g. "faceless youtube"). This is NOT channel discovery — the
+    // channels are already known; we're monitoring what the niche PRODUCES, so
+    // it complements the Growth Watcher (which tracks small-channel growth) and
+    // the spy loops (which find new channels).
+    // The bucket is picked by embedding the query and kNN-ing it against
+    // niche_tree_cluster_vectors, so a listener is defined by MEANING, not by a
+    // keyword or a hand-picked cluster list.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS listeners (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        query TEXT NOT NULL,
+        cluster_ids INTEGER[] NOT NULL DEFAULT '{}',
+        min_similarity REAL NOT NULL DEFAULT 0.35,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        poll_interval_hours REAL NOT NULL DEFAULT 24,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        last_polled_at TIMESTAMPTZ,
+        channels_enrolled INTEGER DEFAULT 0,
+        videos_found INTEGER DEFAULT 0
+      )
+    `);
+    // Membership is materialised (not recomputed per poll) so a re-cluster can
+    // refresh it deliberately rather than silently changing who we listen to.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS listener_channels (
+        listener_id INTEGER NOT NULL REFERENCES listeners(id) ON DELETE CASCADE,
+        channel_id TEXT NOT NULL,
+        added_at TIMESTAMPTZ DEFAULT NOW(),
+        last_checked_at TIMESTAMPTZ,
+        last_video_count INTEGER,
+        new_videos_seen INTEGER DEFAULT 0,
+        PRIMARY KEY (listener_id, channel_id)
+      )
+    `);
+    // Poll queue: oldest-checked first within a listener.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lc_due ON listener_channels(listener_id, last_checked_at NULLS FIRST)`).catch(() => {});
+    // Every upload the listener catches — the feed, and the KPI substrate
+    // (avg newly-discovered videos per channel).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS listener_videos (
+        id SERIAL PRIMARY KEY,
+        listener_id INTEGER NOT NULL REFERENCES listeners(id) ON DELETE CASCADE,
+        channel_id TEXT NOT NULL,
+        video_id INTEGER,
+        yt_video_id TEXT,
+        detected_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_lv_unique ON listener_videos(listener_id, yt_video_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_lv_detected ON listener_videos(listener_id, detected_at DESC)`).catch(() => {});
+
     // Content Gen "used" channels — a channel marked as already consumed into a
     // produced video. discoverChannels() excludes these so the used group
     // disappears and a fresh group takes its place (keeps the seed pipeline
