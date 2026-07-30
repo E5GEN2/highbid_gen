@@ -114,11 +114,96 @@ export async function refreshListenerMembers(listenerId: number): Promise<number
   return n;
 }
 
+
+/**
+ * Assign listener-discovered videos to clusters BY COMPUTING the assignment from
+ * each video's own embedding — never by inheriting its channel's cluster. A channel
+ * spanning three niches must be able to produce three differently-clustered videos;
+ * blind channel-level inheritance would destroy exactly the per-video resolution the
+ * clustering handoff (§4) asks us to preserve.
+ *
+ * Why this lives here: the clustering engine's incremental-assign loop is written but
+ * NOT deployed (handoff §1.5), so without this, uploads the listener pulls would sit
+ * in niche_spy_videos unclustered forever. Embedding itself is already handled — the
+ * embed backfill picks up any unembedded video freshest-first.
+ *
+ * Method: nearest L1 cluster of the CURRENT tree run by cosine distance against
+ * niche_tree_cluster_vectors. Cheap enough to run continuously (a few thousand
+ * candidate clusters, small batches) and it writes distance_to_centroid so a weak
+ * assignment is visible rather than silently trusted.
+ */
+async function assignListenerVideosToClusters(batch = 40): Promise<{ assigned: number; pending: number }> {
+  const pool = await getPool();
+  const { vectorPool } = await import('./vector-db');
+
+  const runRes = await pool.query<{ id: number }>(
+    `SELECT id FROM niche_tree_runs WHERE kind='global' AND status='done'
+      ORDER BY started_at DESC NULLS LAST LIMIT 1`,
+  );
+  const runId = runRes.rows[0]?.id;
+  if (!runId) return { assigned: 0, pending: 0 };
+
+  // Candidate clusters + their index, once per tick (not per video).
+  const cl = await pool.query<{ id: number; cluster_index: number }>(
+    `SELECT id, cluster_index FROM niche_tree_clusters WHERE run_id = $1 AND level = 1`,
+    [runId],
+  );
+  if (cl.rows.length === 0) return { assigned: 0, pending: 0 };
+  const clusterIds = cl.rows.map(r => r.id);
+  const idxById = new Map(cl.rows.map(r => [r.id, r.cluster_index]));
+
+  // Listener videos that are embedded but not yet placed in the current run.
+  const todo = await pool.query<{ id: number }>(
+    `SELECT DISTINCT v.id
+       FROM listener_videos lv
+       JOIN niche_spy_videos v ON v.id = lv.video_id
+      WHERE v.combined_embedded_v2_at IS NOT NULL
+        AND NOT EXISTS (
+              SELECT 1 FROM niche_tree_assignments a
+               WHERE a.video_id = v.id AND a.run_id = $1)
+      ORDER BY v.id DESC
+      LIMIT $2`,
+    [runId, batch],
+  );
+  if (todo.rows.length === 0) return { assigned: 0, pending: 0 };
+
+  let assigned = 0;
+  for (const row of todo.rows) {
+    const near = await vectorPool.query<{ cluster_id: number; dist: number }>(
+      `SELECT c.cluster_id, (c.embedding <=> v.embedding) AS dist
+         FROM niche_tree_cluster_vectors c
+         CROSS JOIN (SELECT embedding FROM niche_video_vectors_combined_v2 WHERE video_id = $1) v
+        WHERE c.level = 1 AND c.cluster_id = ANY($2::int[])
+        ORDER BY dist ASC LIMIT 1`,
+      [row.id, clusterIds],
+    ).catch(() => null);
+    const hit = near?.rows[0];
+    if (!hit) continue;
+    await pool.query(
+      `INSERT INTO niche_tree_assignments (run_id, video_id, cluster_id, cluster_index, distance_to_centroid)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [runId, row.id, hit.cluster_id, idxById.get(hit.cluster_id) ?? 0, hit.dist],
+    ).catch(() => {});
+    assigned++;
+  }
+
+  const pend = await pool.query<{ n: string }>(
+    `SELECT COUNT(*) n FROM listener_videos lv
+       JOIN niche_spy_videos v ON v.id = lv.video_id
+      WHERE v.combined_embedded_v2_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM niche_tree_assignments a WHERE a.video_id = v.id AND a.run_id = $1)`,
+    [runId],
+  );
+  return { assigned, pending: parseInt(pend.rows[0]?.n ?? '0') };
+}
+
 export interface ListenerTickResult {
   polled: number;
   new_videos: number;
   listeners_active: number;
   errors: number;
+  assigned: number;   // videos given a cluster this tick
+  unassigned: number; // embedded-but-unclustered backlog
 }
 
 /**
@@ -132,7 +217,7 @@ export interface ListenerTickResult {
  */
 export async function runListenerTick(batch = 60): Promise<ListenerTickResult> {
   const pool = await getPool();
-  const out: ListenerTickResult = { polled: 0, new_videos: 0, listeners_active: 0, errors: 0 };
+  const out: ListenerTickResult = { polled: 0, new_videos: 0, listeners_active: 0, errors: 0, assigned: 0, unassigned: 0 };
 
   const cfg = await pool.query<{ value: string }>(`SELECT value FROM admin_config WHERE key='listener_enabled'`);
   if (cfg.rows[0]?.value === 'false') return out;   // default ON once a listener exists
@@ -149,6 +234,11 @@ export async function runListenerTick(batch = 60): Promise<ListenerTickResult> {
       LIMIT $1`,
     [batch],
   );
+  // Cluster whatever is embedded-and-unplaced, every tick — including ticks with
+  // nothing due, so the backlog drains continuously rather than only on poll waves.
+  const asg = await assignListenerVideosToClusters().catch(() => ({ assigned: 0, pending: 0 }));
+  out.assigned = asg.assigned; out.unassigned = asg.pending;
+
   if (due.rows.length === 0) return out;
 
   const listeners = new Set<number>();
