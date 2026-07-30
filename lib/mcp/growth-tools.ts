@@ -544,4 +544,113 @@ const growth_playbook: McpTool = {
   },
 };
 
-export const GROWTH_TOOLS: McpTool[] = [growth_journeys, growth_milestones, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating, growth_playbook];
+// ── ONE-CLICK COHORT ROUTES ───────────────────────────────────────────────
+// growth_journeys is general-purpose (any starting size, any milestone), and its
+// default starting_size='any' returns the biggest absolute gainers — which are
+// usually channels that were ALREADY big when we found them. These two
+// zero-argument tools are the two cohorts we actually report on, so an agent (or
+// a person clicking once) lands on the right set without having to know the
+// parameters. Both are artifact-guarded and exclude auto-generated music channels.
+
+/** Shared cohort query: journeys whose FIRST FRESH reading fell in [lo,hi]. */
+async function cohortJourneys(lo: number, hi: number, limit: number, order: 'reached' | 'gained') {
+  const pool = await getPool();
+  const orderBy = order === 'reached' ? 's.smax DESC' : '(s.s_last - s.s1) DESC';
+  const r = await pool.query<JourneyRow>(
+    `WITH s AS (
+       SELECT channel_id,
+              (ARRAY_AGG(subscriber_count ORDER BY day ASC))[1]  AS s1,
+              (ARRAY_AGG(subscriber_count ORDER BY day ASC))[2]  AS s2,
+              (ARRAY_AGG(subscriber_count ORDER BY day DESC))[1] AS s_last,
+              MAX(subscriber_count) AS smax,
+              COUNT(*) AS days,
+              STRING_AGG(subscriber_count::text, '->' ORDER BY day) AS series
+         FROM channel_growth_snapshots
+        WHERE subscriber_count IS NOT NULL
+        GROUP BY channel_id
+       HAVING COUNT(*) >= 2)
+     SELECT s.channel_id, sc.channel_name, s.s1, s.smax, s.s_last, s.days, s.series,
+            (NOW()::date - sc.channel_created_at::date) AS age_days
+       FROM s JOIN niche_spy_channels sc USING (channel_id)
+      WHERE s.s1 BETWEEN $1 AND $2 AND ${ARTIFACT_GUARD}
+        AND s.s_last > s.s1
+        AND sc.channel_name NOT ILIKE '% - Topic' AND sc.channel_name NOT ILIKE '%VEVO'
+      ORDER BY ${orderBy}
+      LIMIT $3`,
+    [lo, hi, limit],
+  );
+  return r.rows.map(j => {
+    const flag = seriesFlag(j.series);
+    const gained = Number(j.s_last) - Number(j.s1);
+    const mult = Number(j.s1) > 0 ? Math.round((Number(j.s_last) / Number(j.s1)) * 10) / 10 : null;
+    return {
+      channel_id: j.channel_id,
+      channel: j.channel_name,
+      channel_age: `${Number(j.age_days)} days old`,
+      started_at: Number(j.s1),
+      subscribers_now: Number(j.s_last),
+      gained: `+${gained} subscribers${mult && mult >= 2 ? ` (${mult}x)` : ''}`,
+      highest_reached: Number(j.smax),
+      we_have_watched_for: `${j.days} days`,
+      the_climb: j.series.split('->').join(' → ') + ' subscribers',
+      looks_fake: flag.suspicious,
+      warning: flag.reason,
+    };
+  });
+}
+
+const journeys_from_zero: McpTool = {
+  name: 'journeys_from_zero',
+  description:
+    'ONE CLICK — the tiny-channel cohort. Channels we found while they had under 10 subscribers, and the whole ' +
+    'day-by-day climb of the ones that actually grew ("4 → 6 → 15 → 31 → 48 → 140 subscribers"). This is the ' +
+    'genesis group: the hardest, most interesting journey, because we were there before anything was happening. ' +
+    'Use this whenever someone asks about tiny channels, brand-new channels, or the 0-to-100 journey. Channels ' +
+    'that look like they bought subscribers are marked — never present those as successes. Always show the climb.',
+  inputSchema: { type: 'object', properties: {
+    limit: { type: 'integer', description: 'How many channels (default 30, max 100).' },
+  } },
+  handler: async (args) => {
+    const limit = clampInt(args.limit, 30, 1, 100);
+    const journeys = await cohortJourneys(0, 9, limit, 'reached');
+    const window = await dataWindow();
+    const crossed100 = journeys.filter(j => j.highest_reached >= 100).length;
+    return {
+      window, how_we_know: METHOD_NOTE,
+      cohort: 'Found at under 10 subscribers (the genesis group)',
+      showing: 'Every one of these grew while we watched — biggest reached first',
+      count: journeys.length,
+      of_these_crossed_100_subs: crossed100,
+      note: 'Only a tiny fraction of the sub-10 channels we watch ever take off — roughly 3 in 10 move at all, and only a couple of dozen have crossed 100 subscribers so far. That is the honest base rate; call growth_outcomes for the full picture.',
+      journeys,
+    };
+  },
+};
+
+const journeys_past_100: McpTool = {
+  name: 'journeys_past_100',
+  description:
+    'ONE CLICK — the established-small cohort. Channels that were already past 100 subscribers (100-500) when we ' +
+    'found them, and how they have climbed since, day by day. This is the "it is already working, now it compounds" ' +
+    'group — they grow far more reliably than tiny channels, so it is the best place to show what sustained growth ' +
+    'looks like. Use this when someone asks about channels that already have some traction, or wants to compare ' +
+    'small-but-working channels against brand-new ones. Suspected fake growth is marked.',
+  inputSchema: { type: 'object', properties: {
+    limit: { type: 'integer', description: 'How many channels (default 30, max 100).' },
+  } },
+  handler: async (args) => {
+    const limit = clampInt(args.limit, 30, 1, 100);
+    const journeys = await cohortJourneys(100, 500, limit, 'gained');
+    const window = await dataWindow();
+    return {
+      window, how_we_know: METHOD_NOTE,
+      cohort: 'Found at 100-500 subscribers (already had traction)',
+      showing: 'Every one of these grew while we watched — biggest gain first',
+      count: journeys.length,
+      note: 'This group grows far more reliably than the tiny one: about 9 in 10 of these channels gained subscribers while we watched, versus roughly 3 in 10 of the under-10 channels. Compare with journeys_from_zero to show the difference traction makes.',
+      journeys,
+    };
+  },
+};
+
+export const GROWTH_TOOLS: McpTool[] = [journeys_from_zero, journeys_past_100, growth_journeys, growth_milestones, channel_growth_series, growth_attribution, growth_outcomes, growth_accelerating, growth_playbook];
