@@ -86,7 +86,7 @@ export async function findRespyCandidates(limit = 20): Promise<RespyCandidate[]>
      -- previously-crawled SEED VIDEO to whatever cluster it belongs to today.
      hist AS (
        SELECT a.cluster_id,
-              AVG(s.new_channels)::float  AS expected_yield,
+              SUM(s.new_channels)::float  AS sum_new_channels,
               MAX(s.completed_at)         AS last_crawl,
               COUNT(*)                    AS prior_crawls
          FROM niche_discovery_seeds s
@@ -97,10 +97,23 @@ export async function findRespyCandidates(limit = 20): Promise<RespyCandidate[]>
           AND s.completed_at IS NOT NULL
         GROUP BY a.cluster_id
      ),
+     -- Global mean = the shrinkage prior for thinly-observed clusters.
+     gm AS (
+       SELECT COALESCE(AVG(new_channels)::float, 20) AS prior_mean
+         FROM niche_discovery_seeds WHERE new_channels IS NOT NULL
+     ),
      scored AS (
-       SELECT h.cluster_id, h.expected_yield, h.prior_crawls,
+       -- EMPIRICAL-BAYES SHRINKAGE. Most clusters have only 1 prior crawl, and the
+       -- top of a raw ranking of noisy single observations is mostly luck, not merit
+       -- (winner's curse) — a scorer built on it would chase outliers forever and
+       -- never converge. Shrink each cluster's mean toward the global mean with
+       -- weight K = within_var / between_var, measured at (12.7^2)/(10.4^2) ~= 1.5.
+       -- One lucky 131-channel crawl is thereby pulled to ~64 until repeated, while a
+       -- cluster with many consistent crawls keeps its own estimate.
+       SELECT h.cluster_id, h.prior_crawls,
+              (h.sum_new_channels + 1.5 * gm.prior_mean) / (h.prior_crawls + 1.5) AS expected_yield,
               EXTRACT(EPOCH FROM (NOW() - h.last_crawl))/3600.0 AS hours_since
-         FROM hist h
+         FROM hist h CROSS JOIN gm
      ),
      -- One un-seeded, view-worthy video per cluster to act as the seed.
      pick AS (

@@ -319,7 +319,7 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
     // would choose so the decision can be validated against real yield data before it
     // gates any dispatch. Wiring it in is deliberately deferred until source='respy'
     // exists; with only one mode running there is nothing to balance.
-    await computeModeBudget(cfg.maxThreads).catch(() => null);
+    const modeBudget = await computeModeBudget(cfg.maxThreads).catch(() => null);
 
     // ── PRIORITY: Content-Gen seeds (exclusive) ─────────────────────────
     // Channels shown in the Content Gen draft cards get researched first.
@@ -402,7 +402,23 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
 
     // ── 4. Dispatch within budget ───────────────────────────────────────
     const snapshot = await buildFleetSnapshot(cfg.token, NICHE_SPY_JOB_ID);
-    let threadsLeft = freeThreads;
+
+    // RE-SPY takes its slice of the fleet first, then novelty gets the remainder.
+    // Gated on the mode-split flag, so with it off this is a no-op and behaviour is
+    // byte-identical to before. Re-spy is capped at its budgeted share of the FREE
+    // threads (not the total), so it can never crowd novelty out of a tight fleet.
+    let respySeeds = 0, respyThreads = 0;
+    if (modeBudget?.applied) {
+      const respyBudget = Math.min(
+        freeThreads,
+        Math.round(freeThreads * (modeBudget.respy_threads / Math.max(1, cfg.maxThreads))),
+      );
+      const r = await dispatchRespySeeds(respyBudget, cfg, lockedClusters, snapshot)
+        .catch((e) => { console.error('[respy] dispatch failed:', (e as Error).message); return { seeds: 0, threads: 0 }; });
+      respySeeds = r.seeds; respyThreads = r.threads;
+    }
+
+    let threadsLeft = freeThreads - respyThreads;
     let seedsLeft = cfg.maxSeedsPerTick;
     let nichesDispatched = 0, seedsDispatched = 0, threadsDispatched = 0;
 
@@ -501,6 +517,80 @@ export interface ReaperResult {
  * the crawled region, then release the region lock. This is what makes
  * decay actually happen and what frees a cluster for future seeding.
  */
+/**
+ * Dispatch RE-SPY crawls — revisit KNOWN niches to track their development.
+ *
+ * Mirrors the novelty dispatch path but draws from findRespyCandidates() (scored by
+ * expected_yield x recency + staleness, all soft) and tags rows `source='respy'` so
+ * the mode controller can measure each mode's new-channels/thread-hour separately.
+ *
+ * Skips clusters that are currently crawling — the dispatcher's existing region lock;
+ * two live crawls in one neighbourhood would collide and double-count.
+ */
+async function dispatchRespySeeds(
+  budgetThreads: number,
+  cfg: SchedulerConfig,
+  lockedClusters: Set<number>,
+  snapshot: Awaited<ReturnType<typeof buildFleetSnapshot>>,
+): Promise<{ seeds: number; threads: number }> {
+  if (budgetThreads < cfg.threadsPerSeed) return { seeds: 0, threads: 0 };
+  const pool = await getPool();
+  const { findRespyCandidates } = await import('./respy-candidates');
+  // Over-fetch: some candidates will be region-locked or already seeded.
+  const cands = await findRespyCandidates(Math.max(10, budgetThreads * 3)).catch((e) => {
+    console.error('[respy] candidate pull failed:', (e as Error).message);
+    return [];
+  });
+
+  let threadsLeft = budgetThreads;
+  let seeds = 0, threads = 0;
+  for (const c of cands) {
+    if (threadsLeft < cfg.threadsPerSeed) break;
+    if (lockedClusters.has(c.cluster_id)) continue;
+
+    const label = deriveLabel({ title: c.title, seedUrl: c.url });
+    const nicheId = await createNiche({ label, seedUrl: c.url, createdFrom: 'auto_seed' });
+    await pool.query(
+      `UPDATE agent_niches SET origin_cluster_id = $1, status = 'crawling', last_seeded_at = NOW() WHERE niche_id = $2`,
+      [c.cluster_id, nicheId],
+    ).catch(() => {});
+
+    const taskInput = JSON.stringify({
+      seedUrl: c.url,
+      apiKey: cfg.apiKey,
+      loopNumber: cfg.loopNumber,
+      maxSuggestedResultsBeforeFallback: cfg.maxSuggested,
+      rofeAPIKey: cfg.rofeAPIKey,
+      nicheId,
+    });
+    const dep = await deployBatch(
+      cfg.token, NICHE_SPY_JOB_ID,
+      { keyword: nicheId, threads: cfg.threadsPerSeed, taskInput },
+      snapshot,
+    );
+    const deployed = dep.pinned + dep.unpinned;
+    if (deployed > 0) {
+      await pool.query(
+        `INSERT INTO niche_discovery_seeds
+           (seed_video_id, seed_url, niche_id, origin_cluster_id, status, source, select_score)
+         VALUES ($1, $2, $3, $4, 'crawling', 'respy', $5)
+         ON CONFLICT (seed_video_id) DO UPDATE
+           SET status='crawling', niche_id=EXCLUDED.niche_id, dispatched_at=NOW(),
+               origin_cluster_id=EXCLUDED.origin_cluster_id, source='respy',
+               select_score=EXCLUDED.select_score`,
+        [c.video_id, c.url, nicheId, c.cluster_id, c.score],
+      ).catch(() => {});
+      await addSeedUrlToNiche(nicheId, c.url).catch(() => {});
+      lockedClusters.add(c.cluster_id);   // don't pick this neighbourhood twice in one wave
+      seeds++; threads += deployed; threadsLeft -= deployed;
+    } else {
+      await pool.query(`UPDATE agent_niches SET status='active' WHERE niche_id=$1`, [nicheId]).catch(() => {});
+    }
+  }
+  if (seeds > 0) console.log(`[respy] dispatched ${seeds} seeds / ${threads} threads (budget ${budgetThreads})`);
+  return { seeds, threads };
+}
+
 /**
  * MODE BUDGET CONTROLLER — split the xgodo fleet between the two discovery modes.
  *
