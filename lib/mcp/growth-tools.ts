@@ -588,7 +588,7 @@ async function cohortJourneys(lo: number, hi: number, limit: number, order: 'rea
       channel_id: j.channel_id,
       channel: j.channel_name,
       channel_age: `${Number(j.age_days)} days old`,
-      caught_at: Number(j.s1),          // where we FOUND it (defines its group)
+      subs_when_discovered: Number(j.s1),   // size when we DISCOVERED it (defines its group)
       subscribers_now: Number(j.s_last),
       gained: `+${gained} subscribers${mult && mult >= 2 ? ` (${mult}x)` : ''}`,
       highest_reached: Number(j.smax),
@@ -639,33 +639,33 @@ interface BandSpec {
   order: 'reached' | 'gained'; blurb: string; guidance: string;
 }
 
-/** The four STARTING-SIZE groups. The band is where we CAUGHT the channel — the
- *  journey is wherever it went from there (a channel caught at 4 subs that is now
+/** The four STARTING-SIZE groups. The band is where we DISCOVERED the channel — the
+ *  journey is wherever it went from there (a channel discovered at 4 subs that is now
  *  at 572 belongs to the 0-10 group but its journey is 4 → 572). Never describe a
  *  band as "the journey"; it is the starting point that defines the group. */
 const COHORT_BANDS: BandSpec[] = [
   {
-    tool: 'caught_at_0_to_10', lo: 0, hi: 9, label: 'GROUP: channels we caught at under 10 subscribers',
+    tool: 'discovered_at_0_to_10', lo: 0, hi: 9, label: 'GROUP: channels we discovered at under 10 subscribers',
     order: 'reached',
-    blurb: 'ONE CLICK — the group of channels we caught while they still had under 10 subscribers, and where each one has travelled since, day by day ("4 → 6 → 15 → 31 → 48 → 140 subscribers"). The 0-10 is where we FOUND them, not how far they got — some are now in the hundreds. This is the hardest group to grow and the most interesting, because we were watching before anything was happening.',
+    blurb: 'ONE CLICK — the group of channels we discovered while they still had under 10 subscribers, and where each one has travelled since, day by day ("4 → 6 → 15 → 31 → 48 → 140 subscribers"). The 0-10 is where we FOUND them, not how far they got — some are now in the hundreds. This is the hardest group to grow and the most interesting, because we were watching before anything was happening.',
     guidance: 'Use for any question about tiny, brand-new, or from-scratch channels, and for the climb out of single digits.',
   },
   {
-    tool: 'caught_at_10_to_100', lo: 10, hi: 99, label: 'GROUP: channels we caught at 10-100 subscribers',
+    tool: 'discovered_at_10_to_100', lo: 10, hi: 99, label: 'GROUP: channels we discovered at 10-100 subscribers',
     order: 'reached',
-    blurb: 'ONE CLICK — the group of channels that had between 10 and 100 subscribers when we caught them, and where they have travelled since. 10-100 is the starting point, not the destination. This is the biggest group we watch and where first real momentum usually appears.',
+    blurb: 'ONE CLICK — the group of channels that had between 10 and 100 subscribers when we discovered them, and where they have travelled since. 10-100 is the starting point, not the destination. This is the biggest group we watch and where first real momentum usually appears.',
     guidance: 'Use for questions about channels that had just started picking up their first subscribers.',
   },
   {
-    tool: 'caught_at_100_to_200', lo: 100, hi: 199, label: 'GROUP: channels we caught at 100-200 subscribers',
+    tool: 'discovered_at_100_to_200', lo: 100, hi: 199, label: 'GROUP: channels we discovered at 100-200 subscribers',
     order: 'gained',
-    blurb: 'ONE CLICK — the group of channels sitting between 100 and 200 subscribers when we caught them, and their climb since. They had already cleared the hardest hurdle, so most of these compound.',
+    blurb: 'ONE CLICK — the group of channels sitting between 100 and 200 subscribers when we discovered them, and their climb since. They had already cleared the hardest hurdle, so most of these compound.',
     guidance: 'Use to show what happens after a channel breaks 100 — the stretch where growth becomes reliable.',
   },
   {
-    tool: 'caught_at_200_to_500', lo: 200, hi: 500, label: 'GROUP: channels we caught at 200-500 subscribers',
+    tool: 'discovered_at_200_to_500', lo: 200, hi: 500, label: 'GROUP: channels we discovered at 200-500 subscribers',
     order: 'gained',
-    blurb: 'ONE CLICK — the group of channels at 200-500 subscribers when we caught them, and how far they have climbed. The "already working, now it compounds" group — the most reliable growers we track.',
+    blurb: 'ONE CLICK — the group of channels at 200-500 subscribers when we discovered them, and how far they have climbed. The "already working, now it compounds" group — the most reliable growers we track.',
     guidance: 'Use to show sustained growth, and to contrast against the tiny group — starting traction makes an enormous difference.',
   },
 ];
@@ -690,11 +690,11 @@ function makeCohortTool(spec: BandSpec): McpTool {
       return {
         window, how_we_know: METHOD_NOTE,
         group: spec.label,
-        grouped_by: `Where the channel was when we CAUGHT it: ${spec.lo}-${spec.hi} subscribers. This is the starting point that defines the group — NOT the journey. Each channel below has travelled from that starting point to wherever it is now, and some are far past this range.`,
+        grouped_by: `Where the channel was when we DISCOVERED it: ${spec.lo}-${spec.hi} subscribers. This is the starting point that defines the group — NOT the journey. Each channel below has travelled from that starting point to wherever it is now, and some are far past this range.`,
         group_reality: stats,
         showing: `The ones that grew — ${spec.order === 'reached' ? 'highest reached' : 'biggest gain'} first`,
         count: journeys.length,
-        note: `Of the ${stats.channels_we_watch_in_this_size} channels we caught in this size range, ${stats.how_many_grew_at_all} (${stats.pct_that_grew}%) gained subscribers while we watched. Compare groups to see how much starting traction matters — the smaller the channel when caught, the longer the odds.`,
+        note: `Of the ${stats.channels_we_watch_in_this_size} channels we discovered in this size range, ${stats.how_many_grew_at_all} (${stats.pct_that_grew}%) gained subscribers while we watched. Compare groups to see how much starting traction matters — the smaller the channel when discovered, the longer the odds.`,
         journeys,
       };
     },
