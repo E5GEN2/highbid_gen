@@ -147,7 +147,14 @@ export async function GET(req: NextRequest) {
          (SELECT COUNT(*) FROM niche_spy_channels WHERE subscriber_count IS NULL) AS subs_backlog,
          (SELECT status FROM niche_yt_enrich_jobs ORDER BY id DESC LIMIT 1) AS enrich_status,
          (SELECT COUNT(*) FROM channel_cg_status) AS tracked,
-         (SELECT COUNT(*) FROM channel_cg_status WHERE cg_evaluated_at IS NOT NULL) AS evaluated`,
+         (SELECT COUNT(*) FROM channel_cg_status WHERE cg_evaluated_at IS NOT NULL) AS evaluated,
+         -- STAMPING LAG. discovered_at is backdated to a channel's first video
+         -- sighting, so if channel rows are created late every recent bucket reads
+         -- near-zero and a measurement LAG is indistinguishable from a discovery
+         -- COLLAPSE (it read ~13.5h stale on 2026-07-31 and looked like an outage).
+         -- Surface it so an incomplete KPI announces itself instead of lying low.
+         (SELECT ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(discovered_at)))/60)
+            FROM channel_cg_status) AS stamping_lag_min`,
     ),
   ]);
 
@@ -213,6 +220,10 @@ export async function GET(req: NextRequest) {
       enrich_status: hl.enrich_status,
       tracked: parseInt(hl.tracked),
       evaluated: parseInt(hl.evaluated),
+      // >~30min means the headline KPIs are knowingly INCOMPLETE for recent windows,
+      // not that discovery stopped. Read the KPI as a lower bound while this is high.
+      stamping_lag_min: hl.stamping_lag_min == null ? null : parseInt(hl.stamping_lag_min),
+      stamping_stale: hl.stamping_lag_min != null && parseInt(hl.stamping_lag_min) > 30,
     },
   });
 }

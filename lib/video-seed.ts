@@ -486,6 +486,24 @@ async function resolveBatch(
         ],
       );
       byYtId.set(ytId, { id: ins.rows[0].id, title, thumbnail: thumb, has_v2: false, wasNew: true });
+
+      // Create the CHANNEL row here too, not later. channelId/channelName come from
+      // the same YT metadata fetch we just did, so the row costs nothing extra — yet
+      // without it a newly-discovered channel exists only as a video.channel_id until
+      // the enricher gets to it. The cg-sweep only stamps channels present in
+      // niche_spy_channels, and `discovered_at` is backdated to the first video
+      // sighting, so that wait made the new-channel KPI report ~13.5h stale with
+      // 2,859 orphan channels queued (2026-07-31) — a measurement lag that reads as a
+      // discovery collapse. DO NOTHING so this can never clobber enriched data; the
+      // enricher still fills subs/stats/uploads exactly as before, it is simply no
+      // longer on the critical path for the channel's EXISTENCE.
+      if (channelId) {
+        await pool.query(
+          `INSERT INTO niche_spy_channels (channel_id, channel_name)
+           VALUES ($1, $2) ON CONFLICT (channel_id) DO NOTHING`,
+          [channelId, channelName],
+        ).catch(() => { /* non-fatal: enricher will create it on its next pass */ });
+      }
     }
   }
 
