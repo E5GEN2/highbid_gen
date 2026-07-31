@@ -22,7 +22,7 @@ interface YtChannelItem {
     title?: string; customUrl?: string; publishedAt?: string;
     thumbnails?: { default?: { url?: string }; medium?: { url?: string } };
   };
-  statistics?: { subscriberCount?: string; videoCount?: string };
+  statistics?: { subscriberCount?: string; videoCount?: string; viewCount?: string };
   contentDetails?: { relatedPlaylists?: { uploads?: string } };
 }
 
@@ -109,6 +109,12 @@ export async function reMeasureChannels(
       for (const ch of items) {
         const subCount = parseInt(ch.statistics?.subscriberCount || '0') || 0;
         const videoCount = parseInt(ch.statistics?.videoCount || '0') || 0;
+        // Lifetime channel views. The SAME channels.list?part=statistics response
+        // already carries this, so recording it costs nothing extra — but until
+        // 2026-07-31 we parsed only subs/videoCount and threw viewCount away,
+        // leaving channel_growth_snapshots.total_views ~96% empty. Views over
+        // time is a core growth signal (views lead subs), so capture it.
+        const viewCount = parseInt(ch.statistics?.viewCount || '0') || 0;
         const channelCreatedAt = ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null;
         const avatar = ch.snippet?.thumbnails?.default?.url || ch.snippet?.thumbnails?.medium?.url || '';
         const channelName = ch.snippet?.title || null;
@@ -119,8 +125,9 @@ export async function reMeasureChannels(
         await pool.query(
           `INSERT INTO niche_spy_channels
              (channel_id, channel_name, channel_handle, channel_avatar,
-              subscriber_count, channel_created_at, video_count, uploads_playlist_id, last_channel_fetched_at)
-           VALUES ($1, $2, $3, $4, $5::bigint, $6, $7::bigint, $8, NOW())
+              subscriber_count, channel_created_at, video_count, uploads_playlist_id,
+              total_views, stats_refreshed_at, last_channel_fetched_at)
+           VALUES ($1, $2, $3, $4, $5::bigint, $6, $7::bigint, $8, $9::bigint, NOW(), NOW())
            ON CONFLICT (channel_id) DO UPDATE SET
              channel_name   = COALESCE(NULLIF(EXCLUDED.channel_name, ''),   niche_spy_channels.channel_name),
              channel_handle = COALESCE(NULLIF(EXCLUDED.channel_handle, ''), niche_spy_channels.channel_handle),
@@ -129,8 +136,14 @@ export async function reMeasureChannels(
              channel_created_at = COALESCE(EXCLUDED.channel_created_at, niche_spy_channels.channel_created_at),
              video_count = CASE WHEN EXCLUDED.video_count > 0 THEN EXCLUDED.video_count ELSE niche_spy_channels.video_count END,
              uploads_playlist_id = COALESCE(EXCLUDED.uploads_playlist_id, niche_spy_channels.uploads_playlist_id),
+             -- ::bigint throughout: lifetime views run to billions and a bare
+             -- param compared to an int literal infers int4 and overflows
+             -- (the 2026-07-14 enricher crash-loop). Only overwrite with a real
+             -- reading so a transient 0 can't wipe a good value.
+             total_views = CASE WHEN EXCLUDED.total_views > 0 THEN EXCLUDED.total_views ELSE niche_spy_channels.total_views END,
+             stats_refreshed_at = CASE WHEN EXCLUDED.total_views > 0 THEN NOW() ELSE niche_spy_channels.stats_refreshed_at END,
              last_channel_fetched_at = NOW()`,
-          [ch.id, channelName, handle, avatar, subCount, channelCreatedAt, videoCount, uploadsId],
+          [ch.id, channelName, handle, avatar, subCount, channelCreatedAt, videoCount, uploadsId, viewCount],
         ).then(() => { result.statsUpdated++; }).catch(() => { result.errors++; });
       }
     }
