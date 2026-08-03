@@ -27,7 +27,12 @@ import { reMeasureChannels } from '@/lib/channel-remeasure';
 const GROWTH_LOCK = 728412003;         // distinct from cg-sweep (…001) + niche-watcher (…002)
 const ENROLL_BATCH = 2000;             // new small channels enrolled per tick
 const SCAN_BATCH = 300;                // liveness/dormant channels scanned per tick (stats-only, 50/call)
-const DEEP_BATCH = 120;                // deep (2u) channels per tick. Capacity must EXCEED the due-rate or the queue tail starves: ~39K deep pool / 20h cadence ≈ 33 due/min, and 64/tick at ~70s ticks was only ~55/min — too thin once ticks slow. 120 gives real headroom (parallel pulls keep the tick ~30-40s).
+// Deep (2u) channels per tick. Capacity must EXCEED the due-rate or the queue
+// tail starves. NB the old note here claimed parallel pulls kept the tick to
+// ~30-40s — measurement disproved that (6-16 min actual), which is why
+// DEEP_CONCURRENCY is now the lever; revisit this number only after confirming
+// tick duration, not by assumption.
+const DEEP_BATCH = 120;
 const LIVE_CADENCE_H = 20;             // ~daily re-scan for every active stage (<24h so a daily snapshot always lands)
 const DORMANT_CADENCE_H = 168;         // dormant channels re-checked weekly
 // Discovery net ceiling. Set to the TOP of the highest reporting group
@@ -38,7 +43,17 @@ const DORMANT_CADENCE_H = 168;         // dormant channels re-checked weekly
 // Config-overridable (growth_enroll_max_subs) so it never needs a redeploy.
 const DEFAULT_MAX_SUBS_ENROLL = 500;
 const VIDEOS_PER_CHANNEL_SNAP = 30;    // newest N videos snapshotted per deep channel
-const DEEP_CONCURRENCY = 10;           // parallel recent-uploads pulls in the deep wave (2u each, per-channel) — keeps the tick fast even with the larger deep batch; well within the 11K-key pool
+// Parallel recent-uploads pulls in the deep wave. This is the THROUGHPUT LEVER:
+// measured 2026-08-03, ticks were running 6-16 MINUTES (not the ~60s the interval
+// assumes), because 120 deep channels × 2 YouTube calls with only 10 in flight is
+// ~12 sequential rounds of network wait. That capped the watcher at ~4,080
+// scans/hour ≈ 98K/day against ~151K/day of demand, so the due-backlog grew
+// (2.4K → 11.6K) and channels were drifting past their daily cadence.
+// This work is NETWORK-bound, not CPU-bound, so raising it costs essentially no
+// CPU on an already-loaded box — it just holds more sockets open. Headroom is
+// ample: 14,201 active YT keys (~142M units/day, we use ~0.2%) and 62+ proxies
+// against 25 concurrent. Env-tunable so it can be retuned without a redeploy.
+const DEEP_CONCURRENCY = Math.max(1, parseInt(process.env.HB_GROWTH_DEEP_CONCURRENCY || '25', 10));
 
 /** Tunables (admin_config key → default). All read each tick. */
 interface GrowthCfg {
