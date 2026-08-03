@@ -26,7 +26,16 @@ import { reMeasureChannels } from '@/lib/channel-remeasure';
  */
 const GROWTH_LOCK = 728412003;         // distinct from cg-sweep (…001) + niche-watcher (…002)
 const ENROLL_BATCH = 2000;             // new small channels enrolled per tick
-const SCAN_BATCH = 300;                // liveness/dormant channels scanned per tick (stats-only, 50/call)
+// Channels given the cheap stats-only scan per tick. This is the cheapest
+// throughput available: channels.list batches 50 per API call, so 900 channels is
+// only 18 calls. Measured (2026-08-03): a deep=0 tick did 300 cheap scans in
+// ~17s, so 900 costs ~50s on a ~270s tick (+13% time) while lifting output from
+// 420 to 1,020 snapshots/tick (+143%) — roughly 2.1x net throughput.
+// Needed because demand (~151K scans/day for 126K channels on a ~20h cadence)
+// was outrunning capacity and the due-backlog was climbing (11.6K -> 19.8K),
+// which would stretch cadence past a day and GAP the daily series — the one
+// thing this study cannot afford. Env-tunable for retuning without a redeploy.
+const SCAN_BATCH = Math.max(1, parseInt(process.env.HB_GROWTH_SCAN_BATCH || '900', 10));
 // Deep (2u) channels per tick. Capacity must EXCEED the due-rate or the queue
 // tail starves. NB the old note here claimed parallel pulls kept the tick to
 // ~30-40s — measurement disproved that (6-16 min actual), which is why
