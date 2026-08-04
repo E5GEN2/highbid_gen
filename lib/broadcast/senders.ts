@@ -148,6 +148,11 @@ export function renderTelegramHTML(r: BroadcastReport): string {
   L.push(`<b>🌱 Young channels we're tracking</b>`);
   L.push(`   👁 <b>${comma(s.tracked)}</b> channels watched every day`);
   L.push(`   📈 <b>${comma(s.trackedGrowing)}</b> (${pct(s.trackedGrowing, s.tracked)}%) already growing since we found them`);
+  if (s.listenerChannels > 0) {
+    // Listener health, reported daily so it never needs to be asked for.
+    const ok = s.listenerOverdue === 0 ? '✅' : `⚠️ ${s.listenerOverdue} overdue`;
+    L.push(`   🎧 <b>${comma(s.listenerVideos24h)}</b> new uploads heard across <b>${comma(s.listenerChannels)}</b> listened channels ${ok}`);
+  }
   L.push('');
   // Genesis cohort in depth — growing / stalled / dropped, growth rate, videos.
   for (const g of s.tinyGroups) {

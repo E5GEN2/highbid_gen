@@ -56,6 +56,8 @@ export interface BroadcastStats {
   historyAvgDepth: number;   // avg measurements (days) per tracked channel
   historyDeep: number;       // channels with 5+ days of history
   measurementsTotal: string;
+  // Listener — niche upload watching (0 when no listener is enabled)
+  listenerChannels: number; listenerVideos24h: number; listenerOverdue: number;
 }
 
 export interface BroadcastReport {
@@ -187,6 +189,8 @@ async function buildStats(pool: Pool): Promise<BroadcastStats> {
     vidsTotal: fmt(m.vids_total), chansTotal: fmt(m.chans_total), edgesTotal: fmt(m.edges_total),
     tracked: t?.total ?? 0,
     trackedGrowing: t?.growing ?? 0,
+    // Listener defaults; filled in by buildBroadcastReport below (0 when none enabled).
+    listenerChannels: 0, listenerVideos24h: 0, listenerOverdue: 0,
     tinyGroups,
     trk100_1k: t?.s100_1k ?? 0, trk1k_10k: t?.s1k_10k ?? 0, trk10k: t?.s10k ?? 0,
     historyDays: h?.days ?? 0,
@@ -200,5 +204,19 @@ async function buildStats(pool: Pool): Promise<BroadcastStats> {
  *  compatibility but no longer used — insights are event-driven now. */
 export async function buildBroadcastReport(pool: Pool, _rotationIdx?: number): Promise<BroadcastReport> {
   const stats = await buildStats(pool);
+  // Listener status — folded into the daily pulse so its health is reported
+  // without anyone having to ask. Zeros when no listener is enabled.
+  const lsn = await pool.query<{ ch: string; v24: string; overdue: string }>(
+    `SELECT
+       (SELECT COUNT(*) FROM listener_channels lc JOIN listeners l ON l.id=lc.listener_id AND l.enabled)::text AS ch,
+       (SELECT COUNT(*) FROM listener_videos WHERE detected_at > NOW()-INTERVAL '24 hours')::text AS v24,
+       (SELECT COUNT(*) FROM listener_channels lc JOIN listeners l ON l.id=lc.listener_id AND l.enabled
+         WHERE lc.last_checked_at IS NULL
+            OR lc.last_checked_at < NOW()-(l.poll_interval_hours||' hours')::interval)::text AS overdue`
+  ).catch(() => null);
+  stats.listenerChannels  = parseInt(lsn?.rows[0]?.ch   ?? '0');
+  stats.listenerVideos24h = parseInt(lsn?.rows[0]?.v24  ?? '0');
+  stats.listenerOverdue   = parseInt(lsn?.rows[0]?.overdue ?? '0');
+
   return { title: 'rofe.ai mining pulse', stats, insight: null, featuredKey: null, kind: 'pulse' };
 }
