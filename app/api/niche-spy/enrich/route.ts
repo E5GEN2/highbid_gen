@@ -555,7 +555,35 @@ async function runEnrichJob(
     extraChanParams
   );
   const extraIds: string[] = missingUploadsRes.rows.map(r => r.channel_id);
+
+  // NEVER-ENRICHED channels, newest first. THIS IS THE PRIMARY NEW-CHANNEL SIGNAL.
+  //
+  // It used to be the `orphanRes` query below — "on a video but missing from the
+  // channels table" — i.e. new channels were detected by their ABSENCE. Since
+  // resolveBatch started creating the channel row inline at discovery time (to kill a
+  // 13.5h KPI stamping lag), that row always exists, so the orphan query matches
+  // nothing and the detector went permanently blind. The `uploads_playlist_id IS NULL`
+  // query above does not save us: it has no ORDER BY and a LIMIT, so it returns
+  // arbitrary heap order and keeps re-picking the same backlog while new rows starve
+  // at the back.
+  //
+  // Result was 1,591 channels/24h stuck at subscriber_count = NULL, which silently
+  // broke TWO things that both hard-require subs: Growth Watcher enrolment (dry ~40h,
+  // frozen at 126,632) and cg-eligibility (~0-1/day). 2026-08-05.
+  //
+  // Keyed on the DURABLE condition (never enriched) rather than the incidental one
+  // (row absent), so a future change to when rows are created cannot re-break it.
+  const neverEnrichedRes = await pool.query(
+    `SELECT c.channel_id
+       FROM niche_spy_channels c
+      WHERE c.subscriber_count IS NULL
+      ORDER BY c.channel_id DESC
+      LIMIT ${limit}`,
+  );
+  for (const r of neverEnrichedRes.rows) extraIds.push(r.channel_id);
+
   // Also include channel_ids present on videos but missing from the channels table
+  // (kept as a belt-and-braces net for any path that inserts a video without a channel)
   const missingKwJoin = keyword && keyword !== 'all' ? `AND v.keyword = '${keyword.replace(/'/g, "''")}'` : '';
   const orphanRes = await pool.query(
     `SELECT DISTINCT v.channel_id FROM niche_spy_videos v
