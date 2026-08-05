@@ -403,22 +403,43 @@ export async function runSeedSchedulerTick(): Promise<SchedulerTickResult> {
     // ── 4. Dispatch within budget ───────────────────────────────────────
     const snapshot = await buildFleetSnapshot(cfg.token, NICHE_SPY_JOB_ID);
 
+    // DISCOVER-WATCH goes FIRST — user-watched niches get a small reserved slice of
+    // the fleet before the system's own modes bid for threads. Config:
+    //   discover_watch_threads   (default 3, 0 disables)
+    //   discover_watch_cadence_h (default 48 — TUNE from measured yield, see module)
+    const dwCfgRes = await pool.query<{ key: string; value: string }>(
+      `SELECT key, value FROM admin_config WHERE key IN ('discover_watch_threads','discover_watch_cadence_h')`,
+    );
+    const dwc: Record<string, string> = {};
+    for (const r of dwCfgRes.rows) dwc[r.key] = r.value;
+    const dwThreads = Math.max(0, Math.min(cfg.maxThreads, parseInt(dwc.discover_watch_threads ?? '3')));
+    const dwCadence = Math.max(1, parseInt(dwc.discover_watch_cadence_h ?? '48'));
+    let dwSeeds = 0, dwThreadsUsed = 0;
+    if (dwThreads > 0 && freeThreads > 0) {
+      const d = await dispatchDiscoverWatchSeeds(Math.min(dwThreads, freeThreads), dwCadence, cfg, lockedClusters, snapshot)
+        .catch((e) => { console.error('[discover-watch] dispatch failed:', (e as Error).message); return { seeds: 0, threads: 0 }; });
+      dwSeeds = d.seeds; dwThreadsUsed = d.threads;
+    }
+
     // RE-SPY takes its slice of the fleet first, then novelty gets the remainder.
     // Gated on the mode-split flag, so with it off this is a no-op and behaviour is
     // byte-identical to before. Re-spy is capped at its budgeted share of the FREE
     // threads (not the total), so it can never crowd novelty out of a tight fleet.
     let respySeeds = 0, respyThreads = 0;
     if (modeBudget?.applied) {
+      // Net out the threads discover-watch already took, so the two lanes can't
+      // together over-commit the fleet.
+      const availForModes = Math.max(0, freeThreads - dwThreadsUsed);
       const respyBudget = Math.min(
-        freeThreads,
-        Math.round(freeThreads * (modeBudget.respy_threads / Math.max(1, cfg.maxThreads))),
+        availForModes,
+        Math.round(availForModes * (modeBudget.respy_threads / Math.max(1, cfg.maxThreads))),
       );
       const r = await dispatchRespySeeds(respyBudget, cfg, lockedClusters, snapshot)
         .catch((e) => { console.error('[respy] dispatch failed:', (e as Error).message); return { seeds: 0, threads: 0 }; });
       respySeeds = r.seeds; respyThreads = r.threads;
     }
 
-    let threadsLeft = freeThreads - respyThreads;
+    let threadsLeft = freeThreads - respyThreads - dwThreadsUsed;
     let seedsLeft = cfg.maxSeedsPerTick;
     let nichesDispatched = 0, seedsDispatched = 0, threadsDispatched = 0;
 
@@ -517,6 +538,86 @@ export interface ReaperResult {
  * the crawled region, then release the region lock. This is what makes
  * decay actually happen and what frees a cluster for future seeding.
  */
+/**
+ * Dispatch DISCOVER-WATCH crawls — the expensive half of the Niche Watcher.
+ *
+ * Sends spy agents into the niches users are WATCHING, to find channels we don't know
+ * yet. The cheap watcher re-measures known channels only, so without this a watch can
+ * never surface anything new. Runs on its own small dedicated thread budget, taken
+ * before novelty/respy, so user intent always gets served and can never be starved by
+ * the system's own yield-chasing — and is capped so watches can't eat the fleet.
+ *
+ * Tagged source='discover_watch' so stampSeedYield() measures it like every other
+ * mode; that is what makes the cadence tunable from real cost-vs-new-channels data
+ * instead of a guessed constant.
+ *
+ * Discovered channels need no special handling: they land in the corpus like any crawl
+ * output and the clustering engine assigns them from their videos.
+ */
+async function dispatchDiscoverWatchSeeds(
+  budgetThreads: number,
+  cadenceHours: number,
+  cfg: SchedulerConfig,
+  lockedClusters: Set<number>,
+  snapshot: Awaited<ReturnType<typeof buildFleetSnapshot>>,
+): Promise<{ seeds: number; threads: number }> {
+  if (budgetThreads < cfg.threadsPerSeed) return { seeds: 0, threads: 0 };
+  const pool = await getPool();
+  const { findDiscoverWatchCandidates, markDiscoverCrawled } = await import('./discover-watch');
+  const cands = await findDiscoverWatchCandidates(Math.max(5, budgetThreads * 3), cadenceHours)
+    .catch((e) => { console.error('[discover-watch] candidate pull failed:', (e as Error).message); return []; });
+
+  let threadsLeft = budgetThreads;
+  let seeds = 0, threads = 0;
+  for (const c of cands) {
+    if (threadsLeft < cfg.threadsPerSeed) break;
+    if (lockedClusters.has(c.cluster_id)) continue;   // region lock: already crawling
+
+    const label = deriveLabel({ title: c.title, seedUrl: c.url });
+    const nicheId = await createNiche({ label, seedUrl: c.url, createdFrom: 'auto_seed' });
+    await pool.query(
+      `UPDATE agent_niches SET origin_cluster_id = $1, status = 'crawling', last_seeded_at = NOW() WHERE niche_id = $2`,
+      [c.cluster_id, nicheId],
+    ).catch(() => {});
+
+    const taskInput = JSON.stringify({
+      seedUrl: c.url,
+      apiKey: cfg.apiKey,
+      loopNumber: cfg.loopNumber,
+      maxSuggestedResultsBeforeFallback: cfg.maxSuggested,
+      rofeAPIKey: cfg.rofeAPIKey,
+      nicheId,
+    });
+    const dep = await deployBatch(
+      cfg.token, NICHE_SPY_JOB_ID,
+      { keyword: nicheId, threads: cfg.threadsPerSeed, taskInput },
+      snapshot,
+    );
+    const deployed = dep.pinned + dep.unpinned;
+    if (deployed > 0) {
+      await pool.query(
+        `INSERT INTO niche_discovery_seeds
+           (seed_video_id, seed_url, niche_id, origin_cluster_id, status, source)
+         VALUES ($1, $2, $3, $4, 'crawling', 'discover_watch')
+         ON CONFLICT (seed_video_id) DO UPDATE
+           SET status='crawling', niche_id=EXCLUDED.niche_id, dispatched_at=NOW(),
+               origin_cluster_id=EXCLUDED.origin_cluster_id, source='discover_watch'`,
+        [c.video_id, c.url, nicheId, c.cluster_id],
+      ).catch(() => {});
+      await addSeedUrlToNiche(nicheId, c.url).catch(() => {});
+      // Stamp the cadence gate only on a REAL dispatch — a failed deploy must not
+      // silently put the niche on cooldown and skip it for another cycle.
+      await markDiscoverCrawled(c.cluster_id);
+      lockedClusters.add(c.cluster_id);
+      seeds++; threads += deployed; threadsLeft -= deployed;
+    } else {
+      await pool.query(`UPDATE agent_niches SET status='active' WHERE niche_id=$1`, [nicheId]).catch(() => {});
+    }
+  }
+  if (seeds > 0) console.log(`[discover-watch] dispatched ${seeds} seeds / ${threads} threads (budget ${budgetThreads}, cadence ${cadenceHours}h)`);
+  return { seeds, threads };
+}
+
 /**
  * Dispatch RE-SPY crawls — revisit KNOWN niches to track their development.
  *
