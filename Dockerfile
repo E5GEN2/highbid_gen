@@ -1,4 +1,12 @@
-FROM node:22-slim
+# Base image PINNED BY DIGEST (= node:22-slim as of 2026-08-05).
+# `node:22-slim` is a FLOATING tag: upstream rebuilds it regularly for security
+# updates, and every change silently invalidates EVERY layer below — including the
+# heavy apt layer (chromium/ffmpeg/python). That turned a one-line TypeScript fix
+# into a ~100-minute rebuild on 2026-08-05 while an outage fix waited on it.
+# Pinning makes rebuilds deterministic: the apt layer stays cached until we bump
+# this digest deliberately. To update: docker pull node:22-slim && \
+#   docker image inspect node:22-slim --format "{{index .RepoDigests 0}}"
+FROM node@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 
 # System chromium + fonts/libs Playwright + Remotion need to render real
 # YouTube pages (CJK / emoji / system fonts so screenshots aren't tofu;
