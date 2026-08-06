@@ -20,8 +20,14 @@
  * fleet.
  *
  * ── Target set ───────────────────────────────────────────────────────────────
- * The very same clusters the cheap watcher pulses (`user_niche_watches`), so a watch
- * gives the user both halves: existing channels re-measured AND new ones discovered.
+ * PRIMARY: `listeners.cluster_ids` — the niches the Listener (lib/listener.ts) already
+ * polls for new uploads. The Listener only ever sees channels we ALREADY have, so this
+ * lane crawls those same niches for the ones we don't. Two halves of one idea.
+ * Also unions `user_niche_watches` so a per-user watch slot is served if used.
+ *
+ * (First build mis-targeted user_niche_watches alone — that table is empty, so the lane
+ * deployed clean, logged nothing, and never ran a crawl for 16h. A lane with no targets
+ * is indistinguishable from a healthy idle one; check the TARGET COUNT, not just errors.)
  *
  * ── Output ───────────────────────────────────────────────────────────────────
  * None special, by design. Discovered channels land in niche_spy_videos /
@@ -96,11 +102,11 @@ export async function findDiscoverWatchCandidates(
      ),
      -- Target set = the niches we are already LISTENING to, plus any per-user watches.
      --
-     -- The primary source is `listeners.cluster_ids` (lib/listener.ts): the Listener
-     -- polls known channels in a semantically-chosen bucket for new UPLOADS, so it can
-     -- only ever see channels we already have. This lane crawls those same niches for
-     -- channels we DON'T have — the two halves of one idea, pointed at one target set.
-     -- (`user_niche_watches` is the separate per-user watch-slot feature; unioned in so
+     -- Primary source is listeners.cluster_ids (lib/listener.ts): the Listener polls
+     -- known channels in a semantically-chosen bucket for new UPLOADS, so it can only
+     -- ever see channels we already have. This lane crawls those same niches for the
+     -- channels we do NOT have -- the two halves of one idea, one target set.
+     -- (user_niche_watches is the separate per-user watch-slot feature; unioned in so
      -- a user watch is served too, but it is not the main source.)
      watched AS (
        SELECT cluster_id, COUNT(*) AS watchers FROM (
