@@ -94,10 +94,23 @@ export async function findDiscoverWatchCandidates(
         WHERE kind = 'global' AND status = 'done'
         ORDER BY started_at DESC NULLS LAST LIMIT 1
      ),
-     -- Same target set as the cheap watcher: whatever users are watching.
+     -- Target set = the niches we are already LISTENING to, plus any per-user watches.
+     --
+     -- The primary source is `listeners.cluster_ids` (lib/listener.ts): the Listener
+     -- polls known channels in a semantically-chosen bucket for new UPLOADS, so it can
+     -- only ever see channels we already have. This lane crawls those same niches for
+     -- channels we DON'T have — the two halves of one idea, pointed at one target set.
+     -- (`user_niche_watches` is the separate per-user watch-slot feature; unioned in so
+     -- a user watch is served too, but it is not the main source.)
      watched AS (
-       SELECT cluster_id, COUNT(*) AS watchers
-         FROM user_niche_watches GROUP BY cluster_id
+       SELECT cluster_id, COUNT(*) AS watchers FROM (
+         SELECT unnest(l.cluster_ids) AS cluster_id
+           FROM listeners l WHERE l.enabled
+         UNION ALL
+         SELECT cluster_id FROM user_niche_watches
+       ) t
+       WHERE cluster_id IS NOT NULL
+       GROUP BY cluster_id
      ),
      due AS (
        SELECT w.cluster_id, w.watchers,
