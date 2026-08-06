@@ -126,7 +126,20 @@ export async function findDiscoverWatchCandidates(
         WHERE s.last_discover_at IS NULL
            OR s.last_discover_at < NOW() - ($2 || ' hours')::interval
      ),
-     -- One un-seeded video per due cluster to act as the crawl entry point.
+     -- One un-seeded video per due cluster: the one CLOSEST TO THE CENTROID, i.e. the
+     -- niche's semantic centre.
+     --
+     -- Not the most-viewed one (which is what respy does). "Highest view_count in the
+     -- cluster" reliably lands on that niche's old viral mega-hit — measured on respy,
+     -- its picks averaged 4.3 YEARS old with ~34M views. Such a video's suggested-panel
+     -- skews to established, popular, often tangential content, which is close to the
+     -- worst place to look when the goal is catching channels at 0-10 subs before they
+     -- grow. The most CENTRAL video is the most representative of the niche, so its
+     -- neighbours should be squarely on-niche.
+     --
+     -- distance_to_centroid is 100% populated for these clusters in the live run.
+     -- NULLS LAST so a heuristically-assigned video (watcher path, no distance) is only
+     -- used as a last resort rather than silently sorting first.
      pick AS (
        SELECT DISTINCT ON (a.cluster_id)
               a.cluster_id, v.id AS video_id, v.url, v.title
@@ -138,7 +151,7 @@ export async function findDiscoverWatchCandidates(
           AND NOT EXISTS (
                 SELECT 1 FROM niche_discovery_seeds s2
                  WHERE s2.seed_video_id = v.id AND s2.status <> 'failed')
-        ORDER BY a.cluster_id, v.view_count DESC NULLS LAST
+        ORDER BY a.cluster_id, a.distance_to_centroid ASC NULLS LAST
      )
      SELECT p.cluster_id, p.video_id, p.url, p.title, d.hours_since, d.watchers
        FROM pick p JOIN due d ON d.cluster_id = p.cluster_id
