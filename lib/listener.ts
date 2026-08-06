@@ -88,20 +88,35 @@ export async function refreshListenerMembers(listenerId: number): Promise<number
   const clusterIds = l.rows[0]?.cluster_ids ?? [];
   if (clusterIds.length === 0) return 0;
 
+  // L2-AWARE ENROLMENT (fixes BUG-listener-L2-cluster-blindness, 2026-08-06).
+  // The niche tree is built in TWO stages and both levels are valid targets: a
+  // kind='global' run produces L1 clusters, then kind='subdivide' runs split them
+  // into narrower L2 sub-niches — and each subdivide writes its assignments under
+  // its OWN run_id. Pinning to the latest global run therefore dropped every L2
+  // target silently: listener 3 aimed at 25 clusters but could only ever reach the
+  // 10 L1 ones, enrolling 376 of 709 channels (53%) with no error anywhere. The
+  // missing 333 were exactly the NARROW sub-niches — a biased truncation, not a
+  // random sample, which also skewed the avg-new-videos-per-channel KPI.
+  //
+  // Fix: resolve each cluster through ITS OWN run (a.run_id = c.run_id) so a target
+  // is reachable at whatever level it lives. Do NOT reintroduce a single-run pin.
+  // Same fix already shipped in discover-watch (marker DW_ALL_LEVELS).
+  //
+  // NOTE: assignListenerVideosToClusters below ALSO filters level=1 — that one is
+  // deliberate and must NOT be "fixed" the same way (see the bug report §4): L1 and
+  // L2 assignments coexist by design, so letting an L2 cluster win there would
+  // silently overwrite the L1 assignment every other consumer reads.
   const res = await pool.query(
-    `WITH latest_run AS (
-       SELECT id FROM niche_tree_runs WHERE kind='global' AND status='done'
-        ORDER BY started_at DESC NULLS LAST LIMIT 1
-     )
-     INSERT INTO listener_channels (listener_id, channel_id)
+    `INSERT INTO listener_channels (listener_id, channel_id)
      SELECT DISTINCT $1::int, v.channel_id
-       FROM niche_tree_assignments a
+       FROM niche_tree_clusters c
+       JOIN niche_tree_assignments a
+            ON a.cluster_id = c.id AND a.run_id = c.run_id
        JOIN niche_spy_videos v ON v.id = a.video_id
-       JOIN niche_spy_channels c ON c.channel_id = v.channel_id
-      WHERE a.run_id = (SELECT id FROM latest_run)
-        AND a.cluster_id = ANY($2::int[])
+       JOIN niche_spy_channels ch ON ch.channel_id = v.channel_id
+      WHERE c.id = ANY($2::int[])
         AND v.channel_id IS NOT NULL
-        AND c.uploads_playlist_id IS NOT NULL   -- must be fetchable
+        AND ch.uploads_playlist_id IS NOT NULL   -- must be fetchable
      ON CONFLICT (listener_id, channel_id) DO NOTHING`,
     [listenerId, clusterIds],
   );
